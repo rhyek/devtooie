@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.devtooie/
+devtooie.log
+*.log
+devtooie-env.d.ts
+.DS_Store
