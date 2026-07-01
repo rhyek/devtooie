@@ -1,0 +1,17 @@
+{
+  "js/ts.preferences.importModuleSpecifier": "project-relative",
+  "js/ts.tsdk.path": "node_modules/typescript/lib",
+  "eslint.enable": true,
+  "eslint.format.enable": true,
+  "editor.formatOnType": false,
+  "editor.formatOnPaste": true,
+  "editor.formatOnSave": true,
+  "editor.formatOnSaveMode": "file",
+  "eslint.rules.customizations": [{ "rule": "prettier/*", "severity": "off" }],
+  "[typescript]": {
+    "editor.defaultFormatter": "dbaeumer.vscode-eslint"
+  },
+  "[typescriptreact]": {
+    "editor.defaultFormatter": "dbaeumer.vscode-eslint"
+  }
+}
