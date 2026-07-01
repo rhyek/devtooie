@@ -116,6 +116,9 @@ export class ProcessManager implements ControlManager {
   private lastGroupId = new Map<string, number>();
   private logFd: number;
   private logFilePath: string;
+  /** Bound `process.on('exit')` handler, kept so `dispose()` can remove it. */
+  private exitHandler: () => void;
+  private disposed = false;
 
   constructor(
     { sortedApps, rebuildableSet, waitForMap, healthcheckUrls, logFile }: RunnerArgs,
@@ -151,9 +154,10 @@ export class ProcessManager implements ControlManager {
     this.systemPrefix = chalk.dim(`[${' '.repeat(maxNameLen)}]`) + ' ';
 
     ProcessManager.instances.add(this);
-    process.on('exit', () => {
+    this.exitHandler = () => {
       this.killAll();
-    });
+    };
+    process.on('exit', this.exitHandler);
 
     this.logFilePath = logFile ?? path.join(getStateDir(), 'devlog.txt');
     this.logFd = fs.openSync(this.logFilePath, 'w');
@@ -327,6 +331,10 @@ export class ProcessManager implements ControlManager {
 
   /** ControlManager + hotkey entry point: restarts a service. `false` if unknown. */
   restart(name: string): boolean {
+    if (this.transitions.has(name)) {
+      // Already mid restart/rebuild — accept without starting a second transition.
+      return true;
+    }
     const managed = this.processes.get(name);
     if (!managed) {
       return false;
@@ -348,11 +356,16 @@ export class ProcessManager implements ControlManager {
 
   /**
    * ControlManager + hotkey entry point: stop -> `build:clean` -> start.
-   * `false` if unknown. A failing build leaves the service stopped (no restart).
+   * `false` if unknown, or if the service has no `build:clean` script. A
+   * failing build leaves the service stopped (no restart).
    */
   rebuild(name: string): boolean {
+    if (this.transitions.has(name)) {
+      // Already mid restart/rebuild — accept without starting a second transition.
+      return true;
+    }
     const managed = this.processes.get(name);
-    if (!managed) {
+    if (!managed || !this.rebuildableSet.has(name)) {
       return false;
     }
     void this.performRebuild(name, managed);
@@ -365,11 +378,22 @@ export class ProcessManager implements ControlManager {
       await this.stop(name);
       this.addLine(managed.prefix, chalk.yellow('rebuilding...'), managed.searchName, false);
       const [cmd, args] = getExecArgs(managed.app, 'build:clean');
-      const result = await execa(cmd, args, {
+      const buildProc = execa(cmd, args, {
         cwd: managed.app.path,
         stdin: 'ignore',
         reject: false,
+        detached: true,
       });
+      // Tracked in extraProcs for the duration of the build so killAll /
+      // shutdownAll / forceKillAll can reach (and kill the group of) this
+      // child even though it isn't the service's own long-running `proc`.
+      managed.extraProcs.add(buildProc);
+      let result;
+      try {
+        result = await buildProc;
+      } finally {
+        managed.extraProcs.delete(buildProc);
+      }
       if (result.exitCode !== 0) {
         this.addLine(
           managed.prefix,
@@ -596,6 +620,27 @@ export class ProcessManager implements ControlManager {
     }
   }
 
+  /**
+   * Releases everything this instance holds outside its own object graph:
+   * the `process.on('exit')` listener, its entry in the shared instance
+   * registry, and the open logfile descriptor. Safe to call more than once.
+   * Does not touch any running child processes — call `killAll()` /
+   * `shutdownAll()` first if that's also needed.
+   */
+  dispose(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
+    process.off('exit', this.exitHandler);
+    ProcessManager.instances.delete(this);
+    try {
+      fs.closeSync(this.logFd);
+    } catch {
+      /* already closed */
+    }
+  }
+
   private killTree(proc: ResultPromise, signal: NodeJS.Signals = 'SIGTERM'): void {
     if (proc.pid) {
       try {
@@ -614,21 +659,21 @@ export class ProcessManager implements ControlManager {
 
   getRunning(): string[] {
     return [...this.processes.entries()]
-      .filter(([, m]) => m.status === 'running')
+      .filter(([n, m]) => this.effectiveStatus(n, m) === 'running')
       .map(([n]) => n)
       .sort();
   }
 
   getStopped(): string[] {
     return [...this.processes.entries()]
-      .filter(([, m]) => m.status === 'stopped')
+      .filter(([n, m]) => this.effectiveStatus(n, m) === 'stopped')
       .map(([n]) => n)
       .sort();
   }
 
   getWaiting(): string[] {
     return [...this.processes.entries()]
-      .filter(([, m]) => m.status === 'waiting')
+      .filter(([n, m]) => this.effectiveStatus(n, m) === 'waiting')
       .map(([n]) => n)
       .sort();
   }
@@ -650,6 +695,11 @@ export class ProcessManager implements ControlManager {
     if (!managed) {
       return null;
     }
+    return this.effectiveStatus(name, managed);
+  }
+
+  /** `managed.status`, overlaid with a transitional `rebuilding`/`restarting` if one is in flight. */
+  private effectiveStatus(name: string, managed: ManagedProcess): Status {
     return this.transitions.get(name) ?? managed.status;
   }
 

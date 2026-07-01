@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,6 +8,12 @@ import type { RunnerArgs } from './runners/types.js';
 
 let dir: string;
 let logFile: string;
+let manager: ProcessManager | undefined;
+
+afterEach(() => {
+  manager?.dispose();
+  manager = undefined;
+});
 
 beforeAll(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-process-manager-'));
@@ -45,7 +51,7 @@ function runnerArgs(a: AnyAppConfig): RunnerArgs {
 
 describe('ProcessManager', () => {
   it('starts a service, tracks it as running, then stops it cleanly', async () => {
-    const manager = new ProcessManager(runnerArgs(app()), { plain: true });
+    manager = new ProcessManager(runnerArgs(app()), { plain: true });
 
     manager.start('fixture');
     // Give execa (via the package manager) time to actually spawn the child.
@@ -59,14 +65,14 @@ describe('ProcessManager', () => {
   }, 10_000);
 
   it('ControlManager adapter: restart/rebuild return false for an unknown service', () => {
-    const manager = new ProcessManager(runnerArgs(app()), { plain: true });
+    manager = new ProcessManager(runnerArgs(app()), { plain: true });
     expect(manager.restart('does-not-exist')).toBe(false);
     expect(manager.rebuild('does-not-exist')).toBe(false);
     expect(manager.getStatus('does-not-exist')).toBeNull();
   });
 
   it('getServices filters by status', () => {
-    const manager = new ProcessManager(runnerArgs(app()), { plain: true });
+    manager = new ProcessManager(runnerArgs(app()), { plain: true });
     expect(manager.getServices()).toEqual([
       { name: 'fixture', shortName: undefined, status: 'stopped' },
     ]);
