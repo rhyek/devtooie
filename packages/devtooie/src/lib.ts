@@ -5,6 +5,7 @@ import { execaSync } from 'execa';
 import YAML from 'yaml';
 import type { AnyAppConfig } from './config.js';
 import { getRegisteredApps } from './config.js';
+import type { RunnerArgs } from './runners/types.js';
 
 const require = createRequire(import.meta.url);
 
@@ -210,4 +211,80 @@ export function getGitBranch(): string | null {
   } catch {
     return null;
   }
+}
+
+const typeRank = (app: AnyAppConfig): number => {
+  if (app.types.includes('backend')) return 0;
+  if (app.types.includes('browser')) return 1;
+  return 2; // lib / infra
+};
+
+const byName = (a: AnyAppConfig, b: AnyAppConfig) => a.name.localeCompare(b.name);
+
+/** Selectable, dev-scripted apps grouped for the interactive selector. */
+export function getServiceGroups(): { backend: AnyAppConfig[]; frontend: AnyAppConfig[] } {
+  const apps = getRegisteredApps().filter((a) => a.run?.selectable !== false && hasDevScript(a));
+  return {
+    backend: apps.filter((a) => a.types.includes('backend')).sort(byName),
+    frontend: apps.filter((a) => a.types.includes('browser')).sort(byName),
+  };
+}
+
+export function getRuntimeDepsMap(): Record<string, string[]> {
+  const map: Record<string, string[]> = {};
+  for (const a of getRegisteredApps()) {
+    map[a.name] = a.run?.deps?.runtime ?? [];
+  }
+  return map;
+}
+
+/**
+ * Display order: selected → selectable deps → non-selectable infra; within each,
+ * backend → frontend → libs, then alphabetical.
+ */
+export function sortForDisplay(apps: AnyAppConfig[], selectedSet: Set<string>): AnyAppConfig[] {
+  const bucket = (a: AnyAppConfig): number => {
+    if (selectedSet.has(a.name)) return 0;
+    if (a.run?.selectable !== false) return 1;
+    return 2;
+  };
+  return [...apps].sort((a, b) => {
+    const bd = bucket(a) - bucket(b);
+    if (bd !== 0) return bd;
+    const td = typeRank(a) - typeRank(b);
+    if (td !== 0) return td;
+    return byName(a, b);
+  });
+}
+
+export function buildRunnerArgs(selectedApps: AnyAppConfig[], deps: ResolveResult): RunnerArgs {
+  const selectedSet = new Set(selectedApps.map((a) => a.name));
+  const sortedApps = sortForDisplay(deps.allApps, selectedSet);
+  const rebuildableSet = new Set(
+    deps.allApps.filter((a) => hasScript(a, 'build:clean')).map((a) => a.name),
+  );
+  const waitForMap: Record<string, string[]> = {};
+  const healthcheckUrls: Record<string, string> = {};
+  const extraCommandsMap: Record<string, string[]> = {};
+  for (const a of deps.allApps) {
+    if (a.run?.waitFor?.length) {
+      waitForMap[a.name] = a.run.waitFor;
+    }
+    if (a.run?.healthcheck) {
+      healthcheckUrls[a.name] = a.run.healthcheck;
+    }
+    const extra = getExtraCommands(a);
+    if (extra.length) {
+      extraCommandsMap[a.name] = extra;
+    }
+  }
+  return {
+    sortedApps,
+    selectedSet,
+    buildDepSet: deps.buildSet,
+    rebuildableSet,
+    waitForMap,
+    healthcheckUrls,
+    extraCommandsMap,
+  };
 }

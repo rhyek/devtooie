@@ -15,6 +15,8 @@ import {
   loadSelection,
   resetSelection,
   getApiPort,
+  sortForDisplay,
+  buildRunnerArgs,
 } from './lib.js';
 import type { AnyAppConfig } from './config.js';
 import { defineAppConfigs } from './config.js';
@@ -116,5 +118,37 @@ describe('state + persistence', () => {
 
   it('getApiPort returns a number (default 4099 when no devtooie.yaml in cwd)', () => {
     expect(typeof getApiPort()).toBe('number');
+  });
+});
+
+describe('display sort + runner args', () => {
+  function apps() {
+    return defineAppConfigs({
+      workspaceDir: '/repo',
+      apps: [
+        { name: 'proxy', types: ['backend'], run: { selectable: false } },
+        { name: 'api', types: ['backend'], run: { deps: { runtime: ['proxy'] } } },
+        { name: 'web', types: ['browser'], run: { deps: { runtime: ['api', 'proxy'] } } },
+        { name: 'lib-x', types: ['lib'] },
+      ],
+    });
+  }
+
+  it('orders selected first, then selectable deps, then non-selectable infra', () => {
+    const all = apps();
+    const selected = new Set(['web']);
+    const sorted = sortForDisplay(all, selected);
+    expect(sorted[0]!.name).toBe('web'); // selected first
+    expect(sorted[sorted.length - 1]!.name).toBe('proxy'); // non-selectable infra last
+  });
+
+  it('buildRunnerArgs marks the selected set and produces sorted apps', () => {
+    const all = apps();
+    const web = all.find((a) => a.name === 'web')!;
+    const deps = resolveDeps([web]);
+    const args = buildRunnerArgs([web], deps);
+    expect(args.selectedSet.has('web')).toBe(true);
+    expect(args.sortedApps.length).toBeGreaterThan(0);
+    expect(args.buildDepSet).toBe(deps.buildSet);
   });
 });
