@@ -19,7 +19,12 @@ export function findProjectConfigPath(cwd: string = process.cwd()): string | nul
 export function getProjectConfig(cwd: string = process.cwd()): ProjectConfig | null {
   const p = findProjectConfigPath(cwd);
   if (!p) return null;
-  const raw = (YAML.parse(fs.readFileSync(p, 'utf8')) ?? {}) as Partial<ProjectConfig>;
+  let raw: Partial<ProjectConfig>;
+  try {
+    raw = (YAML.parse(fs.readFileSync(p, 'utf8')) ?? {}) as Partial<ProjectConfig>;
+  } catch (err) {
+    throw new Error(`invalid ${path.basename(p)}: ${(err as Error).message}`, { cause: err });
+  }
   return {
     services: raw.services ?? './services.ts',
     apiPort: raw.apiPort ?? 4099,

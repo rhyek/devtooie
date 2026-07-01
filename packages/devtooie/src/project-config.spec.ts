@@ -16,7 +16,7 @@ describe('project-config', () => {
     expect(getProjectConfig(dir)).toBeNull();
   });
 
-  it('round-trips a written config with defaults applied', () => {
+  it('round-trips a fully written config', () => {
     writeProjectConfig({ services: './services.ts', apiPort: 4099, skill: true }, dir);
     const cfg = getProjectConfig(dir)!;
     expect(cfg.services).toBe('./services.ts');
@@ -27,5 +27,10 @@ describe('project-config', () => {
   it('defaults apiPort to 4099 when omitted', () => {
     fs.writeFileSync(path.join(dir, 'devtooie.yaml'), 'services: ./services.ts\n');
     expect(getProjectConfig(dir)!.apiPort).toBe(4099);
+  });
+
+  it('throws on malformed devtooie.yaml', () => {
+    fs.writeFileSync(path.join(dir, 'devtooie.yaml'), 'services: [unclosed\n  : : :\n');
+    expect(() => getProjectConfig(dir)).toThrow(/invalid devtooie\.yaml/);
   });
 });

@@ -162,7 +162,11 @@ export function resolveDeps(
  * Control-API port from `devtooie.yaml` (`apiPort`), defaulting to 4099.
  */
 export function getApiPort(): number {
-  return getProjectConfig()?.apiPort ?? 4099;
+  try {
+    return getProjectConfig()?.apiPort ?? 4099;
+  } catch {
+    return 4099;
+  }
 }
 
 const selectionFile = () => path.join(getStateDir(), 'selection.json');
