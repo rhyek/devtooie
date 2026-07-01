@@ -26,6 +26,8 @@ Every task's requirements implicitly include this section. Values are copied ver
 - **npm scripts the CLI drives/spawns:** `dev`, `build`, `clean`, `build:clean` (= `clean` then `build`). Spawns `pnpm run <script>` (Node app w/ `package.json`) or `make <target>` (has `Makefile`).
 - **Debug flag:** `DEBUG_DEVTOOIE` (opt-in) → `node_modules/.devtooie/debug.log`.
 - **No external-project references anywhere in this repo.** Write all source, comments, commit messages, and docs as greenfield. Never name or hint at any other project this was modeled on or ported from.
+- **Dependency versions: always use the latest published version.** The specific version ranges shown in this plan (e.g. `eslint ^9.0.0`, `ink ^5.0.0`) are illustrative only. For every dependency and devDependency, install the latest published version — prefer `pnpm add [-D] <pkg>@latest` (which writes the actual resolved caret range into `package.json`) over transcribing the version strings from the plan. The one hard floor is `engines.node >= 23.6` and the `typescript` peer range `>=5.0.0`; otherwise take latest.
+- **Repository:** `https://github.com/rhyek/devtooie.git` (owner `rhyek`).
 
 ---
 
@@ -254,7 +256,7 @@ git commit -m "chore: scaffold pnpm workspace root (tsconfig, eslint, prettier, 
   "author": "Carlos González <carlos.rgn@gmail.com>",
   "license": "MIT",
   "type": "module",
-  "repository": { "type": "git", "url": "https://github.com/<owner>/devtooie.git" },
+  "repository": { "type": "git", "url": "https://github.com/rhyek/devtooie.git" },
   "keywords": ["monorepo", "dev", "cli", "orchestration", "dependencies", "tui", "ink"],
   "engines": { "node": ">=23.6" },
   "bin": { "devtooie": "./dist/cli.js" },
@@ -2632,7 +2634,7 @@ Expected: init creates the four artifacts; `--plain` runs; control API responds;
 
 - [ ] **Step 4: Record results + confirm publish readiness**
 
-Note the tarball contents, the e2e result, and the two pre-publish placeholders that must be resolved: the `<owner>` in `repository.url` and final confirmation of the `devtooie` package name. Do not run a real `npm publish` from this plan — publishing happens via the release workflow on merge to `main`.
+Note the tarball contents, the e2e result, and the one remaining pre-publish item: final confirmation of the `devtooie` package name (the repo is `github.com/rhyek/devtooie`, already set in `repository.url`). Do not run a real `npm publish` from this plan — publishing happens via the release workflow on merge to `main`.
 
 - [ ] **Step 5: Commit any fixups**
 
