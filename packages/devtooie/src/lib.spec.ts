@@ -10,6 +10,11 @@ import {
   getExtraCommands,
   resolveDeps,
   DepType,
+  getStateDir,
+  saveSelection,
+  loadSelection,
+  resetSelection,
+  getApiPort,
 } from './lib.js';
 import type { AnyAppConfig } from './config.js';
 import { defineAppConfigs } from './config.js';
@@ -92,5 +97,24 @@ describe('resolveDeps (§8)', () => {
     const web = apps.find((a) => a.name === 'web')!;
     const { buildSet } = resolveDeps([web], [DepType.DEV]);
     expect(buildSet.has('graphql-codegen')).toBe(true);
+  });
+});
+
+describe('state + persistence', () => {
+  it('round-trips the saved selection', () => {
+    resetSelection();
+    expect(loadSelection()).toBeNull();
+    saveSelection(['web', 'core-svc']);
+    expect(loadSelection()).toEqual(['web', 'core-svc']);
+    resetSelection();
+    expect(loadSelection()).toBeNull();
+  });
+
+  it('getStateDir lives under node_modules/.devtooie', () => {
+    expect(getStateDir().replace(/\\/g, '/')).toContain('node_modules/.devtooie');
+  });
+
+  it('getApiPort returns a number (default 4099 when no devtooie.yaml in cwd)', () => {
+    expect(typeof getApiPort()).toBe('number');
   });
 });

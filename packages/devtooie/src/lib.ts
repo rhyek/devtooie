@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { execaSync } from 'execa';
+import YAML from 'yaml';
 import type { AnyAppConfig } from './config.js';
 import { getRegisteredApps } from './config.js';
 
@@ -153,4 +155,59 @@ export function resolveDeps(
   const allNames = new Set([...runSet, ...buildSet]);
   const allApps = [...allNames].map(lookup).filter((a): a is AnyAppConfig => Boolean(a));
   return { allApps, buildSet, runSet, reasons };
+}
+
+/**
+ * Control-API port from `devtooie.yaml` (`apiPort`), defaulting to 4099.
+ * (Reads the yaml inline for now; a later task routes this through project-config.)
+ */
+export function getApiPort(): number {
+  for (const name of ['devtooie.yaml', 'devtooie.yml']) {
+    const p = path.join(process.cwd(), name);
+    if (fs.existsSync(p)) {
+      try {
+        const cfg = YAML.parse(fs.readFileSync(p, 'utf8')) as { apiPort?: number };
+        if (typeof cfg?.apiPort === 'number') return cfg.apiPort;
+      } catch {
+        // fall through to the default
+      }
+    }
+  }
+  return 4099;
+}
+
+const selectionFile = () => path.join(getStateDir(), 'selection.json');
+
+export function saveSelection(names: string[]): void {
+  fs.writeFileSync(selectionFile(), JSON.stringify(names));
+}
+
+export function loadSelection(): string[] | null {
+  try {
+    return JSON.parse(fs.readFileSync(selectionFile(), 'utf8')) as string[];
+  } catch {
+    return null;
+  }
+}
+
+export function resetSelection(): void {
+  try {
+    fs.rmSync(selectionFile(), { force: true });
+  } catch {
+    // nothing to reset
+  }
+}
+
+/** Current git branch; short SHA on detached HEAD; null when not a repo. */
+export function getGitBranch(): string | null {
+  try {
+    const { stdout } = execaSync('git', ['rev-parse', '--abbrev-ref', 'HEAD']);
+    if (stdout.trim() === 'HEAD') {
+      const { stdout: sha } = execaSync('git', ['rev-parse', '--short', 'HEAD']);
+      return sha.trim();
+    }
+    return stdout.trim();
+  } catch {
+    return null;
+  }
 }
