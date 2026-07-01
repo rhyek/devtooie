@@ -45,7 +45,14 @@ export default defineConfig([
   // React (Ink) components live in .tsx files.
   {
     files: ['**/*.tsx'],
-    plugins: { react, 'react-hooks': reactHooks },
+    // eslint-plugin-react / -react-hooks @7.x ship types that don't satisfy ESLint 10's
+    // flat-config `Plugin` type, which (via defineConfig) poisons the whole config array's
+    // type under `// @ts-check`. They work fine at runtime; cast to keep type-checking the
+    // rest of this file.
+    plugins: /** @type {Record<string, import('eslint').ESLint.Plugin>} */ ({
+      react,
+      'react-hooks': reactHooks,
+    }),
     // Hardcoded rather than 'detect': eslint-plugin-react@7.37.5's version
     // detection calls the removed `context.getFilename()` API under
     // ESLint 10's flat config, which throws. Keep in sync with the
