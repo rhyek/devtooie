@@ -39,8 +39,13 @@ export async function runPlain(
   };
 
   // Attach before starting services so status/restart/rebuild requests are
-  // servable the moment anything spawns.
+  // servable the moment anything spawns. Also take over `/command/quit`
+  // routing from whatever handler the server was constructed with (typically
+  // a hard exit, since there's no process manager yet at that point), so a
+  // quit request received during this session goes through the graceful
+  // shutdown above instead.
   server.attach(manager);
+  server.setOnQuit(() => void shutdown());
   manager.startAll();
 
   const stopBranchWatch = watchGitBranch({
