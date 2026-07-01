@@ -41,4 +41,66 @@ describe('command-server', () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/query/status`);
     expect(res.status).toBe(200);
   });
+
+  it('POST /command/restart/<known-app> returns 202', async () => {
+    server = await startCommandServer({ onQuit: () => {}, port: 0 });
+    server.attach({
+      getAllStatuses: () => ({}),
+      getStatus: () => null,
+      getServices: () => [],
+      restart: (name: string) => name === 'web',
+      rebuild: () => false,
+      quit: () => {},
+    });
+    const res = await fetch(`http://127.0.0.1:${server.port}/command/restart/web`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as { ok: boolean };
+    expect(body.ok).toBe(true);
+  });
+
+  it('POST /command/restart/<unknown-app> returns 404', async () => {
+    server = await startCommandServer({ onQuit: () => {}, port: 0 });
+    server.attach({
+      getAllStatuses: () => ({}),
+      getStatus: () => null,
+      getServices: () => [],
+      restart: (name: string) => name === 'web',
+      rebuild: () => false,
+      quit: () => {},
+    });
+    const res = await fetch(`http://127.0.0.1:${server.port}/command/restart/unknown`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { ok: boolean };
+    expect(body.ok).toBe(false);
+  });
+
+  it('POST /command/rebuild/<known-app> returns 202', async () => {
+    server = await startCommandServer({ onQuit: () => {}, port: 0 });
+    server.attach({
+      getAllStatuses: () => ({}),
+      getStatus: () => null,
+      getServices: () => [],
+      restart: () => false,
+      rebuild: (name: string) => name === 'web',
+      quit: () => {},
+    });
+    const res = await fetch(`http://127.0.0.1:${server.port}/command/rebuild/web`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as { ok: boolean };
+    expect(body.ok).toBe(true);
+  });
+
+  it('GET /query/pid/ with trailing slash returns 200', async () => {
+    server = await startCommandServer({ onQuit: () => {}, port: 0 });
+    const res = await fetch(`http://127.0.0.1:${server.port}/query/pid/`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { pid: number };
+    expect(body.pid).toBe(process.pid);
+  });
 });

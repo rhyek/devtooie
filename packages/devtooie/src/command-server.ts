@@ -21,14 +21,16 @@ export async function startCommandServer(opts: {
   };
 
   const server = http.createServer((req, res) => {
+    // Localhost-only convenience API: HTTP methods are intentionally not enforced.
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-    const parts = url.pathname.split('/').filter(Boolean);
-    if (url.pathname === '/query/pid') return send(res, 200, { pid: process.pid });
-    if (url.pathname === '/command/quit') {
+    const pathname = url.pathname.replace(/\/+$/, '') || '/';
+    const parts = pathname.split('/').filter(Boolean);
+    if (pathname === '/query/pid') return send(res, 200, { pid: process.pid });
+    if (pathname === '/command/quit') {
       send(res, 200, { ok: true });
       return void opts.onQuit();
     }
-    if (url.pathname === '/')
+    if (pathname === '/')
       return send(res, 200, { ok: true, pid: process.pid, attached: Boolean(manager) });
 
     if (!manager) return send(res, 503, { error: 'manager not attached' });
