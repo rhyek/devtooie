@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
-import { defineAppConfigs } from './config.js';
+import { defineAppConfigs, findApp, getRegisteredApps } from './config.js';
 
 describe('defineAppConfigs path resolution', () => {
   it('defaults relativeDir to projects/<name> and resolves path against cwd', () => {
@@ -80,5 +80,25 @@ describe('validation', () => {
         apps: [{ name: 'a', types: ['browser'], run: { urls: ['https://:domain'] } }],
       }),
     ).toThrow(/:domain/);
+  });
+});
+
+describe('registry + findApp', () => {
+  it('populates the registry on define and looks apps up by name', () => {
+    defineAppConfigs({
+      apps: [
+        { name: 'alpha', types: [] },
+        { name: 'beta', types: [] },
+      ],
+    });
+    expect(getRegisteredApps().map((a) => a.name)).toEqual(
+      expect.arrayContaining(['alpha', 'beta']),
+    );
+    expect(findApp('alpha').name).toBe('alpha');
+  });
+
+  it('throws for an unknown app', () => {
+    defineAppConfigs({ apps: [{ name: 'alpha', types: [] }] });
+    expect(() => findApp('nope')).toThrow(/nope/);
   });
 });

@@ -40,6 +40,18 @@ export type ResolvedAppConfig<N extends string> = AppConfigInput<N> & {
 
 export type AnyAppConfig = ResolvedAppConfig<string>;
 
+let registeredApps: AnyAppConfig[] = [];
+
+export function getRegisteredApps(): AnyAppConfig[] {
+  return registeredApps;
+}
+
+export function findApp(name: string): AnyAppConfig {
+  const app = registeredApps.find((a) => a.name === name);
+  if (!app) throw new Error(`app ${name} not found`);
+  return app;
+}
+
 function substituteRun<N extends string>(
   name: N,
   run: RunConfig<N>,
@@ -103,7 +115,7 @@ export function defineAppConfigs<const N extends string>(
     }
   }
 
-  return opts.apps.map((config) => {
+  const resolved = opts.apps.map((config) => {
     const relativeDir = config.relativeDir ?? `projects/${config.name}`;
     const run = config.run;
     return {
@@ -113,4 +125,6 @@ export function defineAppConfigs<const N extends string>(
       run: run ? substituteRun(config.name, run, opts.tokens ?? {}) : undefined,
     };
   });
+  registeredApps = resolved as AnyAppConfig[];
+  return resolved;
 }
