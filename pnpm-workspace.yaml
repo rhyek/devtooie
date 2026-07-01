@@ -1,2 +1,8 @@
 packages:
   - 'packages/*'
+# The git hooks are set up by our own `prepare` script, so simple-git-hooks' own
+# postinstall build script is not needed (pnpm's approve-builds gate).
+allowBuilds:
+  simple-git-hooks: false
+# Track the latest release of every dependency (disable pnpm's release-age gate).
+minimumReleaseAge: 0
