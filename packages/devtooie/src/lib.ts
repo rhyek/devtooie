@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { execaSync } from 'execa';
-import YAML from 'yaml';
 import type { AnyAppConfig } from './config.js';
 import { getRegisteredApps } from './config.js';
+import { getProjectConfig } from './project-config.js';
 import type { RunnerArgs } from './runners/types.js';
 
 const require = createRequire(import.meta.url);
@@ -160,21 +160,9 @@ export function resolveDeps(
 
 /**
  * Control-API port from `devtooie.yaml` (`apiPort`), defaulting to 4099.
- * (Reads the yaml inline for now; a later task routes this through project-config.)
  */
 export function getApiPort(): number {
-  for (const name of ['devtooie.yaml', 'devtooie.yml']) {
-    const p = path.join(process.cwd(), name);
-    if (fs.existsSync(p)) {
-      try {
-        const cfg = YAML.parse(fs.readFileSync(p, 'utf8')) as { apiPort?: number };
-        if (typeof cfg?.apiPort === 'number') return cfg.apiPort;
-      } catch {
-        // fall through to the default
-      }
-    }
-  }
-  return 4099;
+  return getProjectConfig()?.apiPort ?? 4099;
 }
 
 const selectionFile = () => path.join(getStateDir(), 'selection.json');
