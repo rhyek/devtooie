@@ -22,8 +22,8 @@ It ships **two things** from one package:
    types. The consumer authors their config against these, and *sibling tools* in
    their monorepo (reverse proxies, codegen scripts, etc.) import the same typed
    config.
-2. **A CLI binary** (`devtooie`) — driven by the consumer's config file, passed
-   via `--config`.
+2. **A CLI binary** (`devtooie`) — driven by a committed `devtooie.yaml` (created by
+   `devtooie init`) that points at the services file and the control-API port.
 
 This spec is self-contained and describes devtooie as a standalone product: its
 public API, CLI, runtime behavior, build, and release pipeline in enough detail to
@@ -49,10 +49,10 @@ implement from scratch.
 - Publish `devtooie` to npmjs.
 - Expose `defineAppConfigs` + related types as the public API surface consumers and
   their sibling tools build against.
-- CLI invoked as `devtooie --config=<path>` (via `pnpm`, `npm run`, `npx`,
-  `bun`, or any runner — the invocation mechanism is package-manager-agnostic).
-- Decouple entirely from the internal monorepo's runtime, env scheme, and directory
-  layout.
+- CLI invoked as plain `devtooie` (via `pnpm`, `npm run`, `npx`, `bun`, or any runner
+  — invocation is package-manager-agnostic); it reads `devtooie.yaml`, not CLI flags.
+- No coupling to any specific JS runtime, env-file scheme, or fixed directory layout —
+  everything env/layout-specific is consumer-supplied config.
 - Faithful, low-boilerplate consumer ergonomics (`export default`, generated types).
 - A CHANGELOG-driven GitHub Actions release pipeline that publishes to npm with
   provenance.
@@ -104,12 +104,18 @@ devtooie/
         ├── package.json         # name: "devtooie", bin + exports, ESM-only
         ├── tsconfig.json        # build config (emits JS + .d.ts to dist)
         ├── README.md            # copied from root at release time
+        ├── assets/
+        │   └── skill.md         # agent-skill template installed by `devtooie init`
+        ├── postinstall.mjs      # best-effort first-run setup offer (see §15)
         └── src/
             ├── index.ts         # library entry — public exports (see §4)
             ├── config.ts        # defineAppConfigs, AppType, registry, findApp, token subst.
             ├── register.ts      # Register interface + derived AppConfig/AppName types
             ├── cli.ts           # CLI entry (bin) — #!/usr/bin/env node after build
-            ├── load-config.ts   # locate + import the consumer's --config module
+            ├── project-config.ts# read/write devtooie.yaml (services path, apiPort, skill flag)
+            ├── load-config.ts   # resolve + import the services module named in devtooie.yaml
+            ├── init.ts          # `devtooie init` interactive flow (§15)
+            ├── skill.ts         # render/install/update the agent skill file (§15)
             ├── typegen.ts       # generate devtooie-env.d.ts augmentation file
             ├── lib.ts           # pure helpers: dep resolution, runner detection, groups, persistence
             ├── process-manager.ts
@@ -142,9 +148,10 @@ The package's `package.json`:
   "type": "module",
   "repository": { "type": "git", "url": "https://github.com/<owner>/devtooie.git" },
   "keywords": ["monorepo", "dev", "cli", "orchestration", "dependencies", "tui", "ink"],
-  "engines": { "node": ">=23.6" },        // native .ts config import (24 LTS recommended)
+  "engines": { "node": ">=23.6" },        // native .ts services import (24 LTS recommended)
   "bin": { "devtooie": "./dist/cli.js" },
-  "files": ["dist"],
+  "files": ["dist", "assets", "postinstall.mjs"],
+  "scripts": { "postinstall": "node ./postinstall.mjs" },  // best-effort; see §15
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
   },
@@ -329,9 +336,25 @@ export type { Register, AppConfig, AppName } from './register';
 
 ## 5. Consumer Integration
 
-### 5.1 The config file
+A configured consumer project has **two files**, both created by `devtooie init`
+(§15) and both committed to the repo:
 
-The entire file the consumer must write (`apps.ts`, or any name they like):
+1. **`devtooie.yaml`** (or `devtooie.yml`) — devtooie's own project config, at the
+   repo root. The CLI reads it to know where the services file is and which control-API
+   port to use. There are **no `--config`/`--api-port` CLI flags** — this file is the
+   single source of truth.
+   ```yaml
+   # devtooie.yaml — created/managed by `devtooie init`
+   services: ./services.ts   # path to the defineAppConfigs module
+   apiPort: 4099             # control HTTP API port
+   skill: true               # agent skill installed + kept up to date (§15)
+   ```
+2. **`services.ts`** (default name; the path is whatever `devtooie.yaml` `services`
+   points at) — the app/service definitions.
+
+### 5.1 The services file
+
+The single file the consumer authors (scaffolded empty by `init`, then filled in):
 
 ```ts
 import { defineAppConfigs } from 'devtooie';
@@ -368,33 +391,33 @@ export default defineAppConfigs({
 });
 ```
 
-`export default` means the consumer is never forced to name the variable; the CLI
+`export default` means the consumer is never forced to name the variable; devtooie
 reads the module's default export. If a sibling tool wants a named import too, the
-consumer can add `export const appConfigs = ...; export default appConfigs;` — but
-the default export is canonical.
+consumer can add `export const services = ...; export default services;` — but the
+default export is canonical.
 
 ### 5.2 CLI invocation
 
 ```bash
-devtooie --config=apps.ts            # via npx, or a package.json script
-pnpm devtooie --config=apps.ts       # same thing under pnpm
-npm run dev                           # if "dev": "devtooie --config=apps.ts"
+devtooie                    # via npx / package.json script; reads ./devtooie.yaml
+pnpm devtooie               # same under pnpm
+npm run dev                 # if "dev": "devtooie"
 ```
 
-The `--config` path is resolved relative to the current working directory (or given
-absolute). See §6.1 for loading details.
+No config/port flags — the CLI reads `devtooie.yaml` from cwd. If it's missing, the
+CLI exits with a message pointing the user to `devtooie init`. See §6.1.
 
 ### 5.3 Sibling tools
 
-Other tools in the consumer's monorepo import the config value from the consumer's
-own file, and types from `devtooie`:
+Other tools in the consumer's monorepo import the config value from the services file
+directly, and types from `devtooie`:
 
 ```ts
 // e.g. a reverse proxy
-import appConfigs from './apps';                 // default import (concrete, typed)
+import services from './services';               // default import (concrete, typed)
 import { AppType, type AnyAppConfig } from 'devtooie';
 
-for (const app of appConfigs) {
+for (const app of services) {
   const { subdomain, port, hmrPort } = app.run ?? {};
   // ...
 }
@@ -405,23 +428,23 @@ function isBackend(app: AnyAppConfig) {
 ```
 
 They may also use `findApp` from `devtooie` (the registry is populated by importing
-`./apps`), and — once augmentation is wired — the narrow `AppConfig`/`AppName`.
+`./services`), and — once augmentation is wired — the narrow `AppConfig`/`AppName`.
 
 ### 5.4 `typegen` and the generated augmentation file
 
-`devtooie typegen --config=apps.ts` reads the config and writes a small file into
-the consumer's project (default: `devtooie-env.d.ts` next to the config, git-ignored):
+`devtooie typegen` reads `devtooie.yaml` for the services path and writes a small file
+into the consumer's project (default: `devtooie-env.d.ts` at the repo root, git-ignored):
 
 ```ts
 // devtooie-env.d.ts — generated by devtooie. Do not edit.
 declare module 'devtooie' {
-  interface Register { appConfigs: typeof import('./apps').default }
+  interface Register { appConfigs: typeof import('./services').default }
 }
 ```
 
-- The relative path (`./apps`) is computed from the generated file's location to the
-  `--config` target.
-- `typegen` also runs automatically at the start of `devtooie dev` (best-effort;
+- The relative path (`./services`) is computed from the generated file's location to
+  the services path in `devtooie.yaml`.
+- `typegen` also runs automatically at the start of a `devtooie` run (best-effort;
   failure is non-fatal and logged), so most consumers never invoke it directly.
 - The generated file must be included in the consumer's `tsconfig` (root-level
   placement usually is already). devtooie does not modify the consumer's tsconfig.
@@ -430,32 +453,36 @@ declare module 'devtooie' {
 
 ## 6. CLI Reference
 
-Argument parsing uses `commander`. Three subcommands (`reset`, `resolvedeps`,
+Argument parsing uses `commander`. Four subcommands (`init`, `reset`, `resolvedeps`,
 `typegen`) are handled before the main parse so they don't alter default behavior.
 
-### 6.1 Config discovery & loading (`load-config.ts`)
+### 6.1 Project config & services loading (`project-config.ts` + `load-config.ts`)
 
-- `--config <path>` is **required** for any command that needs the config (`dev`,
-  the default run, `resolvedeps`, `typegen`). Relative paths resolve against cwd.
-- The config is loaded via **native dynamic `import()`**. Modern Node (≥23.6, default
-  in 24 LTS) strips types from `.ts` files natively, so `import('/abs/apps.ts')`
-  works with **no loader dependency**. `.js`/`.mjs` configs work on any Node.
-- The loaded module's **default export** is the resolved config array. Importing it
-  runs `defineAppConfigs`, which populates the registry; the CLI then reads the
-  registry (or the returned default export directly).
-- No filename auto-discovery in v1 (explicit `--config` only). A default-filename
-  search can be added later without breaking the flag.
+- The CLI reads **`devtooie.yaml`** (or `devtooie.yml`) from cwd for every command that
+  needs the services (`dev`, the default run, `resolvedeps`, `typegen`). If neither
+  exists, the CLI exits with: `no devtooie.yaml found — run \`devtooie init\``.
+- `devtooie.yaml` provides `services` (path to the module), `apiPort`, and `skill`.
+  Parsed with the `yaml` dependency. There is **no `--config` and no `--api-port`
+  flag** — everything comes from this file.
+- The services module (the `services` path) is imported via **native dynamic
+  `import()`**. Modern Node (≥23.6, default in 24 LTS) strips types from `.ts` files
+  natively, so `import('/abs/services.ts')` works with **no loader dependency**.
+  `.js`/`.mjs` services files work on any Node.
+- The module's **default export** is the resolved config array. Importing it runs
+  `defineAppConfigs`, which populates the registry; the CLI then reads the registry.
+- Control-API port = `devtooie.yaml` `apiPort` (default `4099` if absent). Exposed to
+  the agent skill / external callers by reading it from `devtooie.yaml`. No env-file
+  reading. (`DEVTOOIE_API_PORT` may still override for ephemeral runs — see §9.3.)
 
 Minimum-Node note: because native `.ts` import gates on Node ≥23.6, the package's
-`engines.node` is `>=23.6`; the README recommends Node 24 LTS. Consumers on older
-Node can point `--config` at a compiled `.js`/`.mjs`.
+`engines.node` is `>=23.6`; the README recommends Node 24 LTS. Consumers on older Node
+can point `services` at a compiled `.js`/`.mjs`.
 
 ### 6.2 Options
 
 | Option | Description |
 | --- | --- |
-| `--config <path>` | **Required.** Path to the config module (`.ts`/`.js`/`.mjs`). |
-| `-s, --service <name>` | Repeatable. Service(s) to run, bypassing the selector. Validated against the config. |
+| `-s, --service <name>` | Repeatable. Service(s) to run, bypassing the selector. Validated against the services config. |
 | `--ui` | Interactive Ink TUI (default). Mutually exclusive with `--plain`. |
 | `--plain` | No TUI; stream logs with colored name prefixes. Mutually exclusive with `--ui`. |
 | `--last-answers` | Skip selection; reuse the last saved selection. |
@@ -463,23 +490,25 @@ Node can point `--config` at a compiled `.js`/`.mjs`.
 | `--build` | Alias for `--phase build`. |
 | `--rebuild` | Implies `--phase build`; first clears `dist/` of the whole build set, then builds. |
 | `--logfile <path>` | Write all logs to this file. Defaults to `<workspaceDir>/devtooie.log` (truncated per session). |
-| `--api-port <port>` | Port for the control HTTP API. Overrides env/default. |
 
-Control-API port resolution order: `--api-port` → `DEVTOOIE_API_PORT` env → default
-`4099`. No env-file reading.
+The services path and control-API port are **not** CLI options — they live in
+`devtooie.yaml` (§5, §6.1).
 
 ### 6.3 Subcommands
 
+- **`init`** — interactive first-time setup. Creates/updates `devtooie.yaml`, scaffolds
+  the services file, and optionally installs the agent skill. Full flow in §15.
 - **`reset`** — clear persisted preferences (the saved selection). Exits.
-- **`resolvedeps --config <path> --service <name> [...]`** — print dependency info as
-  JSON and exit. Runs dep resolution three times (build / dev / runtime filters) and
-  emits:
+- **`resolvedeps --service <name> [...]`** — print dependency info as JSON and exit
+  (services path from `devtooie.yaml`). Runs dep resolution three times (build / dev /
+  runtime filters) and emits:
   ```json
   { "build": ["..."], "dev": ["..."], "runtime": ["..."] }
   ```
   (selected names excluded from each array). Intended for use by other tooling
   (e.g. targeted typecheck / codegen).
-- **`typegen --config <path> [--out <path>]`** — generate the augmentation file (§5.4).
+- **`typegen [--out <path>]`** — generate the augmentation file (§5.4); services path
+  from `devtooie.yaml`.
 
 ### 6.4 Runner modes
 
@@ -495,8 +524,9 @@ Two runner modes via `--ui` / `--plain`:
 ### 6.5 Top-level flow
 
 ```
-1. Handle typegen/reset/resolvedeps subcommands (pre-parse) → exit.
-2. Parse options. Load --config (populates registry).
+1. Handle init/typegen/reset/resolvedeps subcommands (pre-parse) → exit.
+2. Parse options. Read devtooie.yaml (cwd); error → hint `devtooie init`. Import the
+   services module (populates registry). Best-effort: typegen + skill-refresh (§15).
 3. If phase === 'build':
    a. Resolve service names (from --service or --last-answers; error otherwise).
    b. If --rebuild: rm -rf dist/ of selected + their build deps.
@@ -633,10 +663,11 @@ implement. Items tagged **[portability]** are constraints that keep the package 
 of any runtime, env-file, or directory-layout coupling (see §11).
 
 ### 9.1 `cli.ts` (bin entry)
-Shebang `#!/usr/bin/env node` (after build). Parses options, loads config, routes to
-build/plain/ui paths per §6.5. **[portability]** Node shebang only; imports
-`handleShellError` from local `errors.ts`; reads `--config` and loads it via
-`load-config.ts`.
+Shebang `#!/usr/bin/env node` (after build). Parses options, reads `devtooie.yaml` +
+imports the services module (`project-config.ts` / `load-config.ts`), routes to
+build/plain/ui paths per §6.5, and dispatches the `init`/`reset`/`resolvedeps`/`typegen`
+subcommands. **[portability]** Node shebang only; imports `handleShellError` from local
+`errors.ts`.
 
 ### 9.2 `errors.ts`
 `handleShellError(err)` — prints `stdout`/`stderr` cleanly and exits with the error's
@@ -661,8 +692,9 @@ execa-style error. Self-contained; no runtime coupling.
 - **Runner-args assembly** — `buildRunnerArgs(selectedApps, deps)` computes
   `RunnerArgs` (§9.10): sorted apps, selected/build/rebuildable sets, `waitForMap`,
   `healthcheckUrls`, `extraCommandsMap`.
-- **Control-API port** — `getApiPort()`: `--api-port` (threaded in) → `DEVTOOIE_API_PORT`
-  → `4099`. **[portability]** No `.env.*` file parsing; no `dotenv`.
+- **Control-API port** — `getApiPort()`: `DEVTOOIE_API_PORT` env (optional override,
+  handy for ephemeral runs) → `devtooie.yaml` `apiPort` → `4099`. **[portability]** No
+  `.env.*` file parsing; the port lives in `devtooie.yaml`, not a CLI flag.
 - **Persistence** — read/write/reset the saved selection. **[portability]** Stored
   under `<workspaceDir>/.devtooie/selection.json` (never inside the package dir);
   see §10.
@@ -770,17 +802,27 @@ nothing is found.
 
 ## 10. State & File Locations
 
-All writable state lives in a **consumer-owned** directory, never inside the package
-(which sits under `node_modules` and is read-only/ephemeral). Nothing is written via
-the package's own `import.meta.dirname`:
+All writable state lives in the **consumer project**, never inside the package (which
+sits under `node_modules` and is read-only/ephemeral). Nothing is written via the
+package's own `import.meta.dirname`.
 
-- **Saved selection** → `<workspaceDir>/.devtooie/selection.json`
-- **Default logfile** → `<workspaceDir>/devtooie.log` (override with `--logfile`)
-- **Debug log** (opt-in via `DEBUG_DEVTOOIE`) → `<workspaceDir>/.devtooie/debug.log`
-- **Generated types** → `devtooie-env.d.ts` next to the config (§5.4)
+**Committed** (project config + source, created by `devtooie init`):
+- **`devtooie.yaml`** / **`.yml`** → repo root — tool config (`services`, `apiPort`,
+  `skill`). §5, §15.
+- **Services file** (default `services.ts`) → path per `devtooie.yaml`. §5.1.
+- **Agent skill** → `.claude/skills/devtooie/SKILL.md` (and `.agents/…`/`.cursor/…` if
+  present). Managed/regenerated by devtooie. §15. (Consumer may commit or ignore — it's
+  their repo's skill; devtooie treats it as managed either way.)
 
-Recommend the consumer git-ignore `.devtooie/`, `devtooie.log`, and
-`devtooie-env.d.ts`. The README documents this.
+**Git-ignored** (generated / per-session; README documents these):
+- **Generated types** → `devtooie-env.d.ts` (repo root). §5.4.
+- **Saved selection** → `.devtooie/selection.json`.
+- **Default logfile** → `devtooie.log` (override with `--logfile`).
+- **Debug log** (opt-in via `DEBUG_DEVTOOIE`) → `.devtooie/debug.log`.
+- **Skill state** → `.devtooie/skill.json` (installed path + last-written version, for
+  update detection). §15.
+
+Recommend git-ignoring `.devtooie/`, `devtooie.log`, and `devtooie-env.d.ts`.
 
 ---
 
@@ -792,20 +834,21 @@ directory layout. Concretely:
 1. **Runtime** — `#!/usr/bin/env node` on the compiled bin; no runtime-specific APIs.
    The only shell-error handling is a duck-typed helper in `errors.ts`.
 2. **Directory scheme** — no repo-root walk-up or `GITHUB_WORKSPACE` magic.
-   `workspaceDir` comes from the config, defaulting to cwd (§7.3).
+   `workspaceDir` comes from `defineAppConfigs`, defaulting to cwd (§7.3).
 3. **Config layer** — `defineAppConfigs`/`AppType`/`findApp`/registry live in the
    package (`config.ts`). The consumer keeps only `export default defineAppConfigs(...)`.
 4. **Tokens** — no hardcoded env-var names. Extrinsic URL tokens come from the
    consumer's `tokens` map; intrinsic tokens are computed from the config (§7.2).
-5. **Control-API port** — no env-file reading. `--api-port` › `DEVTOOIE_API_PORT` ›
-   `4099` (§9.3). No `dotenv`.
-6. **Writable state** — selection/debug/log files live under the consumer's
+5. **Project config in `devtooie.yaml`** — services path + API port come from the
+   consumer's committed `devtooie.yaml`, not env files or CLI flags. No `dotenv`.
+   (`DEVTOOIE_API_PORT` remains an optional runtime override; §9.3.)
+6. **Writable state** — selection/debug/log/skill-state files live under the consumer's
    `workspaceDir`, never inside the package (§10).
 7. **Port sweep** — only config-derivable ports + the API port are swept (§9.5).
-8. **Naming** — env var `DEVTOOIE_API_PORT`, debug flag `DEBUG_DEVTOOIE`, default
-   logfile `devtooie.log`, state dir `.devtooie/`.
-9. **Config loading** — `load-config.ts`: `--config` + native Node `.ts` import, no
-   loader dependency.
+8. **Naming** — project config `devtooie.yaml`, env override `DEVTOOIE_API_PORT`, debug
+   flag `DEBUG_DEVTOOIE`, default logfile `devtooie.log`, state dir `.devtooie/`.
+9. **Services loading** — `load-config.ts`: read `devtooie.yaml`, native Node `.ts`
+   import of the services module, no loader dependency.
 10. **Type augmentation** — `register.ts` + `typegen.ts` (§4.4, §5.4).
 
 ---
@@ -818,6 +861,11 @@ directory layout. Concretely:
 - `execa` — process spawning + `lsof`/`ss`/`ps` calls.
 - `commander` — CLI parsing.
 - `string-width`, `wrap-ansi` — ANSI-aware wrapping/measurement.
+- `yaml` — read/write `devtooie.yaml`.
+- `@clack/prompts` — the `devtooie init` interactive flow (§15).
+
+The `postinstall.mjs` hint (§15) uses only Node built-ins (`node:fs`,
+`node:readline`) — no dependency, so it stays cheap even when it does run.
 
 **`peerDependencies`**:
 - `typescript` (`>=5.0.0`) — used to read `tsconfig.build.json` references for build-
@@ -876,7 +924,99 @@ the merge to `main` publishes it.
 
 ---
 
-## 15. Testing
+## 15. Setup, Agent Skill & Updates
+
+devtooie's local dev API is meant to be driven by coding agents (restart/rebuild the
+service they're editing, check status). To make that turnkey, devtooie ships an **agent
+skill** and installs it during first-time setup. Two entry points share one flow.
+
+### 15.1 `devtooie.yaml` — the project config
+
+Written and updated by `devtooie init`. Read by every CLI run (§6.1). Fields:
+
+```yaml
+services: ./services.ts   # path to the defineAppConfigs module (required)
+apiPort: 4099             # control HTTP API port
+skill: true               # whether the agent skill is installed + auto-updated
+```
+
+Its presence in cwd is also the "already set up" marker the postinstall hint checks.
+
+### 15.2 `devtooie init` (the setup flow)
+
+Runs on an explicit `devtooie init`, and is offered by the postinstall prompt (§15.4).
+Interactive, via `@clack/prompts`; idempotent (re-running updates answers):
+
+1. **Install the agent skill?** (Y/n). Recorded as `skill:` in `devtooie.yaml`.
+2. **Where is your services file?** — default `./services.ts`. If it doesn't exist,
+   **scaffold it** with an empty example:
+   ```ts
+   import { defineAppConfigs } from 'devtooie';
+
+   export default defineAppConfigs({
+     // tokens: { domain: process.env.APP_DOMAIN, proxyport: process.env.PROXY_PORT },
+     apps: [
+       // { name: 'my-svc', types: ['backend'], run: { port: 3001 } },
+     ],
+   });
+   ```
+3. **Control API port?** — default `4099`.
+4. **Write `devtooie.yaml`** with `services` / `apiPort` / `skill`.
+5. If skill = yes → install the skill file (§15.3) and generate the type-augmentation
+   file (§5.4).
+
+`init` never requires a running session and touches only the consumer's project.
+
+### 15.3 The agent skill file
+
+- **Template** ships in the package at `assets/skill.md`; `skill.ts` renders it into
+  the consumer's `.claude/skills/devtooie/SKILL.md`. If a `.agents/` or `.cursor/` dir
+  is present, install there too (best-effort; layout per-tool).
+- **Content** (generic for v1) teaches an agent to drive devtooie:
+  - **Invoke headlessly** — always `--plain` with explicit `-s <service>` (no TTY for
+    the TUI); `--build`/`--rebuild` to (re)build; how to stop a session.
+  - **Drive a running session via the control API** — read the port from
+    `devtooie.yaml` (`apiPort`, default `4099`), then `POST /command/restart/<app>`,
+    `POST /command/rebuild/<app>` (prefer rebuild when build output changed),
+    `POST /command/quit`, and poll `GET /query/status[/<app>]` /
+    `GET /query/services?status=…`.
+  - **Discover services** from the running session (`GET /query/status`) or
+    `devtooie resolvedeps -s <name>` rather than hardcoding names.
+- The file carries a managed banner + the devtooie version, e.g.
+  `<!-- devtooie skill v1.4.0 — managed by \`devtooie init\`; do not edit -->`.
+
+### 15.4 Postinstall (best-effort hint / offer)
+
+`postinstall.mjs` runs on install (Node built-ins only). It is deliberately timid:
+
+- **Skip** entirely if `process.env.CI` is set, if `stdout` is not a TTY, or if a
+  `devtooie.yaml`/`.yml` already exists in `INIT_CWD` (the consumer's project — where
+  install was invoked). This keeps CI and non-interactive installs silent.
+- **Otherwise prompt** (plain `node:readline`, no dep): *"Set up devtooie now? runs
+  `devtooie init` (Y/n)."* → **yes** runs the init flow in `INIT_CWD`; **no** prints a
+  one-line hint to run `devtooie init` later.
+- **Reliability caveat (documented in the README):** package managers increasingly do
+  **not** run dependency lifecycle scripts by default (notably pnpm ≥10 unless the
+  package is allowlisted). So the postinstall may never fire — **`devtooie init` is the
+  documented, reliable setup path**; the postinstall is only a convenience.
+
+### 15.5 Keeping the skill up to date
+
+New devtooie versions can change the skill template, so the installed file is refreshed
+automatically:
+
+- `.devtooie/skill.json` records the installed path + the version/content-hash devtooie
+  last wrote.
+- On any `devtooie` run, if `skill: true` and a managed skill file exists whose recorded
+  version is older than the current package **and** the file is unedited (hash matches
+  what devtooie wrote), devtooie **rewrites it** with the new template (best-effort,
+  logged). If the file was hand-edited (hash mismatch), it is left untouched and a note
+  suggests `devtooie init --force`.
+- Re-running `devtooie init` always re-renders the current template.
+
+---
+
+## 16. Testing
 
 Unit specs (no consumer apps needed):
 - Dependency-resolution spec — the §8 algorithm against a fixture config.
@@ -884,15 +1024,16 @@ Unit specs (no consumer apps needed):
 - `git-watch` spec — change detection with fake timers + injected `read`.
 - `defineAppConfigs` validation (waitFor without healthcheck, missing token, missing
   port/subdomain) and token substitution (intrinsic + extrinsic).
-- `getApiPort` precedence (`--api-port` › env › default).
+- `project-config` read/write round-trip; `getApiPort` precedence (env › yaml › default).
 - `typegen` output (correct relative path, valid augmentation).
+- `skill` render + update detection (version bump refreshes; edited file preserved).
 
 Run via `vitest`. CI `pr.yaml` runs eslint + build; add the vitest run once specs
 exist.
 
 ---
 
-## 16. Implementation Phases
+## 17. Implementation Phases
 
 Suggested order (each phase independently reviewable):
 
@@ -907,27 +1048,34 @@ Suggested order (each phase independently reviewable):
    `errors.ts`, `components/*.tsx`, per §9. Honor the §11 portability requirements
    throughout (workspaceDir, tokens, API port, state locations, node shebang).
    Include the unit specs.
-4. **CLI + config loading** — `cli.ts` (commander, phases, subcommands),
-   `load-config.ts` (`--config`, native `.ts` import), `--api-port`. Wire everything.
-5. **typegen** — `typegen.ts` + the `typegen` subcommand + auto-run on `dev`.
-6. **Publish pipeline** — `pr.yaml`, `release.yaml`, `change-log-entry.sh`, first
-   `## 0.1.0` CHANGELOG entry, README (usage, config, tokens, Node requirement,
-   Unix-only note, state files to git-ignore).
-7. **Dry-run publish** — `npm pack` inspection; verify `bin`, `exports`, `files`,
-   `.d.ts`, shebang, and that a scratch consumer with `export default
-   defineAppConfigs({...})` + `--config` runs end-to-end.
+4. **Project config + CLI** — `project-config.ts` (read/write `devtooie.yaml`),
+   `load-config.ts` (resolve services path, native `.ts` import), `cli.ts` (commander,
+   phases, subcommands). Wire the run/build paths. No `--config`/`--api-port` flags.
+5. **typegen** — `typegen.ts` + the `typegen` subcommand + auto-run on a `devtooie` run.
+6. **Setup + agent skill** — `init.ts` (interactive flow, `@clack/prompts`, scaffolds
+   `services.ts` + writes `devtooie.yaml`), `skill.ts` (render/install/update from
+   `assets/skill.md`, `.devtooie/skill.json` state), `postinstall.mjs` (CI/TTY-gated
+   hint). Auto-refresh the skill on run. Unit-test project-config + skill update logic.
+7. **Publish pipeline** — `pr.yaml`, `release.yaml`, `change-log-entry.sh`, first
+   `## 0.1.0` CHANGELOG entry, README (install, `devtooie init`, `devtooie.yaml`,
+   services file, tokens, Node requirement, Unix-only note, postinstall caveat, state
+   files to git-ignore).
+8. **Dry-run publish** — `npm pack` inspection; verify `bin`, `exports`, `files`
+   (incl. `assets/` + `postinstall.mjs`), `.d.ts`, shebang, and that a scratch consumer
+   goes `devtooie init` → fill `services.ts` → `devtooie` end-to-end.
 
 ---
 
-## 17. Open Questions / Future Work
+## 18. Open Questions / Future Work
 
 - **Spawned package manager** — v1 spawns `pnpm`/`make`. A future `packageManager`
-  detection or config option could support yarn/npm-run for the spawned dev/build
-  commands.
+  detection or `devtooie.yaml` option could support yarn/npm-run for the spawned
+  dev/build commands.
 - **Windows** — the session handoff / port sweep / group kills are POSIX. A future
   version could add a Windows strategy (e.g. `netstat`/`taskkill`, job objects).
-- **Config auto-discovery** — a default filename search (e.g. `devtooie.config.ts`)
-  could make `--config` optional.
+- **Config-customized skill** — v1 ships a generic skill; a later version could have
+  `init` embed the consumer's actual service names + a ready-made `--plain -s …`
+  invocation (§15.3), like the most useful hand-written agent skills.
 - **Dual CJS build** — only if a CJS-only sibling-tool consumer ever appears.
 - **Name** — `devtooie` is the working package name (available, memorable; slightly
   non-descriptive for npm search). Confirm before first publish.
