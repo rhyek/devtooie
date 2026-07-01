@@ -131,15 +131,25 @@ function useServiceStatuses(args: RunnerArgs, manager: ProcessManager) {
   // Poll every service with a configured healthcheck, but only while the TUI
   // already considers it starting/started — this owns just the
   // starting <-> started distinction, nothing else.
+  //
+  // Mirrors the `waitingPollInFlight` guard in ProcessManager's own
+  // healthcheck poll: a tick is skipped entirely while the previous tick's
+  // fetches are still outstanding, and each fetch is bounded with a timeout,
+  // so a hung endpoint can neither pile up requests nor hang forever.
   useEffect(() => {
     const names = Object.keys(healthcheckUrls);
     if (names.length === 0) {
       return;
     }
+    let pollInFlight = false;
     const interval = setInterval(() => {
-      for (const name of names) {
+      if (pollInFlight) {
+        return;
+      }
+      pollInFlight = true;
+      const fetches = names.map((name) => {
         const url = healthcheckUrls[name]!;
-        fetch(url)
+        return fetch(url, { signal: AbortSignal.timeout(1500) })
           .then((res) => {
             setStatuses((prev) => {
               const curr = prev.get(name);
@@ -159,7 +169,10 @@ function useServiceStatuses(args: RunnerArgs, manager: ProcessManager) {
               return curr === 'starting' ? prev : new Map(prev).set(name, 'starting');
             });
           });
-      }
+      });
+      void Promise.allSettled(fetches).finally(() => {
+        pollInFlight = false;
+      });
     }, 2000);
     return () => clearInterval(interval);
   }, [healthcheckUrls]);
@@ -607,13 +620,18 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
 
     if (input === 'x' && isActive) {
       markStopped(focusedName);
-      void manager.stop(focusedName);
+      void manager.stop(focusedName).catch(() => {});
       return;
     }
 
     if (input === 's' && !isActive) {
       manager.start(focusedName);
-      markStarted(focusedName);
+      // `start()` silently no-ops for a service with no runnable dev script
+      // (see `ProcessManager.start`/`canDev`), so only optimistically mark it
+      // as started if the manager's own state shows it actually did.
+      if (manager.getStatus(focusedName) !== 'stopped') {
+        markStarted(focusedName);
+      }
       return;
     }
   });
