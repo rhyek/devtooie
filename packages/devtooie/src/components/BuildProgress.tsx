@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { execa } from 'execa';
 import { Box, Text, useApp } from 'ink';
 import Spinner from 'ink-spinner';
-import { findApp } from '../config.js';
+import { findApp, getRegisteredApps } from '../config.js';
 import { startCommandServer } from '../command-server.js';
 import { debugLog } from '../debug-log.js';
 import { acquireDevSession } from '../dev-session.js';
@@ -50,7 +50,6 @@ export function BuildProgress({
   // close it itself so a still-open server doesn't keep the process alive.
   const controlRef = useRef<ControlServer | null>(null);
   const handedOffRef = useRef(false);
-  const errorExitScheduledRef = useRef(false);
 
   const selectedApps = selectedNames.map(findApp);
   const deps = resolveDeps(selectedApps);
@@ -59,84 +58,105 @@ export function BuildProgress({
   const runtimeDepNames = [...deps.runSet].filter(
     (name) => !selectedApps.some((app) => app.name === name),
   );
-  const buildableApps = buildDepNames.map(findApp).filter((app) => hasScript(app, 'build'));
+  // Unlike selectedNames (validated by the caller), buildDepNames come from
+  // deps.build/deps.dev config and may contain a typo'd, unregistered app
+  // name; a non-throwing lookup lets that surface as the error phase instead
+  // of crashing the component, mirroring how resolveDeps tolerates it.
+  const buildableApps = buildDepNames
+    .map((name) => getRegisteredApps().find((app) => app.name === name))
+    .filter((app) => app !== undefined)
+    .filter((app) => hasScript(app, 'build'));
 
   useEffect(() => {
     let cancelled = false;
 
     async function handoffBuildRun() {
-      // 1. Hand off from any already-running session before building, so it
-      //    releases its ports. Best-effort: a handoff failure must never block a run.
-      setState({ phase: 'handoff', message: 'checking for another running session...' });
+      // Guard the whole flow: any failure here (handoff, control-server
+      // start, or build) must land the component in the error phase rather
+      // than escape as an unhandled rejection from the top-level `void
+      // handoffBuildRun()` call below.
       try {
-        await acquireDevSession({
-          onStatus: (message) => {
-            if (!cancelled) {
-              setState({ phase: 'handoff', message });
-            }
-          },
-        });
-      } catch {
-        /* best-effort */
-      }
-      if (cancelled) {
-        return;
-      }
-
-      // 2. Start the control server now (pid + quit) so a yet-newer session
-      //    can detect and close this one while it builds. The run phase
-      //    attaches its process manager once building finishes.
-      debugLog('build: starting control server');
-      const control = await startCommandServer({
-        onQuit: () => {
-          // No process manager yet, so there's nothing to shut down
-          // gracefully — just exit. process.exit guarantees this process
-          // dies so a handing-off session's wait resolves.
-          exit();
-          process.exit(0);
-        },
-      });
-      if (cancelled) {
-        void control.close();
-        return;
-      }
-      controlRef.current = control;
-      onControlReady(control);
-
-      // 3. Build dependencies.
-      for (let i = 0; i < buildableApps.length; i++) {
+        // 1. Hand off from any already-running session before building, so it
+        //    releases its ports. Best-effort: a handoff failure must never block a run.
+        setState({ phase: 'handoff', message: 'checking for another running session...' });
+        try {
+          await acquireDevSession({
+            onStatus: (message) => {
+              if (!cancelled) {
+                setState({ phase: 'handoff', message });
+              }
+            },
+          });
+        } catch {
+          /* best-effort */
+        }
         if (cancelled) {
           return;
         }
-        const app = buildableApps[i]!;
-        setState({
-          phase: 'building',
-          current: i + 1,
-          total: buildableApps.length,
-          name: app.name,
+
+        // 2. Start the control server now (pid + quit) so a yet-newer session
+        //    can detect and close this one while it builds. The run phase
+        //    attaches its process manager once building finishes.
+        debugLog('build: starting control server');
+        const control = await startCommandServer({
+          onQuit: () => {
+            // No process manager yet, so there's nothing to shut down
+            // gracefully — just exit. process.exit guarantees this process
+            // dies so a handing-off session's wait resolves.
+            exit();
+            process.exit(0);
+          },
         });
-        try {
-          const [cmd, args] = getExecArgs(app, 'build');
-          await execa(cmd, args, { stdio: 'pipe', cwd: app.path });
-        } catch (error) {
+        if (cancelled) {
+          void control.close();
+          return;
+        }
+        controlRef.current = control;
+        onControlReady(control);
+
+        // 3. Build dependencies.
+        for (let i = 0; i < buildableApps.length; i++) {
           if (cancelled) {
             return;
           }
+          const app = buildableApps[i]!;
           setState({
-            phase: 'error',
-            message: error instanceof Error ? error.message : 'Unknown build error',
+            phase: 'building',
+            current: i + 1,
+            total: buildableApps.length,
+            name: app.name,
           });
+          try {
+            const [cmd, args] = getExecArgs(app, 'build');
+            await execa(cmd, args, { stdio: 'pipe', cwd: app.path });
+          } catch (error) {
+            if (cancelled) {
+              return;
+            }
+            setState({
+              phase: 'error',
+              message: error instanceof Error ? error.message : 'Unknown build error',
+            });
+            return;
+          }
+        }
+        if (cancelled) {
           return;
         }
-      }
-      if (cancelled) {
-        return;
-      }
 
-      // 4. Run — the caller now owns the control server's lifecycle.
-      setState({ phase: 'done' });
-      handedOffRef.current = true;
-      onComplete({ ...buildRunnerArgs(selectedApps, deps), logFile });
+        // 4. Run — the caller now owns the control server's lifecycle.
+        setState({ phase: 'done' });
+        handedOffRef.current = true;
+        onComplete({ ...buildRunnerArgs(selectedApps, deps), logFile });
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setState({
+          phase: 'error',
+          message: error instanceof Error ? error.message : 'Unknown build error',
+        });
+      }
     }
 
     void handoffBuildRun();
@@ -151,16 +171,19 @@ export function BuildProgress({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (state.phase === 'error') {
-    if (!errorExitScheduledRef.current) {
-      errorExitScheduledRef.current = true;
-      // Give time for the error to render before exiting.
-      setTimeout(() => {
-        exit();
-        process.exit(1);
-      }, 100);
+  useEffect(() => {
+    if (state.phase !== 'error') {
+      return;
     }
+    // Give time for the error to render before exiting.
+    const timer = setTimeout(() => {
+      exit();
+      process.exit(1);
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [state.phase, exit]);
 
+  if (state.phase === 'error') {
     return (
       <Box flexDirection="column">
         <Text color="red" bold>
