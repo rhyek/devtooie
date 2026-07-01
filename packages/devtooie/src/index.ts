@@ -1,0 +1,1 @@
+export const DEVTOOIE_VERSION_PLACEHOLDER = true;

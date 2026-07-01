@@ -6,12 +6,16 @@ import react from 'eslint-plugin-react';
 import reactHooks from 'eslint-plugin-react-hooks';
 import unusedImports from 'eslint-plugin-unused-imports';
 import tseslint from 'typescript-eslint';
+import globals from 'globals';
 
 export default defineConfig([
   globalIgnores(['**/dist/**', '**/build/**', '**/node_modules/**']),
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
+    // This is a Node.js CLI project; Node globals (process, console, etc.)
+    // are available everywhere, including plain scripts like postinstall.mjs.
+    languageOptions: { globals: { ...globals.node } },
     plugins: { 'unused-imports': unusedImports },
     rules: {
       curly: ['error', 'all'],
