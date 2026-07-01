@@ -12,6 +12,11 @@ describe('dev-session pure helpers', () => {
     expect(parseSsPids(out)).toEqual([4242]);
   });
 
+  it('parseSsPids filters out pid=0', () => {
+    const out = 'LISTEN 0 511 *:3000 *:* users:(("x",pid=0,fd=1)) ... pid=4242';
+    expect(parseSsPids(out)).toEqual([4242]);
+  });
+
   it('builds a kill set of roots + transitive descendants', () => {
     const procs = [
       { pid: 100, ppid: 1 },

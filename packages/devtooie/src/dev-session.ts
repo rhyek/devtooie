@@ -11,7 +11,9 @@ export function parseLsofPids(out: string): number[] {
 }
 
 export function parseSsPids(out: string): number[] {
-  return [...out.matchAll(/pid=(\d+)/g)].map((m) => Number(m[1]));
+  return [...out.matchAll(/pid=(\d+)/g)]
+    .map((m) => Number(m[1]))
+    .filter((n) => Number.isInteger(n) && n > 0);
 }
 
 export function buildKillSet(procs: { pid: number; ppid: number }[], roots: number[]): number[] {
@@ -46,9 +48,12 @@ export function collectDevPorts(): number[] {
 export async function findListenerPids(ports: number[]): Promise<number[]> {
   if (!ports.length) return [];
   if (os.platform() === 'darwin') {
-    const { stdout } = await execa('lsof', ['-t', ...ports.flatMap((p) => ['-i', `:${p}`])], {
-      reject: false,
-    });
+    // Only match LISTENERS on the port (mirrors Linux ss -tlnpH listening-only behavior)
+    const { stdout } = await execa(
+      'lsof',
+      ['-t', '-sTCP:LISTEN', ...ports.flatMap((p) => ['-i', `:${p}`])],
+      { reject: false },
+    );
     return parseLsofPids(stdout);
   }
   const pids: number[] = [];
@@ -97,7 +102,7 @@ export async function acquireDevSession(
     });
     if (res.ok) {
       const { pid } = (await res.json()) as { pid: number };
-      if (pid && pid !== process.pid) {
+      if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) {
         onStatus('closing previous session');
         await fetch(`http://127.0.0.1:${port}/command/quit`, { method: 'POST' }).catch(() => {});
         const deadline = Date.now() + 11_000;
