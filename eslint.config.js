@@ -46,7 +46,11 @@ export default defineConfig([
   {
     files: ['**/*.tsx'],
     plugins: { react, 'react-hooks': reactHooks },
-    settings: { react: { version: 'detect' } },
+    // Hardcoded rather than 'detect': eslint-plugin-react@7.37.5's version
+    // detection calls the removed `context.getFilename()` API under
+    // ESLint 10's flat config, which throws. Keep in sync with the
+    // `react` dependency version in package.json.
+    settings: { react: { version: '19.2.7' } },
     rules: {
       ...react.configs.flat.recommended.rules,
       ...react.configs.flat['jsx-runtime'].rules,
