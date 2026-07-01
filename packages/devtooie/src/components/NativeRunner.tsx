@@ -450,6 +450,19 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
     server.attach(manager);
   }, [manager, server]);
 
+  // Take over `/command/quit` routing from whatever handler the server was
+  // constructed with (BuildProgress's hard-exit — there's no process manager to
+  // shut down yet at that point) so a quit request received during the run phase
+  // — an external one, or a newer session's handoff — goes through this phase's
+  // own graceful shutdown instead. Handed back to a no-op on unmount, since this
+  // phase is the one that owns `shutdown` from here on.
+  useEffect(() => {
+    server.setOnQuit(() => void shutdown());
+    return () => {
+      server.setOnQuit(() => {});
+    };
+  }, [server, shutdown]);
+
   // If the checked-out branch changes underneath this session, shut down
   // gracefully — a stale build against the old branch is unsafe to keep serving.
   useEffect(() => {

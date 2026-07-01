@@ -96,6 +96,23 @@ describe('command-server', () => {
     expect(body.ok).toBe(true);
   });
 
+  it('setOnQuit swaps which handler /command/quit invokes', async () => {
+    let firstCalled = false;
+    let secondCalled = false;
+    server = await startCommandServer({
+      onQuit: () => {
+        firstCalled = true;
+      },
+      port: 0,
+    });
+    server.setOnQuit(() => {
+      secondCalled = true;
+    });
+    await fetch(`http://127.0.0.1:${server.port}/command/quit`, { method: 'POST' });
+    expect(secondCalled).toBe(true);
+    expect(firstCalled).toBe(false);
+  });
+
   it('GET /query/pid/ with trailing slash returns 200', async () => {
     server = await startCommandServer({ onQuit: () => {}, port: 0 });
     const res = await fetch(`http://127.0.0.1:${server.port}/query/pid/`);

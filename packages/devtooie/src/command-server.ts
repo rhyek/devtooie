@@ -10,11 +10,21 @@ export interface ControlManager {
   quit(): void;
 }
 
-export async function startCommandServer(opts: {
-  onQuit: () => void;
-  port?: number;
-}): Promise<{ attach(m: ControlManager): void; close(): Promise<void>; port: number }> {
+export async function startCommandServer(opts: { onQuit: () => void; port?: number }): Promise<{
+  attach(m: ControlManager): void;
+  /**
+   * Swaps the handler invoked by `/command/quit`. The server is typically created
+   * before the process manager exists (so it can be reached mid-build), then a
+   * later phase that owns graceful shutdown takes over quit-routing by calling
+   * this — without it, a quit request during that phase would still hit the
+   * original (e.g. hard-exit) handler it was constructed with.
+   */
+  setOnQuit(fn: () => void): void;
+  close(): Promise<void>;
+  port: number;
+}> {
   let manager: ControlManager | null = null;
+  let onQuit = opts.onQuit;
   const send = (res: http.ServerResponse, code: number, body: unknown) => {
     res.writeHead(code, { 'content-type': 'application/json' });
     res.end(JSON.stringify(body));
@@ -28,7 +38,7 @@ export async function startCommandServer(opts: {
     if (pathname === '/query/pid') return send(res, 200, { pid: process.pid });
     if (pathname === '/command/quit') {
       send(res, 200, { ok: true });
-      return void opts.onQuit();
+      return void onQuit();
     }
     if (pathname === '/')
       return send(res, 200, { ok: true, pid: process.pid, attached: Boolean(manager) });
@@ -58,6 +68,9 @@ export async function startCommandServer(opts: {
   return {
     attach: (m) => {
       manager = m;
+    },
+    setOnQuit: (fn) => {
+      onQuit = fn;
     },
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
     port: actualPort,
