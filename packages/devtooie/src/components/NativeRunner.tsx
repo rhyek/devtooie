@@ -1,0 +1,768 @@
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import chalk from 'chalk';
+import { Box, type DOMElement, Text, measureElement, useApp, useInput } from 'ink';
+import type { startCommandServer } from '../command-server.js';
+import { debugLog } from '../debug-log.js';
+import { watchGitBranch } from '../git-watch.js';
+import { getGitBranch } from '../lib.js';
+import { ProcessManager } from '../process-manager.js';
+import type { RunnerArgs } from '../runners/types.js';
+import { HotkeyHints, type HotkeyHintItem } from './HotkeyHints.js';
+
+export type NativeRunnerProps = {
+  args: RunnerArgs;
+  /** Control API server, already listening, started by the caller before this component mounts. */
+  server: Awaited<ReturnType<typeof startCommandServer>>;
+};
+
+type Mode = 'normal' | 'filter' | 'commands';
+
+/**
+ * One row in the commands menu. The trailing `custom` entry doubles as a
+ * free-form text field: while it's focused, typed characters are appended to
+ * a pending shell command and `enter` runs it. That entry is always present,
+ * so the menu is meaningful even for a service with no extra scripts/targets.
+ */
+type CommandMenuItem = { type: 'script'; name: string } | { type: 'custom' };
+
+/**
+ * Five states a service can be in, shown as a colored dot in the footer:
+ * `stopped` (not running), `waiting` (blocked on a dependency's healthcheck),
+ * `starting`/`started` (running, healthcheck-backed, not yet / already
+ * passing), and `unknown` (running, no healthcheck configured so readiness
+ * can't be distinguished from "just started").
+ */
+type ServiceStatus = 'stopped' | 'starting' | 'started' | 'unknown' | 'waiting';
+
+interface ServiceUrlGroup {
+  name: string;
+  selected: boolean;
+  urls: { label?: string; url: string }[];
+}
+
+const STATUS_COLORS: Record<ServiceStatus, string> = {
+  stopped: 'red',
+  starting: 'yellow',
+  started: 'green',
+  unknown: 'gray',
+  waiting: 'cyan',
+};
+
+/**
+ * Upper bound on how long a graceful shutdown may take before this session
+ * exits anyway, so a second Ctrl+C (or an impatient caller waiting on
+ * `/command/quit`) never has to wait indefinitely for a stuck child process.
+ */
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+
+/** Wraps `text` in an OSC 8 terminal hyperlink; terminals without support just show the text. */
+function hyperlink(url: string, text: string): string {
+  return `\x1b]8;;${url}\x07${text}\x1b]8;;\x07`;
+}
+
+/** Natural width of the right-hand URL column, so the left column knows how much room it can use. */
+function estimateRightColumnWidth(urlGroups: ServiceUrlGroup[]): number {
+  let maxWidth = 0;
+  for (const group of urlGroups) {
+    maxWidth = Math.max(maxWidth, group.name.length);
+    for (const u of group.urls) {
+      maxWidth = Math.max(maxWidth, (u.label ?? u.url).length);
+    }
+  }
+  return maxWidth;
+}
+
+/** Available width for the left (service dot) column once the right (URL) column and chrome are subtracted. */
+function leftColumnAvailableWidth(terminalWidth: number, urlGroups: ServiceUrlGroup[]): number {
+  const rightColWidth = estimateRightColumnWidth(urlGroups);
+  const rightTotal = rightColWidth > 0 ? rightColWidth + 4 : 0; // +4 = the gap between the two columns
+  return Math.max(terminalWidth - 4 - rightTotal, 20); // -4 = border (2) + horizontal padding (2)
+}
+
+/**
+ * Lays out each service dot's row and horizontal center, wrapping to a new
+ * row once it would overflow `availableWidth`. Used purely for up/down arrow
+ * navigation, so the cursor moves to whichever item on the adjacent row sits
+ * closest to its current horizontal position.
+ */
+function computeServiceLayout(
+  serviceNames: string[],
+  availableWidth: number,
+): { row: number; centerX: number }[] {
+  const gap = 2;
+  const positions: { row: number; centerX: number }[] = [];
+  let row = 0;
+  let x = 0;
+  for (let i = 0; i < serviceNames.length; i++) {
+    const itemWidth = 2 + serviceNames[i]!.length; // "● name"
+    if (i > 0 && x + gap + itemWidth > availableWidth) {
+      row++;
+      x = 0;
+    } else if (i > 0) {
+      x += gap;
+    }
+    positions.push({ row, centerX: x + itemWidth / 2 });
+    x += itemWidth;
+  }
+  return positions;
+}
+
+/** Seed status for a service once it's (re)started: `starting` if it has a healthcheck, else `unknown`. */
+function initialStatus(name: string, healthcheckUrls: Record<string, string>): ServiceStatus {
+  return healthcheckUrls[name] ? 'starting' : 'unknown';
+}
+
+// ---------------------------------------------------------------------------
+// useServiceStatuses — the 5-state status model + healthcheck polling
+// ---------------------------------------------------------------------------
+
+function useServiceStatuses(args: RunnerArgs, manager: ProcessManager) {
+  const services = useMemo(() => args.sortedApps, [args.sortedApps]);
+  const healthcheckUrls = args.healthcheckUrls;
+
+  const [statuses, setStatuses] = useState<Map<string, ServiceStatus>>(() => {
+    const map = new Map<string, ServiceStatus>();
+    for (const app of services) {
+      map.set(app.name, 'stopped');
+    }
+    return map;
+  });
+
+  // Poll every service with a configured healthcheck, but only while the TUI
+  // already considers it starting/started — this owns just the
+  // starting <-> started distinction, nothing else.
+  useEffect(() => {
+    const names = Object.keys(healthcheckUrls);
+    if (names.length === 0) {
+      return;
+    }
+    const interval = setInterval(() => {
+      for (const name of names) {
+        const url = healthcheckUrls[name]!;
+        fetch(url)
+          .then((res) => {
+            setStatuses((prev) => {
+              const curr = prev.get(name);
+              if (curr !== 'starting' && curr !== 'started') {
+                return prev;
+              }
+              const next: ServiceStatus = res.ok ? 'started' : 'starting';
+              return curr === next ? prev : new Map(prev).set(name, next);
+            });
+          })
+          .catch(() => {
+            setStatuses((prev) => {
+              const curr = prev.get(name);
+              if (curr !== 'starting' && curr !== 'started') {
+                return prev;
+              }
+              return curr === 'starting' ? prev : new Map(prev).set(name, 'starting');
+            });
+          });
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [healthcheckUrls]);
+
+  // Reconcile against the ProcessManager every 2s. The manager is the source
+  // of truth for process lifecycle, so this catches every transition the TUI
+  // didn't itself drive — a crash, a dependency's healthcheck finally
+  // passing, or (notably) a restart/rebuild issued through the control
+  // server rather than a hotkey. Without this loop, an externally triggered
+  // rebuild would flip the dot red the moment the process stops and never
+  // flip it back once it returns, since nothing local calls markStarted.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setStatuses((prev) => {
+        let changed = false;
+        const next = new Map(prev);
+        for (const [name, tuiStatus] of prev) {
+          const mgrStatus = manager.getStatus(name);
+          if (!mgrStatus) {
+            continue;
+          }
+          let target: ServiceStatus;
+          switch (mgrStatus) {
+            case 'waiting':
+              target = 'waiting';
+              break;
+            case 'rebuilding':
+            case 'restarting':
+              target = 'starting';
+              break;
+            case 'stopped':
+              target = 'stopped';
+              break;
+            case 'running':
+              target =
+                tuiStatus === 'starting' || tuiStatus === 'started'
+                  ? tuiStatus
+                  : initialStatus(name, healthcheckUrls);
+              break;
+            default:
+              target = tuiStatus;
+          }
+          if (target !== tuiStatus) {
+            next.set(name, target);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [manager, healthcheckUrls]);
+
+  const markStarted = useCallback(
+    (name: string) => {
+      setStatuses((prev) => new Map(prev).set(name, initialStatus(name, healthcheckUrls)));
+    },
+    [healthcheckUrls],
+  );
+
+  const markStopped = useCallback((name: string) => {
+    setStatuses((prev) => new Map(prev).set(name, 'stopped'));
+  }, []);
+
+  const markRebuilding = useCallback((name: string) => {
+    setStatuses((prev) => new Map(prev).set(name, 'starting'));
+  }, []);
+
+  const markWaiting = useCallback((name: string) => {
+    setStatuses((prev) => new Map(prev).set(name, 'waiting'));
+  }, []);
+
+  const markAllStarted = useCallback(() => {
+    setStatuses((prev) => {
+      const next = new Map(prev);
+      for (const app of services) {
+        next.set(app.name, initialStatus(app.name, healthcheckUrls));
+      }
+      return next;
+    });
+  }, [services, healthcheckUrls]);
+
+  const markAllStopped = useCallback(() => {
+    setStatuses((prev) => {
+      const next = new Map(prev);
+      for (const app of services) {
+        next.set(app.name, 'stopped');
+      }
+      return next;
+    });
+  }, [services]);
+
+  return {
+    statuses,
+    markStarted,
+    markStopped,
+    markRebuilding,
+    markWaiting,
+    markAllStarted,
+    markAllStopped,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// NativeRunner
+// ---------------------------------------------------------------------------
+
+/**
+ * Owns the run phase: creates the `ProcessManager`, drives it from a
+ * `useInput` hotkey handler, and renders a footer (hotkey hints, per-service
+ * status dots, git branch, logfile path, service URLs) above which the
+ * manager streams every service's own output directly to the terminal. The
+ * footer's real height is measured every render via `measureElement` and fed
+ * back into the manager so its scrollback-clearing logic never clears rows
+ * the footer itself occupies.
+ */
+export function NativeRunner({ args, server }: NativeRunnerProps) {
+  const { exit } = useApp();
+
+  const [gitBranch] = useState(getGitBranch);
+
+  const displayApps = useMemo(
+    () =>
+      args.sortedApps.map((app) => ({
+        name: app.name,
+        displayName: app.run?.shortName ?? app.name,
+        selected: args.selectedSet.has(app.name),
+      })),
+    [args.sortedApps, args.selectedSet],
+  );
+
+  const serviceUrlGroups = useMemo<ServiceUrlGroup[]>(() => {
+    const groups: ServiceUrlGroup[] = [];
+    for (const app of args.sortedApps) {
+      const urls = app.run?.urls;
+      if (!urls || urls.length === 0) {
+        continue;
+      }
+      groups.push({
+        name: app.run?.shortName ?? app.name,
+        selected: args.selectedSet.has(app.name),
+        urls: urls.map((u) => (typeof u === 'string' ? { url: u } : u)),
+      });
+    }
+    return groups;
+  }, [args.sortedApps, args.selectedSet]);
+
+  const [manager] = useState(() => new ProcessManager(args));
+  const [mode, setMode] = useState<Mode>('normal');
+  const [cursor, setCursor] = useState(0);
+  const [shuttingDown, setShuttingDown] = useState(false);
+  const [filterInput, setFilterInput] = useState('');
+  const [activeFilter, setActiveFilter] = useState('');
+  const [pulse, setPulse] = useState(true);
+  const [ready, setReady] = useState(false);
+  const [commandsCursor, setCommandsCursor] = useState(0);
+  const [customCommandInput, setCustomCommandInput] = useState('');
+
+  // Extra scripts/targets (excluding dev/build/build:clean) for the focused service.
+  const focusedExtraCommands = useMemo(() => {
+    const focused = displayApps[cursor];
+    if (!focused) {
+      return [];
+    }
+    return args.extraCommandsMap[focused.name] ?? [];
+  }, [cursor, displayApps, args.extraCommandsMap]);
+
+  // Commands-mode menu: every extra script, plus a trailing free-form entry. Never empty.
+  const commandMenuItems = useMemo<CommandMenuItem[]>(
+    () => [
+      ...focusedExtraCommands.map((name) => ({ type: 'script' as const, name })),
+      { type: 'custom' },
+    ],
+    [focusedExtraCommands],
+  );
+
+  const {
+    statuses,
+    markStarted,
+    markStopped,
+    markRebuilding,
+    markWaiting,
+    markAllStarted,
+    markAllStopped,
+  } = useServiceStatuses(args, manager);
+
+  const shuttingDownRef = useRef(false);
+
+  // The single graceful shutdown path for Ctrl+C and a detected git branch
+  // change: stop every service and wait for it to actually exit, close the
+  // control server, then exit this process. A second call (an impatient
+  // repeat Ctrl+C) skips straight to a hard kill.
+  const shutdown = useCallback(async () => {
+    if (shuttingDownRef.current) {
+      manager.forceKillAll();
+      process.exit(1);
+    }
+    shuttingDownRef.current = true;
+    setShuttingDown(true);
+    markAllStopped();
+    await Promise.race([
+      manager.shutdownAll(),
+      new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_TIMEOUT_MS)),
+    ]);
+    await server.close();
+    manager.dispose();
+    exit();
+    process.exit(0);
+  }, [manager, server, exit, markAllStopped]);
+
+  const serviceNames = useMemo(() => displayApps.map((a) => a.displayName), [displayApps]);
+
+  // Measures the footer's real height every render and syncs it (plus any
+  // filter change) into the ProcessManager, so its scrollback-clearing logic
+  // never treats footer rows as clearable content.
+  //
+  // Startup sequencing: the first successful measurement schedules
+  // resetScreen + startAll via `setTimeout(0)`, letting Ink paint the footer
+  // first. That guarantees the manager knows the footer's height before it
+  // positions the cursor, avoiding a spurious scrollback gap on first paint.
+  const footerRef = useRef<DOMElement>(null);
+  const measuredHeightRef = useRef(0);
+  const prevActiveFilterRef = useRef(activeFilter);
+  const startedRef = useRef(false);
+  useLayoutEffect(() => {
+    if (!footerRef.current) {
+      return;
+    }
+    const { height } = measureElement(footerRef.current);
+    const prevHeight = measuredHeightRef.current;
+    measuredHeightRef.current = height;
+    debugLog(`NativeRunner: measured footer height ${prevHeight} -> ${height}`);
+    manager.setFooterHeight(height);
+
+    if (!startedRef.current) {
+      startedRef.current = true;
+      setTimeout(() => {
+        manager.resetScreen();
+        manager.startAll();
+        markAllStarted();
+        for (const name of manager.getWaiting()) {
+          markWaiting(name);
+        }
+      }, 0);
+      return;
+    }
+
+    const prevFilter = prevActiveFilterRef.current;
+    prevActiveFilterRef.current = activeFilter;
+    const filterChanged = activeFilter !== prevFilter;
+
+    if (filterChanged) {
+      // setFilter clears + replays the screen, which also absorbs any height change.
+      manager.setFilter(activeFilter ? activeFilter.split(/\s+/) : []);
+    } else if (height < prevHeight) {
+      manager.refresh();
+    }
+  });
+
+  // Delay the first real paint slightly so Ink's throttled render has time to
+  // settle into the run-phase layout before anything is shown; suppressing
+  // render until then (see the `!ready` guard below) avoids a one-frame flash
+  // of the footer positioned incorrectly.
+  useEffect(() => {
+    const id = setTimeout(() => setReady(true), 50);
+    return () => {
+      clearTimeout(id);
+      manager.killAll();
+    };
+  }, [manager]);
+
+  // Attach the manager to the already-listening control server, so status
+  // queries and restart/rebuild requests become servable immediately.
+  useEffect(() => {
+    server.attach(manager);
+  }, [manager, server]);
+
+  // If the checked-out branch changes underneath this session, shut down
+  // gracefully — a stale build against the old branch is unsafe to keep serving.
+  useEffect(() => {
+    const stopWatching = watchGitBranch({
+      onChange: (from, to) => {
+        manager.logSystem(chalk.yellow(`git branch changed (${from} -> ${to}), shutting down`));
+        void shutdown();
+      },
+    });
+    return () => stopWatching();
+  }, [manager, shutdown]);
+
+  // Pulse animation for starting/waiting dots (toggles dim every 500ms).
+  useEffect(() => {
+    const interval = setInterval(() => setPulse((v) => !v), 500);
+    return () => clearInterval(interval);
+  }, []);
+
+  useInput((input, key) => {
+    // Ctrl+C always works, regardless of mode.
+    if (input === 'c' && key.ctrl) {
+      void shutdown();
+      return;
+    }
+
+    if (shuttingDown) {
+      return;
+    }
+
+    if (mode === 'filter') {
+      if (key.return) {
+        setActiveFilter(filterInput.trim());
+        setMode('normal');
+      } else if (key.escape) {
+        setFilterInput(activeFilter);
+        setMode('normal');
+      } else if (key.backspace || key.delete) {
+        setFilterInput((v) => v.slice(0, -1));
+      } else if (input && !key.ctrl && !key.meta) {
+        setFilterInput((v) => v + input);
+      }
+      return;
+    }
+
+    if (mode === 'commands') {
+      const focusedItem = commandMenuItems[commandsCursor];
+      const isCustomFocused = focusedItem?.type === 'custom';
+
+      if (key.upArrow) {
+        setCommandsCursor((c) => (c - 1 + commandMenuItems.length) % commandMenuItems.length);
+      } else if (key.downArrow) {
+        setCommandsCursor((c) => (c + 1) % commandMenuItems.length);
+      } else if (key.return) {
+        const focusedApp = displayApps[cursor];
+        if (!focusedItem || !focusedApp) {
+          setMode('normal');
+          return;
+        }
+        if (focusedItem.type === 'script') {
+          manager.runCommand(focusedApp.name, focusedItem.name);
+          setMode('normal');
+        } else {
+          const trimmed = customCommandInput.trim();
+          if (trimmed) {
+            manager.runCustomCommand(focusedApp.name, trimmed);
+          }
+          setMode('normal');
+        }
+      } else if (key.escape) {
+        setMode('normal');
+      } else if (isCustomFocused && (key.backspace || key.delete)) {
+        setCustomCommandInput((v) => v.slice(0, -1));
+      } else if (isCustomFocused && input && !key.ctrl && !key.meta) {
+        setCustomCommandInput((v) => v + input);
+      }
+      return;
+    }
+
+    // Normal mode.
+
+    if (key.leftArrow) {
+      setCursor((c) => (c - 1 + displayApps.length) % displayApps.length);
+      return;
+    }
+    if (key.rightArrow) {
+      setCursor((c) => (c + 1) % displayApps.length);
+      return;
+    }
+    if (key.upArrow || key.downArrow) {
+      const availWidth = leftColumnAvailableWidth(process.stdout.columns || 120, serviceUrlGroups);
+      const positions = computeServiceLayout(serviceNames, availWidth);
+      const cur = positions[cursor];
+      if (!cur) {
+        return;
+      }
+      const targetRow = key.upArrow ? cur.row - 1 : cur.row + 1;
+      let best = -1;
+      let bestDist = Infinity;
+      for (let i = 0; i < positions.length; i++) {
+        const pos = positions[i];
+        if (pos && pos.row === targetRow) {
+          const dist = Math.abs(pos.centerX - cur.centerX);
+          if (dist < bestDist) {
+            bestDist = dist;
+            best = i;
+          }
+        }
+      }
+      if (best >= 0) {
+        setCursor(best);
+      }
+      return;
+    }
+
+    if (input === 'k') {
+      manager.clearBuffer();
+      return;
+    }
+
+    if (input === 't' && args.logFile) {
+      manager.truncateLogFile();
+      return;
+    }
+
+    if (input === 'f') {
+      setFilterInput(activeFilter);
+      setMode('filter');
+      return;
+    }
+
+    if (input === 'c' && activeFilter) {
+      setActiveFilter('');
+      setFilterInput('');
+      return;
+    }
+
+    // Everything past this point acts on the focused service.
+    const focusedApp = displayApps[cursor];
+    if (!focusedApp) {
+      return;
+    }
+    const focusedName = focusedApp.name;
+    const focusedStatus = statuses.get(focusedName) ?? 'stopped';
+    const isActive = focusedStatus !== 'stopped' && focusedStatus !== 'waiting';
+
+    // The commands menu is always available, independent of run state — even
+    // a stopped service can still have its custom command entry used.
+    if (input === 'm') {
+      setCommandsCursor(0);
+      setCustomCommandInput('');
+      setMode('commands');
+      return;
+    }
+
+    if (input === 'r' && isActive) {
+      if (manager.restart(focusedName)) {
+        markRebuilding(focusedName);
+      }
+      return;
+    }
+
+    if (input === 'b' && isActive && args.rebuildableSet.has(focusedName)) {
+      if (manager.rebuild(focusedName)) {
+        markRebuilding(focusedName);
+      }
+      return;
+    }
+
+    if (input === 'x' && isActive) {
+      markStopped(focusedName);
+      void manager.stop(focusedName);
+      return;
+    }
+
+    if (input === 's' && !isActive) {
+      manager.start(focusedName);
+      markStarted(focusedName);
+      return;
+    }
+  });
+
+  // Suppressed until the first footer measurement + resetScreen have run, so
+  // Ink never paints the footer at the top of the screen for one frame before
+  // the manager positions it at the bottom.
+  if (!ready) {
+    return null;
+  }
+
+  const linksColumn =
+    serviceUrlGroups.length > 0 ? (
+      <Box flexDirection="column" alignItems="flex-end" flexShrink={0}>
+        {serviceUrlGroups.map((group) => (
+          <React.Fragment key={group.name}>
+            <Text bold={group.selected}>{group.name}</Text>
+            {group.urls.map((u, i) => (
+              // A brighter blue than Ink's default, which is too dark to read on this background.
+              <Text key={i} wrap="truncate" color="#58a6ff">
+                {hyperlink(u.url, u.label ?? u.url)}
+              </Text>
+            ))}
+          </React.Fragment>
+        ))}
+      </Box>
+    ) : null;
+
+  const focusedApp = displayApps[cursor];
+  const focusedStatus = focusedApp ? (statuses.get(focusedApp.name) ?? 'stopped') : 'stopped';
+  const focusedIsActive = focusedStatus !== 'stopped' && focusedStatus !== 'waiting';
+  const focusedIsRebuildable = focusedApp ? args.rebuildableSet.has(focusedApp.name) : false;
+
+  const hints: HotkeyHintItem[] = [
+    { key: 'r', label: 'restart', dim: !focusedIsActive },
+    { key: 'b', label: 'rebuild', dim: !focusedIsActive || !focusedIsRebuildable },
+    { key: 'x', label: 'stop', dim: !focusedIsActive },
+    { key: 's', label: 'start', dim: focusedIsActive },
+    { key: 'm', label: 'commands' },
+    { separator: true },
+    { key: 'k', label: 'clear' },
+    ...(args.logFile ? [{ key: 't', label: 'trunc logfile' }] : []),
+    { key: 'f', label: 'filter' },
+    { key: '^c', label: 'quit' },
+  ];
+
+  const filterLine = activeFilter ? (
+    <Text color="cyan">[filter: {activeFilter}] c: clear filter</Text>
+  ) : null;
+
+  const serviceStatusDots = (
+    <Box flexWrap="wrap" columnGap={2}>
+      {displayApps.map((app, i) => {
+        const status = statuses.get(app.name) ?? 'stopped';
+        const color = STATUS_COLORS[status];
+        const dim = (status === 'starting' || status === 'waiting') && !pulse;
+        const isFocused = i === cursor;
+        return (
+          <Box key={app.name} flexShrink={0}>
+            <Text color={color} dimColor={dim}>
+              ●
+            </Text>
+            <Text> </Text>
+            <Text bold={isFocused} underline={isFocused}>
+              {app.displayName}
+            </Text>
+          </Box>
+        );
+      })}
+    </Box>
+  );
+
+  const isFilter = mode === 'filter';
+  const isCommands = mode === 'commands';
+
+  const topSection = shuttingDown ? (
+    <Text color="yellow">Shutting down... (press Ctrl+C again to force kill)</Text>
+  ) : isFilter ? (
+    <>
+      <Text bold>Filter output (space-separated terms, all must match):</Text>
+      <Box>
+        <Text color="cyan">&gt; </Text>
+        <Text>{filterInput}</Text>
+        <Text color="cyan">_</Text>
+      </Box>
+      <Text dimColor>{'  enter: apply   esc: cancel   empty + enter: clear filter'}</Text>
+    </>
+  ) : isCommands ? (
+    <>
+      <Text bold>
+        Commands for <Text color="cyan">{focusedApp?.displayName ?? ''}</Text>{' '}
+        <Text dimColor>(custom runs via a shell)</Text>:
+      </Text>
+      {commandMenuItems.map((item, i) => {
+        const selected = i === commandsCursor;
+        if (item.type === 'custom') {
+          if (selected) {
+            return (
+              <Box key="__custom__">
+                <Text color="magenta" bold>
+                  ❯{' '}
+                </Text>
+                <Text color="magenta">&gt; </Text>
+                <Text>{customCommandInput}</Text>
+                <Text color="magenta">_</Text>
+              </Box>
+            );
+          }
+          return (
+            <Text key="__custom__" dimColor>
+              {'  <custom command…>'}
+            </Text>
+          );
+        }
+        return (
+          <Text key={item.name} color={selected ? 'magenta' : undefined} bold={selected}>
+            {selected ? '❯ ' : '  '}
+            {item.name}
+          </Text>
+        );
+      })}
+      <Text dimColor>{'  ↑↓: navigate   enter: run   esc: cancel'}</Text>
+    </>
+  ) : (
+    <>
+      <HotkeyHints hints={hints} />
+      {filterLine}
+    </>
+  );
+
+  const borderColor = shuttingDown ? 'yellow' : isFilter ? 'cyan' : isCommands ? 'magenta' : 'gray';
+
+  return (
+    <Box ref={footerRef} borderStyle="single" borderColor={borderColor} paddingX={1} columnGap={4}>
+      <Box flexDirection="column" flexGrow={1}>
+        {topSection}
+        <Box marginTop={1}>{serviceStatusDots}</Box>
+        <Box flexDirection="column" marginTop={1}>
+          {gitBranch && (
+            <Text>
+              <Text color="cyan">git:(</Text>
+              <Text color="green">{gitBranch}</Text>
+              <Text color="cyan">)</Text>
+            </Text>
+          )}
+          {args.logFile && <Text dimColor>logfile: {args.logFile}</Text>}
+        </Box>
+      </Box>
+      {linksColumn}
+    </Box>
+  );
+}

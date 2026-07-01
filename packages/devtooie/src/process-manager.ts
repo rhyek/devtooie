@@ -756,6 +756,16 @@ export class ProcessManager implements ControlManager {
     this.addLine(this.systemPrefix, message, 'system', false);
   }
 
+  /**
+   * Reserve `height` rows for a host UI's footer, kept out of the clearable
+   * region. Called on every render by an interactive runner that measures its
+   * own footer, so the manager's scrollback-clearing logic never treats
+   * footer rows as clearable output.
+   */
+  setFooterHeight(height: number): void {
+    this.footerHeight = height;
+  }
+
   /** Truncate the logfile in place (close + reopen). */
   truncateLogFile(): void {
     fs.closeSync(this.logFd);
@@ -866,8 +876,15 @@ export class ProcessManager implements ControlManager {
     }
   }
 
-  /** Clear the screen and scrollback with raw escape codes (bypasses any host UI's own rendering). */
-  private resetScreen(): void {
+  /**
+   * Clear the screen and scrollback with raw escape codes, positioning the
+   * cursor just above the reserved footer rows. Public so an interactive
+   * runner can reposition the cursor once at startup (before its first
+   * `startAll()`), avoiding a spurious scrollback gap on initial paint; used
+   * internally by `clearBuffer()`/`replayBuffer()` for the same reason on
+   * every subsequent clear.
+   */
+  resetScreen(): void {
     if (this.plain) {
       this.visibleLineCount = 0;
       return;
