@@ -86,6 +86,23 @@ export function defineAppConfigs<const N extends string>(
   opts: DefineAppConfigsOptions<N>,
 ): ResolvedAppConfig<N>[] {
   const workspaceDir = opts.workspaceDir ?? process.cwd();
+
+  // Validate waitFor targets before substitution
+  const healthcheckApps = new Set(opts.apps.filter((c) => c.run?.healthcheck).map((c) => c.name));
+  const allNames = new Set(opts.apps.map((c) => c.name));
+  for (const config of opts.apps) {
+    for (const waitName of config.run?.waitFor ?? []) {
+      if (!allNames.has(waitName)) {
+        throw new Error(`${config.name} has waitFor "${waitName}" but no such app exists`);
+      }
+      if (!healthcheckApps.has(waitName)) {
+        throw new Error(
+          `${config.name} has waitFor "${waitName}" but that app has no healthcheck defined`,
+        );
+      }
+    }
+  }
+
   return opts.apps.map((config) => {
     const relativeDir = config.relativeDir ?? `projects/${config.name}`;
     const run = config.run;

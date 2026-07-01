@@ -53,3 +53,32 @@ describe('token substitution', () => {
     expect(typeof url === 'object' && url.url).toBe('https://app.example.com:8443');
   });
 });
+
+describe('validation', () => {
+  it('throws when waitFor targets an app without a healthcheck', () => {
+    expect(() =>
+      defineAppConfigs({
+        apps: [
+          { name: 'a', types: ['backend'], run: { waitFor: ['b'] } },
+          { name: 'b', types: ['backend'], run: {} },
+        ],
+      }),
+    ).toThrow(/waitFor "b".*no healthcheck/);
+  });
+
+  it('throws when waitFor targets a missing app', () => {
+    expect(() =>
+      defineAppConfigs({
+        apps: [{ name: 'a', types: ['backend'], run: { waitFor: ['ghost' as any] } }],
+      }),
+    ).toThrow(/waitFor "ghost"/);
+  });
+
+  it('throws when a url uses an unknown extrinsic token', () => {
+    expect(() =>
+      defineAppConfigs({
+        apps: [{ name: 'a', types: ['browser'], run: { urls: ['https://:domain'] } }],
+      }),
+    ).toThrow(/:domain/);
+  });
+});
