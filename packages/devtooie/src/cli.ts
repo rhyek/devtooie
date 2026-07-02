@@ -101,7 +101,10 @@ function resolveSelectedNames(
 }
 
 async function clearDist(app: AnyAppConfig): Promise<void> {
-  await execa('rm', ['-rf', path.join(app.path, 'dist')], { reject: false });
+  const result = await execa('rm', ['-rf', path.join(app.path, 'dist')], { reject: false });
+  if (result.exitCode !== 0) {
+    console.error(`warning: could not clear ${path.join(app.path, 'dist')}`);
+  }
 }
 
 async function buildOne(app: AnyAppConfig, script: string): Promise<void> {
@@ -288,11 +291,11 @@ program.action(async () => {
   if (opts.plain) {
     const names = resolveSelectedNames(opts, '--plain');
     saveSelection(names);
-    await acquireDevSession();
-    const server = await startCommandServer({ onQuit: () => process.exit(0) });
-    const apps = names.map((n) => findApp(n));
-    const deps = resolveDeps(apps);
     try {
+      await acquireDevSession();
+      const server = await startCommandServer({ onQuit: () => process.exit(0) });
+      const apps = names.map((n) => findApp(n));
+      const deps = resolveDeps(apps);
       await buildDeps(deps);
       await runPlain({ ...buildRunnerArgs(apps, deps), logFile }, server);
     } catch (err) {
@@ -305,4 +308,4 @@ program.action(async () => {
   renderApp({ services: opts.service, lastAnswers: opts.lastAnswers, logFile });
 });
 
-await program.parseAsync(process.argv);
+await program.parseAsync(process.argv).catch((err: unknown) => handleShellError(err));
