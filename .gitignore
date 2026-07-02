@@ -3,3 +3,6 @@ dist/
 .DS_Store
 docs/superpowers/
 .superpowers/
+
+# npm pack output
+*.tgz
