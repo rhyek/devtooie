@@ -48,6 +48,7 @@ try {
       child.on('exit', () => {
         process.exit(0);
       });
+      child.on('error', () => process.exit(0));
     } else {
       console.log("Run `devtooie init` when you're ready to set up devtooie.");
       process.exit(0);

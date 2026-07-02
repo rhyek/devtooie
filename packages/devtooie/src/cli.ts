@@ -22,6 +22,7 @@ import {
   resolveDeps,
   saveSelection,
 } from './lib.js';
+import { createPlainStatusReporter } from './plain-status.js';
 import { getProjectConfig } from './project-config.js';
 import { runPlain } from './runners/plain.js';
 import { refreshSkillIfStale } from './skill.js';
@@ -292,7 +293,9 @@ program.action(async () => {
     const names = resolveSelectedNames(opts, '--plain');
     saveSelection(names);
     try {
-      await acquireDevSession();
+      const statusReporter = createPlainStatusReporter();
+      await acquireDevSession({ onStatus: (msg) => statusReporter.update(msg) });
+      statusReporter.done();
       const server = await startCommandServer({ onQuit: () => process.exit(0) });
       const apps = names.map((n) => findApp(n));
       const deps = resolveDeps(apps);

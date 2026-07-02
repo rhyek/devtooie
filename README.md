@@ -97,6 +97,13 @@ message pointing you at `devtooie init`.
 
 The one file you author: a single `export default defineAppConfigs({...})`.
 
+> **Note:** devtooie imports this file with a native `.ts` dynamic `import()`
+> (see [Requirements](#requirements) above). If your project's
+> `package.json` doesn't have `"type": "module"`, Node will still load it
+> correctly but will print a `MODULE_TYPELESS_PACKAGE_JSON` performance
+> warning. Add `"type": "module"` to your `package.json`, or name the file
+> `services.mts`, to silence it.
+
 ```ts
 import { defineAppConfigs } from 'devtooie';
 

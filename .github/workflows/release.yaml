@@ -77,6 +77,9 @@ jobs:
       - name: Copy README into the package
         run: cp README.md packages/devtooie/README.md
 
+      - name: Copy LICENSE into the package
+        run: cp LICENSE packages/devtooie/LICENSE
+
       - name: Extract release notes
         run: ./scripts/change-log-entry.sh > /tmp/release-notes.md
 
