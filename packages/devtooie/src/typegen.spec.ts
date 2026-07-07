@@ -6,6 +6,8 @@ describe('computeAugmentation', () => {
     const out = computeAugmentation('/repo/devtooie-env.d.ts', '/repo/services.ts');
     expect(out).toContain("typeof import('./services').default");
     expect(out).toContain("declare module 'devtooie'");
+    // Must be a module (top-level export) so `declare module` augments rather than shadows.
+    expect(out).toContain('export {};');
   });
 
   it('handles nested services paths', () => {
