@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+
+# TanStack Start / Vite build + cache output
+.output/
+.tanstack/
+.vite/
+
+# Local SQLite database (created on first run)
+*.db
+*.db-shm
+*.db-wal
+
+.DS_Store

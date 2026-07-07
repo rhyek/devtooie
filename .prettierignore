@@ -1,0 +1,2 @@
+# `example/` is a nested workspace with its own Prettier config — don't format it from here.
+example/

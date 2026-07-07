@@ -11,5 +11,6 @@
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
     "sourceMap": true
-  }
+  },
+  "exclude": ["example"]
 }

@@ -1,6 +1,6 @@
 {
   "*.{ts,tsx}": [
     "prettier --write",
-    "eslint --concurrency=auto --fix --max-warnings=0 --no-warn-ignored"
+    "eslint --config eslint.config.js --concurrency=auto --fix --max-warnings=0 --no-warn-ignored"
   ]
 }
