@@ -195,9 +195,13 @@ const program = new Command()
 
 program
   .command('init')
-  .description('interactively set up devtooie.config.ts (and, optionally, the agent skill)')
-  .action(async () => {
-    await runInit();
+  .description('set up devtooie.config.ts (and, optionally, the agent skill)')
+  .option(
+    '-y, --yes',
+    'non-interactive: accept defaults (scaffold config + install the agent skill)',
+  )
+  .action(async (opts: { yes?: boolean }) => {
+    await runInit({ yes: opts.yes });
   });
 
 program

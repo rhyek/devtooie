@@ -38,30 +38,37 @@ function readOwnVersion(): string {
 }
 
 /**
- * Interactive `devtooie init` setup flow. Idempotent: an existing `devtooie.config.ts`
- * is left untouched (pass `force: true` to overwrite); the agent skill is (re)installed
- * whenever chosen.
+ * `devtooie init` setup flow. Idempotent: an existing `devtooie.config.ts` is left
+ * untouched (pass `force: true` to overwrite); the agent skill is (re)installed whenever
+ * chosen. Pass `yes: true` for a non-interactive run that accepts the defaults (install the
+ * agent skill) without prompting — used by `-y/--yes` and by automation.
  *
  * Does NOT prompt for a logfile location — that default is fixed at
  * `node_modules/.devtooie/devlog.txt` and is only overridable via the `--logfile` CLI flag.
  */
-export async function runInit(opts: { cwd?: string; force?: boolean } = {}): Promise<void> {
+export async function runInit(
+  opts: { cwd?: string; force?: boolean; yes?: boolean } = {},
+): Promise<void> {
   const cwd = opts.cwd ?? process.cwd();
   const existingConfig = findConfigPath(cwd);
 
   intro('devtooie init');
 
-  const skillAnswer = await confirm({
-    message: 'Install the devtooie agent skill?',
-    initialValue: true,
-  });
-  if (isCancel(skillAnswer)) {
-    cancel('Setup cancelled.');
-    return;
+  // --yes: skip the prompt and accept the default (install the agent skill).
+  let skill: boolean;
+  if (opts.yes) {
+    skill = true;
+  } else {
+    const skillAnswer = await confirm({
+      message: 'Install the devtooie agent skill?',
+      initialValue: true,
+    });
+    if (isCancel(skillAnswer)) {
+      cancel('Setup cancelled.');
+      return;
+    }
+    skill = skillAnswer;
   }
-
-  // Prompt answered without cancellation — now perform the (idempotent) writes.
-  const skill = skillAnswer;
 
   const configPath = path.join(cwd, 'devtooie.config.ts');
   if (opts.force || !existingConfig) {

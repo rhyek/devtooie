@@ -68,6 +68,9 @@ This is an interactive, idempotent setup flow. It will:
    Idempotent; your other settings are left untouched.
 4. If you opted in to the skill, install it.
 
+Pass `-y`/`--yes` to run it non-interactively (accepts the defaults — scaffold
+the config and install the skill — without prompting), handy for automation.
+
 After that, fill in the scaffolded config's `packages` array with your real
 packages (see below) and run `devtooie`.
 
