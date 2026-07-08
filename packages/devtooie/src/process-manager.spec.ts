@@ -186,3 +186,65 @@ describe('ProcessManager env-change restart', () => {
     await m.stop('wfixture');
   }, 15_000);
 });
+
+describe('ProcessManager rebuild (clean + build)', () => {
+  let rbDir: string;
+  let rbLog: string;
+  let mgr: ProcessManager | undefined;
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  beforeAll(() => {
+    rbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-pm-rebuild-'));
+    rbLog = path.join(rbDir, 'seq.log');
+    fs.writeFileSync(rbLog, '');
+    // No `build:clean` — only separate `clean` and `build`, which append ordered markers.
+    fs.writeFileSync(
+      path.join(rbDir, 'package.json'),
+      JSON.stringify({
+        name: 'rbfix',
+        version: '1.0.0',
+        scripts: {
+          dev: 'node -e "setInterval(()=>{},1e9)"',
+          clean: `node -e "require('fs').appendFileSync('${rbLog}','C')"`,
+          build: `node -e "require('fs').appendFileSync('${rbLog}','B')"`,
+        },
+      }),
+    );
+  });
+  afterAll(() => {
+    mgr?.dispose();
+    fs.rmSync(rbDir, { recursive: true, force: true });
+  });
+
+  it('runs clean then build (in order) and restarts when there is no build:clean', async () => {
+    const a: AnyPackageConfig = { name: 'rbfix', types: [], relativeDir: '.', path: rbDir };
+    mgr = new ProcessManager(
+      {
+        sortedPackages: [a],
+        selectedSet: new Set([a.name]),
+        buildDepSet: new Set(),
+        rebuildableSet: new Set([a.name]),
+        waitForMap: {},
+        healthcheckUrls: {},
+        extraCommandsMap: {},
+        logFile: path.join(rbDir, 'devlog.txt'),
+        cwd: rbDir,
+      },
+      { plain: true },
+    );
+
+    mgr.start('rbfix');
+    await wait(1200);
+    expect(mgr.getStatus('rbfix')).toBe('running');
+
+    expect(mgr.rebuild('rbfix')).toBe(true);
+    for (let i = 0; i < 40; i++) {
+      if (fs.readFileSync(rbLog, 'utf8') === 'CB' && mgr.getStatus('rbfix') === 'running') break;
+      await wait(200);
+    }
+    expect(fs.readFileSync(rbLog, 'utf8')).toBe('CB'); // clean (C) before build (B)
+    expect(mgr.getStatus('rbfix')).toBe('running'); // restarted after the rebuild
+
+    await mgr.stop('rbfix');
+  }, 15_000);
+});

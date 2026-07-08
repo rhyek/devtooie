@@ -62,10 +62,14 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
    scripts (`pnpm run <name>`); with a `Makefile` and no `package.json` it runs
    `make <target>`. (`package.json` wins if a package somehow has both.)
 
-   For a **Node package** it needs `dev`, `build`, `clean`, and `build:clean` (which runs
-   `clean` then `build`). devtooie's rebuild command runs `build:clean`, and its
-   "rebuildable" detection (the `b` hotkey in the interactive UI, and the control API's
-   rebuild endpoint) keys off that script's presence — so don't skip it.
+   In all cases a package needs `dev`, `build`, and `clean`. devtooie's clean-rebuild (the
+   `b` hotkey in the interactive UI and the control API's rebuild endpoint) runs
+   `build:clean` if the package defines it, otherwise it runs `clean` then `build` in
+   sequence — so `dev` + `build` + `clean` is enough to be "rebuildable".
+
+   For a **Node package**, these are npm scripts. You may add a combined `build:clean`
+   script (running `clean` then `build`) as a shortcut, but it's optional now that separate
+   `clean` + `build` are used automatically.
 
    For a **non-Node package** (no `package.json`), the entry points come from a `Makefile`
    with the equivalent **`make` targets** `dev`, `build`, and `clean`, which devtooie
@@ -89,10 +93,10 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
    	@rm -rf ./bin
    ```
 
-   Recipe lines must be indented with a real tab. Note that rebuild (`build:clean`) is a
-   Node-script-only convenience — a `make` target name can't contain a colon — so a
-   Makefile package is run and restarted normally but is not "rebuildable" (the `b`
-   hotkey / rebuild endpoint skip it); that's expected.
+   Recipe lines must be indented with a real tab. A `make` target name can't contain a
+   colon, so a Makefile package can't have a `build:clean` target — but it doesn't need one:
+   with `build` and `clean` targets, devtooie's rebuild runs `make clean` then `make build`,
+   so a Makefile package with `dev`/`build`/`clean` is fully rebuildable.
 2. **Rename equivalent existing scripts rather than duplicate them.** If the package
    already has a script that does the same job under a different name, rename it
    (and fix any references to the old name) instead of adding a second script that

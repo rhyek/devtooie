@@ -9,7 +9,7 @@ import type { ControlManager } from './command-server.js';
 import { debugLog } from './debug-log.js';
 import { DEFAULT_ENV_FILES, resolveEnv } from './env.js';
 import { watchEnvFiles, type WatchTarget } from './env-watch.js';
-import { getExecArgs, getStateDir, hasScript } from './lib.js';
+import { getExecArgs, getRebuildCommands, getStateDir, hasScript } from './lib.js';
 import type { RunnerArgs } from './runners/types.js';
 
 type ProcessState = 'running' | 'stopped' | 'waiting';
@@ -434,9 +434,10 @@ export class ProcessManager implements ControlManager {
   }
 
   /**
-   * ControlManager + hotkey entry point: stop -> `build:clean` -> start.
-   * `false` if unknown, or if the package has no `build:clean` script. A
-   * failing build leaves the package stopped (no restart).
+   * ControlManager + hotkey entry point: stop -> clean rebuild -> start, where the clean
+   * rebuild is `build:clean` (or `clean` then `build` when there's no combined script).
+   * `false` if unknown, or if the package isn't rebuildable. A failing build leaves the
+   * package stopped (no restart).
    */
   rebuild(name: string): boolean {
     if (this.transitions.has(name)) {
@@ -456,39 +457,42 @@ export class ProcessManager implements ControlManager {
     try {
       await this.stop(name);
       this.addLine(managed.prefix, chalk.yellow('rebuilding...'), managed.searchName, false);
-      const [cmd, args] = getExecArgs(managed.pkg, 'build:clean');
-      const buildProc = execa(cmd, args, {
-        cwd: managed.pkg.path,
-        env: this.packageEnv(managed.pkg),
-        stdin: 'ignore',
-        reject: false,
-        detached: true,
-      });
-      // Tracked in extraProcs for the duration of the build so killAll /
-      // shutdownAll / forceKillAll can reach (and kill the group of) this
-      // child even though it isn't the package's own long-running `proc`.
-      managed.extraProcs.add(buildProc);
-      let result;
-      try {
-        result = await buildProc;
-      } finally {
-        managed.extraProcs.delete(buildProc);
-      }
-      if (result.exitCode !== 0) {
-        this.addLine(
-          managed.prefix,
-          chalk.red(`rebuild failed (exit ${String(result.exitCode)})`),
-          managed.searchName,
-          true,
-        );
-        if (result.stderr) {
-          for (const line of result.stderr.split('\n')) {
-            if (line) {
-              this.addLine(managed.prefix, chalk.red(line), managed.searchName, true);
+      // A clean rebuild is `build:clean`, or `clean` then `build` sequentially when the
+      // package has no combined script/target — resolved identically for pnpm and make.
+      for (const [cmd, args] of getRebuildCommands(managed.pkg)) {
+        const buildProc = execa(cmd, args, {
+          cwd: managed.pkg.path,
+          env: this.packageEnv(managed.pkg),
+          stdin: 'ignore',
+          reject: false,
+          detached: true,
+        });
+        // Tracked in extraProcs for the duration of the build so killAll /
+        // shutdownAll / forceKillAll can reach (and kill the group of) this
+        // child even though it isn't the package's own long-running `proc`.
+        managed.extraProcs.add(buildProc);
+        let result;
+        try {
+          result = await buildProc;
+        } finally {
+          managed.extraProcs.delete(buildProc);
+        }
+        if (result.exitCode !== 0) {
+          this.addLine(
+            managed.prefix,
+            chalk.red(`rebuild failed (exit ${String(result.exitCode)})`),
+            managed.searchName,
+            true,
+          );
+          if (result.stderr) {
+            for (const line of result.stderr.split('\n')) {
+              if (line) {
+                this.addLine(managed.prefix, chalk.red(line), managed.searchName, true);
+              }
             }
           }
+          return;
         }
-        return;
       }
       this.addLine(managed.prefix, chalk.green('rebuild complete'), managed.searchName, false);
       this.start(name);

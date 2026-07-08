@@ -40,6 +40,28 @@ export function hasScript(pkg: AnyPackageConfig, script: string): boolean {
   return Boolean(readPackageJson(pkg)?.scripts?.[script]);
 }
 
+/**
+ * Whether a package can be cleanly rebuilt: it has a single `build:clean` script/target,
+ * or separate `clean` and `build` ones (run in sequence). Makefile packages rely on the
+ * latter, since a `make` target name can't contain the `:` in `build:clean`.
+ */
+export function canRebuild(pkg: AnyPackageConfig): boolean {
+  return hasScript(pkg, 'build:clean') || (hasScript(pkg, 'clean') && hasScript(pkg, 'build'));
+}
+
+/**
+ * The command(s) a clean rebuild runs, in order: a single `build:clean` when the package
+ * defines it, otherwise `clean` then `build`. Empty when the package can't rebuild (see
+ * {@link canRebuild}).
+ */
+export function getRebuildCommands(pkg: AnyPackageConfig): [string, string[]][] {
+  if (hasScript(pkg, 'build:clean')) return [getExecArgs(pkg, 'build:clean')];
+  if (hasScript(pkg, 'clean') && hasScript(pkg, 'build')) {
+    return [getExecArgs(pkg, 'clean'), getExecArgs(pkg, 'build')];
+  }
+  return [];
+}
+
 export function hasDevScript(pkg: AnyPackageConfig): boolean {
   return hasScript(pkg, 'dev');
 }
@@ -249,9 +271,7 @@ export function buildRunnerArgs(
 ): RunnerArgs {
   const selectedSet = new Set(selectedPackages.map((a) => a.name));
   const sortedPackages = sortForDisplay(deps.allPackages, selectedSet);
-  const rebuildableSet = new Set(
-    deps.allPackages.filter((a) => hasScript(a, 'build:clean')).map((a) => a.name),
-  );
+  const rebuildableSet = new Set(deps.allPackages.filter(canRebuild).map((a) => a.name));
   const waitForMap: Record<string, string[]> = {};
   const healthcheckUrls: Record<string, string> = {};
   const extraCommandsMap: Record<string, string[]> = {};

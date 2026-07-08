@@ -16,6 +16,8 @@ import {
   resetSelection,
   sortForDisplay,
   buildRunnerArgs,
+  canRebuild,
+  getRebuildCommands,
 } from './lib.js';
 import type { AnyPackageConfig } from './config.js';
 import { defineConfig } from './config.js';
@@ -145,5 +147,63 @@ describe('display sort + runner args', () => {
     expect(args.selectedSet.has('web')).toBe(true);
     expect(args.sortedPackages.length).toBeGreaterThan(0);
     expect(args.buildDepSet).toBe(deps.buildSet);
+  });
+});
+
+describe('rebuild resolution', () => {
+  let bc: string; // has build:clean (+ build, clean)
+  let cb: string; // has separate clean + build, no build:clean
+  let bonly: string; // only build
+  let mk: string; // Makefile with build + clean
+  beforeAll(() => {
+    bc = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-bc-'));
+    fs.writeFileSync(
+      path.join(bc, 'package.json'),
+      JSON.stringify({ scripts: { build: 'x', clean: 'x', 'build:clean': 'x' } }),
+    );
+    cb = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-cb-'));
+    fs.writeFileSync(
+      path.join(cb, 'package.json'),
+      JSON.stringify({ scripts: { build: 'x', clean: 'x' } }),
+    );
+    bonly = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-bo-'));
+    fs.writeFileSync(path.join(bonly, 'package.json'), JSON.stringify({ scripts: { build: 'x' } }));
+    mk = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-mk-'));
+    fs.writeFileSync(
+      path.join(mk, 'Makefile'),
+      'dev:\n\t@go run .\nbuild:\n\t@go build\nclean:\n\t@rm -rf bin\n',
+    );
+  });
+  afterAll(() => {
+    for (const d of [bc, cb, bonly, mk]) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  it('canRebuild: build:clean OR (clean AND build); false otherwise', () => {
+    expect(canRebuild(pkg({ path: bc }))).toBe(true);
+    expect(canRebuild(pkg({ path: cb }))).toBe(true);
+    expect(canRebuild(pkg({ path: bonly }))).toBe(false);
+  });
+
+  it('getRebuildCommands: a single build:clean when the package defines it', () => {
+    expect(getRebuildCommands(pkg({ path: bc }))).toEqual([['pnpm', ['run', 'build:clean']]]);
+  });
+
+  it('getRebuildCommands: clean then build when there is no build:clean', () => {
+    expect(getRebuildCommands(pkg({ path: cb }))).toEqual([
+      ['pnpm', ['run', 'clean']],
+      ['pnpm', ['run', 'build']],
+    ]);
+  });
+
+  it('getRebuildCommands: empty when the package cannot rebuild', () => {
+    expect(getRebuildCommands(pkg({ path: bonly }))).toEqual([]);
+  });
+
+  it('getRebuildCommands: make clean then make build for a Makefile package', () => {
+    expect(canRebuild(pkg({ path: mk }))).toBe(true);
+    expect(getRebuildCommands(pkg({ path: mk }))).toEqual([
+      ['make', ['clean']],
+      ['make', ['build']],
+    ]);
   });
 });
