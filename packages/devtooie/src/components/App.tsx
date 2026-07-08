@@ -1,19 +1,19 @@
 import { render, type Instance } from 'ink';
 import React, { useCallback, useRef, useState } from 'react';
-import { getRuntimeDepsMap, getServiceGroups, loadSelection, saveSelection } from '../lib.js';
+import { getRuntimeDepsMap, getPackageGroups, loadSelection, saveSelection } from '../lib.js';
 import type { RunnerArgs } from '../runners/types.js';
 import { BuildProgress, type ControlServer } from './BuildProgress.js';
 import { NativeRunner } from './NativeRunner.js';
-import { ServiceSelector, type ServiceSelectorGroup } from './ServiceSelector.js';
+import { PackageSelector, type PackageSelectorGroup } from './PackageSelector.js';
 
 type Phase =
-  | { type: 'service-select' }
+  | { type: 'package-select' }
   | { type: 'building'; selectedNames: string[] }
   | { type: 'running'; runnerArgs: RunnerArgs };
 
 export type AppProps = {
-  /** Explicit `--service` selections from the CLI; non-empty bypasses the selector entirely. */
-  services?: string[];
+  /** Explicit `--package` selections from the CLI; non-empty bypasses the selector entirely. */
+  packages?: string[];
   /** `--last-answers`: reuse the previously saved selection and skip the selector. */
   lastAnswers?: boolean;
   logFile?: string;
@@ -25,20 +25,20 @@ export type AppProps = {
  * into the build phase; otherwise the selector is shown first.
  */
 function getInitialPhase(
-  services: string[],
+  packages: string[],
   lastAnswers: boolean,
   savedSelection: string[],
 ): Phase {
-  if (services.length > 0) {
-    return { type: 'building', selectedNames: services };
+  if (packages.length > 0) {
+    return { type: 'building', selectedNames: packages };
   }
   if (lastAnswers && savedSelection.length > 0) {
     return { type: 'building', selectedNames: savedSelection };
   }
-  return { type: 'service-select' };
+  return { type: 'package-select' };
 }
 
-function toSelectorGroups(groups: ReturnType<typeof getServiceGroups>): ServiceSelectorGroup[] {
+function toSelectorGroups(groups: ReturnType<typeof getPackageGroups>): PackageSelectorGroup[] {
   return [
     { label: 'Backend', items: groups.backend },
     { label: 'Frontend', items: groups.frontend },
@@ -46,23 +46,23 @@ function toSelectorGroups(groups: ReturnType<typeof getServiceGroups>): ServiceS
 }
 
 /**
- * Root component: a phase state machine (`service-select` -> `building` -> `running`)
+ * Root component: a phase state machine (`package-select` -> `building` -> `running`)
  * that owns the one thing shared across those phases — the control server, received
  * from `BuildProgress` via `onControlReady` and handed to `NativeRunner` once the
  * build completes — plus the interactive selection, persisted via `saveSelection`
- * only when it actually came from the selector (a `--service`/`--last-answers` run
+ * only when it actually came from the selector (a `--package`/`--last-answers` run
  * never touches it).
  */
-export function App({ services = [], lastAnswers = false, logFile }: AppProps) {
-  // Computed once: the registered-app catalog is fixed for the process's lifetime, and a
-  // stable identity here means these props are never a reason for ServiceSelector to redo
+export function App({ packages = [], lastAnswers = false, logFile }: AppProps) {
+  // Computed once: the registered-package catalog is fixed for the process's lifetime, and a
+  // stable identity here means these props are never a reason for PackageSelector to redo
   // its own memoized derivations.
-  const [groups] = useState(() => toSelectorGroups(getServiceGroups()));
+  const [groups] = useState(() => toSelectorGroups(getPackageGroups()));
   const [runtimeDeps] = useState(getRuntimeDepsMap);
   const [savedSelection] = useState(() => loadSelection() ?? []);
 
   const [phase, setPhase] = useState<Phase>(() =>
-    getInitialPhase(services, lastAnswers, savedSelection),
+    getInitialPhase(packages, lastAnswers, savedSelection),
   );
 
   // Received from BuildProgress once its control server is listening, then handed to
@@ -72,9 +72,9 @@ export function App({ services = [], lastAnswers = false, logFile }: AppProps) {
   // and restart whenever `server` changes).
   const controlRef = useRef<ControlServer | null>(null);
 
-  // Deferred here rather than inside ServiceSelector so that a --service/--last-answers
+  // Deferred here rather than inside PackageSelector so that a --package/--last-answers
   // run — which never renders the selector — can't overwrite a previously saved selection.
-  const onServicesSubmit = useCallback((selected: string[]) => {
+  const onPackagesSubmit = useCallback((selected: string[]) => {
     saveSelection(selected);
     setPhase({ type: 'building', selectedNames: selected });
   }, []);
@@ -88,13 +88,13 @@ export function App({ services = [], lastAnswers = false, logFile }: AppProps) {
   }, []);
 
   switch (phase.type) {
-    case 'service-select':
+    case 'package-select':
       return (
-        <ServiceSelector
+        <PackageSelector
           groups={groups}
           runtimeDeps={runtimeDeps}
           initialSelected={savedSelection}
-          onSubmit={onServicesSubmit}
+          onSubmit={onPackagesSubmit}
         />
       );
 

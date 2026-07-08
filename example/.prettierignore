@@ -6,7 +6,6 @@
 
 # Generated — never hand-formatted
 **/routeTree.gen.ts
-**/devtooie-env.d.ts
 
 # Lockfiles
 pnpm-lock.yaml

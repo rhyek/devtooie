@@ -21,26 +21,26 @@ type Mode = 'normal' | 'filter' | 'commands';
  * One row in the commands menu. The trailing `custom` entry doubles as a
  * free-form text field: while it's focused, typed characters are appended to
  * a pending shell command and `enter` runs it. That entry is always present,
- * so the menu is meaningful even for a service with no extra scripts/targets.
+ * so the menu is meaningful even for a package with no extra scripts/targets.
  */
 type CommandMenuItem = { type: 'script'; name: string } | { type: 'custom' };
 
 /**
- * Five states a service can be in, shown as a colored dot in the footer:
+ * Five states a package can be in, shown as a colored dot in the footer:
  * `stopped` (not running), `waiting` (blocked on a dependency's healthcheck),
  * `starting`/`started` (running, healthcheck-backed, not yet / already
  * passing), and `unknown` (running, no healthcheck configured so readiness
  * can't be distinguished from "just started").
  */
-type ServiceStatus = 'stopped' | 'starting' | 'started' | 'unknown' | 'waiting';
+type PackageStatus = 'stopped' | 'starting' | 'started' | 'unknown' | 'waiting';
 
-interface ServiceUrlGroup {
+interface PackageUrlGroup {
   name: string;
   selected: boolean;
   urls: { label?: string; url: string }[];
 }
 
-const STATUS_COLORS: Record<ServiceStatus, string> = {
+const STATUS_COLORS: Record<PackageStatus, string> = {
   stopped: 'red',
   starting: 'yellow',
   started: 'green',
@@ -61,7 +61,7 @@ function hyperlink(url: string, text: string): string {
 }
 
 /** Natural width of the right-hand URL column, so the left column knows how much room it can use. */
-function estimateRightColumnWidth(urlGroups: ServiceUrlGroup[]): number {
+function estimateRightColumnWidth(urlGroups: PackageUrlGroup[]): number {
   let maxWidth = 0;
   for (const group of urlGroups) {
     maxWidth = Math.max(maxWidth, group.name.length);
@@ -72,29 +72,29 @@ function estimateRightColumnWidth(urlGroups: ServiceUrlGroup[]): number {
   return maxWidth;
 }
 
-/** Available width for the left (service dot) column once the right (URL) column and chrome are subtracted. */
-function leftColumnAvailableWidth(terminalWidth: number, urlGroups: ServiceUrlGroup[]): number {
+/** Available width for the left (package dot) column once the right (URL) column and chrome are subtracted. */
+function leftColumnAvailableWidth(terminalWidth: number, urlGroups: PackageUrlGroup[]): number {
   const rightColWidth = estimateRightColumnWidth(urlGroups);
   const rightTotal = rightColWidth > 0 ? rightColWidth + 4 : 0; // +4 = the gap between the two columns
   return Math.max(terminalWidth - 4 - rightTotal, 20); // -4 = border (2) + horizontal padding (2)
 }
 
 /**
- * Lays out each service dot's row and horizontal center, wrapping to a new
+ * Lays out each package dot's row and horizontal center, wrapping to a new
  * row once it would overflow `availableWidth`. Used purely for up/down arrow
  * navigation, so the cursor moves to whichever item on the adjacent row sits
  * closest to its current horizontal position.
  */
-function computeServiceLayout(
-  serviceNames: string[],
+function computePackageLayout(
+  packageNames: string[],
   availableWidth: number,
 ): { row: number; centerX: number }[] {
   const gap = 2;
   const positions: { row: number; centerX: number }[] = [];
   let row = 0;
   let x = 0;
-  for (let i = 0; i < serviceNames.length; i++) {
-    const itemWidth = 2 + serviceNames[i]!.length; // "● name"
+  for (let i = 0; i < packageNames.length; i++) {
+    const itemWidth = 2 + packageNames[i]!.length; // "● name"
     if (i > 0 && x + gap + itemWidth > availableWidth) {
       row++;
       x = 0;
@@ -107,28 +107,28 @@ function computeServiceLayout(
   return positions;
 }
 
-/** Seed status for a service once it's (re)started: `starting` if it has a healthcheck, else `unknown`. */
-function initialStatus(name: string, healthcheckUrls: Record<string, string>): ServiceStatus {
+/** Seed status for a package once it's (re)started: `starting` if it has a healthcheck, else `unknown`. */
+function initialStatus(name: string, healthcheckUrls: Record<string, string>): PackageStatus {
   return healthcheckUrls[name] ? 'starting' : 'unknown';
 }
 
 // ---------------------------------------------------------------------------
-// useServiceStatuses — the 5-state status model + healthcheck polling
+// usePackageStatuses — the 5-state status model + healthcheck polling
 // ---------------------------------------------------------------------------
 
-function useServiceStatuses(args: RunnerArgs, manager: ProcessManager) {
-  const services = useMemo(() => args.sortedApps, [args.sortedApps]);
+function usePackageStatuses(args: RunnerArgs, manager: ProcessManager) {
+  const packages = useMemo(() => args.sortedPackages, [args.sortedPackages]);
   const healthcheckUrls = args.healthcheckUrls;
 
-  const [statuses, setStatuses] = useState<Map<string, ServiceStatus>>(() => {
-    const map = new Map<string, ServiceStatus>();
-    for (const app of services) {
-      map.set(app.name, 'stopped');
+  const [statuses, setStatuses] = useState<Map<string, PackageStatus>>(() => {
+    const map = new Map<string, PackageStatus>();
+    for (const pkg of packages) {
+      map.set(pkg.name, 'stopped');
     }
     return map;
   });
 
-  // Poll every service with a configured healthcheck, but only while the TUI
+  // Poll every package with a configured healthcheck, but only while the TUI
   // already considers it starting/started — this owns just the
   // starting <-> started distinction, nothing else.
   //
@@ -156,7 +156,7 @@ function useServiceStatuses(args: RunnerArgs, manager: ProcessManager) {
               if (curr !== 'starting' && curr !== 'started') {
                 return prev;
               }
-              const next: ServiceStatus = res.ok ? 'started' : 'starting';
+              const next: PackageStatus = res.ok ? 'started' : 'starting';
               return curr === next ? prev : new Map(prev).set(name, next);
             });
           })
@@ -194,7 +194,7 @@ function useServiceStatuses(args: RunnerArgs, manager: ProcessManager) {
           if (!mgrStatus) {
             continue;
           }
-          let target: ServiceStatus;
+          let target: PackageStatus;
           switch (mgrStatus) {
             case 'waiting':
               target = 'waiting';
@@ -248,22 +248,22 @@ function useServiceStatuses(args: RunnerArgs, manager: ProcessManager) {
   const markAllStarted = useCallback(() => {
     setStatuses((prev) => {
       const next = new Map(prev);
-      for (const app of services) {
-        next.set(app.name, initialStatus(app.name, healthcheckUrls));
+      for (const pkg of packages) {
+        next.set(pkg.name, initialStatus(pkg.name, healthcheckUrls));
       }
       return next;
     });
-  }, [services, healthcheckUrls]);
+  }, [packages, healthcheckUrls]);
 
   const markAllStopped = useCallback(() => {
     setStatuses((prev) => {
       const next = new Map(prev);
-      for (const app of services) {
-        next.set(app.name, 'stopped');
+      for (const pkg of packages) {
+        next.set(pkg.name, 'stopped');
       }
       return next;
     });
-  }, [services]);
+  }, [packages]);
 
   return {
     statuses,
@@ -282,9 +282,9 @@ function useServiceStatuses(args: RunnerArgs, manager: ProcessManager) {
 
 /**
  * Owns the run phase: creates the `ProcessManager`, drives it from a
- * `useInput` hotkey handler, and renders a footer (hotkey hints, per-service
- * status dots, git branch, logfile path, service URLs) above which the
- * manager streams every service's own output directly to the terminal. The
+ * `useInput` hotkey handler, and renders a footer (hotkey hints, per-package
+ * status dots, git branch, logfile path, package URLs) above which the
+ * manager streams every package's own output directly to the terminal. The
  * footer's real height is measured every render via `measureElement` and fed
  * back into the manager so its scrollback-clearing logic never clears rows
  * the footer itself occupies.
@@ -294,31 +294,31 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
 
   const [gitBranch] = useState(getGitBranch);
 
-  const displayApps = useMemo(
+  const displayPackages = useMemo(
     () =>
-      args.sortedApps.map((app) => ({
-        name: app.name,
-        displayName: app.run?.shortName ?? app.name,
-        selected: args.selectedSet.has(app.name),
+      args.sortedPackages.map((pkg) => ({
+        name: pkg.name,
+        displayName: pkg.run?.shortName ?? pkg.name,
+        selected: args.selectedSet.has(pkg.name),
       })),
-    [args.sortedApps, args.selectedSet],
+    [args.sortedPackages, args.selectedSet],
   );
 
-  const serviceUrlGroups = useMemo<ServiceUrlGroup[]>(() => {
-    const groups: ServiceUrlGroup[] = [];
-    for (const app of args.sortedApps) {
-      const urls = app.run?.urls;
+  const packageUrlGroups = useMemo<PackageUrlGroup[]>(() => {
+    const groups: PackageUrlGroup[] = [];
+    for (const pkg of args.sortedPackages) {
+      const urls = pkg.run?.urls;
       if (!urls || urls.length === 0) {
         continue;
       }
       groups.push({
-        name: app.run?.shortName ?? app.name,
-        selected: args.selectedSet.has(app.name),
+        name: pkg.run?.shortName ?? pkg.name,
+        selected: args.selectedSet.has(pkg.name),
         urls: urls.map((u) => (typeof u === 'string' ? { url: u } : u)),
       });
     }
     return groups;
-  }, [args.sortedApps, args.selectedSet]);
+  }, [args.sortedPackages, args.selectedSet]);
 
   const [manager] = useState(() => new ProcessManager(args));
   const [mode, setMode] = useState<Mode>('normal');
@@ -331,14 +331,14 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
   const [commandsCursor, setCommandsCursor] = useState(0);
   const [customCommandInput, setCustomCommandInput] = useState('');
 
-  // Extra scripts/targets (excluding dev/build/build:clean) for the focused service.
+  // Extra scripts/targets (excluding dev/build/build:clean) for the focused package.
   const focusedExtraCommands = useMemo(() => {
-    const focused = displayApps[cursor];
+    const focused = displayPackages[cursor];
     if (!focused) {
       return [];
     }
     return args.extraCommandsMap[focused.name] ?? [];
-  }, [cursor, displayApps, args.extraCommandsMap]);
+  }, [cursor, displayPackages, args.extraCommandsMap]);
 
   // Commands-mode menu: every extra script, plus a trailing free-form entry. Never empty.
   const commandMenuItems = useMemo<CommandMenuItem[]>(
@@ -357,12 +357,12 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
     markWaiting,
     markAllStarted,
     markAllStopped,
-  } = useServiceStatuses(args, manager);
+  } = usePackageStatuses(args, manager);
 
   const shuttingDownRef = useRef(false);
 
   // The single graceful shutdown path for Ctrl+C and a detected git branch
-  // change: stop every service and wait for it to actually exit, close the
+  // change: stop every package and wait for it to actually exit, close the
   // control server, then exit this process. A second call (an impatient
   // repeat Ctrl+C) skips straight to a hard kill.
   const shutdown = useCallback(async () => {
@@ -383,7 +383,7 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
     process.exit(0);
   }, [manager, server, exit, markAllStopped]);
 
-  const serviceNames = useMemo(() => displayApps.map((a) => a.displayName), [displayApps]);
+  const packageNames = useMemo(() => displayPackages.map((a) => a.displayName), [displayPackages]);
 
   // Measures the footer's real height every render and syncs it (plus any
   // filter change) into the ProcessManager, so its scrollback-clearing logic
@@ -516,18 +516,18 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
       } else if (key.downArrow) {
         setCommandsCursor((c) => (c + 1) % commandMenuItems.length);
       } else if (key.return) {
-        const focusedApp = displayApps[cursor];
-        if (!focusedItem || !focusedApp) {
+        const focusedPackage = displayPackages[cursor];
+        if (!focusedItem || !focusedPackage) {
           setMode('normal');
           return;
         }
         if (focusedItem.type === 'script') {
-          manager.runCommand(focusedApp.name, focusedItem.name);
+          manager.runCommand(focusedPackage.name, focusedItem.name);
           setMode('normal');
         } else {
           const trimmed = customCommandInput.trim();
           if (trimmed) {
-            manager.runCustomCommand(focusedApp.name, trimmed);
+            manager.runCustomCommand(focusedPackage.name, trimmed);
           }
           setMode('normal');
         }
@@ -544,16 +544,16 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
     // Normal mode.
 
     if (key.leftArrow) {
-      setCursor((c) => (c - 1 + displayApps.length) % displayApps.length);
+      setCursor((c) => (c - 1 + displayPackages.length) % displayPackages.length);
       return;
     }
     if (key.rightArrow) {
-      setCursor((c) => (c + 1) % displayApps.length);
+      setCursor((c) => (c + 1) % displayPackages.length);
       return;
     }
     if (key.upArrow || key.downArrow) {
-      const availWidth = leftColumnAvailableWidth(process.stdout.columns || 120, serviceUrlGroups);
-      const positions = computeServiceLayout(serviceNames, availWidth);
+      const availWidth = leftColumnAvailableWidth(process.stdout.columns || 120, packageUrlGroups);
+      const positions = computePackageLayout(packageNames, availWidth);
       const cur = positions[cursor];
       if (!cur) {
         return;
@@ -599,17 +599,17 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
       return;
     }
 
-    // Everything past this point acts on the focused service.
-    const focusedApp = displayApps[cursor];
-    if (!focusedApp) {
+    // Everything past this point acts on the focused package.
+    const focusedPackage = displayPackages[cursor];
+    if (!focusedPackage) {
       return;
     }
-    const focusedName = focusedApp.name;
+    const focusedName = focusedPackage.name;
     const focusedStatus = statuses.get(focusedName) ?? 'stopped';
     const isActive = focusedStatus !== 'stopped' && focusedStatus !== 'waiting';
 
     // The commands menu is always available, independent of run state — even
-    // a stopped service can still have its custom command entry used.
+    // a stopped package can still have its custom command entry used.
     if (input === 'm') {
       setCommandsCursor(0);
       setCustomCommandInput('');
@@ -639,7 +639,7 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
 
     if (input === 's' && !isActive) {
       manager.start(focusedName);
-      // `start()` silently no-ops for a service with no runnable dev script
+      // `start()` silently no-ops for a package with no runnable dev script
       // (see `ProcessManager.start`/`canDev`), so only optimistically mark it
       // as started if the manager's own state shows it actually did.
       if (manager.getStatus(focusedName) !== 'stopped') {
@@ -657,9 +657,9 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
   }
 
   const linksColumn =
-    serviceUrlGroups.length > 0 ? (
+    packageUrlGroups.length > 0 ? (
       <Box flexDirection="column" alignItems="flex-end" flexShrink={0}>
-        {serviceUrlGroups.map((group) => (
+        {packageUrlGroups.map((group) => (
           <React.Fragment key={group.name}>
             <Text bold={group.selected}>{group.name}</Text>
             {group.urls.map((u, i) => (
@@ -673,10 +673,14 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
       </Box>
     ) : null;
 
-  const focusedApp = displayApps[cursor];
-  const focusedStatus = focusedApp ? (statuses.get(focusedApp.name) ?? 'stopped') : 'stopped';
+  const focusedPackage = displayPackages[cursor];
+  const focusedStatus = focusedPackage
+    ? (statuses.get(focusedPackage.name) ?? 'stopped')
+    : 'stopped';
   const focusedIsActive = focusedStatus !== 'stopped' && focusedStatus !== 'waiting';
-  const focusedIsRebuildable = focusedApp ? args.rebuildableSet.has(focusedApp.name) : false;
+  const focusedIsRebuildable = focusedPackage
+    ? args.rebuildableSet.has(focusedPackage.name)
+    : false;
 
   const hints: HotkeyHintItem[] = [
     { key: 'r', label: 'restart', dim: !focusedIsActive },
@@ -695,21 +699,21 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
     <Text color="cyan">[filter: {activeFilter}] c: clear filter</Text>
   ) : null;
 
-  const serviceStatusDots = (
+  const packageStatusDots = (
     <Box flexWrap="wrap" columnGap={2}>
-      {displayApps.map((app, i) => {
-        const status = statuses.get(app.name) ?? 'stopped';
+      {displayPackages.map((pkg, i) => {
+        const status = statuses.get(pkg.name) ?? 'stopped';
         const color = STATUS_COLORS[status];
         const dim = (status === 'starting' || status === 'waiting') && !pulse;
         const isFocused = i === cursor;
         return (
-          <Box key={app.name} flexShrink={0}>
+          <Box key={pkg.name} flexShrink={0}>
             <Text color={color} dimColor={dim}>
               ●
             </Text>
             <Text> </Text>
             <Text bold={isFocused} underline={isFocused}>
-              {app.displayName}
+              {pkg.displayName}
             </Text>
           </Box>
         );
@@ -735,7 +739,7 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
   ) : isCommands ? (
     <>
       <Text bold>
-        Commands for <Text color="cyan">{focusedApp?.displayName ?? ''}</Text>{' '}
+        Commands for <Text color="cyan">{focusedPackage?.displayName ?? ''}</Text>{' '}
         <Text dimColor>(custom runs via a shell)</Text>:
       </Text>
       {commandMenuItems.map((item, i) => {
@@ -781,7 +785,7 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
     <Box ref={footerRef} borderStyle="single" borderColor={borderColor} paddingX={1} columnGap={4}>
       <Box flexDirection="column" flexGrow={1}>
         {topSection}
-        <Box marginTop={1}>{serviceStatusDots}</Box>
+        <Box marginTop={1}>{packageStatusDots}</Box>
         <Box flexDirection="column" marginTop={1}>
           {gitBranch && (
             <Text>

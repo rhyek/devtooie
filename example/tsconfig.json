@@ -11,5 +11,5 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["services.ts", "devtooie-env.d.ts"]
+  "include": ["devtooie.config.ts"]
 }

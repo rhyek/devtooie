@@ -8,7 +8,7 @@ import type { RunnerArgs } from './types.js';
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
 /**
- * Drives a run session with no interactive UI: every selected service streams
+ * Drives a run session with no interactive UI: every selected package streams
  * its output as plain, colour-prefixed lines to stdout/stderr. The session
  * ends on SIGINT/SIGTERM, a `/command/quit` request against the control
  * server, or a detected git branch change — all funnelled through the same
@@ -38,7 +38,7 @@ export async function runPlain(
     process.exit(0);
   };
 
-  // Attach before starting services so status/restart/rebuild requests are
+  // Attach before starting packages so status/restart/rebuild requests are
   // servable the moment anything spawns. Also take over `/command/quit`
   // routing from whatever handler the server was constructed with (typically
   // a hard exit, since there's no process manager yet at that point), so a

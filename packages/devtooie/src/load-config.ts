@@ -1,19 +1,41 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { getProjectConfig } from './project-config.js';
-import { getRegisteredApps, type AnyAppConfig } from './config.js';
+import { getRegisteredPackages, type AnyPackageConfig, type Config } from './config.js';
 
 export class NoProjectConfigError extends Error {}
 
-export async function loadServices(cwd: string = process.cwd()): Promise<AnyAppConfig[]> {
-  const cfg = getProjectConfig(cwd);
-  if (!cfg) {
-    throw new NoProjectConfigError('no devtooie.yaml found — run `devtooie init`');
+/**
+ * Config file names, in discovery order. `devtooie.config.ts` is canonical; the others are
+ * runtime-only fallbacks (a `.js`/`.mjs` config works at runtime but carries no inline
+ * `declare module` type augmentation).
+ */
+export const CONFIG_NAMES = [
+  'devtooie.config.ts',
+  'devtooie.config.mts',
+  'devtooie.config.js',
+  'devtooie.config.mjs',
+];
+
+export function findConfigPath(cwd: string = process.cwd()): string | null {
+  for (const name of CONFIG_NAMES) {
+    const p = path.join(cwd, name);
+    if (fs.existsSync(p)) return p;
   }
-  const servicesPath = path.resolve(cwd, cfg.services);
-  const mod = (await import(pathToFileURL(servicesPath).href)) as { default?: AnyAppConfig[] };
-  const registered = getRegisteredApps();
+  return null;
+}
+
+export async function loadConfig(cwd: string = process.cwd()): Promise<AnyPackageConfig[]> {
+  const configPath = findConfigPath(cwd);
+  if (!configPath) {
+    throw new NoProjectConfigError('no devtooie.config.ts found — run `devtooie init`');
+  }
+  const mod = (await import(pathToFileURL(configPath).href)) as { default?: Config<string> };
+  // `defineConfig` registers packages as a side effect of being imported.
+  const registered = getRegisteredPackages();
   if (registered.length) return registered;
-  if (Array.isArray(mod.default)) return mod.default;
-  throw new Error(`services module ${cfg.services} did not export a defineAppConfigs default`);
+  if (mod.default && Array.isArray(mod.default.packages)) return mod.default.packages;
+  throw new Error(
+    `config module ${path.basename(configPath)} did not export a defineConfig default`,
+  );
 }

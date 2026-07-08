@@ -18,12 +18,12 @@ import {
   sortForDisplay,
   buildRunnerArgs,
 } from './lib.js';
-import type { AnyAppConfig } from './config.js';
-import { defineAppConfigs } from './config.js';
+import type { AnyPackageConfig } from './config.js';
+import { defineConfig } from './config.js';
 
 let dir: string;
-function app(over: Partial<AnyAppConfig> & { path: string }): AnyAppConfig {
-  return { name: 'x', types: [], relativeDir: 'x', ...over } as AnyAppConfig;
+function pkg(over: Partial<AnyPackageConfig> & { path: string }): AnyPackageConfig {
+  return { name: 'x', types: [], relativeDir: 'x', ...over } as AnyPackageConfig;
 }
 
 beforeAll(() => {
@@ -36,29 +36,29 @@ beforeAll(() => {
 afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 describe('runner detection', () => {
-  it('detects pnpm for a package.json app', () => {
-    expect(getCommandRunner(app({ path: dir }))).toBe('pnpm');
-    expect(getExecArgs(app({ path: dir }), 'dev')).toEqual(['pnpm', ['run', 'dev']]);
+  it('detects pnpm for a package.json pkg', () => {
+    expect(getCommandRunner(pkg({ path: dir }))).toBe('pnpm');
+    expect(getExecArgs(pkg({ path: dir }), 'dev')).toEqual(['pnpm', ['run', 'dev']]);
   });
   it('reads scripts', () => {
-    expect(hasScript(app({ path: dir }), 'build')).toBe(true);
-    expect(hasDevScript(app({ path: dir }))).toBe(true);
+    expect(hasScript(pkg({ path: dir }), 'build')).toBe(true);
+    expect(hasDevScript(pkg({ path: dir }))).toBe(true);
   });
   it('excludes runner-managed scripts from extra commands', () => {
-    expect(getExtraCommands(app({ path: dir }))).toEqual(['codegen']);
+    expect(getExtraCommands(pkg({ path: dir }))).toEqual(['codegen']);
   });
   it('falls back to pnpm when nothing present', () => {
     const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-empty-'));
-    expect(getCommandRunner(app({ path: empty }))).toBe('pnpm');
+    expect(getCommandRunner(pkg({ path: empty }))).toBe('pnpm');
     fs.rmSync(empty, { recursive: true, force: true });
   });
 });
 
 describe('resolveDeps (§8)', () => {
   function setup() {
-    return defineAppConfigs({
+    return defineConfig({
       workspaceDir: '/repo',
-      apps: [
+      packages: [
         { name: 'reverse-proxy', types: ['backend'], run: { selectable: false } },
         {
           name: 'core-svc',
@@ -72,12 +72,12 @@ describe('resolveDeps (§8)', () => {
         },
         { name: 'graphql-codegen', types: [] },
       ],
-    });
+    }).packages;
   }
 
   it('adds one level of runtime deps to runSet (NOT transitive)', () => {
-    const apps = setup();
-    const web = apps.find((a) => a.name === 'web')!;
+    const packages = setup();
+    const web = packages.find((a) => a.name === 'web')!;
     const { runSet, reasons } = resolveDeps([web], [DepType.RUNTIME]);
     // web + its direct runtime deps; core-svc's own runtime dep (reverse-proxy) is
     // already present because web lists it, but is NOT followed transitively via core-svc.
@@ -87,16 +87,16 @@ describe('resolveDeps (§8)', () => {
   });
 
   it('does not follow runtime deps of a runtime dep', () => {
-    const apps = setup();
-    const core = apps.find((a) => a.name === 'core-svc')!;
+    const packages = setup();
+    const core = packages.find((a) => a.name === 'core-svc')!;
     // Select core-svc only → runSet is {core-svc, reverse-proxy}.
     const { runSet } = resolveDeps([core], [DepType.RUNTIME]);
     expect([...runSet].sort()).toEqual(['core-svc', 'reverse-proxy']);
   });
 
   it('adds dev deps to the build set transitively', () => {
-    const apps = setup();
-    const web = apps.find((a) => a.name === 'web')!;
+    const packages = setup();
+    const web = packages.find((a) => a.name === 'web')!;
     const { buildSet } = resolveDeps([web], [DepType.DEV]);
     expect(buildSet.has('graphql-codegen')).toBe(true);
   });
@@ -116,39 +116,39 @@ describe('state + persistence', () => {
     expect(getStateDir().replace(/\\/g, '/')).toContain('node_modules/.devtooie');
   });
 
-  it('getApiPort returns a number (default 4099 when no devtooie.yaml in cwd)', () => {
+  it('getApiPort returns a number (default 4099 when config sets no apiPort)', () => {
     expect(typeof getApiPort()).toBe('number');
   });
 });
 
 describe('display sort + runner args', () => {
-  function apps() {
-    return defineAppConfigs({
+  function packages() {
+    return defineConfig({
       workspaceDir: '/repo',
-      apps: [
+      packages: [
         { name: 'proxy', types: ['backend'], run: { selectable: false } },
         { name: 'api', types: ['backend'], run: { deps: { runtime: ['proxy'] } } },
         { name: 'web', types: ['browser'], run: { deps: { runtime: ['api', 'proxy'] } } },
         { name: 'lib-x', types: ['lib'] },
       ],
-    });
+    }).packages;
   }
 
   it('orders selected first, then selectable deps, then non-selectable infra', () => {
-    const all = apps();
+    const all = packages();
     const selected = new Set(['web']);
     const sorted = sortForDisplay(all, selected);
     expect(sorted[0]!.name).toBe('web'); // selected first
     expect(sorted[sorted.length - 1]!.name).toBe('proxy'); // non-selectable infra last
   });
 
-  it('buildRunnerArgs marks the selected set and produces sorted apps', () => {
-    const all = apps();
+  it('buildRunnerArgs marks the selected set and produces sorted packages', () => {
+    const all = packages();
     const web = all.find((a) => a.name === 'web')!;
     const deps = resolveDeps([web]);
     const args = buildRunnerArgs([web], deps);
     expect(args.selectedSet.has('web')).toBe(true);
-    expect(args.sortedApps.length).toBeGreaterThan(0);
+    expect(args.sortedPackages.length).toBeGreaterThan(0);
     expect(args.buildDepSet).toBe(deps.buildSet);
   });
 });

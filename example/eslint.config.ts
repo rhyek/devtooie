@@ -17,7 +17,6 @@ export default defineConfig([
     '**/.output/**',
     '**/.tanstack/**',
     '**/routeTree.gen.ts',
-    '**/devtooie-env.d.ts',
   ]),
   eslint.configs.recommended,
   ...tseslint.configs.recommended,

@@ -3,10 +3,10 @@ import { getApiPort } from './lib.js';
 
 export interface ControlManager {
   getAllStatuses(): unknown;
-  getStatus(app: string): unknown;
-  getServices(filter?: string): unknown;
-  restart(app: string): boolean;
-  rebuild(app: string): boolean;
+  getStatus(pkg: string): unknown;
+  getPackages(filter?: string): unknown;
+  restart(pkg: string): boolean;
+  rebuild(pkg: string): boolean;
   quit(): void;
 }
 
@@ -48,8 +48,8 @@ export async function startCommandServer(opts: { onQuit: () => void; port?: numb
     if (parts[0] === 'query' && parts[1] === 'status') {
       return send(res, 200, parts[2] ? manager.getStatus(parts[2]) : manager.getAllStatuses());
     }
-    if (parts[0] === 'query' && parts[1] === 'services') {
-      return send(res, 200, manager.getServices(url.searchParams.get('status') ?? undefined));
+    if (parts[0] === 'query' && parts[1] === 'packages') {
+      return send(res, 200, manager.getPackages(url.searchParams.get('status') ?? undefined));
     }
     if (parts[0] === 'command' && (parts[1] === 'restart' || parts[1] === 'rebuild') && parts[2]) {
       const ok = parts[1] === 'restart' ? manager.restart(parts[2]) : manager.rebuild(parts[2]);

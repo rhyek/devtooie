@@ -1,34 +1,34 @@
 import { Box, Text, useApp, useInput } from 'ink';
 import React, { useMemo, useState } from 'react';
-import type { AnyAppConfig } from '../config.js';
+import type { AnyPackageConfig } from '../config.js';
 import { HotkeyHints } from './HotkeyHints.js';
 
-/** One labelled column of the grid (e.g. "Backend" / "Frontend"), fed by `getServiceGroups()`. */
-export type ServiceSelectorGroup = { label: string; items: AnyAppConfig[] };
+/** One labelled column of the grid (e.g. "Backend" / "Frontend"), fed by `getPackageGroups()`. */
+export type PackageSelectorGroup = { label: string; items: AnyPackageConfig[] };
 
-export type ServiceSelectorProps = {
-  groups: ServiceSelectorGroup[];
-  /** App name -> its runtime dep app names, as returned by `getRuntimeDepsMap()`. */
+export type PackageSelectorProps = {
+  groups: PackageSelectorGroup[];
+  /** App name -> its runtime dep pkg names, as returned by `getRuntimeDepsMap()`. */
   runtimeDeps: Record<string, string[]>;
   initialSelected?: string[];
   onSubmit: (selected: string[]) => void;
 };
 
 /**
- * Grouped multi-select for choosing which services to run: arrow keys move a
- * cursor across a grid of labelled columns, space toggles the app under the
- * cursor, and a selected app's runtime deps are auto-included (shown locked,
+ * Grouped multi-select for choosing which packages to run: arrow keys move a
+ * cursor across a grid of labelled columns, space toggles the pkg under the
+ * cursor, and a selected pkg's runtime deps are auto-included (shown locked,
  * un-toggleable) so the choice always yields a runnable set.
  */
-export function ServiceSelector({
+export function PackageSelector({
   groups,
   runtimeDeps,
   initialSelected = [],
   onSubmit,
-}: ServiceSelectorProps) {
+}: PackageSelectorProps) {
   const { exit } = useApp();
 
-  // Columns with no selectable apps would break grid navigation (an empty
+  // Columns with no selectable packages would break grid navigation (an empty
   // items array has no valid row index), so they're dropped up front.
   const visibleGroups = useMemo(() => groups.filter((g) => g.items.length > 0), [groups]);
 
@@ -46,8 +46,8 @@ export function ServiceSelector({
   const [row, setRow] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set(initialSelected));
 
-  // Runtime deps of selected apps that are also visible in the selector: shown
-  // locked-in rather than toggleable, mapped to the app name that pulled them in.
+  // Runtime deps of selected packages that are also visible in the selector: shown
+  // locked-in rather than toggleable, mapped to the pkg name that pulled them in.
   const locked = useMemo(() => {
     const result = new Map<string, string>();
     for (const name of selected) {
@@ -129,7 +129,7 @@ export function ServiceSelector({
         </Text>
       </Box>
       <Box marginTop={1}>
-        <Text bold>Select services to run</Text>
+        <Text bold>Select packages to run</Text>
       </Box>
       <HotkeyHints
         hints={[
@@ -143,7 +143,7 @@ export function ServiceSelector({
       />
       {visibleGroups.length === 0 ? (
         <Box marginTop={1}>
-          <Text color="yellow">No selectable services configured.</Text>
+          <Text color="yellow">No selectable packages configured.</Text>
         </Box>
       ) : (
         <Box flexDirection="row" marginTop={1} columnGap={4}>

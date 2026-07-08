@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadServices, NoProjectConfigError } from './load-config.js';
+import { loadConfig, findConfigPath, NoProjectConfigError } from './load-config.js';
 
 let dir: string;
 beforeEach(() => {
@@ -10,21 +10,32 @@ beforeEach(() => {
 });
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-describe('loadServices', () => {
-  it('throws NoProjectConfigError when devtooie.yaml is missing', async () => {
-    await expect(loadServices(dir)).rejects.toBeInstanceOf(NoProjectConfigError);
+describe('loadConfig', () => {
+  it('throws NoProjectConfigError when no devtooie.config file exists', async () => {
+    await expect(loadConfig(dir)).rejects.toBeInstanceOf(NoProjectConfigError);
   });
 
-  it('imports the services module and returns registered apps', async () => {
-    // A compiled ESM services file (avoids relying on native TS in the test).
+  it('imports the config module and returns its resolved packages', async () => {
+    // A compiled ESM config file (avoids relying on native TS in the test).
     const pkgIndex = path.resolve('packages/devtooie/dist/index.js');
     fs.writeFileSync(
-      path.join(dir, 'services.mjs'),
-      `import { defineAppConfigs } from ${JSON.stringify(pkgIndex)};\n` +
-        `export default defineAppConfigs({ apps: [{ name: 'svc', types: ['backend'] }] });\n`,
+      path.join(dir, 'devtooie.config.mjs'),
+      `import { defineConfig } from ${JSON.stringify(pkgIndex)};\n` +
+        `export default defineConfig({ apiPort: 4099, packages: [{ name: 'svc', types: ['backend'] }] });\n`,
     );
-    fs.writeFileSync(path.join(dir, 'devtooie.yaml'), 'services: ./services.mjs\napiPort: 4099\n');
-    const apps = await loadServices(dir);
-    expect(apps.map((a: (typeof apps)[0]) => a.name)).toContain('svc');
+    const packages = await loadConfig(dir);
+    expect(packages.map((p: (typeof packages)[0]) => p.name)).toContain('svc');
+  });
+});
+
+describe('findConfigPath', () => {
+  it('returns null when nothing matches', () => {
+    expect(findConfigPath(dir)).toBeNull();
+  });
+
+  it('discovers devtooie.config.ts', () => {
+    const p = path.join(dir, 'devtooie.config.ts');
+    fs.writeFileSync(p, 'export default {};\n');
+    expect(findConfigPath(dir)).toBe(p);
   });
 });

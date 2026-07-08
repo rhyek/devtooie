@@ -4,7 +4,7 @@ import chalk from 'chalk';
 import { execa, type ResultPromise } from 'execa';
 import stringWidth from 'string-width';
 import wrapAnsi from 'wrap-ansi';
-import type { AnyAppConfig } from './config.js';
+import type { AnyPackageConfig } from './config.js';
 import type { ControlManager } from './command-server.js';
 import { debugLog } from './debug-log.js';
 import { getExecArgs, getStateDir, hasScript } from './lib.js';
@@ -14,16 +14,16 @@ type ProcessState = 'running' | 'stopped' | 'waiting';
 type Status = ProcessState | 'rebuilding' | 'restarting';
 
 interface ManagedProcess {
-  app: AnyAppConfig;
+  pkg: AnyPackageConfig;
   proc: ResultPromise | null;
   status: ProcessState;
-  /** Colored `"[name] "` prefix rendered before every line for this service. */
+  /** Colored `"[name] "` prefix rendered before every line for this package. */
   prefix: string;
   /** Lowercase `"name shortname"` string used for filter matching. */
   searchName: string;
-  /** Whether this app has a `dev` script/target and can be started. */
+  /** Whether this pkg has a `dev` script/target and can be started. */
   canDev: boolean;
-  /** One-off commands (via `runCommand`/`runCustomCommand`) spawned for this app, tracked for cleanup. */
+  /** One-off commands (via `runCommand`/`runCustomCommand`) spawned for this pkg, tracked for cleanup. */
   extraProcs: Set<ResultPromise>;
 }
 
@@ -82,7 +82,7 @@ const SHUTDOWN_GRACE_MS = 3000;
 const WAIT_FOR_POLL_MS = 2000;
 
 /**
- * Owns the lifecycle of every service's dev process: spawning, streaming and
+ * Owns the lifecycle of every package's dev process: spawning, streaming and
  * filtering their output, tracking status, and tearing everything down
  * cleanly on exit. Framework-agnostic — the interactive (Ink) and plain
  * runners both drive it the same way.
@@ -97,7 +97,7 @@ export class ProcessManager implements ControlManager {
   private filterTerms: string[] = [];
   private buffer: BufferedLine[] = [];
   private rebuildableSet: Set<string>;
-  /** App name -> names of apps whose healthchecks must pass before it starts. */
+  /** App name -> names of packages whose healthchecks must pass before it starts. */
   private waitForMap: Record<string, string[]>;
   /** App name -> its resolved healthcheck URL. */
   private healthcheckUrls: Record<string, string>;
@@ -121,7 +121,7 @@ export class ProcessManager implements ControlManager {
   private disposed = false;
 
   constructor(
-    { sortedApps, rebuildableSet, waitForMap, healthcheckUrls, logFile }: RunnerArgs,
+    { sortedPackages, rebuildableSet, waitForMap, healthcheckUrls, logFile }: RunnerArgs,
     { plain = false }: { plain?: boolean } = {},
   ) {
     this.plain = plain;
@@ -129,24 +129,24 @@ export class ProcessManager implements ControlManager {
     this.waitForMap = waitForMap;
     this.healthcheckUrls = healthcheckUrls;
 
-    const displayName = (a: AnyAppConfig) => a.run?.shortName ?? a.name;
-    const maxNameLen = sortedApps.reduce((m, a) => Math.max(m, displayName(a).length), 0);
+    const displayName = (a: AnyPackageConfig) => a.run?.shortName ?? a.name;
+    const maxNameLen = sortedPackages.reduce((m, a) => Math.max(m, displayName(a).length), 0);
     this.prefixWidth = maxNameLen + 3; // "[" + padded name + "]" + " "
     this.continuationPad = ' '.repeat(this.prefixWidth);
 
-    for (let i = 0; i < sortedApps.length; i++) {
-      const app = sortedApps[i]!;
+    for (let i = 0; i < sortedPackages.length; i++) {
+      const pkg = sortedPackages[i]!;
       const color = PALETTE[i % PALETTE.length]!;
-      const label = displayName(app);
+      const label = displayName(pkg);
       const padded = label + ' '.repeat(maxNameLen - label.length);
-      const shortName = app.run?.shortName;
-      this.processes.set(app.name, {
-        app,
+      const shortName = pkg.run?.shortName;
+      this.processes.set(pkg.name, {
+        pkg,
         proc: null,
         status: 'stopped',
         prefix: color(`[${padded}]`) + ' ',
-        searchName: (shortName ? `${app.name} ${shortName}` : app.name).toLowerCase(),
-        canDev: hasScript(app, 'dev'),
+        searchName: (shortName ? `${pkg.name} ${shortName}` : pkg.name).toLowerCase(),
+        canDev: hasScript(pkg, 'dev'),
         extraProcs: new Set(),
       });
     }
@@ -195,13 +195,13 @@ export class ProcessManager implements ControlManager {
         return;
       }
       this.waitingPollInFlight = true;
-      void this.pollWaitingServices().finally(() => {
+      void this.pollWaitingPackages().finally(() => {
         this.waitingPollInFlight = false;
       });
     }, WAIT_FOR_POLL_MS);
   }
 
-  private async pollWaitingServices(): Promise<void> {
+  private async pollWaitingPackages(): Promise<void> {
     for (const [name, managed] of this.processes) {
       if (managed.status !== 'waiting') {
         continue;
@@ -251,9 +251,9 @@ export class ProcessManager implements ControlManager {
     }
 
     const pfx = managed.prefix;
-    const [cmd, args] = getExecArgs(managed.app, 'dev');
+    const [cmd, args] = getExecArgs(managed.pkg, 'dev');
     const proc = execa(cmd, args, {
-      cwd: managed.app.path,
+      cwd: managed.pkg.path,
       stdin: 'ignore',
       stdout: 'pipe',
       stderr: 'pipe',
@@ -329,7 +329,7 @@ export class ProcessManager implements ControlManager {
     this.addLine(managed.prefix, chalk.red('stopped'), managed.searchName, false);
   }
 
-  /** ControlManager + hotkey entry point: restarts a service. `false` if unknown. */
+  /** ControlManager + hotkey entry point: restarts a package. `false` if unknown. */
   restart(name: string): boolean {
     if (this.transitions.has(name)) {
       // Already mid restart/rebuild — accept without starting a second transition.
@@ -356,8 +356,8 @@ export class ProcessManager implements ControlManager {
 
   /**
    * ControlManager + hotkey entry point: stop -> `build:clean` -> start.
-   * `false` if unknown, or if the service has no `build:clean` script. A
-   * failing build leaves the service stopped (no restart).
+   * `false` if unknown, or if the package has no `build:clean` script. A
+   * failing build leaves the package stopped (no restart).
    */
   rebuild(name: string): boolean {
     if (this.transitions.has(name)) {
@@ -377,16 +377,16 @@ export class ProcessManager implements ControlManager {
     try {
       await this.stop(name);
       this.addLine(managed.prefix, chalk.yellow('rebuilding...'), managed.searchName, false);
-      const [cmd, args] = getExecArgs(managed.app, 'build:clean');
+      const [cmd, args] = getExecArgs(managed.pkg, 'build:clean');
       const buildProc = execa(cmd, args, {
-        cwd: managed.app.path,
+        cwd: managed.pkg.path,
         stdin: 'ignore',
         reject: false,
         detached: true,
       });
       // Tracked in extraProcs for the duration of the build so killAll /
       // shutdownAll / forceKillAll can reach (and kill the group of) this
-      // child even though it isn't the service's own long-running `proc`.
+      // child even though it isn't the package's own long-running `proc`.
       managed.extraProcs.add(buildProc);
       let result;
       try {
@@ -421,17 +421,17 @@ export class ProcessManager implements ControlManager {
   // One-off commands
   // ---------------------------------------------------------------------------
 
-  /** Run a named script/target for a service as a tracked one-off child process. */
+  /** Run a named script/target for a package as a tracked one-off child process. */
   runCommand(name: string, scriptName: string): void {
     const managed = this.processes.get(name);
     if (!managed) {
       return;
     }
-    const [cmd, args] = getExecArgs(managed.app, scriptName);
+    const [cmd, args] = getExecArgs(managed.pkg, scriptName);
     this.spawnExtra(managed, cmd, args, scriptName, false);
   }
 
-  /** Run an arbitrary shell command string for a service (pipes/redirects allowed). */
+  /** Run an arbitrary shell command string for a package (pipes/redirects allowed). */
   runCustomCommand(name: string, commandString: string): void {
     const managed = this.processes.get(name);
     if (!managed) {
@@ -443,7 +443,7 @@ export class ProcessManager implements ControlManager {
   /**
    * Shared spawning path for one-off "extra" commands used by both
    * `runCommand` and `runCustomCommand`. Output interleaves with the
-   * service's regular logs (same prefix/searchName/filtering); demarcated
+   * package's regular logs (same prefix/searchName/filtering); demarcated
    * with `▶ running:` / `✔ finished` / `✘ exited` lines. Tracked in
    * `extraProcs` so shutdown can clean it up. Only custom commands run
    * through a shell — named scripts avoid it to sidestep the extra process
@@ -462,7 +462,7 @@ export class ProcessManager implements ControlManager {
     this.addLine(pfx, chalk.cyan(`▶ running: ${displayLabel}`), searchName, false);
 
     const proc = execa(cmd, args, {
-      cwd: managed.app.path,
+      cwd: managed.pkg.path,
       stdin: 'ignore',
       stdout: 'pipe',
       stderr: 'pipe',
@@ -686,7 +686,7 @@ export class ProcessManager implements ControlManager {
   }
 
   /**
-   * Status for a single service. `null` means it isn't part of this session
+   * Status for a single package. `null` means it isn't part of this session
    * at all; otherwise its process state, or a transitional
    * `rebuilding`/`restarting` while one of those is in flight.
    */
@@ -711,15 +711,15 @@ export class ProcessManager implements ControlManager {
     return out;
   }
 
-  /** ControlManager entry point: service list, optionally filtered by exact status. */
-  getServices(filter?: string): { name: string; shortName?: string; status: string }[] {
+  /** ControlManager entry point: package list, optionally filtered by exact status. */
+  getPackages(filter?: string): { name: string; shortName?: string; status: string }[] {
     const out: { name: string; shortName?: string; status: string }[] = [];
     for (const [name, managed] of this.processes) {
       const status = this.getStatus(name) ?? 'stopped';
       if (filter && status !== filter) {
         continue;
       }
-      out.push({ name, shortName: managed.app.run?.shortName, status });
+      out.push({ name, shortName: managed.pkg.run?.shortName, status });
     }
     return out.sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -751,7 +751,7 @@ export class ProcessManager implements ControlManager {
     this.resetScreen();
   }
 
-  /** Emit a system-level line (e.g. shutdown notices), interleaved like any service's output. */
+  /** Emit a system-level line (e.g. shutdown notices), interleaved like any package's output. */
   logSystem(message: string): void {
     this.addLine(this.systemPrefix, message, 'system', false);
   }
@@ -773,7 +773,7 @@ export class ProcessManager implements ControlManager {
   }
 
   private addLine(prefix: string, text: string, searchName: string, isError: boolean): void {
-    // Consecutive lines from the same service are grouped: a continuation
+    // Consecutive lines from the same package are grouped: a continuation
     // line shares the group of the entry it belongs to, so filtering and
     // replay keep multi-line log entries intact.
     let groupId: number;

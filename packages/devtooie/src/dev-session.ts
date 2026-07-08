@@ -1,6 +1,6 @@
 import os from 'node:os';
 import { execa } from 'execa';
-import { getRegisteredApps } from './config.js';
+import { getRegisteredPackages } from './config.js';
 import { getApiPort } from './lib.js';
 
 export function parseLsofPids(out: string): number[] {
@@ -38,7 +38,7 @@ export function dedupePorts(ports: (number | undefined)[]): number[] {
 
 export function collectDevPorts(): number[] {
   const ports: (number | undefined)[] = [];
-  for (const a of getRegisteredApps()) {
+  for (const a of getRegisteredPackages()) {
     ports.push(a.run?.port, a.run?.hmrPort);
   }
   ports.push(getApiPort());

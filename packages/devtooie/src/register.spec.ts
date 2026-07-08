@@ -1,17 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { defineAppConfigs, findApp } from './index.js';
-import type { AnyAppConfig, AppName } from './index.js';
+import { defineConfig, findPackage } from './index.js';
+import type { AnyPackageConfig, PackageName } from './index.js';
 
 describe('public exports', () => {
   it('re-exports the runtime API', () => {
-    expect(typeof defineAppConfigs).toBe('function');
-    expect(typeof findApp).toBe('function');
+    expect(typeof defineConfig).toBe('function');
+    expect(typeof findPackage).toBe('function');
   });
 
-  it('AppName falls back to string when Register is unaugmented', () => {
-    // Compile-time assertion: a plain string is assignable to AppName.
-    const n: AppName = 'anything';
-    const app: AnyAppConfig | undefined = defineAppConfigs({ apps: [{ name: n, types: [] }] })[0];
-    expect(app?.name).toBe('anything');
+  it('PackageName falls back to string when Register is unaugmented', () => {
+    // Compile-time assertion: a plain string is assignable to PackageName.
+    const n: PackageName = 'anything';
+    const pkg: AnyPackageConfig | undefined = defineConfig({ packages: [{ name: n, types: [] }] })
+      .packages[0];
+    expect(pkg?.name).toBe('anything');
   });
 });

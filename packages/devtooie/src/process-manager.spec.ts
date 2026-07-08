@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ProcessManager } from './process-manager.js';
-import type { AnyAppConfig } from './config.js';
+import type { AnyPackageConfig } from './config.js';
 import type { RunnerArgs } from './runners/types.js';
 
 let dir: string;
@@ -32,13 +32,13 @@ afterAll(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function app(): AnyAppConfig {
+function pkg(): AnyPackageConfig {
   return { name: 'fixture', types: [], relativeDir: '.', path: dir };
 }
 
-function runnerArgs(a: AnyAppConfig): RunnerArgs {
+function runnerArgs(a: AnyPackageConfig): RunnerArgs {
   return {
-    sortedApps: [a],
+    sortedPackages: [a],
     selectedSet: new Set([a.name]),
     buildDepSet: new Set(),
     rebuildableSet: new Set(),
@@ -50,8 +50,8 @@ function runnerArgs(a: AnyAppConfig): RunnerArgs {
 }
 
 describe('ProcessManager', () => {
-  it('starts a service, tracks it as running, then stops it cleanly', async () => {
-    manager = new ProcessManager(runnerArgs(app()), { plain: true });
+  it('starts a package, tracks it as running, then stops it cleanly', async () => {
+    manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
 
     manager.start('fixture');
     // Give execa (via the package manager) time to actually spawn the child.
@@ -64,18 +64,18 @@ describe('ProcessManager', () => {
     expect(manager.getStatus('fixture')).toBe('stopped');
   }, 10_000);
 
-  it('ControlManager adapter: restart/rebuild return false for an unknown service', () => {
-    manager = new ProcessManager(runnerArgs(app()), { plain: true });
+  it('ControlManager adapter: restart/rebuild return false for an unknown package', () => {
+    manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
     expect(manager.restart('does-not-exist')).toBe(false);
     expect(manager.rebuild('does-not-exist')).toBe(false);
     expect(manager.getStatus('does-not-exist')).toBeNull();
   });
 
-  it('getServices filters by status', () => {
-    manager = new ProcessManager(runnerArgs(app()), { plain: true });
-    expect(manager.getServices()).toEqual([
+  it('getPackages filters by status', () => {
+    manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
+    expect(manager.getPackages()).toEqual([
       { name: 'fixture', shortName: undefined, status: 'stopped' },
     ]);
-    expect(manager.getServices('running')).toEqual([]);
+    expect(manager.getPackages('running')).toEqual([]);
   });
 });

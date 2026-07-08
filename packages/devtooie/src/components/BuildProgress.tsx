@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { execa } from 'execa';
 import { Box, Text, useApp } from 'ink';
 import Spinner from 'ink-spinner';
-import { findApp, getRegisteredApps } from '../config.js';
+import { findPackage, getRegisteredPackages } from '../config.js';
 import { startCommandServer } from '../command-server.js';
 import { debugLog } from '../debug-log.js';
 import { acquireDevSession } from '../dev-session.js';
@@ -28,7 +28,7 @@ type BuildState =
 
 /**
  * Shows the resolved build/runtime dependency summary for the selected
- * services, then drives the sequence that has to happen before the run
+ * packages, then drives the sequence that has to happen before the run
  * phase can start: hand off from any prior session, start the control
  * server, and build every dependency that needs it. The control server is
  * handed to the caller as soon as it's listening (`onControlReady`) so a
@@ -51,21 +51,21 @@ export function BuildProgress({
   const controlRef = useRef<ControlServer | null>(null);
   const handedOffRef = useRef(false);
 
-  const selectedApps = selectedNames.map(findApp);
-  const deps = resolveDeps(selectedApps);
+  const selectedPackages = selectedNames.map(findPackage);
+  const deps = resolveDeps(selectedPackages);
 
   const buildDepNames = [...deps.buildSet];
   const runtimeDepNames = [...deps.runSet].filter(
-    (name) => !selectedApps.some((app) => app.name === name),
+    (name) => !selectedPackages.some((pkg) => pkg.name === name),
   );
   // Unlike selectedNames (validated by the caller), buildDepNames come from
-  // deps.build/deps.dev config and may contain a typo'd, unregistered app
+  // deps.build/deps.dev config and may contain a typo'd, unregistered pkg
   // name; a non-throwing lookup lets that surface as the error phase instead
   // of crashing the component, mirroring how resolveDeps tolerates it.
-  const buildableApps = buildDepNames
-    .map((name) => getRegisteredApps().find((app) => app.name === name))
-    .filter((app) => app !== undefined)
-    .filter((app) => hasScript(app, 'build'));
+  const buildablePackages = buildDepNames
+    .map((name) => getRegisteredPackages().find((pkg) => pkg.name === name))
+    .filter((pkg) => pkg !== undefined)
+    .filter((pkg) => hasScript(pkg, 'build'));
 
   useEffect(() => {
     let cancelled = false;
@@ -115,20 +115,20 @@ export function BuildProgress({
         onControlReady(control);
 
         // 3. Build dependencies.
-        for (let i = 0; i < buildableApps.length; i++) {
+        for (let i = 0; i < buildablePackages.length; i++) {
           if (cancelled) {
             return;
           }
-          const app = buildableApps[i]!;
+          const pkg = buildablePackages[i]!;
           setState({
             phase: 'building',
             current: i + 1,
-            total: buildableApps.length,
-            name: app.name,
+            total: buildablePackages.length,
+            name: pkg.name,
           });
           try {
-            const [cmd, args] = getExecArgs(app, 'build');
-            await execa(cmd, args, { stdio: 'pipe', cwd: app.path });
+            const [cmd, args] = getExecArgs(pkg, 'build');
+            await execa(cmd, args, { stdio: 'pipe', cwd: pkg.path });
           } catch (error) {
             if (cancelled) {
               return;
@@ -147,7 +147,7 @@ export function BuildProgress({
         // 4. Run — the caller now owns the control server's lifecycle.
         setState({ phase: 'done' });
         handedOffRef.current = true;
-        onComplete({ ...buildRunnerArgs(selectedApps, deps), logFile });
+        onComplete({ ...buildRunnerArgs(selectedPackages, deps), logFile });
       } catch (error) {
         if (cancelled) {
           return;
@@ -247,7 +247,7 @@ export function BuildProgress({
           </Text>
         ) : state.phase === 'done' ? (
           <Text color="green">Dependencies built.</Text>
-        ) : buildableApps.length > 0 ? (
+        ) : buildablePackages.length > 0 ? (
           <Text>
             <Text color="cyan">
               <Spinner type="dots" />

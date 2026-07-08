@@ -6,11 +6,16 @@ import { Command } from 'commander';
 import { execa } from 'execa';
 import { renderApp } from './components/App.js';
 import { startCommandServer } from './command-server.js';
-import { type AnyAppConfig, findApp, getRegisteredApps } from './config.js';
+import {
+  type AnyPackageConfig,
+  findPackage,
+  getRegisteredPackages,
+  getLoadedConfig,
+} from './config.js';
 import { acquireDevSession } from './dev-session.js';
 import { handleShellError } from './errors.js';
 import { runInit } from './init.js';
-import { NoProjectConfigError, loadServices } from './load-config.js';
+import { NoProjectConfigError, loadConfig } from './load-config.js';
 import {
   DepType,
   buildRunnerArgs,
@@ -23,13 +28,11 @@ import {
   saveSelection,
 } from './lib.js';
 import { createPlainStatusReporter } from './plain-status.js';
-import { getProjectConfig } from './project-config.js';
 import { runPlain } from './runners/plain.js';
 import { refreshSkillIfStale } from './skill.js';
-import { runTypegen } from './typegen.js';
 
 interface RootOptions {
-  service: string[];
+  package: string[];
   ui?: boolean;
   plain?: boolean;
   lastAnswers: boolean;
@@ -39,7 +42,7 @@ interface RootOptions {
   logfile?: string;
 }
 
-/** Commander option-parser for repeatable `-s/--service <name>` flags. */
+/** Commander option-parser for repeatable `-p/--package <name>` flags. */
 function collect(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
@@ -55,10 +58,10 @@ function readOwnVersion(): string {
   }
 }
 
-/** Loads `devtooie.yaml` + the services module, printing a clear hint and exiting 1 if there is none. */
-async function loadServicesOrExit(): Promise<AnyAppConfig[]> {
+/** Loads `devtooie.config.ts`, printing a clear hint and exiting 1 if there is none. */
+async function loadConfigOrExit(): Promise<AnyPackageConfig[]> {
   try {
-    return await loadServices();
+    return await loadConfig();
   } catch (err) {
     if (err instanceof NoProjectConfigError) {
       console.error(err.message);
@@ -68,86 +71,92 @@ async function loadServicesOrExit(): Promise<AnyAppConfig[]> {
   }
 }
 
-/** Exits with a clear message if any of `names` isn't a registered app. */
-function validateServiceNames(names: string[]): void {
-  const registered = new Set(getRegisteredApps().map((a) => a.name));
+/** Exits with a clear message if any of `names` isn't a registered package. */
+function validatePackageNames(names: string[]): void {
+  const registered = new Set(getRegisteredPackages().map((p) => p.name));
   const unknown = names.filter((n) => !registered.has(n));
   if (unknown.length > 0) {
-    console.error(`Unknown service${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}`);
+    console.error(`Unknown package${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}`);
     process.exit(1);
   }
 }
 
 /**
- * Resolves the service names for a non-interactive phase (build/plain), which — unlike
- * the UI — has no selector to fall back on: an explicit `--service` wins, then a saved
+ * Resolves the package names for a non-interactive phase (build/plain), which — unlike
+ * the UI — has no selector to fall back on: an explicit `--package` wins, then a saved
  * `--last-answers` selection, otherwise this exits with a hint naming `usage`.
  */
 function resolveSelectedNames(
-  opts: { service: string[]; lastAnswers: boolean },
+  opts: { package: string[]; lastAnswers: boolean },
   usage: string,
 ): string[] {
-  if (opts.service.length > 0) return opts.service;
+  if (opts.package.length > 0) return opts.package;
   if (opts.lastAnswers) {
     const saved = loadSelection() ?? [];
     if (saved.length === 0) {
       console.error('No saved selection found — run once without --last-answers first.');
       process.exit(1);
     }
-    validateServiceNames(saved);
+    validatePackageNames(saved);
     return saved;
   }
-  console.error(`${usage} requires --service or --last-answers.`);
+  console.error(`${usage} requires --package or --last-answers.`);
   process.exit(1);
 }
 
-async function clearDist(app: AnyAppConfig): Promise<void> {
-  const result = await execa('rm', ['-rf', path.join(app.path, 'dist')], { reject: false });
+async function clearDist(pkg: AnyPackageConfig): Promise<void> {
+  const result = await execa('rm', ['-rf', path.join(pkg.path, 'dist')], { reject: false });
   if (result.exitCode !== 0) {
-    console.error(`warning: could not clear ${path.join(app.path, 'dist')}`);
+    console.error(`warning: could not clear ${path.join(pkg.path, 'dist')}`);
   }
 }
 
-async function buildOne(app: AnyAppConfig, script: string): Promise<void> {
-  const [cmd, args] = getExecArgs(app, script);
-  await execa(cmd, args, { stdio: 'inherit', cwd: app.path });
+async function buildOne(pkg: AnyPackageConfig, script: string): Promise<void> {
+  const [cmd, args] = getExecArgs(pkg, script);
+  await execa(cmd, args, { stdio: 'inherit', cwd: pkg.path });
 }
 
 /** Builds every buildable dep in `deps.buildSet`, in dependency order, with console output. */
 async function buildDeps(deps: ReturnType<typeof resolveDeps>): Promise<void> {
-  const depApps = [...deps.buildSet].map((n) => findApp(n)).filter((a) => hasScript(a, 'build'));
-  for (const [i, app] of depApps.entries()) {
+  const depPackages = [...deps.buildSet]
+    .map((n) => findPackage(n))
+    .filter((p) => hasScript(p, 'build'));
+  for (const [i, pkg] of depPackages.entries()) {
     console.log(
-      `${chalk.blue('▶')} building dep (${i + 1}/${depApps.length}): ${chalk.bold(app.name)}`,
+      `${chalk.blue('▶')} building dep (${i + 1}/${depPackages.length}): ${chalk.bold(pkg.name)}`,
     );
-    await buildOne(app, 'build');
+    await buildOne(pkg, 'build');
   }
-  if (depApps.length > 0) console.log(chalk.green('✔ dependencies built'));
+  if (depPackages.length > 0) console.log(chalk.green('✔ dependencies built'));
 }
 
-/** `--phase build` / `--build` / `--rebuild`: build deps then the selected services, then exit. */
+/** `--phase build` / `--build` / `--rebuild`: build deps then the selected packages, then exit. */
 async function runBuildPhase(names: string[], rebuild: boolean): Promise<void> {
-  const apps = names.map((n) => findApp(n));
-  const deps = resolveDeps(apps, [DepType.BUILD]);
-  const depApps = [...deps.buildSet].map((n) => findApp(n)).filter((a) => hasScript(a, 'build'));
-  const selectedApps = apps.filter((a) => hasScript(a, 'build') || hasScript(a, 'build:clean'));
+  const packages = names.map((n) => findPackage(n));
+  const deps = resolveDeps(packages, [DepType.BUILD]);
+  const depPackages = [...deps.buildSet]
+    .map((n) => findPackage(n))
+    .filter((p) => hasScript(p, 'build'));
+  const selectedPackages = packages.filter(
+    (p) => hasScript(p, 'build') || hasScript(p, 'build:clean'),
+  );
 
   if (rebuild) {
     console.log(chalk.blue('▶ clearing dist/'));
-    for (const app of [...depApps, ...selectedApps]) await clearDist(app);
+    for (const pkg of [...depPackages, ...selectedPackages]) await clearDist(pkg);
   }
 
-  for (const [i, app] of depApps.entries()) {
+  for (const [i, pkg] of depPackages.entries()) {
     console.log(
-      `${chalk.blue('▶')} building dep (${i + 1}/${depApps.length}): ${chalk.bold(app.name)}`,
+      `${chalk.blue('▶')} building dep (${i + 1}/${depPackages.length}): ${chalk.bold(pkg.name)}`,
     );
-    await buildOne(app, 'build');
+    await buildOne(pkg, 'build');
   }
 
-  for (const app of selectedApps) {
-    const script = rebuild && hasScript(app, 'build:clean') ? 'build:clean' : 'build';
-    console.log(`${chalk.blue('▶')} building: ${chalk.bold(app.name)}`);
-    await buildOne(app, script);
+  for (const pkg of selectedPackages) {
+    const script = rebuild && hasScript(pkg, 'build:clean') ? 'build:clean' : 'build';
+    console.log(`${chalk.blue('▶')} building: ${chalk.bold(pkg.name)}`);
+    await buildOne(pkg, script);
   }
 
   console.log(chalk.green('✔ build complete'));
@@ -159,10 +168,10 @@ async function runBuildPhase(names: string[], rebuild: boolean): Promise<void> {
 
 const program = new Command()
   .name('devtooie')
-  .description("Dependency-aware CLI for a monorepo's local dev services")
+  .description("Dependency-aware CLI for a monorepo's local dev packages")
   .option(
-    '-s, --service <name>',
-    'service to run (repeatable, bypasses the interactive selector)',
+    '-p, --package <name>',
+    'package to run (repeatable, bypasses the interactive selector)',
     collect,
     [],
   )
@@ -170,24 +179,24 @@ const program = new Command()
   .option('--plain', 'run without the TUI, streaming logs to stdout')
   .option('--last-answers', 'skip the selector and reuse the last saved selection', false)
   .option('--phase <phase>', 'pipeline phase: "dev" (default) or "build"', 'dev')
-  .option('--build', 'build the selected services + their build-time deps, then exit', false)
+  .option('--build', 'build the selected packages + their build-time deps, then exit', false)
   .option(
     '--rebuild',
     "like --build, but clears each build target's dist/ first (implies --build)",
     false,
   )
-  .option('--logfile <path>', 'write all service output to this file (truncated on each run)');
+  .option('--logfile <path>', 'write all package output to this file (truncated on each run)');
 
 program
   .command('init')
-  .description('interactively set up devtooie.yaml (and, optionally, the agent skill)')
+  .description('interactively set up devtooie.config.ts (and, optionally, the agent skill)')
   .action(async () => {
     await runInit();
   });
 
 program
   .command('reset')
-  .description('clear the saved service selection')
+  .description('clear the saved package selection')
   .action(() => {
     resetSelection();
     console.log('Selection reset.');
@@ -196,25 +205,25 @@ program
 
 program
   .command('resolvedeps')
-  .description('print the build/dev/runtime deps for one or more --service names, as JSON')
+  .description('print the build/dev/runtime deps for one or more --package names, as JSON')
   .action(async () => {
-    // Reuses the root `-s/--service` option rather than redeclaring its own: commander
+    // Reuses the root `-p/--package` option rather than redeclaring its own: commander
     // resolves a single option's value against whichever command owns it, so a second,
     // identically-flagged option on this subcommand would just shadow the root one and
     // silently swallow its value.
-    const names = program.opts<RootOptions>().service;
+    const names = program.opts<RootOptions>().package;
     if (names.length === 0) {
-      console.error('resolvedeps requires at least one --service <name>');
+      console.error('resolvedeps requires at least one --package <name>');
       process.exit(1);
     }
-    await loadServicesOrExit();
-    validateServiceNames(names);
-    const apps = names.map((n) => findApp(n));
-    const selectedNames = new Set(apps.map((a) => a.name));
+    await loadConfigOrExit();
+    validatePackageNames(names);
+    const packages = names.map((n) => findPackage(n));
+    const selectedNames = new Set(packages.map((p) => p.name));
 
-    const build = resolveDeps(apps, [DepType.BUILD]);
-    const dev = resolveDeps(apps, [DepType.DEV]);
-    const runtime = resolveDeps(apps, [DepType.RUNTIME]);
+    const build = resolveDeps(packages, [DepType.BUILD]);
+    const dev = resolveDeps(packages, [DepType.DEV]);
+    const runtime = resolveDeps(packages, [DepType.RUNTIME]);
 
     console.log(
       JSON.stringify(
@@ -227,15 +236,6 @@ program
         2,
       ),
     );
-    process.exit(0);
-  });
-
-program
-  .command('typegen')
-  .description('regenerate devtooie-env.d.ts from devtooie.yaml')
-  .option('--out <path>', 'output path for the generated declaration file')
-  .action((cmdOpts: { out?: string }) => {
-    runTypegen({ out: cmdOpts.out });
     process.exit(0);
   });
 
@@ -255,24 +255,19 @@ program.action(async () => {
     process.exit(1);
   }
 
-  await loadServicesOrExit();
+  await loadConfigOrExit();
 
-  // Best-effort: neither typegen nor a skill refresh should ever block a run.
+  // Best-effort: a skill refresh should never block a run.
   try {
-    runTypegen();
-  } catch (err) {
-    console.error('devtooie: typegen failed (non-fatal):', err);
-  }
-  try {
-    if (getProjectConfig()?.skill) {
+    if (getLoadedConfig()?.skill) {
       refreshSkillIfStale({ cwd: process.cwd(), version: readOwnVersion() });
     }
   } catch (err) {
     console.error('devtooie: skill refresh failed (non-fatal):', err);
   }
 
-  // Validate --service names before mounting/running anything.
-  validateServiceNames(opts.service);
+  // Validate --package names before mounting/running anything.
+  validatePackageNames(opts.package);
 
   const phase: 'dev' | 'build' =
     opts.rebuild || opts.build ? 'build' : (opts.phase as 'dev' | 'build');
@@ -297,10 +292,10 @@ program.action(async () => {
       await acquireDevSession({ onStatus: (msg) => statusReporter.update(msg) });
       statusReporter.done();
       const server = await startCommandServer({ onQuit: () => process.exit(0) });
-      const apps = names.map((n) => findApp(n));
-      const deps = resolveDeps(apps);
+      const packages = names.map((n) => findPackage(n));
+      const deps = resolveDeps(packages);
       await buildDeps(deps);
-      await runPlain({ ...buildRunnerArgs(apps, deps), logFile }, server);
+      await runPlain({ ...buildRunnerArgs(packages, deps), logFile }, server);
     } catch (err) {
       handleShellError(err);
     }
@@ -308,7 +303,7 @@ program.action(async () => {
   }
 
   // --ui (default): App owns the selector -> build -> run phases and the control server.
-  renderApp({ services: opts.service, lastAnswers: opts.lastAnswers, logFile });
+  renderApp({ packages: opts.package, lastAnswers: opts.lastAnswers, logFile });
 });
 
 await program.parseAsync(process.argv).catch((err: unknown) => handleShellError(err));

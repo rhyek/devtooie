@@ -1,10 +1,11 @@
-export { defineAppConfigs, AppType, findApp } from './config.js';
+export { defineConfig, PackageType, findPackage } from './config.js';
 export type {
-  AppConfigInput,
+  PackageConfigInput,
   RunConfig,
-  DefineAppConfigsOptions,
-  ResolvedAppConfig,
-  AnyAppConfig,
-  AppTypeValue,
+  DefineConfigOptions,
+  ResolvedPackageConfig,
+  AnyPackageConfig,
+  Config,
+  PackageTypeValue,
 } from './config.js';
-export type { Register, AppConfig, AppName } from './register.js';
+export type { Register, PackageConfig, PackageName } from './register.js';

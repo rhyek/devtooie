@@ -1,7 +1,9 @@
-import { defineAppConfigs } from 'devtooie';
+import { defineConfig } from 'devtooie';
 
-export default defineAppConfigs({
-  apps: [
+const config = defineConfig({
+  apiPort: 4099,
+  skill: false,
+  packages: [
     {
       name: 'backend',
       relativeDir: 'packages/backend',
@@ -29,3 +31,11 @@ export default defineAppConfigs({
     },
   ],
 });
+export default config;
+
+// Wires your package names into devtooie's types. Keep as-is.
+declare module 'devtooie' {
+  interface Register {
+    packageConfigs: typeof config.packages;
+  }
+}

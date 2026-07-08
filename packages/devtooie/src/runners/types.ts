@@ -1,7 +1,7 @@
-import type { AnyAppConfig } from '../config.js';
+import type { AnyPackageConfig } from '../config.js';
 
 export interface RunnerArgs {
-  sortedApps: AnyAppConfig[];
+  sortedPackages: AnyPackageConfig[];
   selectedSet: Set<string>;
   buildDepSet: Set<string>;
   rebuildableSet: Set<string>;

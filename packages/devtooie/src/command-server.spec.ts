@@ -33,7 +33,7 @@ describe('command-server', () => {
     server.attach({
       getAllStatuses: () => ({ web: 'running' }),
       getStatus: () => 'running',
-      getServices: () => [],
+      getPackages: () => [],
       restart: () => true,
       rebuild: () => true,
       quit: () => {},
@@ -42,12 +42,12 @@ describe('command-server', () => {
     expect(res.status).toBe(200);
   });
 
-  it('POST /command/restart/<known-app> returns 202', async () => {
+  it('POST /command/restart/<known-pkg> returns 202', async () => {
     server = await startCommandServer({ onQuit: () => {}, port: 0 });
     server.attach({
       getAllStatuses: () => ({}),
       getStatus: () => null,
-      getServices: () => [],
+      getPackages: () => [],
       restart: (name: string) => name === 'web',
       rebuild: () => false,
       quit: () => {},
@@ -60,12 +60,12 @@ describe('command-server', () => {
     expect(body.ok).toBe(true);
   });
 
-  it('POST /command/restart/<unknown-app> returns 404', async () => {
+  it('POST /command/restart/<unknown-pkg> returns 404', async () => {
     server = await startCommandServer({ onQuit: () => {}, port: 0 });
     server.attach({
       getAllStatuses: () => ({}),
       getStatus: () => null,
-      getServices: () => [],
+      getPackages: () => [],
       restart: (name: string) => name === 'web',
       rebuild: () => false,
       quit: () => {},
@@ -78,12 +78,12 @@ describe('command-server', () => {
     expect(body.ok).toBe(false);
   });
 
-  it('POST /command/rebuild/<known-app> returns 202', async () => {
+  it('POST /command/rebuild/<known-pkg> returns 202', async () => {
     server = await startCommandServer({ onQuit: () => {}, port: 0 });
     server.attach({
       getAllStatuses: () => ({}),
       getStatus: () => null,
-      getServices: () => [],
+      getPackages: () => [],
       restart: () => false,
       rebuild: (name: string) => name === 'web',
       quit: () => {},

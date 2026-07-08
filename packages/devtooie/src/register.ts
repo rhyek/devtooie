@@ -1,12 +1,12 @@
-import type { AnyAppConfig } from './config.js';
+import type { AnyPackageConfig } from './config.js';
 
-// Augmentation target — intentionally empty. Consumers/typegen augment it.
+// Augmentation target — intentionally empty. Consumers augment it from devtooie.config.ts.
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface Register {}
 
-type Resolved = Register extends { appConfigs: infer T extends readonly AnyAppConfig[] }
+type Resolved = Register extends { packageConfigs: infer T extends readonly AnyPackageConfig[] }
   ? T
-  : readonly AnyAppConfig[];
+  : readonly AnyPackageConfig[];
 
-export type AppConfig = Resolved[number];
-export type AppName = AppConfig['name'];
+export type PackageConfig = Resolved[number];
+export type PackageName = PackageConfig['name'];

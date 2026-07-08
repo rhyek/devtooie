@@ -1,19 +1,31 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { intro, outro, confirm, text, isCancel, cancel, log } from '@clack/prompts';
-import { getProjectConfig, writeProjectConfig } from './project-config.js';
+import { findConfigPath } from './load-config.js';
 import { installSkill } from './skill.js';
-import { runTypegen } from './typegen.js';
 
-const SERVICES_TEMPLATE = `import { defineAppConfigs } from 'devtooie';
+/** The scaffolded `devtooie.config.ts`: meta + packages + the inline type augmentation. */
+function configTemplate(apiPort: number, skill: boolean): string {
+  return `import { defineConfig } from 'devtooie';
 
-export default defineAppConfigs({
+const config = defineConfig({
+  apiPort: ${apiPort},
+  skill: ${skill},
   // tokens: { domain: process.env.APP_DOMAIN, proxyport: process.env.PROXY_PORT },
-  apps: [
-    // { name: 'my-svc', types: ['backend'], run: { port: 3001 } },
+  packages: [
+    // { name: 'my-pkg', types: ['backend'], run: { port: 3001 } },
   ],
 });
+export default config;
+
+// Wires your package names into devtooie's types. Keep as-is.
+declare module 'devtooie' {
+  interface Register {
+    packageConfigs: typeof config.packages;
+  }
+}
 `;
+}
 
 /** Reads this package's own version (for the skill install banner). Falls back to '0.0.0'. */
 function readOwnVersion(): string {
@@ -27,40 +39,31 @@ function readOwnVersion(): string {
 }
 
 /**
- * Interactive `devtooie init` setup flow (§15.2). Idempotent: re-running reads any
- * existing `devtooie.yaml` and uses its values as prompt defaults, then overwrites it.
+ * Interactive `devtooie init` setup flow. Idempotent: an existing `devtooie.config.ts`
+ * is left untouched (pass `force: true` to overwrite); the agent skill is (re)installed
+ * whenever chosen.
  *
  * Does NOT prompt for a logfile location — that default is fixed at
  * `node_modules/.devtooie/devlog.txt` and is only overridable via the `--logfile` CLI flag.
  */
 export async function runInit(opts: { cwd?: string; force?: boolean } = {}): Promise<void> {
   const cwd = opts.cwd ?? process.cwd();
-  const existing = getProjectConfig(cwd);
+  const existingConfig = findConfigPath(cwd);
 
   intro('devtooie init');
 
   const skillAnswer = await confirm({
     message: 'Install the devtooie agent skill?',
-    initialValue: existing?.skill ?? true,
+    initialValue: true,
   });
   if (isCancel(skillAnswer)) {
     cancel('Setup cancelled.');
     return;
   }
 
-  const servicesAnswer = await text({
-    message: 'Where is your services file?',
-    defaultValue: existing?.services ?? './services.ts',
-    placeholder: './services.ts',
-  });
-  if (isCancel(servicesAnswer)) {
-    cancel('Setup cancelled.');
-    return;
-  }
-
   const apiPortAnswer = await text({
     message: 'Control API port?',
-    defaultValue: String(existing?.apiPort ?? 4099),
+    defaultValue: '4099',
     placeholder: '4099',
     validate: (value) => {
       if (!value) return undefined;
@@ -77,24 +80,20 @@ export async function runInit(opts: { cwd?: string; force?: boolean } = {}): Pro
 
   // All prompts answered without cancellation — now perform the (idempotent) writes.
   const skill = skillAnswer;
-  const services = servicesAnswer;
   const apiPort = Number(apiPortAnswer);
 
-  const servicesPath = path.resolve(cwd, services);
-  if (opts.force || !fs.existsSync(servicesPath)) {
-    fs.mkdirSync(path.dirname(servicesPath), { recursive: true });
-    fs.writeFileSync(servicesPath, SERVICES_TEMPLATE);
-    log.step(`Scaffolded ${services}`);
+  const configPath = path.join(cwd, 'devtooie.config.ts');
+  if (opts.force || !existingConfig) {
+    fs.writeFileSync(configPath, configTemplate(apiPort, skill));
+    log.step('Scaffolded devtooie.config.ts');
+  } else {
+    log.step(`Kept existing ${path.basename(existingConfig)}`);
   }
-
-  writeProjectConfig({ services, apiPort, skill }, cwd);
-  log.step('Wrote devtooie.yaml');
 
   if (skill) {
     const version = readOwnVersion();
     installSkill({ cwd, version });
-    runTypegen({ cwd });
-    log.step('Installed agent skill and generated devtooie-env.d.ts');
+    log.step('Installed agent skill');
   }
 
   outro('devtooie is set up.');

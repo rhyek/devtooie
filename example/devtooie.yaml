@@ -1,3 +1,0 @@
-services: ./services.ts
-apiPort: 4099
-skill: false

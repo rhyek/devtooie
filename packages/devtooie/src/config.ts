@@ -1,8 +1,8 @@
 import path from 'node:path';
 
-export const AppType = { BACKEND: 'backend', BROWSER: 'browser', LIB: 'lib' } as const;
-export type AppType = (typeof AppType)[keyof typeof AppType];
-export type AppTypeValue = 'backend' | 'browser' | 'lib';
+export const PackageType = { BACKEND: 'backend', BROWSER: 'browser', LIB: 'lib' } as const;
+export type PackageType = (typeof PackageType)[keyof typeof PackageType];
+export type PackageTypeValue = 'backend' | 'browser' | 'lib';
 
 export interface RunConfig<N extends string> {
   selectable?: boolean;
@@ -20,36 +20,52 @@ export interface RunConfig<N extends string> {
   };
 }
 
-export interface AppConfigInput<N extends string> {
+export interface PackageConfigInput<N extends string> {
   name: N;
   relativeDir?: string;
-  types: AppTypeValue[];
+  types: PackageTypeValue[];
   run?: RunConfig<N>;
 }
 
-export interface DefineAppConfigsOptions<N extends string> {
-  apps: AppConfigInput<N>[];
+export interface DefineConfigOptions<N extends string> {
+  apiPort?: number;
+  skill?: boolean;
+  packages: PackageConfigInput<N>[];
   workspaceDir?: string;
   tokens?: Record<string, string | undefined>;
 }
 
-export type ResolvedAppConfig<N extends string> = AppConfigInput<N> & {
+export type ResolvedPackageConfig<N extends string> = PackageConfigInput<N> & {
   relativeDir: string;
   path: string;
 };
 
-export type AnyAppConfig = ResolvedAppConfig<string>;
+export type AnyPackageConfig = ResolvedPackageConfig<string>;
 
-let registeredApps: AnyAppConfig[] = [];
-
-export function getRegisteredApps(): AnyAppConfig[] {
-  return registeredApps;
+export interface Config<N extends string> {
+  apiPort: number;
+  skill: boolean;
+  packages: ResolvedPackageConfig<N>[];
 }
 
-export function findApp(name: string): AnyAppConfig {
-  const app = registeredApps.find((a) => a.name === name);
-  if (!app) throw new Error(`app ${name} not found`);
-  return app;
+export const DEFAULT_API_PORT = 4099;
+
+let registeredPackages: AnyPackageConfig[] = [];
+let loadedConfig: Config<string> | null = null;
+
+export function getRegisteredPackages(): AnyPackageConfig[] {
+  return registeredPackages;
+}
+
+/** The most recently defined config (meta + packages), or null before any `defineConfig` runs. */
+export function getLoadedConfig(): Config<string> | null {
+  return loadedConfig;
+}
+
+export function findPackage(name: string): AnyPackageConfig {
+  const pkg = registeredPackages.find((p) => p.name === name);
+  if (!pkg) throw new Error(`package ${name} not found`);
+  return pkg;
 }
 
 function substituteRun<N extends string>(
@@ -94,29 +110,29 @@ function substituteRun<N extends string>(
   };
 }
 
-export function defineAppConfigs<const N extends string>(
-  opts: DefineAppConfigsOptions<N>,
-): ResolvedAppConfig<N>[] {
+export function defineConfig<const N extends string>(opts: DefineConfigOptions<N>): Config<N> {
   const workspaceDir = opts.workspaceDir ?? process.cwd();
 
   // Validate waitFor targets before substitution
-  const healthcheckApps = new Set(opts.apps.filter((c) => c.run?.healthcheck).map((c) => c.name));
-  const allNames = new Set(opts.apps.map((c) => c.name));
-  for (const config of opts.apps) {
+  const healthcheckPackages = new Set(
+    opts.packages.filter((c) => c.run?.healthcheck).map((c) => c.name),
+  );
+  const allNames = new Set(opts.packages.map((c) => c.name));
+  for (const config of opts.packages) {
     for (const waitName of config.run?.waitFor ?? []) {
       if (!allNames.has(waitName)) {
-        throw new Error(`${config.name} has waitFor "${waitName}" but no such app exists`);
+        throw new Error(`${config.name} has waitFor "${waitName}" but no such package exists`);
       }
-      if (!healthcheckApps.has(waitName)) {
+      if (!healthcheckPackages.has(waitName)) {
         throw new Error(
-          `${config.name} has waitFor "${waitName}" but that app has no healthcheck defined`,
+          `${config.name} has waitFor "${waitName}" but that package has no healthcheck defined`,
         );
       }
     }
   }
 
-  const resolved = opts.apps.map((config) => {
-    const relativeDir = config.relativeDir ?? `projects/${config.name}`;
+  const packages = opts.packages.map((config) => {
+    const relativeDir = config.relativeDir ?? `packages/${config.name}`;
     const run = config.run;
     return {
       ...config,
@@ -125,6 +141,13 @@ export function defineAppConfigs<const N extends string>(
       run: run ? substituteRun(config.name, run, opts.tokens ?? {}) : undefined,
     };
   });
-  registeredApps = resolved as AnyAppConfig[];
+
+  const resolved: Config<N> = {
+    apiPort: opts.apiPort ?? DEFAULT_API_PORT,
+    skill: opts.skill ?? false,
+    packages,
+  };
+  registeredPackages = packages as AnyPackageConfig[];
+  loadedConfig = resolved as Config<string>;
   return resolved;
 }
