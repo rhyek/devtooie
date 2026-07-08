@@ -184,7 +184,7 @@ describe('ProcessManager PORT injection', () => {
       types: [],
       relativeDir: '.',
       path: portDir,
-      run: { port: 4321 },
+      run: { port: 4321, command: { name: 'dev', watches: true, builds: true } },
     };
     mgr = new ProcessManager(
       {

@@ -34,6 +34,7 @@ describe('command-server', () => {
       getAllStatuses: () => ({ web: 'running' }),
       getStatus: () => 'running',
       getPackages: () => [],
+      getConfig: () => null,
       restart: () => true,
       rebuild: () => true,
       quit: () => {},
@@ -49,6 +50,7 @@ describe('command-server', () => {
       getAllStatuses: () => ({}),
       getStatus: () => null,
       getPackages: () => [],
+      getConfig: () => null,
       restart: (name: string) => name === 'web',
       rebuild: () => false,
       quit: () => {},
@@ -68,6 +70,7 @@ describe('command-server', () => {
       getAllStatuses: () => ({}),
       getStatus: () => null,
       getPackages: () => [],
+      getConfig: () => null,
       restart: (name: string) => name === 'web',
       rebuild: () => false,
       quit: () => {},
@@ -87,6 +90,7 @@ describe('command-server', () => {
       getAllStatuses: () => ({}),
       getStatus: () => null,
       getPackages: () => [],
+      getConfig: () => null,
       restart: () => false,
       rebuild: (name: string) => name === 'web',
       quit: () => {},
@@ -107,6 +111,7 @@ describe('command-server', () => {
       getAllStatuses: () => ({}),
       getStatus: () => null,
       getPackages: () => [],
+      getConfig: () => null,
       restart: () => true,
       rebuild: () => true,
       quit: () => {},
@@ -138,6 +143,29 @@ describe('command-server', () => {
     await fetch(`http://127.0.0.1:${server.port}/command/quit`, { method: 'POST' });
     expect(secondCalled).toBe(true);
     expect(firstCalled).toBe(false);
+  });
+
+  it('GET /query/config returns the resolved config from the manager', async () => {
+    const config = {
+      apiPort: undefined,
+      packages: [{ name: 'web', run: { command: { name: 'dev', watches: true, builds: true } } }],
+      envFiles: [],
+    };
+    server = await startCommandServer({ onQuit: () => {}, port: 0 });
+    server.attach({
+      getAllStatuses: () => ({}),
+      getStatus: () => null,
+      getPackages: () => [],
+      getConfig: () => config,
+      restart: () => true,
+      rebuild: () => true,
+      quit: () => {},
+      logControl: () => {},
+    });
+    const res = await fetch(`http://127.0.0.1:${server.port}/query/config`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual(config);
   });
 
   it('GET /query/pid/ with trailing slash returns 200', async () => {

@@ -1,17 +1,28 @@
 import path from 'node:path';
+import { z } from 'zod';
 import { DEFAULT_ENV_FILES } from './env.js';
 
 export const PackageType = { BACKEND: 'backend', BROWSER: 'browser', LIB: 'lib' } as const;
 export type PackageType = (typeof PackageType)[keyof typeof PackageType];
 export type PackageTypeValue = 'backend' | 'browser' | 'lib';
 
+// ---------------------------------------------------------------------------
+// Zod schemas — the single source of the config's shape, defaults, and
+// validation. Public types are derived from these (`z.input` for what
+// `defineConfig` accepts, `z.infer` for the resolved config), with a thin
+// generic overlay (`WithNames`) re-adding package-name type-safety.
+// ---------------------------------------------------------------------------
+
+const UrlLinkSchema = z.union([z.string(), z.object({ label: z.string(), url: z.string() })]);
+const UrlEntrySchema = z.union([UrlLinkSchema, z.array(UrlLinkSchema)]);
+
 /** A single link: a bare URL, or a labeled URL (the label is shown in place of the URL). */
-export type UrlLink = string | { label: string; url: string };
+export type UrlLink = z.infer<typeof UrlLinkSchema>;
 /**
  * One footer line's worth of links: a single link, or an array of links rendered on the
  * same line separated by a space. `urls` is a list of these entries, one line each.
  */
-export type UrlEntry = UrlLink | UrlLink[];
+export type UrlEntry = z.infer<typeof UrlEntrySchema>;
 
 /** One footer line after normalization: the links to render on it (label falls back to url). */
 export type UrlLine = { label?: string; url: string }[];
@@ -22,59 +33,123 @@ export function normalizeUrlEntry(entry: UrlEntry): UrlLine {
   return links.map((link) => (typeof link === 'string' ? { url: link } : link));
 }
 
-export interface RunConfig<N extends string> {
-  selectable?: boolean;
-  shortName?: string;
-  subdomain?: string | string[];
-  port?: number;
-  hmrPort?: number;
-  urls?: UrlEntry[];
-  healthcheck?: string;
+// `command` options as a union of the two *legal* shapes, so `{ watches: true, builds: false }`
+// (and `{ builds: false }`, since watches then defaults true) is rejected at the type level
+// AND at parse time: a watching command must also build.
+const CommandOptionsSchema = z.union([
+  z.strictObject({ watches: z.literal(true).optional(), builds: z.literal(true).optional() }),
+  z.strictObject({ watches: z.literal(false), builds: z.boolean().optional() }),
+]);
+
+const CommandSchema = z
+  .union([z.string(), z.tuple([z.string(), CommandOptionsSchema])])
+  .default('dev')
+  .transform((c) =>
+    typeof c === 'string'
+      ? { name: c, watches: true, builds: true }
+      : { name: c[0], watches: c[1].watches ?? true, builds: c[1].builds ?? true },
+  );
+
+/** A resolved `run.command`: which script to run and how it behaves on file changes. */
+export type Command = z.infer<typeof CommandSchema>;
+
+const RunConfigSchema = z.object({
+  selectable: z.boolean().optional().describe('Show in the interactive picker (default true).'),
+  shortName: z.string().optional().describe('Shorter label used in the TUI in place of `name`.'),
+  subdomain: z
+    .union([z.string(), z.array(z.string())])
+    .optional()
+    .describe('Reverse-proxy subdomain(s); the first feeds `$subdomain` substitution.'),
+  port: z.number().optional().describe('Dev port; injected as `PORT` and feeds `$port`.'),
+  hmrPort: z.number().optional().describe("A browser package's HMR socket port."),
+  command: CommandSchema.describe(
+    'The dev process to run and how it behaves. A script/target name, or `[name, { watches, ' +
+      "builds }]`. Default `['dev', { watches: true, builds: true }]`. `watches`: the script " +
+      'watches files and reloads itself. `builds`: the script (re)builds on start. ' +
+      '`watches:true` requires `builds:true`. Drives what to do after editing this package: ' +
+      'watches→nothing, else builds→restart, else rebuild.',
+  ),
+  urls: z
+    .array(UrlEntrySchema)
+    .optional()
+    .describe(
+      'Footer links; each entry is one line (string, {label,url}, or an array on one line).',
+    ),
+  healthcheck: z
+    .string()
+    .optional()
+    .describe('URL polled for readiness; required by `waitFor` targets.'),
+  waitFor: z
+    .array(z.string())
+    .optional()
+    .describe('Package names whose `healthcheck` must pass before this one starts.'),
+  deps: z
+    .object({
+      build: z.array(z.string()).optional(),
+      dev: z.array(z.string()).optional(),
+      runtime: z.array(z.string()).optional(),
+    })
+    .optional()
+    .describe('Other packages this one depends on (build / dev / runtime).'),
+});
+
+const PackageConfigSchema = z.object({
+  name: z.string(),
+  relativeDir: z.string().optional(),
+  types: z.array(z.enum(['backend', 'browser', 'lib'])),
+  run: RunConfigSchema.optional(),
+});
+
+const DefineConfigSchema = z.object({
+  apiPort: z.number().optional(),
+  packages: z.array(PackageConfigSchema),
+  urls: z.array(UrlEntrySchema).optional(),
+  workspaceDir: z.string().optional(),
+  tokens: z.record(z.string(), z.string().optional()).optional(),
+  env: z.object({ files: z.array(z.string()).optional() }).optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Types: Zod-derived base + a generic overlay that re-adds package-name safety
+// on the relational fields (`name`, `waitFor`, `deps.*`). Everything else keeps
+// the Zod-inferred type verbatim.
+// ---------------------------------------------------------------------------
+
+/**
+ * Overlays a package's name-referencing fields with the concrete name union `N`. `NoInfer`
+ * keeps these values out of `N`'s inference, so a typo'd name is a compile error rather
+ * than silently widening `N`.
+ */
+type RunWithNames<R, N extends string> = Omit<R, 'waitFor' | 'deps'> & {
   waitFor?: NoInfer<N>[];
-  deps?: {
-    build?: NoInfer<N>[];
-    dev?: NoInfer<N>[];
-    runtime?: NoInfer<N>[];
-  };
-}
-
-export interface PackageConfigInput<N extends string> {
-  name: N;
-  relativeDir?: string;
-  types: PackageTypeValue[];
-  run?: RunConfig<N>;
-}
-
-export interface DefineConfigOptions<N extends string> {
-  /**
-   * Fixed port for devtooie's localhost-only control API. Optional — when omitted, devtooie
-   * picks a random free port in `14000`–`14099` and records it (with the session pid) in
-   * `node_modules/.devtooie/running.json`, reusing it across restarts of this workspace.
-   * Set this only to pin a specific port.
-   */
-  apiPort?: number;
-  packages: PackageConfigInput<N>[];
-  /**
-   * Workspace-wide URLs, not tied to any package, rendered in the TUI footer above the
-   * per-package links. Same shape as {@link RunConfig.urls}. Only **extrinsic** `$token`s
-   * (from {@link tokens}) are substituted — there is no package, so intrinsic tokens
-   * (`$name`/`$port`/`$subdomain`) resolve to nothing and throw.
-   */
-  urls?: UrlEntry[];
-  workspaceDir?: string;
-  tokens?: Record<string, string | undefined>;
-  /**
-   * `.env` filenames loaded per package, ascending precedence within a scope. Each file is
-   * resolved at both the workspace root and the package dir (package scope wins). Defaults
-   * to `['.env', '.env.development.pre', '.env.development', '.env.local']`.
-   */
-  env?: { files?: string[] };
-}
-
-export type ResolvedPackageConfig<N extends string> = PackageConfigInput<N> & {
-  relativeDir: string;
-  path: string;
+  deps?: { build?: NoInfer<N>[]; dev?: NoInfer<N>[]; runtime?: NoInfer<N>[] };
 };
+
+/** A package's `run` block as authored (loose `command`, name-checked `waitFor`/`deps`). */
+export type RunConfig<N extends string> = RunWithNames<z.input<typeof RunConfigSchema>, N>;
+
+/** A package's resolved `run` block (normalized `command`, substituted urls). */
+type ResolvedRun<N extends string> = RunWithNames<z.infer<typeof RunConfigSchema>, N>;
+
+export type PackageConfigInput<N extends string> = Omit<
+  z.input<typeof PackageConfigSchema>,
+  'name' | 'run'
+> & { name: N; run?: RunConfig<N> };
+
+/**
+ * The argument to {@link defineConfig}. Everything is typed straight from the Zod schema
+ * except the relational fields, which are pinned to your package names for autocomplete
+ * and typo errors.
+ */
+export type DefineConfigOptions<N extends string> = Omit<
+  z.input<typeof DefineConfigSchema>,
+  'packages'
+> & { packages: PackageConfigInput<N>[] };
+
+export type ResolvedPackageConfig<N extends string> = Omit<
+  z.infer<typeof PackageConfigSchema>,
+  'name' | 'run'
+> & { name: N; relativeDir: string; path: string; run?: ResolvedRun<N> };
 
 export type AnyPackageConfig = ResolvedPackageConfig<string>;
 
@@ -87,6 +162,10 @@ export interface Config<N extends string> {
   /** Resolved `.env` filenames loaded per package (defaults to {@link DEFAULT_ENV_FILES}). */
   envFiles: string[];
 }
+
+// ---------------------------------------------------------------------------
+// State + lookups
+// ---------------------------------------------------------------------------
 
 let registeredPackages: AnyPackageConfig[] = [];
 let loadedConfig: Config<string> | null = null;
@@ -105,6 +184,15 @@ export function findPackage(name: string): AnyPackageConfig {
   if (!pkg) throw new Error(`package ${name} not found`);
   return pkg;
 }
+
+/** The dev-process script/target name for a package (`run.command.name`, default `'dev'`). */
+export function getDevScript(pkg: AnyPackageConfig): string {
+  return pkg.run?.command.name ?? 'dev';
+}
+
+// ---------------------------------------------------------------------------
+// Token substitution (post-parse; Zod can't express intrinsic/extrinsic tokens)
+// ---------------------------------------------------------------------------
 
 /**
  * Replaces every remaining `$key` in `input` with `tokens[key]`, throwing (naming
@@ -141,11 +229,13 @@ function substituteUrlEntry(entry: UrlEntry, replace: (s: string) => string): Ur
     : substituteUrlLink(entry, replace);
 }
 
-function substituteRun<N extends string>(
-  name: N,
-  run: RunConfig<N>,
+type ResolvedRunAny = z.infer<typeof RunConfigSchema>;
+
+function substituteRun(
+  name: string,
+  run: ResolvedRunAny,
   tokens: Record<string, string | undefined>,
-): RunConfig<N> {
+): ResolvedRunAny {
   const primarySubdomain = Array.isArray(run.subdomain) ? run.subdomain[0] : run.subdomain;
   const replace = (s: string): string => {
     let out = s.replaceAll('$name', name);
@@ -171,15 +261,31 @@ function substituteRun<N extends string>(
   };
 }
 
-export function defineConfig<const N extends string>(opts: DefineConfigOptions<N>): Config<N> {
-  const workspaceDir = opts.workspaceDir ?? process.cwd();
+/** Renders a Zod parse failure into a readable, multi-line message. */
+function formatConfigError(err: z.ZodError): string {
+  const lines = err.issues.map((issue) => {
+    const at = issue.path.length ? issue.path.join('.') : '(root)';
+    const hint = issue.path.includes('command')
+      ? ' — a command that watches must also build (watches:true requires builds:true)'
+      : '';
+    return `  - ${at}: ${issue.message}${hint}`;
+  });
+  return `invalid devtooie config:\n${lines.join('\n')}`;
+}
 
-  // Validate waitFor targets before substitution
-  const healthcheckPackages = new Set(
-    opts.packages.filter((c) => c.run?.healthcheck).map((c) => c.name),
-  );
-  const allNames = new Set(opts.packages.map((c) => c.name));
-  for (const config of opts.packages) {
+export function defineConfig<const N extends string>(opts: DefineConfigOptions<N>): Config<N> {
+  const result = DefineConfigSchema.safeParse(opts);
+  if (!result.success) {
+    throw new Error(formatConfigError(result.error));
+  }
+  const parsed = result.data;
+
+  const workspaceDir = parsed.workspaceDir ?? process.cwd();
+
+  // Validate waitFor targets: each must exist and define a healthcheck.
+  const healthcheckPackages = new Set(parsed.packages.filter((c) => c.run?.healthcheck).map((c) => c.name)); // prettier-ignore
+  const allNames = new Set(parsed.packages.map((c) => c.name));
+  for (const config of parsed.packages) {
     for (const waitName of config.run?.waitFor ?? []) {
       if (!allNames.has(waitName)) {
         throw new Error(`${config.name} has waitFor "${waitName}" but no such package exists`);
@@ -192,30 +298,29 @@ export function defineConfig<const N extends string>(opts: DefineConfigOptions<N
     }
   }
 
-  const tokens = opts.tokens ?? {};
+  const tokens = parsed.tokens ?? {};
 
-  const packages = opts.packages.map((config) => {
+  const packages = parsed.packages.map((config) => {
     const relativeDir = config.relativeDir ?? `packages/${config.name}`;
-    const run = config.run;
     return {
       ...config,
       relativeDir,
       path: path.resolve(workspaceDir, relativeDir),
-      run: run ? substituteRun(config.name, run, tokens) : undefined,
+      run: config.run ? substituteRun(config.name, config.run, tokens) : undefined,
     };
   });
 
-  const urls = opts.urls?.map((entry) =>
+  const urls = parsed.urls?.map((entry) =>
     substituteUrlEntry(entry, (s) => substituteTokens(s, tokens, 'top-level url')),
   );
 
   const resolved: Config<N> = {
-    apiPort: opts.apiPort,
-    packages,
+    apiPort: parsed.apiPort,
+    packages: packages as unknown as ResolvedPackageConfig<N>[],
     urls,
-    envFiles: opts.env?.files ?? DEFAULT_ENV_FILES,
+    envFiles: parsed.env?.files ?? DEFAULT_ENV_FILES,
   };
-  registeredPackages = packages as AnyPackageConfig[];
+  registeredPackages = resolved.packages as AnyPackageConfig[];
   loadedConfig = resolved as Config<string>;
   return resolved;
 }

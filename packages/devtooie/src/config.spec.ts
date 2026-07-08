@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
-import { defineConfig, findPackage, getRegisteredPackages, getLoadedConfig } from './config.js';
+import {
+  defineConfig,
+  findPackage,
+  getRegisteredPackages,
+  getLoadedConfig,
+  getDevScript,
+} from './config.js';
 
 describe('defineConfig path resolution', () => {
   it('defaults relativeDir to packages/<name> and resolves path against cwd', () => {
@@ -173,6 +179,74 @@ describe('top-level urls', () => {
         packages: [{ name: 'svc', types: [] }],
       }),
     ).toThrow(/top-level url.*\$domain/);
+  });
+});
+
+describe('run.command', () => {
+  const cmd = (run: object) =>
+    defineConfig({ packages: [{ name: 'a', types: ['backend'], run: run as never }] }).packages[0]!
+      .run!.command;
+
+  it('defaults to dev / watches:true / builds:true when omitted', () => {
+    expect(cmd({})).toEqual({ name: 'dev', watches: true, builds: true });
+  });
+
+  it('accepts a bare string (defaults watches:true, builds:true)', () => {
+    expect(cmd({ command: 'start' })).toEqual({ name: 'start', watches: true, builds: true });
+  });
+
+  it('a tuple with watches:false defaults builds to true', () => {
+    expect(cmd({ command: ['start', { watches: false }] })).toEqual({
+      name: 'start',
+      watches: false,
+      builds: true,
+    });
+  });
+
+  it('a tuple with watches:false, builds:false is kept', () => {
+    expect(cmd({ command: ['start', { watches: false, builds: false }] })).toEqual({
+      name: 'start',
+      watches: false,
+      builds: false,
+    });
+  });
+
+  it('an empty options object defaults to watches:true, builds:true', () => {
+    expect(cmd({ command: ['start', {}] })).toEqual({
+      name: 'start',
+      watches: true,
+      builds: true,
+    });
+  });
+
+  it('throws at runtime for watches:true + builds:false', () => {
+    expect(() => cmd({ command: ['start', { watches: true, builds: false }] })).toThrow();
+  });
+
+  it('throws at runtime for builds:false without watches:false', () => {
+    expect(() => cmd({ command: ['start', { builds: false }] })).toThrow();
+  });
+
+  it('getDevScript returns the configured command name, else dev', () => {
+    const { packages } = defineConfig({
+      packages: [
+        { name: 'a', types: [], run: { command: 'start' } },
+        { name: 'b', types: [], run: {} },
+        { name: 'c', types: [] },
+      ],
+    });
+    expect(getDevScript(packages[0]!)).toBe('start');
+    expect(getDevScript(packages[1]!)).toBe('dev');
+    expect(getDevScript(packages[2]!)).toBe('dev');
+  });
+
+  it('rejects the illegal combos at the type level', () => {
+    // @ts-expect-error watches:true requires builds:true
+    const a = (): unknown => defineConfig({ packages: [{ name: 'a', types: [], run: { command: ['x', { watches: true, builds: false }] } }] }); // prettier-ignore
+    // @ts-expect-error builds:false requires watches:false
+    const b = (): unknown => defineConfig({ packages: [{ name: 'a', types: [], run: { command: ['x', { builds: false }] } }] }); // prettier-ignore
+    void a;
+    void b;
   });
 });
 

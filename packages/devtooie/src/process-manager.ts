@@ -5,6 +5,7 @@ import { execa, type ResultPromise } from 'execa';
 import stringWidth from 'string-width';
 import wrapAnsi from 'wrap-ansi';
 import type { AnyPackageConfig } from './config.js';
+import { getDevScript, getLoadedConfig } from './config.js';
 import type { ControlManager } from './command-server.js';
 import { debugLog } from './debug-log.js';
 import { DEFAULT_ENV_FILES, resolveEnv } from './env.js';
@@ -166,7 +167,7 @@ export class ProcessManager implements ControlManager {
         status: 'stopped',
         prefix: color(`[${padded}]`) + ' ',
         searchName: (shortName ? `${pkg.name} ${shortName}` : pkg.name).toLowerCase(),
-        canDev: hasScript(pkg, 'dev'),
+        canDev: hasScript(pkg, getDevScript(pkg)),
         extraProcs: new Set(),
       });
     }
@@ -275,7 +276,7 @@ export class ProcessManager implements ControlManager {
     }
 
     const pfx = managed.prefix;
-    const [cmd, args] = getExecArgs(managed.pkg, 'dev');
+    const [cmd, args] = getExecArgs(managed.pkg, getDevScript(managed.pkg));
     const proc = execa(cmd, args, {
       cwd: managed.pkg.path,
       env: this.packageEnv(managed.pkg),
@@ -806,6 +807,11 @@ export class ProcessManager implements ControlManager {
       out[name] = this.getStatus(name) ?? 'stopped';
     }
     return out;
+  }
+
+  /** ControlManager entry point: the whole resolved config (defaults applied) served by `/query/config`. */
+  getConfig(): unknown {
+    return getLoadedConfig();
   }
 
   /** ControlManager entry point: package list, optionally filtered by exact status. */

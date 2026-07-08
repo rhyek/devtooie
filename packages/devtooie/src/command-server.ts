@@ -4,6 +4,8 @@ export interface ControlManager {
   getAllStatuses(): unknown;
   getStatus(pkg: string): unknown;
   getPackages(filter?: string): unknown;
+  /** The whole resolved config (defaults applied), served verbatim by `/query/config`. */
+  getConfig(): unknown;
   restart(pkg: string): boolean;
   rebuild(pkg: string): boolean;
   quit(): void;
@@ -62,6 +64,9 @@ export async function startCommandServer(opts: {
     }
     if (parts[0] === 'query' && parts[1] === 'packages') {
       return send(res, 200, manager.getPackages(url.searchParams.get('status') ?? undefined));
+    }
+    if (parts[0] === 'query' && parts[1] === 'config') {
+      return send(res, 200, manager.getConfig());
     }
     if (parts[0] === 'command' && (parts[1] === 'restart' || parts[1] === 'rebuild') && parts[2]) {
       manager.logControl(`${parts[1]} ${parts[2]}`, parts[2]);

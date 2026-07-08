@@ -158,6 +158,9 @@ Each package entry:
 - **`run`** (optional) — everything about how to run/select/link the package;
   omit it entirely for a build-only lib. Notable fields:
   - `selectable` (default `true`) — show in the interactive picker.
+  - `command` — the dev process to run and how it behaves. A script/target name, or
+    `[name, { watches, builds }]`. Defaults to `['dev', { watches: true, builds: true }]`.
+    See [Package lifecycle](#package-lifecycle-when-you-edit-code).
   - `port`, `hmrPort` — the package's port(s); used for substitution and swept
     on session handoff.
   - `subdomain` — for reverse-proxy routing; used for `$subdomain`
@@ -188,6 +191,32 @@ Three independent categories, resolved when you select a package:
 `devtooie resolvedeps -p <name> [...]` prints the resolved build/dev/runtime
 sets as JSON, which is handy for wiring other tooling (targeted typechecks,
 codegen, etc.) to the same dependency graph.
+
+## Package lifecycle when you edit code
+
+`run.command` declares **how a package's dev process behaves**, which tells you (or an
+agent) what to do after editing that package's source:
+
+```ts
+run: { command: 'dev' }                              // = ['dev', { watches: true, builds: true }]
+run: { command: ['start', { watches: false }] }      // builds defaults to true
+run: { command: ['serve', { watches: false, builds: false }] }
+```
+
+- `command[0]` (or a bare string) is the npm script / Makefile target devtooie runs as the
+  dev process. Defaults to `dev`.
+- `watches` — the script watches files and reloads itself. `builds` — the script
+  (re)builds on start. Both default to `true`. `watches: true` with `builds: false` is
+  rejected (a watching script must also build) — at the type level and at load.
+
+| resolved flags | after you edit the package's code |
+| --- | --- |
+| `watches: true` (default) | nothing — the script reloads itself |
+| `watches: false, builds: true` | `POST /command/restart/<pkg>` |
+| `watches: false, builds: false` | `POST /command/rebuild/<pkg>` (clean build, then start) |
+
+The resolved flags are served by [`GET /query/config`](#control-api), so tooling can read
+them and act without parsing the config file.
 
 ## Top-level URLs
 
@@ -363,6 +392,10 @@ pinned with `apiPort` in `devtooie.config.ts`.
   `devtooie.config.*` it was started with** (`{ pid, configPath }`).
 - `GET /query/status[/<name>]` / `GET /query/packages[?status=...]` — package
   status.
+- `GET /query/config` — the whole **resolved** config (defaults applied,
+  `command` normalized to `{ name, watches, builds }`), same shape as
+  `defineConfig`'s output. It reflects the running session's config as loaded at
+  startup — editing `devtooie.config.ts` takes effect when you restart devtooie.
 - `POST /command/restart/<name>` / `POST /command/rebuild/<name>` — restart
   or rebuild-then-restart a package.
 - `POST /command/quit` — graceful shutdown (same as Ctrl+C).

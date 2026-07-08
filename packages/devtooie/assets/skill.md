@@ -1,6 +1,6 @@
 ---
 name: devtooie
-description: Use when running, building, or restarting a local dev package through devtooie; when asked to add, configure, or onboard a package into devtooie; or when debugging a running package by reading its logs.
+description: Use when running, building, or restarting a local dev package through devtooie; when asked to add, configure, or onboard a package into devtooie; when you need to know how to handle a package's lifecycle (whether to restart or rebuild it) after changing its code; or when debugging a running package by reading its logs.
 ---
 
 # devtooie

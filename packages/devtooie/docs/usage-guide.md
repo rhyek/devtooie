@@ -22,7 +22,7 @@ devtooie --plain -p <package> [-p <other-package> ...]
   shutdown), or use the control API's `POST /command/quit` (see below) if you no
   longer hold the process directly.
 - **Environment**: each package's `.env` files are loaded and injected into its process
-  automatically (see §5), so you don't set env vars yourself. A running session also
+  automatically (see §6), so you don't set env vars yourself. A running session also
   restarts a package when its `.env` files change — so an unexpected restart may just be
   an env edit, not a crash.
 
@@ -43,6 +43,8 @@ Endpoints (all plain HTTP, no auth — localhost-only):
 - `GET /query/status` — status of every package. `GET /query/status/<name>` — one
   package.
 - `GET /query/packages?status=<status>` — list package names filtered by status.
+- `GET /query/config` — the whole resolved config (defaults applied, `run.command`
+  normalized to `{ name, watches, builds }`). Use it to decide package lifecycle — see §4.
 
 Do not hardcode package names. Discover them either from a running session
 (`GET /query/status`) or by asking devtooie directly:
@@ -148,7 +150,28 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
    render in the TUI footer above the per-package links and substitute only extrinsic
    `tokens` (no `$port`/`$name`/`$subdomain`).
 
-## 4. Read running-package logs for debugging
+## 4. Handle a package's lifecycle when you change its code
+
+devtooie does **not** watch source files. How a package should react to a code edit is
+declared by its `run.command`, which you read from `GET /query/config`.
+
+**Fetch the config early, and re-fetch before acting.** On first involvement with a running
+session, read `node_modules/.devtooie/running.json` (for the port) and `GET /query/config`
+once. Then, each time you're about to restart/rebuild a package, **re-read `running.json`**
+(the port changes if the user restarted devtooie) and **re-`GET /query/config`** — the user
+may have edited the config and restarted the session, changing what a package needs. Don't
+trust a cached copy across a possible restart.
+
+For the package you edited, look at its resolved `run.command` (`{ name, watches, builds }`):
+
+- `watches: true` (the default) — the dev script watches files and reloads itself.
+  **Do nothing.**
+- `watches: false, builds: true` — `POST /command/restart/<name>`.
+- `watches: false, builds: false` — `POST /command/rebuild/<name>` (clean build, then start).
+
+Rule: `watches` → nothing; else `builds` → restart; else rebuild.
+
+## 5. Read running-package logs for debugging
 
 A running devtooie session streams the combined stdout/stderr of every package it
 runs into a single logfile at the fixed, literal path:
@@ -176,7 +199,7 @@ writes its combined log — it does not change where this skill looks. So if you
 the one starting the session (per §1), do **not** pass `--logfile`, otherwise the
 logs you need to debug with will end up somewhere other than the path above.
 
-## 5. Run a one-off command with a package's environment
+## 6. Run a one-off command with a package's environment
 
 devtooie resolves a package's `.env` files (at the workspace root and the package's own
 directory) and can inject them into any command — use this to run scripts, migrations, or

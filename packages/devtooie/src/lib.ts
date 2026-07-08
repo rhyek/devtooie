@@ -3,7 +3,12 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { execaSync } from 'execa';
 import type { AnyPackageConfig } from './config.js';
-import { getRegisteredPackages, getLoadedConfig, normalizeUrlEntry } from './config.js';
+import {
+  getRegisteredPackages,
+  getLoadedConfig,
+  getDevScript,
+  normalizeUrlEntry,
+} from './config.js';
 import { DEFAULT_ENV_FILES } from './env.js';
 import type { RunnerArgs } from './runners/types.js';
 
@@ -63,7 +68,7 @@ export function getRebuildCommands(pkg: AnyPackageConfig): [string, string[]][] 
 }
 
 export function hasDevScript(pkg: AnyPackageConfig): boolean {
-  return hasScript(pkg, 'dev');
+  return hasScript(pkg, getDevScript(pkg));
 }
 
 export function getMakeTargets(pkg: AnyPackageConfig): string[] {
@@ -80,7 +85,9 @@ export function getExtraCommands(pkg: AnyPackageConfig): string[] {
     getCommandRunner(pkg) === 'make'
       ? getMakeTargets(pkg)
       : Object.keys(readPackageJson(pkg)?.scripts ?? {});
-  return names.filter((n) => !RUNNER_MANAGED.has(n));
+  // Exclude runner-managed scripts and this package's configured dev command (run via s/r).
+  const devScript = getDevScript(pkg);
+  return names.filter((n) => !RUNNER_MANAGED.has(n) && n !== devScript);
 }
 
 export enum DepType {
