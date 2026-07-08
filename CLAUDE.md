@@ -6,20 +6,26 @@ Monorepo for the published `devtooie` npm package.
 - `example/` — a self-contained example monorepo that consumes the package via
   `devtooie: link:../packages/devtooie` (see `example/package.json`).
 
+`README.md` lives **inside the package** at `packages/devtooie/README.md` (not the repo
+root). It's the canonical copy — edit it in place. Keeping it in the package means it's
+published to npm and is present when the package is consumed via `pnpm link` locally
+(`npm publish` drops symlinks, so a root-level symlink is not an option). Only `LICENSE`
+is still copied in from the repo root at release time.
+
 ## Documentation — keep in lockstep
 
 Whenever a change affects how devtooie is configured, invoked, or driven — `defineConfig`
 options, the package/`run` schema, tokens, CLI flags, or the control API — update the docs
 **in the same change**, not later:
 
-- `README.md` — the human-facing reference.
+- `packages/devtooie/README.md` — the human-facing reference.
 - `packages/devtooie/docs/usage-guide.md` — the agent-facing guide (see below).
 - `packages/devtooie/assets/skill.md` — the installed skill. It is intentionally just
   frontmatter + an `@node_modules/devtooie/docs/usage-guide.md` reference, so put actual
   content in the usage guide, not here.
 
-After touching any of that surface, grep `README.md` and `docs/usage-guide.md` for the
-affected names and reconcile.
+After touching any of that surface, grep `packages/devtooie/README.md` and
+`docs/usage-guide.md` for the affected names and reconcile.
 
 ### `docs/usage-guide.md` scope
 

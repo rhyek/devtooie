@@ -74,9 +74,8 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Copy README into the package
-        run: cp README.md packages/devtooie/README.md
-
+      # README.md lives in packages/devtooie/ (published directly); only LICENSE is
+      # copied in from the repo root.
       - name: Copy LICENSE into the package
         run: cp LICENSE packages/devtooie/LICENSE
 
