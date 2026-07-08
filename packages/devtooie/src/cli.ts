@@ -6,11 +6,22 @@ import { Command } from 'commander';
 import { execa } from 'execa';
 import { renderApp } from './components/App.js';
 import { startCommandServer } from './command-server.js';
-import { type AnyPackageConfig, findPackage, getRegisteredPackages } from './config.js';
+import {
+  type AnyPackageConfig,
+  findPackage,
+  getRegisteredPackages,
+  getLoadedConfig,
+} from './config.js';
+import { DEFAULT_ENV_FILES, resolveEnv } from './env.js';
 import { acquireDevSession } from './dev-session.js';
 import { handleShellError } from './errors.js';
 import { runInit } from './init.js';
-import { NoProjectConfigError, loadConfig } from './load-config.js';
+import {
+  NoProjectConfigError,
+  loadConfig,
+  findWorkspaceRoot,
+  findConfigPath,
+} from './load-config.js';
 import {
   DepType,
   buildRunnerArgs,
@@ -234,6 +245,50 @@ program
     process.exit(0);
   });
 
+program
+  .command('env')
+  .description("resolve a package's .env files, then print them or run a command with them")
+  .option(
+    '--dir <relativeDir>',
+    'package dir to resolve .env files for, relative to the workspace root; defaults to the current directory',
+  )
+  .argument('[command...]', 'command to run with the resolved envs (pass after `--`)')
+  .action(async (command: string[], opts: { dir?: string }) => {
+    // Discover the workspace root (nearest ancestor with a devtooie config) so this works
+    // from anywhere; fall back to cwd + default file list when there's no project.
+    const startCwd = process.cwd();
+    const workspaceRoot = findWorkspaceRoot(startCwd) ?? startCwd;
+    let files = DEFAULT_ENV_FILES;
+    try {
+      await loadConfig(workspaceRoot);
+      files = getLoadedConfig()?.envFiles ?? DEFAULT_ENV_FILES;
+    } catch {
+      /* no devtooie config here — use the default file list */
+    }
+
+    // --dir is relative to the workspace root (matching config `relativeDir`s); with no
+    // --dir, default to the current directory expressed relative to that root.
+    const relativeDir = opts.dir ?? (path.relative(workspaceRoot, startCwd) || '.');
+
+    const { env } = resolveEnv({ cwd: workspaceRoot, relativeDir, files });
+
+    if (command.length > 0) {
+      const [cmd, ...args] = command;
+      const result = await execa(cmd!, args, {
+        cwd: process.cwd(),
+        env: Object.assign({}, process.env, env),
+        stdio: 'inherit',
+        reject: false,
+      });
+      process.exit(result.exitCode ?? 1);
+    }
+
+    for (const key of Object.keys(env).sort()) {
+      console.log(`${key}=${env[key]}`);
+    }
+    process.exit(0);
+  });
+
 // ---------------------------------------------------------------------------
 // Main flow (§6.5) — the default action, run only when no subcommand matched.
 // ---------------------------------------------------------------------------
@@ -283,9 +338,15 @@ program.action(async () => {
     saveSelection(names);
     try {
       const statusReporter = createPlainStatusReporter();
-      await acquireDevSession({ onStatus: (msg) => statusReporter.update(msg) });
+      const configPath =
+        findConfigPath(process.cwd()) ?? path.join(process.cwd(), 'devtooie.config.ts');
+      const port = await acquireDevSession({
+        configPath,
+        apiPortOverride: getLoadedConfig()?.apiPort,
+        onStatus: (msg) => statusReporter.update(msg),
+      });
       statusReporter.done();
-      const server = await startCommandServer({ onQuit: () => process.exit(0) });
+      const server = await startCommandServer({ onQuit: () => process.exit(0), port, configPath });
       const packages = names.map((n) => findPackage(n));
       const deps = resolveDeps(packages);
       await buildDeps(deps);

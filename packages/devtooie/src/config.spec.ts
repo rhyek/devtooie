@@ -20,18 +20,36 @@ describe('defineConfig path resolution', () => {
 });
 
 describe('meta defaults', () => {
-  it('defaults apiPort to 4099', () => {
+  it('leaves apiPort undefined when unset (random port chosen at startup)', () => {
     const cfg = defineConfig({ packages: [{ name: 'svc', types: [] }] });
-    expect(cfg.apiPort).toBe(4099);
+    expect(cfg.apiPort).toBeUndefined();
   });
 
-  it('passes through apiPort and exposes it via getLoadedConfig', () => {
+  it('passes through a pinned apiPort and exposes it via getLoadedConfig', () => {
     const cfg = defineConfig({
       apiPort: 5000,
       packages: [{ name: 'svc', types: [] }],
     });
     expect(cfg.apiPort).toBe(5000);
     expect(getLoadedConfig()?.apiPort).toBe(5000);
+  });
+
+  it('defaults envFiles to the standard set', () => {
+    const cfg = defineConfig({ packages: [{ name: 'svc', types: [] }] });
+    expect(cfg.envFiles).toEqual([
+      '.env',
+      '.env.development.pre',
+      '.env.development',
+      '.env.local',
+    ]);
+  });
+
+  it('honors an env.files override', () => {
+    const cfg = defineConfig({
+      env: { files: ['.env', '.env.test'] },
+      packages: [{ name: 'svc', types: [] }],
+    });
+    expect(cfg.envFiles).toEqual(['.env', '.env.test']);
   });
 });
 

@@ -79,3 +79,110 @@ describe('ProcessManager', () => {
     expect(manager.getPackages('running')).toEqual([]);
   });
 });
+
+describe('ProcessManager env injection', () => {
+  let envDir: string;
+  let envLog: string;
+  let mgr: ProcessManager | undefined;
+
+  beforeAll(() => {
+    envDir = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-pm-env-'));
+    fs.writeFileSync(
+      path.join(envDir, 'package.json'),
+      JSON.stringify({
+        name: 'envfixture',
+        version: '1.0.0',
+        scripts: {
+          dev: 'node -e "console.log(\'VAL=\'+process.env.MY_ENV_VAR);setInterval(()=>{},1e9)"',
+        },
+      }),
+    );
+    fs.writeFileSync(path.join(envDir, '.env.local'), 'MY_ENV_VAR=injected123\n');
+    envLog = path.join(envDir, 'devlog.txt');
+  });
+  afterAll(() => {
+    mgr?.dispose();
+    fs.rmSync(envDir, { recursive: true, force: true });
+  });
+
+  it('injects resolved .env vars into the spawned dev process', async () => {
+    const a: AnyPackageConfig = { name: 'envfixture', types: [], relativeDir: '.', path: envDir };
+    mgr = new ProcessManager(
+      {
+        sortedPackages: [a],
+        selectedSet: new Set([a.name]),
+        buildDepSet: new Set(),
+        rebuildableSet: new Set(),
+        waitForMap: {},
+        healthcheckUrls: {},
+        extraCommandsMap: {},
+        logFile: envLog,
+        envFiles: ['.env.local'],
+        cwd: envDir,
+      },
+      { plain: true },
+    );
+
+    mgr.start('envfixture');
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await mgr.stop('envfixture');
+
+    expect(fs.readFileSync(envLog, 'utf8')).toContain('VAL=injected123');
+  }, 10_000);
+});
+
+describe('ProcessManager env-change restart', () => {
+  let d: string;
+  let log: string;
+  let m: ProcessManager | undefined;
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  beforeAll(() => {
+    d = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-pm-envwatch-'));
+    fs.writeFileSync(
+      path.join(d, 'package.json'),
+      JSON.stringify({
+        name: 'wfixture',
+        version: '1.0.0',
+        scripts: {
+          dev: 'node -e "console.log(\'VAL=\'+process.env.WVAR);setInterval(()=>{},1e9)"',
+        },
+      }),
+    );
+    fs.writeFileSync(path.join(d, '.env.local'), 'WVAR=v1\n');
+    log = path.join(d, 'devlog.txt');
+  });
+  afterAll(() => {
+    m?.dispose();
+    fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  it('restarts a running package when its .env changes, picking up the new value', async () => {
+    const a: AnyPackageConfig = { name: 'wfixture', types: [], relativeDir: '.', path: d };
+    m = new ProcessManager(
+      {
+        sortedPackages: [a],
+        selectedSet: new Set([a.name]),
+        buildDepSet: new Set(),
+        rebuildableSet: new Set(),
+        waitForMap: {},
+        healthcheckUrls: {},
+        extraCommandsMap: {},
+        logFile: log,
+        envFiles: ['.env.local'],
+        cwd: d,
+      },
+      { plain: true },
+    );
+
+    m.startAll();
+    await wait(1500);
+    expect(fs.readFileSync(log, 'utf8')).toContain('VAL=v1');
+
+    fs.writeFileSync(path.join(d, '.env.local'), 'WVAR=v2\n');
+    await wait(3500); // debounce + stop + respawn
+    expect(fs.readFileSync(log, 'utf8')).toContain('VAL=v2');
+
+    await m.stop('wfixture');
+  }, 15_000);
+});

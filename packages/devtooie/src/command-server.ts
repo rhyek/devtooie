@@ -1,5 +1,4 @@
 import http from 'node:http';
-import { getApiPort } from './lib.js';
 
 export interface ControlManager {
   getAllStatuses(): unknown;
@@ -10,7 +9,12 @@ export interface ControlManager {
   quit(): void;
 }
 
-export async function startCommandServer(opts: { onQuit: () => void; port?: number }): Promise<{
+export async function startCommandServer(opts: {
+  onQuit: () => void;
+  port: number;
+  /** Absolute path to the config this session started with; surfaced on `/query/pid` for handoff. */
+  configPath?: string;
+}): Promise<{
   attach(m: ControlManager): void;
   /**
    * Swaps the handler invoked by `/command/quit`. The server is typically created
@@ -35,7 +39,8 @@ export async function startCommandServer(opts: { onQuit: () => void; port?: numb
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
     const parts = pathname.split('/').filter(Boolean);
-    if (pathname === '/query/pid') return send(res, 200, { pid: process.pid });
+    if (pathname === '/query/pid')
+      return send(res, 200, { pid: process.pid, configPath: opts.configPath });
     if (pathname === '/command/quit') {
       send(res, 200, { ok: true });
       return void onQuit();
@@ -58,10 +63,9 @@ export async function startCommandServer(opts: { onQuit: () => void; port?: numb
     send(res, 404, { error: 'not found' });
   });
 
-  const port = opts.port ?? getApiPort();
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, '127.0.0.1', resolve);
+    server.listen(opts.port, '127.0.0.1', resolve);
   });
   const actualPort = (server.address() as { port: number }).port;
 

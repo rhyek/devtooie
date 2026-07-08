@@ -1,7 +1,7 @@
 import os from 'node:os';
 import { execa } from 'execa';
 import { getRegisteredPackages } from './config.js';
-import { getApiPort } from './lib.js';
+import { decideControlPort, isPortListening, probeInstance } from './running.js';
 
 export function parseLsofPids(out: string): number[] {
   return out
@@ -41,7 +41,6 @@ export function collectDevPorts(): number[] {
   for (const a of getRegisteredPackages()) {
     ports.push(a.run?.port, a.run?.hmrPort);
   }
-  ports.push(getApiPort());
   return dedupePorts(ports);
 }
 
@@ -89,44 +88,57 @@ export async function killTrees(roots: number[]): Promise<void> {
   }
 }
 
-export async function acquireDevSession(
-  opts: { onStatus?: (msg: string) => void } = {},
-): Promise<void> {
-  if (os.platform() === 'win32') return; // Unix-only handoff
-  const port = getApiPort();
-  const onStatus = opts.onStatus ?? (() => {});
-  // 1. Detect a live prior session and ask it to quit.
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/query/pid`, {
-      signal: AbortSignal.timeout(500),
-    });
-    if (res.ok) {
-      const { pid } = (await res.json()) as { pid: number };
-      if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) {
-        onStatus('closing previous session');
-        await fetch(`http://127.0.0.1:${port}/command/quit`, { method: 'POST' }).catch(() => {});
-        const deadline = Date.now() + 11_000;
-        while (Date.now() < deadline) {
-          try {
-            process.kill(pid, 0);
-          } catch {
-            break;
-          } // ESRCH → gone
-          await new Promise((r) => setTimeout(r, 250));
-        }
-        try {
-          process.kill(pid, 0);
-          await killTrees([pid]);
-        } catch {
-          /* already gone */
-        }
-      }
+/**
+ * Gracefully shuts down the devtooie instance at `port` (POST /command/quit), waits for
+ * `pid` to exit, then force-kills its process tree if it's still alive (Unix best-effort).
+ */
+export async function shutdownInstance(port: number, pid: number): Promise<void> {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return;
+  await fetch(`http://127.0.0.1:${port}/command/quit`, { method: 'POST' }).catch(() => {});
+  const deadline = Date.now() + 11_000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return; // ESRCH → gone
     }
-  } catch {
-    /* no prior session */
+    await new Promise((r) => setTimeout(r, 250));
   }
-  // 2. Always sweep dev ports.
-  onStatus('freeing dev ports');
-  const holders = await findListenerPids(collectDevPorts());
-  await killTrees(holders);
+  try {
+    process.kill(pid, 0);
+    if (os.platform() === 'win32') process.kill(pid, 'SIGKILL');
+    else await killTrees([pid]);
+  } catch {
+    /* already gone */
+  }
+}
+
+/**
+ * Prepares a dev session: decides (and records in `running.json`) the control-API port,
+ * handing off or relocating around any instance already on it (see
+ * {@link decideControlPort}), then sweeps orphans off this workspace's package dev ports.
+ * Returns the chosen control-API port.
+ */
+export async function acquireDevSession(opts: {
+  /** Absolute path to this session's `devtooie.config.*` — identifies this workspace. */
+  configPath: string;
+  /** A user-pinned `apiPort`, if any; when set, the port is fixed instead of random. */
+  apiPortOverride?: number;
+  onStatus?: (msg: string) => void;
+}): Promise<number> {
+  const onStatus = opts.onStatus ?? (() => {});
+  const port = await decideControlPort({
+    cwd: process.cwd(),
+    configPath: opts.configPath,
+    apiPortOverride: opts.apiPortOverride,
+    env: { isListening: isPortListening, probe: probeInstance, shutdown: shutdownInstance },
+    onStatus,
+  });
+  // Sweep orphans off this workspace's package dev ports (Unix-only; needs lsof/ss/ps).
+  if (os.platform() !== 'win32') {
+    onStatus('freeing dev ports');
+    const holders = await findListenerPids(collectDevPorts());
+    await killTrees(holders);
+  }
+  return port;
 }

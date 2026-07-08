@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadConfig, findConfigPath, NoProjectConfigError } from './load-config.js';
+import {
+  loadConfig,
+  findConfigPath,
+  findWorkspaceRoot,
+  NoProjectConfigError,
+} from './load-config.js';
 
 let dir: string;
 beforeEach(() => {
@@ -37,5 +42,23 @@ describe('findConfigPath', () => {
     const p = path.join(dir, 'devtooie.config.ts');
     fs.writeFileSync(p, 'export default {};\n');
     expect(findConfigPath(dir)).toBe(p);
+  });
+});
+
+describe('findWorkspaceRoot', () => {
+  it('returns the nearest ancestor directory containing a devtooie config', () => {
+    fs.writeFileSync(path.join(dir, 'devtooie.config.ts'), 'export default {};\n');
+    const nested = path.join(dir, 'packages', 'api');
+    fs.mkdirSync(nested, { recursive: true });
+    expect(findWorkspaceRoot(nested)).toBe(dir);
+  });
+
+  it('returns the dir itself when the config is right there', () => {
+    fs.writeFileSync(path.join(dir, 'devtooie.config.mjs'), 'export default {};\n');
+    expect(findWorkspaceRoot(dir)).toBe(dir);
+  });
+
+  it('returns null when no config exists up the tree', () => {
+    expect(findWorkspaceRoot(dir)).toBeNull();
   });
 });

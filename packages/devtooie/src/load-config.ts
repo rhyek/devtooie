@@ -25,6 +25,22 @@ export function findConfigPath(cwd: string = process.cwd()): string | null {
   return null;
 }
 
+/**
+ * Walks up from `cwd` to the nearest directory that holds a devtooie config file, and
+ * returns it — the workspace root. Returns `null` if none is found before the filesystem
+ * root. Unlike {@link findConfigPath}, which only checks `cwd` itself, this searches
+ * ancestors so a command run from inside a package still finds the project root.
+ */
+export function findWorkspaceRoot(cwd: string = process.cwd()): string | null {
+  let dir = path.resolve(cwd);
+  for (;;) {
+    if (findConfigPath(dir)) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
 export async function loadConfig(cwd: string = process.cwd()): Promise<AnyPackageConfig[]> {
   const configPath = findConfigPath(cwd);
   if (!configPath) {

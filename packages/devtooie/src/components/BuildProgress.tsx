@@ -1,11 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
+import path from 'node:path';
 import { execa } from 'execa';
 import { Box, Text, useApp } from 'ink';
 import Spinner from 'ink-spinner';
-import { findPackage, getRegisteredPackages } from '../config.js';
+import { findPackage, getRegisteredPackages, getLoadedConfig } from '../config.js';
 import { startCommandServer } from '../command-server.js';
 import { debugLog } from '../debug-log.js';
 import { acquireDevSession } from '../dev-session.js';
+import { findConfigPath } from '../load-config.js';
+import { pickRandomPort } from '../running.js';
 import { buildRunnerArgs, getExecArgs, hasScript, resolveDeps } from '../lib.js';
 import type { RunnerArgs } from '../runners/types.js';
 
@@ -79,8 +82,13 @@ export function BuildProgress({
         // 1. Hand off from any already-running session before building, so it
         //    releases its ports. Best-effort: a handoff failure must never block a run.
         setState({ phase: 'handoff', message: 'checking for another running session...' });
+        const configPath =
+          findConfigPath(process.cwd()) ?? path.join(process.cwd(), 'devtooie.config.ts');
+        let port: number | undefined;
         try {
-          await acquireDevSession({
+          port = await acquireDevSession({
+            configPath,
+            apiPortOverride: getLoadedConfig()?.apiPort,
             onStatus: (message) => {
               if (!cancelled) {
                 setState({ phase: 'handoff', message });
@@ -96,9 +104,12 @@ export function BuildProgress({
 
         // 2. Start the control server now (pid + quit) so a yet-newer session
         //    can detect and close this one while it builds. The run phase
-        //    attaches its process manager once building finishes.
+        //    attaches its process manager once building finishes. If the handoff
+        //    above failed, fall back to a random port so the server can still bind.
         debugLog('build: starting control server');
         const control = await startCommandServer({
+          port: port ?? pickRandomPort(),
+          configPath,
           onQuit: () => {
             // No process manager yet, so there's nothing to shut down
             // gracefully — just exit. process.exit guarantees this process

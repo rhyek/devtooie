@@ -14,7 +14,6 @@ import {
   saveSelection,
   loadSelection,
   resetSelection,
-  getApiPort,
   sortForDisplay,
   buildRunnerArgs,
 } from './lib.js';
@@ -114,10 +113,6 @@ describe('state + persistence', () => {
 
   it('getStateDir lives under node_modules/.devtooie', () => {
     expect(getStateDir().replace(/\\/g, '/')).toContain('node_modules/.devtooie');
-  });
-
-  it('getApiPort returns a number (default 4099 when config sets no apiPort)', () => {
-    expect(typeof getApiPort()).toBe('number');
   });
 });
 

@@ -9,4 +9,8 @@ export interface RunnerArgs {
   healthcheckUrls: Record<string, string>;
   extraCommandsMap: Record<string, string[]>;
   logFile?: string;
+  /** `.env` filenames resolved per package (defaults to the standard set when omitted). */
+  envFiles?: string[];
+  /** Workspace root that package `relativeDir`s resolve against (defaults to `process.cwd()`). */
+  cwd?: string;
 }

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { DEFAULT_ENV_FILES } from './env.js';
 
 export const PackageType = { BACKEND: 'backend', BROWSER: 'browser', LIB: 'lib' } as const;
 export type PackageType = (typeof PackageType)[keyof typeof PackageType];
@@ -28,10 +29,22 @@ export interface PackageConfigInput<N extends string> {
 }
 
 export interface DefineConfigOptions<N extends string> {
+  /**
+   * Fixed port for devtooie's localhost-only control API. Optional — when omitted, devtooie
+   * picks a random free port in `14000`–`14099` and records it (with the session pid) in
+   * `node_modules/.devtooie/running.json`, reusing it across restarts of this workspace.
+   * Set this only to pin a specific port.
+   */
   apiPort?: number;
   packages: PackageConfigInput<N>[];
   workspaceDir?: string;
   tokens?: Record<string, string | undefined>;
+  /**
+   * `.env` filenames loaded per package, ascending precedence within a scope. Each file is
+   * resolved at both the workspace root and the package dir (package scope wins). Defaults
+   * to `['.env', '.env.development.pre', '.env.development', '.env.local']`.
+   */
+  env?: { files?: string[] };
 }
 
 export type ResolvedPackageConfig<N extends string> = PackageConfigInput<N> & {
@@ -42,11 +55,12 @@ export type ResolvedPackageConfig<N extends string> = PackageConfigInput<N> & {
 export type AnyPackageConfig = ResolvedPackageConfig<string>;
 
 export interface Config<N extends string> {
-  apiPort: number;
+  /** User-pinned control-API port, or `undefined` to let devtooie pick a random one at startup. */
+  apiPort?: number;
   packages: ResolvedPackageConfig<N>[];
+  /** Resolved `.env` filenames loaded per package (defaults to {@link DEFAULT_ENV_FILES}). */
+  envFiles: string[];
 }
-
-export const DEFAULT_API_PORT = 4099;
 
 let registeredPackages: AnyPackageConfig[] = [];
 let loadedConfig: Config<string> | null = null;
@@ -141,8 +155,9 @@ export function defineConfig<const N extends string>(opts: DefineConfigOptions<N
   });
 
   const resolved: Config<N> = {
-    apiPort: opts.apiPort ?? DEFAULT_API_PORT,
+    apiPort: opts.apiPort,
     packages,
+    envFiles: opts.env?.files ?? DEFAULT_ENV_FILES,
   };
   registeredPackages = packages as AnyPackageConfig[];
   loadedConfig = resolved as Config<string>;

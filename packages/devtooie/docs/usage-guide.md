@@ -21,17 +21,18 @@ devtooie --plain -p <package> [-p <other-package> ...]
 - **Stop a session you started**: send `SIGINT`/`SIGTERM` to the process (graceful
   shutdown), or use the control API's `POST /command/quit` (see below) if you no
   longer hold the process directly.
+- **Environment**: each package's `.env` files are loaded and injected into its process
+  automatically (see §5), so you don't set env vars yourself. A running session also
+  restarts a package when its `.env` files change — so an unexpected restart may just be
+  an env edit, not a crash.
 
 ## 2. Drive a running session via the control API
 
 A running devtooie session (whether started by you or a human) exposes a localhost
-HTTP control API. Its port is **not** a devtooie CLI flag — read it from the project
-config file `devtooie.config.ts` at the repo root: the `apiPort` field passed to
-`defineConfig` (default `4099` if absent):
-
-```ts
-export default defineConfig({ apiPort: 4099, packages: [/* … */] });
-```
+HTTP control API on a port chosen at startup. **Read the active port from the JSON file
+`node_modules/.devtooie/running.json`** — devtooie writes the current `{ "port", "pid" }`
+there. Always resolve the port from that file rather than assuming one; a project may pin
+a fixed port with `apiPort` in `devtooie.config.ts`, but `running.json` is always current.
 
 Endpoints (all plain HTTP, no auth — localhost-only):
 
@@ -56,13 +57,40 @@ which prints that package's build/dev/runtime dependency names as JSON.
 
 When asked to add, configure, or onboard one of the user's packages into devtooie:
 
-1. **Ensure the package has the npm scripts devtooie drives.** For a Node package (it
-   has a `package.json`), it needs `dev`, `build`, `clean`, and `build:clean`, where
-   `build:clean` runs `clean` then `build`. devtooie's rebuild command runs
-   `build:clean`, and its "rebuildable" detection (the `b` hotkey in the interactive
-   UI, and the control API's rebuild endpoint) keys off that script's presence — so
-   don't skip it. A non-Node package is driven the same way through a `Makefile` with
-   equivalent targets instead of npm scripts.
+1. **Ensure the package exposes the entry points devtooie drives.** devtooie chooses how
+   to run a package from what's in its directory: with a `package.json` it runs npm
+   scripts (`pnpm run <name>`); with a `Makefile` and no `package.json` it runs
+   `make <target>`. (`package.json` wins if a package somehow has both.)
+
+   For a **Node package** it needs `dev`, `build`, `clean`, and `build:clean` (which runs
+   `clean` then `build`). devtooie's rebuild command runs `build:clean`, and its
+   "rebuildable" detection (the `b` hotkey in the interactive UI, and the control API's
+   rebuild endpoint) keys off that script's presence — so don't skip it.
+
+   For a **non-Node package** (a `Makefile`, no `package.json`), add the equivalent
+   **`make` targets** `dev`, `build`, and `clean`; devtooie invokes them as `make dev` /
+   `make build` / `make clean`. Each target wraps whatever the app's toolchain needs —
+   e.g. for a Go service `dev` is `go run .`, `build` is `go build`, and `clean` removes
+   the build output:
+
+   ```makefile
+   SHELL=/bin/bash -o pipefail
+   .PHONY: dev build clean
+
+   dev:
+   	@go run .
+
+   build:
+   	@go build -o ./bin/app .
+
+   clean:
+   	@rm -rf ./bin
+   ```
+
+   Recipe lines must be indented with a real tab. Note that rebuild (`build:clean`) is a
+   Node-script-only convenience — a `make` target name can't contain a colon — so a
+   Makefile package is run and restarted normally but is not "rebuildable" (the `b`
+   hotkey / rebuild endpoint skip it); that's expected.
 2. **Rename equivalent existing scripts rather than duplicate them.** If the package
    already has a script that does the same job under a different name, rename it
    (and fix any references to the old name) instead of adding a second script that
@@ -123,3 +151,30 @@ override.** The `--logfile` flag only changes where the *running* devtooie sessi
 writes its combined log — it does not change where this skill looks. So if you are
 the one starting the session (per §1), do **not** pass `--logfile`, otherwise the
 logs you need to debug with will end up somewhere other than the path above.
+
+## 5. Run a one-off command with a package's environment
+
+devtooie resolves a package's `.env` files (at the workspace root and the package's own
+directory) and can inject them into any command — use this to run scripts, migrations, or
+checks with the exact env a package would run under:
+
+```sh
+devtooie env --dir <relativeDir> -- <command> [args...]
+```
+
+- `--dir <relativeDir>` — the package's `relativeDir` from `devtooie.config.ts`, relative to
+  the workspace root. Omit it to default to your current directory — so running from inside a
+  package resolves that package (workspace-level files included). Pass `--dir .` to resolve at
+  the workspace root only.
+- Everything after `--` is run with the resolved vars merged over the current environment;
+  the command's exit code is propagated.
+- Omit the `-- <command>` to instead **print** the resolved `KEY=value` pairs — useful for
+  seeing what a package will get:
+
+```sh
+devtooie env --dir <relativeDir>
+```
+
+Precedence: files in the package's own directory override the workspace-root ones, and a
+`.env.local` overrides a `.env`. You do not need this for packages devtooie is already
+running (§1 injects their env automatically) — it's for driving commands yourself.

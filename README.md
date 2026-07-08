@@ -59,10 +59,9 @@ npx devtooie init
 This is an interactive, idempotent setup flow. It will:
 
 1. Ask whether to install the [agent skill](#agent-skill) (recommended: yes).
-2. Ask which port the local control API should listen on (default `4099`).
-3. Scaffold `devtooie.config.ts` at your repo root with those answers (an
-   existing config file is left untouched).
-4. If you opted in to the skill, install it.
+2. Scaffold `devtooie.config.ts` at your repo root (an existing config file is
+   left untouched).
+3. If you opted in to the skill, install it.
 
 After that, fill in the scaffolded config's `packages` array with your real
 packages (see below) and run `devtooie`.
@@ -86,7 +85,6 @@ augmentation block at the bottom:
 import { defineConfig } from 'devtooie';
 
 const config = defineConfig({
-  apiPort: 4099, // local control HTTP API port (default 4099)
   // Values for any extrinsic URL tokens you reference below.
   tokens: { domain: process.env.APP_DOMAIN, proxyport: process.env.PROXY_PORT },
   packages: [
@@ -130,13 +128,12 @@ declare module 'devtooie' {
 
 `defineConfig` accepts:
 
-| Field      | Meaning                                                                                                      |
-| ---------- | ------------------------------------------------------------------------------------------------------------ |
-| `packages` | Your package definitions (see below).                                                                        |
-| `apiPort`  | Port for devtooie's localhost-only control API (status/restart/rebuild/quit). Defaults to `4099` if omitted. |
-| `skill`    | Whether the [agent skill](#agent-skill) is installed and auto-refreshed on new devtooie versions.            |
-| `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.                          |
-| `tokens`   | Values for extrinsic `$token` substitution — see [Tokens](#tokens).                                          |
+| Field          | Meaning                                                                          |
+| -------------- | -------------------------------------------------------------------------------- |
+| `packages`     | Your package definitions (see below).                                            |
+| `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.  |
+| `tokens`       | Values for extrinsic `$token` substitution — see [Tokens](#tokens).              |
+| `env`          | `.env` files loaded per package — see [Environment loading](#environment-env-loading). |
 
 If no `devtooie.config.ts` (or `.mts`/`.js`/`.mjs`) exists, the CLI exits with
 a message pointing you at `devtooie init`.
@@ -204,6 +201,56 @@ token, so misconfiguration fails loudly at startup instead of silently.
 This keeps devtooie itself free of any hardcoded environment-variable names:
 you decide what feeds `tokens` (env vars, computed values, constants).
 
+## Environment (`.env`) loading
+
+devtooie loads `.env` files for every package it runs and injects them into that
+package's child process — merged over the current `process.env` without mutating
+it. Files are resolved at two scopes (the workspace root and the package's own
+directory); only files that exist are loaded.
+
+Default files, **ascending precedence within a scope**:
+
+1. `.env`
+2. `.env.development.pre`
+3. `.env.development`
+4. `.env.local`
+
+**Package scope always overrides workspace scope**, and within a scope a file
+later in the list overrides an earlier one — so a package's `.env.local` wins
+over everything and the workspace `.env` is the base. `${VAR}` references are
+expanded against already-loaded files and the current environment.
+
+Customize the list via `env.files` (each name is still resolved at both scopes):
+
+```ts
+defineConfig({
+  env: { files: ['.env', '.env.local'] },
+  packages: [/* … */],
+});
+```
+
+While a session runs, devtooie **watches these files (and where new ones would
+appear) and restarts the affected package(s)** on change — editing a
+workspace-level file restarts every running package that uses it.
+
+### `devtooie env`
+
+The same resolution is available as a standalone command — handy for running a
+one-off command with a package's env, or inspecting what resolves:
+
+```bash
+devtooie env                              # resolve for the current directory
+devtooie env --dir packages/api           # ...for a specific package
+devtooie env -- node ./scripts/seed.js    # run a command with them injected
+devtooie env --dir packages/api -- npm run migrate
+```
+
+It discovers the workspace root (the nearest ancestor holding a
+`devtooie.config.*`) and reads its `env.files`, so it works from anywhere.
+`--dir` is relative to that root and **defaults to your current directory** — so
+running it from inside a package resolves that package (workspace-level files
+included), just like devtooie would when it runs the package.
+
 ## Type augmentation
 
 The `declare module 'devtooie'` block at the bottom of `devtooie.config.ts`
@@ -252,16 +299,24 @@ Subcommands:
 - **`devtooie reset`** — clear the saved package selection.
 - **`devtooie resolvedeps -p <name> [...]`** — print the resolved
   build/dev/runtime dependency sets as JSON.
+- **`devtooie env [--dir <relativeDir>] [-- <cmd...>]`** — resolve a package's
+  `.env` files and print them, or run a command with them injected. See
+  [Environment loading](#environment-env-loading).
 
-There's no `--config` or `--api-port` flag — the control API port always comes
-from `devtooie.config.ts`.
+There's no `--config` or `--api-port` flag. The control API port is chosen at
+startup and written to `node_modules/.devtooie/running.json`; read it from there.
 
 ### Control API
 
 While a session is running (either runner mode), devtooie exposes a
-localhost-only HTTP API on `apiPort` (default `4099`):
+localhost-only HTTP API. The port is picked at startup from a small range
+(`14000`–`14099`) and recorded — along with the session pid — in
+`node_modules/.devtooie/running.json`; read the `port` field there to reach it.
+Restarts of the same workspace reuse the recorded port, and a fixed port can be
+pinned with `apiPort` in `devtooie.config.ts`.
 
-- `GET /query/pid` — the running session's PID.
+- `GET /query/pid` — the running session's PID **and the absolute path to the
+  `devtooie.config.*` it was started with** (`{ pid, configPath }`).
 - `GET /query/status[/<name>]` / `GET /query/packages[?status=...]` — package
   status.
 - `POST /command/restart/<name>` / `POST /command/rebuild/<name>` — restart

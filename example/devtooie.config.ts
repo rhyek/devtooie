@@ -1,7 +1,6 @@
 import { defineConfig } from 'devtooie';
 
 const config = defineConfig({
-  apiPort: 4099,
   packages: [
     {
       name: 'backend',

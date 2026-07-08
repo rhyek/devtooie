@@ -7,6 +7,8 @@ import wrapAnsi from 'wrap-ansi';
 import type { AnyPackageConfig } from './config.js';
 import type { ControlManager } from './command-server.js';
 import { debugLog } from './debug-log.js';
+import { DEFAULT_ENV_FILES, resolveEnv } from './env.js';
+import { watchEnvFiles, type WatchTarget } from './env-watch.js';
 import { getExecArgs, getStateDir, hasScript } from './lib.js';
 import type { RunnerArgs } from './runners/types.js';
 
@@ -116,18 +118,34 @@ export class ProcessManager implements ControlManager {
   private lastGroupId = new Map<string, number>();
   private logFd: number;
   private logFilePath: string;
+  /** `.env` filenames resolved (per package) and injected into each spawned child. */
+  private envFiles: string[];
+  /** Workspace root that package `relativeDir`s resolve against for `.env` loading. */
+  private cwd: string;
+  /** Tears down the `.env` file watchers; null until `startAll` wires them up. */
+  private envWatchDispose: (() => void) | null = null;
   /** Bound `process.on('exit')` handler, kept so `dispose()` can remove it. */
   private exitHandler: () => void;
   private disposed = false;
 
   constructor(
-    { sortedPackages, rebuildableSet, waitForMap, healthcheckUrls, logFile }: RunnerArgs,
+    {
+      sortedPackages,
+      rebuildableSet,
+      waitForMap,
+      healthcheckUrls,
+      logFile,
+      envFiles,
+      cwd,
+    }: RunnerArgs,
     { plain = false }: { plain?: boolean } = {},
   ) {
     this.plain = plain;
     this.rebuildableSet = rebuildableSet;
     this.waitForMap = waitForMap;
     this.healthcheckUrls = healthcheckUrls;
+    this.envFiles = envFiles ?? DEFAULT_ENV_FILES;
+    this.cwd = cwd ?? process.cwd();
 
     const displayName = (a: AnyPackageConfig) => a.run?.shortName ?? a.name;
     const maxNameLen = sortedPackages.reduce((m, a) => Math.max(m, displayName(a).length), 0);
@@ -186,6 +204,7 @@ export class ProcessManager implements ControlManager {
     if ([...this.processes.values()].some((m) => m.status === 'waiting')) {
       this.startWaitingPoll();
     }
+    this.startEnvWatchers();
     debugLog(`startAll: done, buffer.length=${this.buffer.length}`);
   }
 
@@ -254,6 +273,7 @@ export class ProcessManager implements ControlManager {
     const [cmd, args] = getExecArgs(managed.pkg, 'dev');
     const proc = execa(cmd, args, {
       cwd: managed.pkg.path,
+      env: this.packageEnv(managed.pkg),
       stdin: 'ignore',
       stdout: 'pipe',
       stderr: 'pipe',
@@ -297,6 +317,65 @@ export class ProcessManager implements ControlManager {
     });
 
     this.addLine(pfx, chalk.green('started'), searchName, false);
+  }
+
+  /**
+   * Environment for a package's child processes: the current `process.env` overlaid with
+   * the package's resolved `.env` files (later files / package scope win). Re-resolved on
+   * every spawn so a restart picks up edited `.env` values. Never mutates `process.env`.
+   */
+  private packageEnv(pkg: AnyPackageConfig): NodeJS.ProcessEnv {
+    const { env } = resolveEnv({
+      cwd: this.cwd,
+      relativeDir: pkg.relativeDir,
+      files: this.envFiles,
+    });
+    return Object.assign({}, process.env, env);
+  }
+
+  /**
+   * Watches every package's `.env` candidate files (workspace-shared and package-local)
+   * and restarts affected running packages when one changes or appears. Idempotent.
+   */
+  private startEnvWatchers(): void {
+    if (this.envWatchDispose) return;
+    const workspaceDir = path.resolve(this.cwd);
+    const targets: WatchTarget[] = [
+      // Workspace-scope files are shared: a change restarts every running package.
+      {
+        dir: workspaceDir,
+        filenames: this.envFiles,
+        onChange: () => {
+          for (const name of this.processes.keys()) this.restartForEnvChange(name);
+        },
+      },
+    ];
+    // Package-scope files restart only their own package.
+    for (const [name, managed] of this.processes) {
+      const pkgDir = path.resolve(this.cwd, managed.pkg.relativeDir);
+      if (pkgDir === workspaceDir) continue; // already covered by the workspace watcher
+      targets.push({
+        dir: pkgDir,
+        filenames: this.envFiles,
+        onChange: () => this.restartForEnvChange(name),
+      });
+    }
+    this.envWatchDispose = watchEnvFiles({ targets });
+  }
+
+  /** Restart a package in response to an `.env` change, but only if it's currently running. */
+  private restartForEnvChange(name: string): void {
+    if (this.getStatus(name) !== 'running') return;
+    const managed = this.processes.get(name);
+    if (managed) {
+      this.addLine(
+        managed.prefix,
+        chalk.cyan('.env changed, restarting...'),
+        managed.searchName,
+        false,
+      );
+    }
+    this.restart(name);
   }
 
   // ---------------------------------------------------------------------------
@@ -380,6 +459,7 @@ export class ProcessManager implements ControlManager {
       const [cmd, args] = getExecArgs(managed.pkg, 'build:clean');
       const buildProc = execa(cmd, args, {
         cwd: managed.pkg.path,
+        env: this.packageEnv(managed.pkg),
         stdin: 'ignore',
         reject: false,
         detached: true,
@@ -463,6 +543,7 @@ export class ProcessManager implements ControlManager {
 
     const proc = execa(cmd, args, {
       cwd: managed.pkg.path,
+      env: this.packageEnv(managed.pkg),
       stdin: 'ignore',
       stdout: 'pipe',
       stderr: 'pipe',
@@ -632,6 +713,10 @@ export class ProcessManager implements ControlManager {
       return;
     }
     this.disposed = true;
+    if (this.envWatchDispose) {
+      this.envWatchDispose();
+      this.envWatchDispose = null;
+    }
     process.off('exit', this.exitHandler);
     ProcessManager.instances.delete(this);
     try {

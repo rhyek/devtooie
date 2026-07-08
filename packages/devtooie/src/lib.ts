@@ -3,7 +3,8 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { execaSync } from 'execa';
 import type { AnyPackageConfig } from './config.js';
-import { getRegisteredPackages, getLoadedConfig, DEFAULT_API_PORT } from './config.js';
+import { getRegisteredPackages, getLoadedConfig } from './config.js';
+import { DEFAULT_ENV_FILES } from './env.js';
 import type { RunnerArgs } from './runners/types.js';
 
 const require = createRequire(import.meta.url);
@@ -157,15 +158,6 @@ export function resolveDeps(
   return { allPackages, buildSet, runSet, reasons };
 }
 
-/**
- * Control-API port from the loaded `devtooie.config.ts` (`apiPort`), defaulting to 4099.
- * Reads the config cached by `defineConfig` at import time, so callers must have loaded
- * the config first (the run flow always does).
- */
-export function getApiPort(): number {
-  return getLoadedConfig()?.apiPort ?? DEFAULT_API_PORT;
-}
-
 const selectionFile = () => path.join(getStateDir(), 'selection.json');
 
 export function saveSelection(names: string[]): void {
@@ -283,5 +275,7 @@ export function buildRunnerArgs(
     waitForMap,
     healthcheckUrls,
     extraCommandsMap,
+    envFiles: getLoadedConfig()?.envFiles ?? DEFAULT_ENV_FILES,
+    cwd: process.cwd(),
   };
 }

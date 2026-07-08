@@ -1,15 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { intro, outro, confirm, text, isCancel, cancel, log } from '@clack/prompts';
+import { intro, outro, confirm, isCancel, cancel, log } from '@clack/prompts';
 import { findConfigPath } from './load-config.js';
 import { installSkill } from './skill.js';
 
 /** The scaffolded `devtooie.config.ts`: meta + packages + the inline type augmentation. */
-function configTemplate(apiPort: number): string {
+function configTemplate(): string {
   return `import { defineConfig } from 'devtooie';
 
 const config = defineConfig({
-  apiPort: ${apiPort},
   // tokens: { domain: process.env.APP_DOMAIN, proxyport: process.env.PROXY_PORT },
   packages: [
     // { name: 'my-pkg', types: ['backend'], run: { port: 3001 } },
@@ -60,30 +59,12 @@ export async function runInit(opts: { cwd?: string; force?: boolean } = {}): Pro
     return;
   }
 
-  const apiPortAnswer = await text({
-    message: 'Control API port?',
-    defaultValue: '4099',
-    placeholder: '4099',
-    validate: (value) => {
-      if (!value) return undefined;
-      if (!/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 65535) {
-        return 'must be a port number between 1 and 65535';
-      }
-      return undefined;
-    },
-  });
-  if (isCancel(apiPortAnswer)) {
-    cancel('Setup cancelled.');
-    return;
-  }
-
-  // All prompts answered without cancellation — now perform the (idempotent) writes.
+  // Prompt answered without cancellation — now perform the (idempotent) writes.
   const skill = skillAnswer;
-  const apiPort = Number(apiPortAnswer);
 
   const configPath = path.join(cwd, 'devtooie.config.ts');
   if (opts.force || !existingConfig) {
-    fs.writeFileSync(configPath, configTemplate(apiPort));
+    fs.writeFileSync(configPath, configTemplate());
     log.step('Scaffolded devtooie.config.ts');
   } else {
     log.step(`Kept existing ${path.basename(existingConfig)}`);
