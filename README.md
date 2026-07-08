@@ -61,7 +61,12 @@ This is an interactive, idempotent setup flow. It will:
 1. Ask whether to install the [agent skill](#agent-skill) (recommended: yes).
 2. Scaffold `devtooie.config.ts` at your repo root (an existing config file is
    left untouched).
-3. If you opted in to the skill, install it.
+3. Reconcile a root `tsconfig.json` so the config type-checks with Node globals
+   in scope — creating one if absent, or just adding `devtooie.config.ts` to its
+   `include` (and `"node"` to a `types` array that lacks it) if one already
+   exists — so editors don't flag `process.env.*` in the config with TS2591.
+   Idempotent; your other settings are left untouched.
+4. If you opted in to the skill, install it.
 
 After that, fill in the scaffolded config's `packages` array with your real
 packages (see below) and run `devtooie`.
@@ -219,6 +224,11 @@ Default files, **ascending precedence within a scope**:
 later in the list overrides an earlier one — so a package's `.env.local` wins
 over everything and the workspace `.env` is the base. `${VAR}` references are
 expanded against already-loaded files and the current environment.
+
+A package's `run.port` is also injected as the `PORT` env var (so the app can
+read `process.env.PORT` without duplicating it), sitting between the inherited
+environment and the `.env` files — a default the config provides, which an
+explicit `.env` `PORT` still overrides.
 
 Customize the list via `env.files` (each name is still resolved at both scopes):
 

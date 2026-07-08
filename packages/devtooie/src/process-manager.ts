@@ -320,9 +320,11 @@ export class ProcessManager implements ControlManager {
   }
 
   /**
-   * Environment for a package's child processes: the current `process.env` overlaid with
-   * the package's resolved `.env` files (later files / package scope win). Re-resolved on
-   * every spawn so a restart picks up edited `.env` values. Never mutates `process.env`.
+   * Environment for a package's child processes: the current `process.env`, then the
+   * package's configured `run.port` as `PORT`, then its resolved `.env` files (later files /
+   * package scope win). So `PORT` defaults to the config port but an explicit `.env` `PORT`
+   * still wins. Re-resolved on every spawn so a restart picks up edited `.env` values. Never
+   * mutates `process.env`.
    */
   private packageEnv(pkg: AnyPackageConfig): NodeJS.ProcessEnv {
     const { env } = resolveEnv({
@@ -330,7 +332,8 @@ export class ProcessManager implements ControlManager {
       relativeDir: pkg.relativeDir,
       files: this.envFiles,
     });
-    return Object.assign({}, process.env, env);
+    const port = pkg.run?.port;
+    return Object.assign({}, process.env, port !== undefined ? { PORT: String(port) } : {}, env);
   }
 
   /**

@@ -131,6 +131,61 @@ describe('ProcessManager env injection', () => {
   }, 10_000);
 });
 
+describe('ProcessManager PORT injection', () => {
+  let portDir: string;
+  let portLog: string;
+  let mgr: ProcessManager | undefined;
+
+  beforeAll(() => {
+    portDir = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-pm-port-'));
+    fs.writeFileSync(
+      path.join(portDir, 'package.json'),
+      JSON.stringify({
+        name: 'portfix',
+        version: '1.0.0',
+        scripts: {
+          dev: 'node -e "console.log(\'PORT=\'+process.env.PORT);setInterval(()=>{},1e9)"',
+        },
+      }),
+    );
+    portLog = path.join(portDir, 'devlog.txt');
+  });
+  afterAll(() => {
+    mgr?.dispose();
+    fs.rmSync(portDir, { recursive: true, force: true });
+  });
+
+  it("injects a package's run.port as the PORT env var", async () => {
+    const a: AnyPackageConfig = {
+      name: 'portfix',
+      types: [],
+      relativeDir: '.',
+      path: portDir,
+      run: { port: 4321 },
+    };
+    mgr = new ProcessManager(
+      {
+        sortedPackages: [a],
+        selectedSet: new Set([a.name]),
+        buildDepSet: new Set(),
+        rebuildableSet: new Set(),
+        waitForMap: {},
+        healthcheckUrls: {},
+        extraCommandsMap: {},
+        logFile: portLog,
+        cwd: portDir,
+      },
+      { plain: true },
+    );
+
+    mgr.start('portfix');
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await mgr.stop('portfix');
+
+    expect(fs.readFileSync(portLog, 'utf8')).toContain('PORT=4321');
+  }, 10_000);
+});
+
 describe('ProcessManager env-change restart', () => {
   let d: string;
   let log: string;

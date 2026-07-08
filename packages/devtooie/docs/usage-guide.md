@@ -121,6 +121,9 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
    Infer `types` (`backend` / `browser` / `lib`) and the `run` block from what the
    package actually is:
    - `port` — the dev port it listens on (`hmrPort` for a browser package's HMR socket).
+     devtooie injects this into the package's process as the `PORT` env var, so the app can
+     read `process.env.PORT` without you duplicating it in a `.env` (an explicit `.env`
+     `PORT` still wins).
    - `healthcheck` / `urls` — strings that may contain **tokens** substituted at load
      time: `$port`, `$name`, `$subdomain` (intrinsic), plus any extrinsic `$key` you
      declare in the top-level `tokens` map passed to `defineConfig`. Write

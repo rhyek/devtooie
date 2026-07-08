@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import path from 'node:path';
 import chalk from 'chalk';
 import { Box, type DOMElement, Text, measureElement, useApp, useInput } from 'ink';
 import type { startCommandServer } from '../command-server.js';
@@ -794,7 +795,11 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
               <Text color="cyan">)</Text>
             </Text>
           )}
-          {args.logFile && <Text dimColor>logfile: {args.logFile}</Text>}
+          {args.logFile && (
+            <Text dimColor>
+              logfile: {path.relative(process.cwd(), args.logFile) || args.logFile}
+            </Text>
+          )}
         </Box>
       </Box>
       {linksColumn}
