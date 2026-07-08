@@ -67,11 +67,13 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
    "rebuildable" detection (the `b` hotkey in the interactive UI, and the control API's
    rebuild endpoint) keys off that script's presence — so don't skip it.
 
-   For a **non-Node package** (a `Makefile`, no `package.json`), add the equivalent
-   **`make` targets** `dev`, `build`, and `clean`; devtooie invokes them as `make dev` /
-   `make build` / `make clean`. Each target wraps whatever the app's toolchain needs —
-   e.g. for a Go service `dev` is `go run .`, `build` is `go build`, and `clean` removes
-   the build output:
+   For a **non-Node package** (no `package.json`), the entry points come from a `Makefile`
+   with the equivalent **`make` targets** `dev`, `build`, and `clean`, which devtooie
+   invokes as `make dev` / `make build` / `make clean`. **If the package has no `Makefile`,
+   create one** (a package with neither a `package.json` nor a `Makefile` can't be driven);
+   if it already has one, add whatever targets are missing. Each target wraps whatever the
+   app's toolchain needs — e.g. for a Go service `dev` is `go run .`, `build` is
+   `go build`, and `clean` removes the build output:
 
    ```makefile
    SHELL=/bin/bash -o pipefail
