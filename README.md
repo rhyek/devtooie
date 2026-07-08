@@ -87,7 +87,6 @@ import { defineConfig } from 'devtooie';
 
 const config = defineConfig({
   apiPort: 4099, // local control HTTP API port (default 4099)
-  skill: true, // whether the agent skill is installed + kept up to date
   // Values for any extrinsic URL tokens you reference below.
   tokens: { domain: process.env.APP_DOMAIN, proxyport: process.env.PROXY_PORT },
   packages: [
@@ -96,7 +95,7 @@ const config = defineConfig({
       types: ['backend'],
       run: {
         port: 3001,
-        healthcheck: 'http://localhost::port/health',
+        healthcheck: 'http://localhost:$port/health',
       },
     },
     {
@@ -104,7 +103,7 @@ const config = defineConfig({
       types: ['backend'],
       run: {
         selectable: false, // infra dep, never shown in the picker
-        healthcheck: 'https://:domain::proxyport/_health',
+        healthcheck: 'https://$domain:$proxyport/_health',
       },
     },
     {
@@ -112,7 +111,7 @@ const config = defineConfig({
       types: ['browser'],
       run: {
         port: 3000,
-        urls: ['https://app.:domain::proxyport'],
+        urls: ['https://app.$domain:$proxyport'],
         waitFor: ['core-api'],
         deps: { runtime: ['core-api', 'reverse-proxy'] },
       },
@@ -137,7 +136,7 @@ declare module 'devtooie' {
 | `apiPort`  | Port for devtooie's localhost-only control API (status/restart/rebuild/quit). Defaults to `4099` if omitted. |
 | `skill`    | Whether the [agent skill](#agent-skill) is installed and auto-refreshed on new devtooie versions.            |
 | `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.                          |
-| `tokens`   | Values for extrinsic `:token` substitution — see [Tokens](#tokens).                                          |
+| `tokens`   | Values for extrinsic `$token` substitution — see [Tokens](#tokens).                                          |
 
 If no `devtooie.config.ts` (or `.mts`/`.js`/`.mjs`) exists, the CLI exits with
 a message pointing you at `devtooie init`.
@@ -155,7 +154,7 @@ Each package entry:
   - `selectable` (default `true`) — show in the interactive picker.
   - `port`, `hmrPort` — the package's port(s); used for substitution and swept
     on session handoff.
-  - `subdomain` — for reverse-proxy routing; used for `:subdomain`
+  - `subdomain` — for reverse-proxy routing; used for `$subdomain`
     substitution.
   - `urls` — strings or `{ label, url }`, shown in the running footer.
   - `healthcheck` — a URL polled for readiness; also required by anything
@@ -184,19 +183,21 @@ codegen, etc.) to the same dependency graph.
 
 ## Tokens
 
-`urls` and `healthcheck` strings support `:token` substitution, resolved once
-at `defineConfig()` call time:
+`urls` and `healthcheck` strings support `$token` substitution, resolved once
+at `defineConfig()` call time. Using `$` (rather than `:`) keeps tokens from
+colliding with the `:` that precedes a port in a URL — e.g.
+`http://localhost:$port`:
 
 **Intrinsic** (always available, derived from the package's own config):
 
-- `:name` → the package's `name`
-- `:port` → `run.port` (throws if the package has no `port`)
-- `:subdomain` → `run.subdomain` (first element, if it's an array; throws if
+- `$name` → the package's `name`
+- `$port` → `run.port` (throws if the package has no `port`)
+- `$subdomain` → `run.subdomain` (first element, if it's an array; throws if
   the package has no `subdomain`)
 
-**Extrinsic** (yours to supply via `tokens: {...}`): any other `:key` in a
+**Extrinsic** (yours to supply via `tokens: {...}`): any other `$key` in a
 `urls`/`healthcheck` string is looked up in the `tokens` map you pass to
-`defineConfig`. Referencing a `:key` with no matching entry — or one
+`defineConfig`. Referencing a `$key` with no matching entry — or one
 whose value is `undefined` — throws immediately, naming the package and the
 token, so misconfiguration fails loudly at startup instead of silently.
 
@@ -273,9 +274,8 @@ drive a session headlessly.
 
 ## Agent skill
 
-If you opt in during `devtooie init` (or set `skill: true` in
-`devtooie.config.ts`), devtooie installs an agent-facing skill file at
-`.claude/skills/devtooie/SKILL.md` (and, best-effort, under `.agents/` /
+If you opt in during `devtooie init`, devtooie installs an agent-facing skill
+file at `.claude/skills/devtooie/SKILL.md` (and, best-effort, under `.agents/` /
 `.cursor/` if those directories already exist). It teaches a coding agent how
 to run devtooie headlessly (`--plain -p <package>`), drive a running session
 through the control API, read the fixed default logfile for debugging, and

@@ -5,12 +5,11 @@ import { findConfigPath } from './load-config.js';
 import { installSkill } from './skill.js';
 
 /** The scaffolded `devtooie.config.ts`: meta + packages + the inline type augmentation. */
-function configTemplate(apiPort: number, skill: boolean): string {
+function configTemplate(apiPort: number): string {
   return `import { defineConfig } from 'devtooie';
 
 const config = defineConfig({
   apiPort: ${apiPort},
-  skill: ${skill},
   // tokens: { domain: process.env.APP_DOMAIN, proxyport: process.env.PROXY_PORT },
   packages: [
     // { name: 'my-pkg', types: ['backend'], run: { port: 3001 } },
@@ -84,7 +83,7 @@ export async function runInit(opts: { cwd?: string; force?: boolean } = {}): Pro
 
   const configPath = path.join(cwd, 'devtooie.config.ts');
   if (opts.force || !existingConfig) {
-    fs.writeFileSync(configPath, configTemplate(apiPort, skill));
+    fs.writeFileSync(configPath, configTemplate(apiPort));
     log.step('Scaffolded devtooie.config.ts');
   } else {
     log.step(`Kept existing ${path.basename(existingConfig)}`);

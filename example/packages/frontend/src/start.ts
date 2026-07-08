@@ -1,8 +1,14 @@
-// TanStack Start instance config. One global middleware lives here: the ONE place every server-fn
-// failure is surfaced. (No CSRF middleware — this app isn't behind a TLS-terminating, Sec-Fetch-*
-// stripping reverse proxy, so TanStack's built-in origin check needs no override.)
-import { createStart, createMiddleware } from '@tanstack/react-start';
+// TanStack Start instance config. Two middlewares live here:
+//   - `csrf` (request phase): same-origin protection for server functions. Server fns are
+//     same-origin RPC endpoints, and this check (Sec-Fetch-Site → Origin → Referer) is opt-in —
+//     without it they aren't origin-checked at all. Scoped to `serverFn` so router requests are
+//     untouched. This is what silences Start's "not protected by the CSRF middleware" warning.
+//   - `surfaceErrors` (function phase): the ONE place every server-fn failure is surfaced.
+import { createStart, createMiddleware, createCsrfMiddleware } from '@tanstack/react-start';
 import { toast } from 'sonner';
+
+// Reject cross-site server-fn calls; leave router (SSR/document) requests alone.
+const csrf = createCsrfMiddleware({ filter: (ctx) => ctx.handlerType === 'serverFn' });
 
 // Global server-fn error surface. The `.client()` phase wraps every server-fn call in the browser;
 // on a rejection it toasts MUTATION (POST) failures — the state-changing calls where a silent
@@ -21,5 +27,6 @@ const surfaceErrors = createMiddleware({ type: 'function' }).client(async ({ nex
 });
 
 export const startInstance = createStart(() => ({
+  requestMiddleware: [csrf],
   functionMiddleware: [surfaceErrors],
 }));

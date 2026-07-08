@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { spawn } from 'node:child_process';
@@ -17,12 +16,14 @@ try {
     process.exit(0);
   }
 
-  // Gate 3: Skip if devtooie.yaml or devtooie.yml exists
+  // Gate 3: Decide whether devtooie still needs setup — either no config, or a config
+  // exists but the agent skill isn't installed. Delegates to devtooie's own setup-status
+  // logic so the config-file names and skill-install paths stay single-sourced (see
+  // src/setup-status.ts).
   const initCwd = process.env.INIT_CWD || process.cwd();
-  const yamlPath = path.join(initCwd, 'devtooie.yaml');
-  const ymlPath = path.join(initCwd, 'devtooie.yml');
-
-  if (fs.existsSync(yamlPath) || fs.existsSync(ymlPath)) {
+  const { setupNag } = await import('./dist/setup-status.js');
+  const nag = setupNag(initCwd);
+  if (!nag.prompt) {
     process.exit(0);
   }
 
@@ -32,7 +33,7 @@ try {
     output: process.stdout,
   });
 
-  rl.question('Set up devtooie now? runs `devtooie init` (Y/n) ', (answer) => {
+  rl.question(`${nag.message} (Y/n) `, (answer) => {
     rl.close();
 
     const isYes = !answer || answer.toLowerCase() === 'y';

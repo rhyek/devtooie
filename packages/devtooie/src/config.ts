@@ -29,7 +29,6 @@ export interface PackageConfigInput<N extends string> {
 
 export interface DefineConfigOptions<N extends string> {
   apiPort?: number;
-  skill?: boolean;
   packages: PackageConfigInput<N>[];
   workspaceDir?: string;
   tokens?: Record<string, string | undefined>;
@@ -44,7 +43,6 @@ export type AnyPackageConfig = ResolvedPackageConfig<string>;
 
 export interface Config<N extends string> {
   apiPort: number;
-  skill: boolean;
   packages: ResolvedPackageConfig<N>[];
 }
 
@@ -75,29 +73,29 @@ function substituteRun<N extends string>(
 ): RunConfig<N> {
   const primarySubdomain = Array.isArray(run.subdomain) ? run.subdomain[0] : run.subdomain;
   const replace = (s: string): string => {
-    let out = s.replaceAll(':name', name);
-    if (out.includes(':subdomain')) {
+    let out = s.replaceAll('$name', name);
+    if (out.includes('$subdomain')) {
       if (!primarySubdomain) {
-        throw new Error(`${name} uses :subdomain but run.subdomain is not defined`);
+        throw new Error(`${name} uses $subdomain but run.subdomain is not defined`);
       }
-      out = out.replaceAll(':subdomain', primarySubdomain);
+      out = out.replaceAll('$subdomain', primarySubdomain);
     }
-    if (out.includes(':port')) {
+    if (out.includes('$port')) {
       if (run.port === undefined) {
-        throw new Error(`${name} uses :port but run.port is not defined`);
+        throw new Error(`${name} uses $port but run.port is not defined`);
       }
-      out = out.replaceAll(':port', String(run.port));
+      out = out.replaceAll('$port', String(run.port));
     }
-    // Extrinsic tokens: any remaining :key must resolve from tokens.
-    out = out.replace(/:([a-z][a-z0-9_]*)/gi, (_match, key: string) => {
+    // Extrinsic tokens: any remaining $key must resolve from tokens.
+    out = out.replace(/\$([a-z][a-z0-9_]*)/gi, (_match, key: string) => {
       if (key in tokens) {
         const val = tokens[key];
         if (val === undefined) {
-          throw new Error(`${name} uses :${key} but tokens.${key} is undefined`);
+          throw new Error(`${name} uses $${key} but tokens.${key} is undefined`);
         }
         return val;
       }
-      throw new Error(`${name} uses :${key} but no such token was provided`);
+      throw new Error(`${name} uses $${key} but no such token was provided`);
     });
     return out;
   };
@@ -144,7 +142,6 @@ export function defineConfig<const N extends string>(opts: DefineConfigOptions<N
 
   const resolved: Config<N> = {
     apiPort: opts.apiPort ?? DEFAULT_API_PORT,
-    skill: opts.skill ?? false,
     packages,
   };
   registeredPackages = packages as AnyPackageConfig[];

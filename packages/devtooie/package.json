@@ -27,6 +27,7 @@
   "files": [
     "dist",
     "assets",
+    "docs",
     "postinstall.mjs"
   ],
   "scripts": {

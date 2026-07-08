@@ -20,27 +20,23 @@ describe('defineConfig path resolution', () => {
 });
 
 describe('meta defaults', () => {
-  it('defaults apiPort to 4099 and skill to false', () => {
+  it('defaults apiPort to 4099', () => {
     const cfg = defineConfig({ packages: [{ name: 'svc', types: [] }] });
     expect(cfg.apiPort).toBe(4099);
-    expect(cfg.skill).toBe(false);
   });
 
-  it('passes through apiPort and skill and exposes them via getLoadedConfig', () => {
+  it('passes through apiPort and exposes it via getLoadedConfig', () => {
     const cfg = defineConfig({
       apiPort: 5000,
-      skill: true,
       packages: [{ name: 'svc', types: [] }],
     });
     expect(cfg.apiPort).toBe(5000);
-    expect(cfg.skill).toBe(true);
     expect(getLoadedConfig()?.apiPort).toBe(5000);
-    expect(getLoadedConfig()?.skill).toBe(true);
   });
 });
 
 describe('token substitution', () => {
-  it('substitutes intrinsic :name, :port, :subdomain', () => {
+  it('substitutes intrinsic $name, $port, $subdomain', () => {
     const { packages } = defineConfig({
       packages: [
         {
@@ -49,8 +45,8 @@ describe('token substitution', () => {
           run: {
             port: 3001,
             subdomain: ['core', 'core-bg'],
-            healthcheck: 'http://localhost::port/health',
-            urls: ['https://:subdomain.local/:name'],
+            healthcheck: 'http://localhost:$port/health',
+            urls: ['https://$subdomain.local/$name'],
           },
         },
       ],
@@ -67,7 +63,7 @@ describe('token substitution', () => {
         {
           name: 'web',
           types: ['browser'],
-          run: { urls: [{ label: 'home', url: 'https://app.:domain::proxyport' }] },
+          run: { urls: [{ label: 'home', url: 'https://app.$domain:$proxyport' }] },
         },
       ],
     });
@@ -99,9 +95,9 @@ describe('validation', () => {
   it('throws when a url uses an unknown extrinsic token', () => {
     expect(() =>
       defineConfig({
-        packages: [{ name: 'a', types: ['browser'], run: { urls: ['https://:domain'] } }],
+        packages: [{ name: 'a', types: ['browser'], run: { urls: ['https://$domain'] } }],
       }),
-    ).toThrow(/:domain/);
+    ).toThrow(/\$domain/);
   });
 });
 

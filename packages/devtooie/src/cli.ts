@@ -6,12 +6,7 @@ import { Command } from 'commander';
 import { execa } from 'execa';
 import { renderApp } from './components/App.js';
 import { startCommandServer } from './command-server.js';
-import {
-  type AnyPackageConfig,
-  findPackage,
-  getRegisteredPackages,
-  getLoadedConfig,
-} from './config.js';
+import { type AnyPackageConfig, findPackage, getRegisteredPackages } from './config.js';
 import { acquireDevSession } from './dev-session.js';
 import { handleShellError } from './errors.js';
 import { runInit } from './init.js';
@@ -257,11 +252,10 @@ program.action(async () => {
 
   await loadConfigOrExit();
 
-  // Best-effort: a skill refresh should never block a run.
+  // Best-effort: a skill refresh should never block a run. No-ops unless the skill was
+  // actually installed (tracked in node_modules/.devtooie/skill.json).
   try {
-    if (getLoadedConfig()?.skill) {
-      refreshSkillIfStale({ cwd: process.cwd(), version: readOwnVersion() });
-    }
+    refreshSkillIfStale({ cwd: process.cwd(), version: readOwnVersion() });
   } catch (err) {
     console.error('devtooie: skill refresh failed (non-fatal):', err);
   }
