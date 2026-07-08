@@ -20,6 +20,17 @@ export function contentHash(s: string): string {
   return crypto.createHash('sha256').update(s).digest('hex');
 }
 
+/** Reads devtooie's own version (for the skill banner). Falls back to '0.0.0'. */
+export function readOwnVersion(): string {
+  try {
+    const pkgPath = path.join(import.meta.dirname, '../package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
 /** `true` when `a` is an older semver-ish (`x.y.z`) version than `b`. */
 function isOlder(a: string, b: string): boolean {
   const pa = a.split('.').map(Number);
@@ -65,6 +76,16 @@ function writeSkillFile(filePath: string, content: string): void {
 // Best-effort secondary install targets: mirrored under any of these dirs
 // that already exist, alongside the canonical `.claude/` install.
 const OPTIONAL_DIRS = ['.agents', '.cursor'];
+
+/** Canonical install path for the managed skill file (`.claude/skills/devtooie/SKILL.md`). */
+export function skillInstallPath(cwd: string): string {
+  return path.join(cwd, '.claude', 'skills', 'devtooie', 'SKILL.md');
+}
+
+/** `true` when the managed skill file is already installed at `cwd`. */
+export function isSkillInstalled(cwd: string): boolean {
+  return fs.existsSync(skillInstallPath(cwd));
+}
 
 /**
  * Writes the rendered skill to `.claude/skills/devtooie/SKILL.md` (always) and, when
@@ -113,4 +134,19 @@ export function refreshSkillIfStale(opts: { cwd?: string; version: string }): vo
   if (contentHash(onDisk) !== state.hash) return; // hand-edited; leave untouched
 
   installSkill(opts);
+}
+
+/**
+ * If the managed skill is already installed at `cwd`, silently re-render and overwrite it
+ * (and every recorded install target) so it always matches the shipped template. Unlike
+ * {@link refreshSkillIfStale} this is unconditional: it ignores the recorded version and
+ * overwrites even a hand-edited file (the file is managed — "do not edit"). No-op when the
+ * skill isn't installed. Returns whether an update happened. Used by `postinstall` and
+ * `devtooie init` to keep the installed skill in lockstep without prompting.
+ */
+export function updateSkillIfPresent(opts: { cwd?: string; version?: string } = {}): boolean {
+  const cwd = opts.cwd ?? process.cwd();
+  if (!isSkillInstalled(cwd)) return false;
+  installSkill({ cwd, version: opts.version ?? readOwnVersion() });
+  return true;
 }

@@ -379,8 +379,10 @@ file at `.claude/skills/devtooie/SKILL.md` (and, best-effort, under `.agents/` /
 to run devtooie headlessly (`--plain -p <package>`), drive a running session
 through the control API, read the fixed default logfile for debugging, and
 onboard a new package into your `devtooie.config.ts`. The installed file is
-refreshed automatically on newer devtooie versions, as long as it hasn't been
-hand-edited.
+**managed** — treat it as generated, not something to hand-edit. `devtooie init`
+and the package's `postinstall` hook refresh it to match the installed devtooie
+version automatically (overwriting local changes), so it stays in lockstep with
+the package.
 
 ## License
 

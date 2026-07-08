@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { intro, outro, confirm, isCancel, cancel, log } from '@clack/prompts';
 import { findConfigPath } from './load-config.js';
-import { installSkill } from './skill.js';
+import { installSkill, isSkillInstalled, readOwnVersion } from './skill.js';
 import { reconcileTsconfig } from './tsconfig.js';
 
 /** The scaffolded `devtooie.config.ts`: meta + packages + the inline type augmentation. */
@@ -26,22 +26,13 @@ declare module 'devtooie' {
 `;
 }
 
-/** Reads this package's own version (for the skill install banner). Falls back to '0.0.0'. */
-function readOwnVersion(): string {
-  try {
-    const pkgPath = path.join(import.meta.dirname, '../package.json');
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
-    return pkg.version ?? '0.0.0';
-  } catch {
-    return '0.0.0';
-  }
-}
-
 /**
  * `devtooie init` setup flow. Idempotent: an existing `devtooie.config.ts` is left
- * untouched (pass `force: true` to overwrite); the agent skill is (re)installed whenever
- * chosen. Pass `yes: true` for a non-interactive run that accepts the defaults (install the
- * agent skill) without prompting — used by `-y/--yes` and by automation.
+ * untouched (pass `force: true` to overwrite). An already-installed agent skill is
+ * refreshed automatically without prompting (it's a managed file); the install prompt only
+ * appears for a first-time install. Pass `yes: true` for a non-interactive run that accepts
+ * the defaults (install the agent skill) without prompting — used by `-y/--yes` and by
+ * automation.
  *
  * Does NOT prompt for a logfile location — that default is fixed at
  * `node_modules/.devtooie/devlog.txt` and is only overridable via the `--logfile` CLI flag.
@@ -54,9 +45,11 @@ export async function runInit(
 
   intro('devtooie init');
 
-  // --yes: skip the prompt and accept the default (install the agent skill).
+  // An already-installed skill is a managed file — refresh it without asking. The prompt
+  // only appears for a first-time install; --yes always installs without prompting.
+  const skillInstalled = isSkillInstalled(cwd);
   let skill: boolean;
-  if (opts.yes) {
+  if (opts.yes || skillInstalled) {
     skill = true;
   } else {
     const skillAnswer = await confirm({
@@ -89,9 +82,8 @@ export async function runInit(
   }
 
   if (skill) {
-    const version = readOwnVersion();
-    installSkill({ cwd, version });
-    log.step('Installed agent skill');
+    installSkill({ cwd, version: readOwnVersion() });
+    log.step(skillInstalled ? 'Updated agent skill' : 'Installed agent skill');
   }
 
   outro('devtooie is set up.');

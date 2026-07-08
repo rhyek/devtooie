@@ -31,3 +31,21 @@ describe('runInit --yes (non-interactive)', () => {
     expect((ts.match(/devtooie\.config\.ts/g) ?? []).length).toBe(1);
   });
 });
+
+describe('runInit skill auto-update', () => {
+  it('refreshes an already-installed skill without prompting (no --yes)', async () => {
+    // First-time install (via --yes) so the managed skill file exists.
+    await runInit({ cwd, yes: true });
+    const file = path.join(cwd, '.claude/skills/devtooie/SKILL.md');
+    // Simulate the on-disk skill drifting from the shipped template.
+    fs.writeFileSync(file, 'STALE\n');
+
+    // No --yes: because the skill already exists, init must refresh it WITHOUT prompting
+    // (this would hang on the confirm() prompt if the auto-update path weren't taken).
+    await runInit({ cwd });
+
+    const out = fs.readFileSync(file, 'utf8');
+    expect(out).not.toContain('STALE');
+    expect(out).toContain('devtooie skill v');
+  });
+});

@@ -11,6 +11,18 @@ try {
     process.exit(0);
   }
 
+  const initCwd = process.env.INIT_CWD || process.cwd();
+
+  // If the managed agent skill is already installed, refresh it to this version silently —
+  // no prompt, and regardless of TTY. Keeps the installed skill in lockstep with the
+  // package on every (re)install. No-op when the skill isn't installed yet.
+  try {
+    const { updateSkillIfPresent } = await import('./dist/skill.js');
+    updateSkillIfPresent({ cwd: initCwd });
+  } catch {
+    // best-effort: never let a skill refresh fail the install.
+  }
+
   // Gate 2: Skip if stdout is not a TTY
   if (!process.stdout.isTTY) {
     process.exit(0);
@@ -20,7 +32,6 @@ try {
   // exists but the agent skill isn't installed. Delegates to devtooie's own setup-status
   // logic so the config-file names and skill-install paths stay single-sourced (see
   // src/setup-status.ts).
-  const initCwd = process.env.INIT_CWD || process.cwd();
   const { setupNag } = await import('./dist/setup-status.js');
   const nag = setupNag(initCwd);
   if (!nag.prompt) {
