@@ -3,6 +3,7 @@ import path from 'node:path';
 import chalk from 'chalk';
 import { Box, type DOMElement, Text, measureElement, useApp, useInput } from 'ink';
 import type { startCommandServer } from '../command-server.js';
+import { normalizeUrlEntry, type UrlLine } from '../config.js';
 import { debugLog } from '../debug-log.js';
 import { watchGitBranch } from '../git-watch.js';
 import { getGitBranch } from '../lib.js';
@@ -38,7 +39,19 @@ type PackageStatus = 'stopped' | 'starting' | 'started' | 'unknown' | 'waiting';
 interface PackageUrlGroup {
   name: string;
   selected: boolean;
-  urls: { label?: string; url: string }[];
+  /** Each entry is one footer line; a line with multiple links renders them space-separated. */
+  urls: UrlLine[];
+}
+
+/** Displayed width of a single link: its label if it has one, else the raw URL. */
+function linkWidth(u: { label?: string; url: string }): number {
+  return (u.label ?? u.url).length;
+}
+
+/** Displayed width of one footer line: its links plus a single space between each. */
+function lineWidth(line: UrlLine): number {
+  if (line.length === 0) return 0;
+  return line.reduce((sum, u) => sum + linkWidth(u), 0) + (line.length - 1);
 }
 
 const STATUS_COLORS: Record<PackageStatus, string> = {
@@ -61,23 +74,75 @@ function hyperlink(url: string, text: string): string {
   return `\x1b]8;;${url}\x07${text}\x1b]8;;\x07`;
 }
 
+/** One footer line as a single string: each link hyperlinked, joined by a space. */
+function renderLineText(line: UrlLine): string {
+  return line.map((u) => hyperlink(u.url, u.label ?? u.url)).join(' ');
+}
+
 /** Natural width of the right-hand URL column, so the left column knows how much room it can use. */
-function estimateRightColumnWidth(urlGroups: PackageUrlGroup[]): number {
+function estimateRightColumnWidth(urlGroups: PackageUrlGroup[], topLevelUrls: UrlLine[]): number {
   let maxWidth = 0;
+  for (const line of topLevelUrls) {
+    maxWidth = Math.max(maxWidth, lineWidth(line));
+  }
   for (const group of urlGroups) {
     maxWidth = Math.max(maxWidth, group.name.length);
-    for (const u of group.urls) {
-      maxWidth = Math.max(maxWidth, (u.label ?? u.url).length);
+    for (const line of group.urls) {
+      maxWidth = Math.max(maxWidth, lineWidth(line));
     }
   }
   return maxWidth;
 }
 
 /** Available width for the left (package dot) column once the right (URL) column and chrome are subtracted. */
-function leftColumnAvailableWidth(terminalWidth: number, urlGroups: PackageUrlGroup[]): number {
-  const rightColWidth = estimateRightColumnWidth(urlGroups);
+function leftColumnAvailableWidth(
+  terminalWidth: number,
+  urlGroups: PackageUrlGroup[],
+  topLevelUrls: UrlLine[],
+): number {
+  const rightColWidth = estimateRightColumnWidth(urlGroups, topLevelUrls);
   const rightTotal = rightColWidth > 0 ? rightColWidth + 4 : 0; // +4 = the gap between the two columns
   return Math.max(terminalWidth - 4 - rightTotal, 20); // -4 = border (2) + horizontal padding (2)
+}
+
+/**
+ * The right-hand footer column of links: workspace-wide (top-level) links first, then a
+ * dim rule, then a bold-headed group per package. The rule shows only when both are
+ * present. A line with several links renders them space-separated on one row.
+ */
+export function LinksColumn({
+  topLevelUrls,
+  packageUrlGroups,
+}: {
+  topLevelUrls: UrlLine[];
+  packageUrlGroups: PackageUrlGroup[];
+}): React.ReactElement | null {
+  if (topLevelUrls.length === 0 && packageUrlGroups.length === 0) {
+    return null;
+  }
+  const showSeparator = topLevelUrls.length > 0 && packageUrlGroups.length > 0;
+  const separatorRule = '┈'.repeat(estimateRightColumnWidth(packageUrlGroups, topLevelUrls));
+  return (
+    <Box flexDirection="column" alignItems="flex-end" flexShrink={0}>
+      {topLevelUrls.map((line, i) => (
+        // A brighter blue than Ink's default, which is too dark to read on this background.
+        <Text key={`top-${i}`} wrap="truncate" color="#58a6ff">
+          {renderLineText(line)}
+        </Text>
+      ))}
+      {showSeparator && <Text dimColor>{separatorRule}</Text>}
+      {packageUrlGroups.map((group) => (
+        <React.Fragment key={group.name}>
+          <Text bold={group.selected}>{group.name}</Text>
+          {group.urls.map((line, i) => (
+            <Text key={i} wrap="truncate" color="#58a6ff">
+              {renderLineText(line)}
+            </Text>
+          ))}
+        </React.Fragment>
+      ))}
+    </Box>
+  );
 }
 
 /**
@@ -315,11 +380,13 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
       groups.push({
         name: pkg.run?.shortName ?? pkg.name,
         selected: args.selectedSet.has(pkg.name),
-        urls: urls.map((u) => (typeof u === 'string' ? { url: u } : u)),
+        urls: urls.map(normalizeUrlEntry),
       });
     }
     return groups;
   }, [args.sortedPackages, args.selectedSet]);
+
+  const topLevelUrls = useMemo<UrlLine[]>(() => args.topLevelUrls ?? [], [args.topLevelUrls]);
 
   const [manager] = useState(() => new ProcessManager(args));
   const [mode, setMode] = useState<Mode>('normal');
@@ -553,7 +620,11 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
       return;
     }
     if (key.upArrow || key.downArrow) {
-      const availWidth = leftColumnAvailableWidth(process.stdout.columns || 120, packageUrlGroups);
+      const availWidth = leftColumnAvailableWidth(
+        process.stdout.columns || 120,
+        packageUrlGroups,
+        topLevelUrls,
+      );
       const positions = computePackageLayout(packageNames, availWidth);
       const cur = positions[cursor];
       if (!cur) {
@@ -657,22 +728,9 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
     return null;
   }
 
-  const linksColumn =
-    packageUrlGroups.length > 0 ? (
-      <Box flexDirection="column" alignItems="flex-end" flexShrink={0}>
-        {packageUrlGroups.map((group) => (
-          <React.Fragment key={group.name}>
-            <Text bold={group.selected}>{group.name}</Text>
-            {group.urls.map((u, i) => (
-              // A brighter blue than Ink's default, which is too dark to read on this background.
-              <Text key={i} wrap="truncate" color="#58a6ff">
-                {hyperlink(u.url, u.label ?? u.url)}
-              </Text>
-            ))}
-          </React.Fragment>
-        ))}
-      </Box>
-    ) : null;
+  const linksColumn = (
+    <LinksColumn topLevelUrls={topLevelUrls} packageUrlGroups={packageUrlGroups} />
+  );
 
   const focusedPackage = displayPackages[cursor];
   const focusedStatus = focusedPackage

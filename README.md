@@ -79,7 +79,7 @@ packages (see below) and run `devtooie`.
 The one file you author and commit — the single source of truth the CLI reads
 on every run. There are no CLI flags for any of it. It holds your control-API
 port, whether the agent skill is managed, and your package definitions, and it
-wires your package *names* into devtooie's exported types via a small inline
+wires your package _names_ into devtooie's exported types via a small inline
 augmentation block at the bottom:
 
 > **Note:** devtooie imports this file with a native `.ts` dynamic `import()`
@@ -136,11 +136,12 @@ declare module 'devtooie' {
 
 `defineConfig` accepts:
 
-| Field          | Meaning                                                                          |
-| -------------- | -------------------------------------------------------------------------------- |
-| `packages`     | Your package definitions (see below).                                            |
-| `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.  |
-| `tokens`       | Values for extrinsic `$token` substitution — see [Tokens](#tokens).              |
+| Field          | Meaning                                                                                |
+| -------------- | -------------------------------------------------------------------------------------- |
+| `packages`     | Your package definitions (see below).                                                  |
+| `urls`         | Workspace-wide links, not tied to a package — see [Top-level URLs](#top-level-urls).   |
+| `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.       |
+| `tokens`       | Values for extrinsic `$token` substitution — see [Tokens](#tokens).                    |
 | `env`          | `.env` files loaded per package — see [Environment loading](#environment-env-loading). |
 
 If no `devtooie.config.ts` (or `.mts`/`.js`/`.mjs`) exists, the CLI exits with
@@ -161,7 +162,9 @@ Each package entry:
     on session handoff.
   - `subdomain` — for reverse-proxy routing; used for `$subdomain`
     substitution.
-  - `urls` — strings or `{ label, url }`, shown in the running footer.
+  - `urls` — links shown in the running footer, one entry per line. Each entry is a
+    string, a `{ label, url }`, or an **array** of those (rendered on the same line,
+    space-separated).
   - `healthcheck` — a URL polled for readiness; also required by anything
     that lists this package in its `waitFor`.
   - `waitFor` — package names to wait on (each must define a `healthcheck`)
@@ -177,7 +180,7 @@ Three independent categories, resolved when you select a package:
   transitively.
 - **`deps.dev`** — compiled before running; currently behaves like a build
   dep, tracked separately for future divergence.
-- **`deps.runtime`** — other packages that must be *running* alongside this
+- **`deps.runtime`** — other packages that must be _running_ alongside this
   one. **Not transitive**: only the packages you explicitly select have
   their runtime deps expanded. If a runtime dep needs its own runtime deps
   too, select it explicitly (or add it to your own selection).
@@ -185,6 +188,33 @@ Three independent categories, resolved when you select a package:
 `devtooie resolvedeps -p <name> [...]` prints the resolved build/dev/runtime
 sets as JSON, which is handy for wiring other tooling (targeted typechecks,
 codegen, etc.) to the same dependency graph.
+
+## Top-level URLs
+
+The top-level `urls` field holds workspace-wide links that aren't tied to any single
+package — dashboards, admin panels, docs. They render in the TUI footer **above** the
+per-package links, separated by a dim rule:
+
+```ts
+defineConfig({
+  urls: [
+    'https://status.internal',
+    { label: 'Grafana', url: 'https://grafana.$domain' },
+    // An array entry renders its links on one line, space-separated:
+    [
+      { label: 'repo', url: 'https://github.com/acme/app' },
+      { label: 'CI', url: 'https://ci.acme.dev' },
+    ],
+  ],
+  tokens: { domain: 'example.com' },
+  packages: [/* ... */],
+});
+```
+
+Same shape as a package's `run.urls` — each entry is a string, a `{ label, url }`, or an
+array of those. Only **extrinsic** tokens (from `tokens`) are substituted; there is no
+package, so an intrinsic `$name`/`$port`/`$subdomain` reference has nothing to resolve
+against and throws (see [Tokens](#tokens)).
 
 ## Tokens
 
@@ -203,8 +233,9 @@ colliding with the `:` that precedes a port in a URL — e.g.
 **Extrinsic** (yours to supply via `tokens: {...}`): any other `$key` in a
 `urls`/`healthcheck` string is looked up in the `tokens` map you pass to
 `defineConfig`. Referencing a `$key` with no matching entry — or one
-whose value is `undefined` — throws immediately, naming the package and the
-token, so misconfiguration fails loudly at startup instead of silently.
+whose value is `undefined` — throws immediately, naming the source (the package, or
+`top-level url`) and the token, so misconfiguration fails loudly at startup instead of
+silently. Top-level `urls` support **only** these extrinsic tokens.
 
 This keeps devtooie itself free of any hardcoded environment-variable names:
 you decide what feeds `tokens` (env vars, computed values, constants).
@@ -296,15 +327,15 @@ devtooie --rebuild -p web # like --build, but clears dist/ first
 
 Common options:
 
-| Option | Description |
-| --- | --- |
-| `-p, --package <name>` | Repeatable. Package(s) to run, bypassing the interactive selector. |
-| `--ui` | Interactive terminal UI (default). Mutually exclusive with `--plain`. |
-| `--plain` | No TUI — stream logs to stdout with colored name prefixes. Requires `-p` or `--last-answers`. |
-| `--last-answers` | Skip selection; reuse the last saved selection. |
-| `--build` | Build the selected packages and their build-time deps, then exit (no run phase). |
-| `--rebuild` | Like `--build`, but first clears `dist/` for every build target. |
-| `--logfile <path>` | Write all package output to this file (truncated each run). Defaults to `node_modules/.devtooie/devlog.txt`. |
+| Option                 | Description                                                                                                  |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `-p, --package <name>` | Repeatable. Package(s) to run, bypassing the interactive selector.                                           |
+| `--ui`                 | Interactive terminal UI (default). Mutually exclusive with `--plain`.                                        |
+| `--plain`              | No TUI — stream logs to stdout with colored name prefixes. Requires `-p` or `--last-answers`.                |
+| `--last-answers`       | Skip selection; reuse the last saved selection.                                                              |
+| `--build`              | Build the selected packages and their build-time deps, then exit (no run phase).                             |
+| `--rebuild`            | Like `--build`, but first clears `dist/` for every build target.                                             |
+| `--logfile <path>`     | Write all package output to this file (truncated each run). Defaults to `node_modules/.devtooie/devlog.txt`. |
 
 Subcommands:
 

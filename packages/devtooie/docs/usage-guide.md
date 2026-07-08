@@ -97,6 +97,7 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
    colon, so a Makefile package can't have a `build:clean` target — but it doesn't need one:
    with `build` and `clean` targets, devtooie's rebuild runs `make clean` then `make build`,
    so a Makefile package with `dev`/`build`/`clean` is fully rebuildable.
+
 2. **Rename equivalent existing scripts rather than duplicate them.** If the package
    already has a script that does the same job under a different name, rename it
    (and fix any references to the old name) instead of adding a second script that
@@ -106,6 +107,7 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
    - a script that runs `rimraf dist` (or equivalent) → rename to `clean`
 3. **Add the package to `devtooie.config.ts`.** Append a new entry to the `packages`
    array passed to `defineConfig`:
+
    ```ts
    {
      name: 'my-pkg',
@@ -118,6 +120,7 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
      },
    }
    ```
+
    Infer `types` (`backend` / `browser` / `lib`) and the `run` block from what the
    package actually is:
    - `port` — the dev port it listens on (`hmrPort` for a browser package's HMR socket).
@@ -128,6 +131,8 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
      time: `$port`, `$name`, `$subdomain` (intrinsic), plus any extrinsic `$key` you
      declare in the top-level `tokens` map passed to `defineConfig`. Write
      `http://localhost:$port/health` rather than hardcoding the port, so it can't drift.
+     Each `urls` entry is a string, a `{ label, url }`, or an array of those (an array
+     entry's links render on one footer line, space-separated).
    - `deps: { build, dev, runtime }` — names of other packages this one depends on;
      drives build/start ordering and what gets pulled in when this package is selected.
    - `waitFor` — names of packages whose `healthcheck` must pass before this one starts
@@ -137,6 +142,11 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
    API paths, `-p` flags, etc). The `declare module 'devtooie'` block at the bottom of
    `devtooie.config.ts` references the config's own `packages` (`typeof config.packages`),
    so the new name is recognized inline with no extra codegen step.
+
+   For workspace-wide links not tied to any package (dashboards, docs), add a top-level
+   `urls` array to `defineConfig` — same entry shape as a package's `run.urls`. These
+   render in the TUI footer above the per-package links and substitute only extrinsic
+   `tokens` (no `$port`/`$name`/`$subdomain`).
 
 ## 4. Read running-package logs for debugging
 
@@ -161,7 +171,7 @@ so you can confirm a command you sent (per §2) actually landed and see the pack
 own output that followed it.
 
 **This skill always reads logs from that exact path, regardless of any `--logfile`
-override.** The `--logfile` flag only changes where the *running* devtooie session
+override.** The `--logfile` flag only changes where the _running_ devtooie session
 writes its combined log — it does not change where this skill looks. So if you are
 the one starting the session (per §1), do **not** pass `--logfile`, otherwise the
 logs you need to debug with will end up somewhere other than the path above.

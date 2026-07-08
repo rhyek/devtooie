@@ -85,8 +85,94 @@ describe('token substitution', () => {
         },
       ],
     });
-    const url = packages[0]!.run!.urls![0];
-    expect(typeof url === 'object' && url.url).toBe('https://app.example.com:8443');
+    expect(packages[0]!.run!.urls![0]).toEqual({
+      label: 'home',
+      url: 'https://app.example.com:8443',
+    });
+  });
+
+  it('substitutes tokens inside a per-package array (same-line) url entry, keeping its shape', () => {
+    const { packages } = defineConfig({
+      tokens: { domain: 'example.com' },
+      packages: [
+        {
+          name: 'web',
+          types: ['browser'],
+          run: {
+            port: 3000,
+            urls: [['http://localhost:$port', { label: 'app', url: 'https://app.$domain' }]],
+          },
+        },
+      ],
+    });
+    expect(packages[0]!.run!.urls![0]).toEqual([
+      'http://localhost:3000',
+      { label: 'app', url: 'https://app.example.com' },
+    ]);
+  });
+});
+
+describe('top-level urls', () => {
+  it('substitutes extrinsic tokens in a bare-string top-level url', () => {
+    const cfg = defineConfig({
+      tokens: { domain: 'example.com' },
+      urls: ['https://grafana.$domain'],
+      packages: [{ name: 'svc', types: [] }],
+    });
+    expect(cfg.urls![0]).toBe('https://grafana.example.com');
+  });
+
+  it('substitutes extrinsic tokens in an object top-level url and keeps the label', () => {
+    const cfg = defineConfig({
+      tokens: { domain: 'example.com', proxyport: '8443' },
+      urls: [{ label: 'Grafana', url: 'https://grafana.$domain:$proxyport' }],
+      packages: [{ name: 'svc', types: [] }],
+    });
+    const url = cfg.urls![0];
+    expect(url).toEqual({ label: 'Grafana', url: 'https://grafana.example.com:8443' });
+  });
+
+  it('substitutes tokens inside a top-level array (same-line) url entry, keeping its shape', () => {
+    const cfg = defineConfig({
+      tokens: { domain: 'example.com' },
+      urls: [['https://grafana.$domain', { label: 'Logs', url: 'https://logs.$domain' }]],
+      packages: [{ name: 'svc', types: [] }],
+    });
+    expect(cfg.urls![0]).toEqual([
+      'https://grafana.example.com',
+      { label: 'Logs', url: 'https://logs.example.com' },
+    ]);
+  });
+
+  it('leaves a top-level url with no tokens verbatim', () => {
+    const cfg = defineConfig({
+      urls: ['https://dashboard.internal'],
+      packages: [{ name: 'svc', types: [] }],
+    });
+    expect(cfg.urls![0]).toBe('https://dashboard.internal');
+  });
+
+  it('leaves urls undefined when none are given', () => {
+    const cfg = defineConfig({ packages: [{ name: 'svc', types: [] }] });
+    expect(cfg.urls).toBeUndefined();
+  });
+
+  it('throws when a top-level url references an intrinsic token like $port', () => {
+    expect(() =>
+      defineConfig({
+        urls: ['http://localhost:$port'],
+        packages: [{ name: 'svc', types: [] }],
+      }),
+    ).toThrow(/top-level url.*\$port/);
+  });
+
+  it('throws when a top-level url references an unknown extrinsic token', () => {
+    expect(() =>
+      defineConfig({
+        urls: ['https://$domain'],
+        packages: [{ name: 'svc', types: [] }],
+      }),
+    ).toThrow(/top-level url.*\$domain/);
   });
 });
 

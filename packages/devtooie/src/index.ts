@@ -7,6 +7,8 @@ export type {
   AnyPackageConfig,
   Config,
   PackageTypeValue,
+  UrlLink,
+  UrlEntry,
 } from './config.js';
 export type { Register, PackageConfig, PackageName } from './register.js';
 export { resolveEnv, envCandidatePaths, DEFAULT_ENV_FILES } from './env.js';

@@ -148,6 +148,33 @@ describe('display sort + runner args', () => {
     expect(args.sortedPackages.length).toBeGreaterThan(0);
     expect(args.buildDepSet).toBe(deps.buildSet);
   });
+
+  it('buildRunnerArgs surfaces top-level urls as normalized lines from the loaded config', () => {
+    const all = defineConfig({
+      workspaceDir: '/repo',
+      urls: [
+        'https://dashboard.internal',
+        { label: 'Grafana', url: 'https://grafana.internal' },
+        ['https://logs.internal', { label: 'Traces', url: 'https://traces.internal' }],
+      ],
+      packages: [{ name: 'web', types: ['browser'] }],
+    }).packages;
+    const web = all.find((a) => a.name === 'web')!;
+    const args = buildRunnerArgs([web], resolveDeps([web]));
+    // Each entry becomes one line (an array of links); an array entry is a multi-link line.
+    expect(args.topLevelUrls).toEqual([
+      [{ url: 'https://dashboard.internal' }],
+      [{ label: 'Grafana', url: 'https://grafana.internal' }],
+      [{ url: 'https://logs.internal' }, { label: 'Traces', url: 'https://traces.internal' }],
+    ]);
+  });
+
+  it('buildRunnerArgs leaves topLevelUrls undefined when the config declares none', () => {
+    const all = packages();
+    const web = all.find((a) => a.name === 'web')!;
+    const args = buildRunnerArgs([web], resolveDeps([web]));
+    expect(args.topLevelUrls).toBeUndefined();
+  });
 });
 
 describe('rebuild resolution', () => {

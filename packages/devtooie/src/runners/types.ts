@@ -1,4 +1,4 @@
-import type { AnyPackageConfig } from '../config.js';
+import type { AnyPackageConfig, UrlLine } from '../config.js';
 
 export interface RunnerArgs {
   sortedPackages: AnyPackageConfig[];
@@ -8,6 +8,11 @@ export interface RunnerArgs {
   waitForMap: Record<string, string[]>;
   healthcheckUrls: Record<string, string>;
   extraCommandsMap: Record<string, string[]>;
+  /**
+   * Workspace-wide links (not tied to a package), rendered above the per-package links.
+   * Each entry is one footer line; a line with multiple links renders them space-separated.
+   */
+  topLevelUrls?: UrlLine[];
   logFile?: string;
   /** `.env` filenames resolved per package (defaults to the standard set when omitted). */
   envFiles?: string[];

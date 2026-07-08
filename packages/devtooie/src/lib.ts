@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { execaSync } from 'execa';
 import type { AnyPackageConfig } from './config.js';
-import { getRegisteredPackages, getLoadedConfig } from './config.js';
+import { getRegisteredPackages, getLoadedConfig, normalizeUrlEntry } from './config.js';
 import { DEFAULT_ENV_FILES } from './env.js';
 import type { RunnerArgs } from './runners/types.js';
 
@@ -287,6 +287,7 @@ export function buildRunnerArgs(
       extraCommandsMap[a.name] = extra;
     }
   }
+  const config = getLoadedConfig();
   return {
     sortedPackages,
     selectedSet,
@@ -295,7 +296,8 @@ export function buildRunnerArgs(
     waitForMap,
     healthcheckUrls,
     extraCommandsMap,
-    envFiles: getLoadedConfig()?.envFiles ?? DEFAULT_ENV_FILES,
+    topLevelUrls: config?.urls?.map(normalizeUrlEntry),
+    envFiles: config?.envFiles ?? DEFAULT_ENV_FILES,
     cwd: process.cwd(),
   };
 }

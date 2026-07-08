@@ -5,13 +5,30 @@ export const PackageType = { BACKEND: 'backend', BROWSER: 'browser', LIB: 'lib' 
 export type PackageType = (typeof PackageType)[keyof typeof PackageType];
 export type PackageTypeValue = 'backend' | 'browser' | 'lib';
 
+/** A single link: a bare URL, or a labeled URL (the label is shown in place of the URL). */
+export type UrlLink = string | { label: string; url: string };
+/**
+ * One footer line's worth of links: a single link, or an array of links rendered on the
+ * same line separated by a space. `urls` is a list of these entries, one line each.
+ */
+export type UrlEntry = UrlLink | UrlLink[];
+
+/** One footer line after normalization: the links to render on it (label falls back to url). */
+export type UrlLine = { label?: string; url: string }[];
+
+/** Flattens a resolved `urls` entry into the links shown on a single footer line. */
+export function normalizeUrlEntry(entry: UrlEntry): UrlLine {
+  const links = Array.isArray(entry) ? entry : [entry];
+  return links.map((link) => (typeof link === 'string' ? { url: link } : link));
+}
+
 export interface RunConfig<N extends string> {
   selectable?: boolean;
   shortName?: string;
   subdomain?: string | string[];
   port?: number;
   hmrPort?: number;
-  urls?: (string | { label: string; url: string })[];
+  urls?: UrlEntry[];
   healthcheck?: string;
   waitFor?: NoInfer<N>[];
   deps?: {
@@ -37,6 +54,13 @@ export interface DefineConfigOptions<N extends string> {
    */
   apiPort?: number;
   packages: PackageConfigInput<N>[];
+  /**
+   * Workspace-wide URLs, not tied to any package, rendered in the TUI footer above the
+   * per-package links. Same shape as {@link RunConfig.urls}. Only **extrinsic** `$token`s
+   * (from {@link tokens}) are substituted — there is no package, so intrinsic tokens
+   * (`$name`/`$port`/`$subdomain`) resolve to nothing and throw.
+   */
+  urls?: UrlEntry[];
   workspaceDir?: string;
   tokens?: Record<string, string | undefined>;
   /**
@@ -58,6 +82,8 @@ export interface Config<N extends string> {
   /** User-pinned control-API port, or `undefined` to let devtooie pick a random one at startup. */
   apiPort?: number;
   packages: ResolvedPackageConfig<N>[];
+  /** Resolved workspace-wide URLs (extrinsic tokens substituted), or `undefined` if none. */
+  urls?: UrlEntry[];
   /** Resolved `.env` filenames loaded per package (defaults to {@link DEFAULT_ENV_FILES}). */
   envFiles: string[];
 }
@@ -78,6 +104,41 @@ export function findPackage(name: string): AnyPackageConfig {
   const pkg = registeredPackages.find((p) => p.name === name);
   if (!pkg) throw new Error(`package ${name} not found`);
   return pkg;
+}
+
+/**
+ * Replaces every remaining `$key` in `input` with `tokens[key]`, throwing (naming
+ * `context` and the token) when the key is absent or its value is `undefined`. Used both
+ * for a package's extrinsic pass (after intrinsic tokens are resolved) and for top-level
+ * urls, which have only extrinsic tokens.
+ */
+function substituteTokens(
+  input: string,
+  tokens: Record<string, string | undefined>,
+  context: string,
+): string {
+  return input.replace(/\$([a-z][a-z0-9_]*)/gi, (_match, key: string) => {
+    if (key in tokens) {
+      const val = tokens[key];
+      if (val === undefined) {
+        throw new Error(`${context} uses $${key} but tokens.${key} is undefined`);
+      }
+      return val;
+    }
+    throw new Error(`${context} uses $${key} but no such token was provided`);
+  });
+}
+
+/** Substitutes tokens in one link (bare string or `{ label, url }`), preserving its shape. */
+function substituteUrlLink(link: UrlLink, replace: (s: string) => string): UrlLink {
+  return typeof link === 'string' ? replace(link) : { ...link, url: replace(link.url) };
+}
+
+/** Substitutes tokens across a `urls` entry, which may be a single link or an array of links. */
+function substituteUrlEntry(entry: UrlEntry, replace: (s: string) => string): UrlEntry {
+  return Array.isArray(entry)
+    ? entry.map((link) => substituteUrlLink(link, replace))
+    : substituteUrlLink(entry, replace);
 }
 
 function substituteRun<N extends string>(
@@ -101,23 +162,11 @@ function substituteRun<N extends string>(
       out = out.replaceAll('$port', String(run.port));
     }
     // Extrinsic tokens: any remaining $key must resolve from tokens.
-    out = out.replace(/\$([a-z][a-z0-9_]*)/gi, (_match, key: string) => {
-      if (key in tokens) {
-        const val = tokens[key];
-        if (val === undefined) {
-          throw new Error(`${name} uses $${key} but tokens.${key} is undefined`);
-        }
-        return val;
-      }
-      throw new Error(`${name} uses $${key} but no such token was provided`);
-    });
-    return out;
+    return substituteTokens(out, tokens, name);
   };
   return {
     ...run,
-    urls: run.urls?.map((u) =>
-      typeof u === 'string' ? replace(u) : { ...u, url: replace(u.url) },
-    ),
+    urls: run.urls?.map((entry) => substituteUrlEntry(entry, replace)),
     healthcheck: run.healthcheck ? replace(run.healthcheck) : undefined,
   };
 }
@@ -143,6 +192,8 @@ export function defineConfig<const N extends string>(opts: DefineConfigOptions<N
     }
   }
 
+  const tokens = opts.tokens ?? {};
+
   const packages = opts.packages.map((config) => {
     const relativeDir = config.relativeDir ?? `packages/${config.name}`;
     const run = config.run;
@@ -150,13 +201,18 @@ export function defineConfig<const N extends string>(opts: DefineConfigOptions<N
       ...config,
       relativeDir,
       path: path.resolve(workspaceDir, relativeDir),
-      run: run ? substituteRun(config.name, run, opts.tokens ?? {}) : undefined,
+      run: run ? substituteRun(config.name, run, tokens) : undefined,
     };
   });
+
+  const urls = opts.urls?.map((entry) =>
+    substituteUrlEntry(entry, (s) => substituteTokens(s, tokens, 'top-level url')),
+  );
 
   const resolved: Config<N> = {
     apiPort: opts.apiPort,
     packages,
+    urls,
     envFiles: opts.env?.files ?? DEFAULT_ENV_FILES,
   };
   registeredPackages = packages as AnyPackageConfig[];
