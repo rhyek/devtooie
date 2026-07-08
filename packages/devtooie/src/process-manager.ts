@@ -114,6 +114,8 @@ export class ProcessManager implements ControlManager {
   /** Skip terminal clearing/scrollback tricks when there's no interactive UI on top. */
   private plain: boolean;
   private systemPrefix: string;
+  /** Colored `"[dt:control] "` prefix for control-API command notices. */
+  private controlPrefix: string;
   private nextGroupId = 0;
   private lastGroupId = new Map<string, number>();
   private logFd: number;
@@ -170,6 +172,9 @@ export class ProcessManager implements ControlManager {
     }
 
     this.systemPrefix = chalk.dim(`[${' '.repeat(maxNameLen)}]`) + ' ';
+    // Pad the label to the widest service name so the closing bracket lines up
+    // with every package prefix (e.g. `[dt:control     ]` beside `[whatsapp-bridge]`).
+    this.controlPrefix = chalk.dim(`[${'dt:control'.padEnd(maxNameLen)}]`) + ' ';
 
     ProcessManager.instances.add(this);
     this.exitHandler = () => {
@@ -846,6 +851,17 @@ export class ProcessManager implements ControlManager {
   /** Emit a system-level line (e.g. shutdown notices), interleaved like any package's output. */
   logSystem(message: string): void {
     this.addLine(this.systemPrefix, message, 'system', false);
+  }
+
+  /**
+   * Emit a `[dt:control]` line noting a mutating command received over the
+   * control API. When `pkg` names a known package, the line is tagged with that
+   * package's search name so it shows/hides with the package under an active
+   * filter; otherwise it's tagged `dt:control`.
+   */
+  logControl(message: string, pkg?: string): void {
+    const searchName = (pkg && this.processes.get(pkg)?.searchName) ?? 'dt:control';
+    this.addLine(this.controlPrefix, message, searchName, false);
   }
 
   /**

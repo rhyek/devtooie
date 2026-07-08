@@ -155,6 +155,11 @@ tail -n 200 node_modules/.devtooie/devlog.txt
 grep -i error node_modules/.devtooie/devlog.txt
 ```
 
+Mutating commands received over the control API (restart, rebuild, quit) are echoed
+into the same log as `[dt:control]` lines (e.g. `[dt:control] restart backend`),
+so you can confirm a command you sent (per §2) actually landed and see the package's
+own output that followed it.
+
 **This skill always reads logs from that exact path, regardless of any `--logfile`
 override.** The `--logfile` flag only changes where the *running* devtooie session
 writes its combined log — it does not change where this skill looks. So if you are

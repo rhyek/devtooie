@@ -78,6 +78,29 @@ describe('ProcessManager', () => {
     ]);
     expect(manager.getPackages('running')).toEqual([]);
   });
+
+  it('logControl writes a [dt:control] line to the logfile', () => {
+    manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
+    manager.logControl('restart fixture', 'fixture');
+    manager.logControl('quit');
+    const contents = fs.readFileSync(logFile, 'utf8');
+    expect(contents).toContain('[dt:control] restart fixture');
+    expect(contents).toContain('[dt:control] quit');
+  });
+
+  it('logControl pads the [dt:control] label to align with the widest service name', () => {
+    const wide: AnyPackageConfig = {
+      name: 'whatsapp-bridge',
+      types: [],
+      relativeDir: '.',
+      path: dir,
+    };
+    manager = new ProcessManager(runnerArgs(wide), { plain: true });
+    manager.logControl('restart whatsapp-bridge', 'whatsapp-bridge');
+    const contents = fs.readFileSync(logFile, 'utf8');
+    // "dt:control" (10) padded to "whatsapp-bridge" width (15) → 5 trailing spaces.
+    expect(contents).toContain('[dt:control     ] restart whatsapp-bridge');
+  });
 });
 
 describe('ProcessManager env injection', () => {

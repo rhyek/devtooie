@@ -37,6 +37,7 @@ describe('command-server', () => {
       restart: () => true,
       rebuild: () => true,
       quit: () => {},
+      logControl: () => {},
     });
     const res = await fetch(`http://127.0.0.1:${server.port}/query/status`);
     expect(res.status).toBe(200);
@@ -51,6 +52,7 @@ describe('command-server', () => {
       restart: (name: string) => name === 'web',
       rebuild: () => false,
       quit: () => {},
+      logControl: () => {},
     });
     const res = await fetch(`http://127.0.0.1:${server.port}/command/restart/web`, {
       method: 'POST',
@@ -69,6 +71,7 @@ describe('command-server', () => {
       restart: (name: string) => name === 'web',
       rebuild: () => false,
       quit: () => {},
+      logControl: () => {},
     });
     const res = await fetch(`http://127.0.0.1:${server.port}/command/restart/unknown`, {
       method: 'POST',
@@ -87,6 +90,7 @@ describe('command-server', () => {
       restart: () => false,
       rebuild: (name: string) => name === 'web',
       quit: () => {},
+      logControl: () => {},
     });
     const res = await fetch(`http://127.0.0.1:${server.port}/command/rebuild/web`, {
       method: 'POST',
@@ -94,6 +98,29 @@ describe('command-server', () => {
     expect(res.status).toBe(202);
     const body = (await res.json()) as { ok: boolean };
     expect(body.ok).toBe(true);
+  });
+
+  it('logs mutating commands via logControl (restart/rebuild scoped to pkg, quit unscoped)', async () => {
+    const logged: { message: string; pkg?: string }[] = [];
+    server = await startCommandServer({ onQuit: () => {}, port: 0 });
+    server.attach({
+      getAllStatuses: () => ({}),
+      getStatus: () => null,
+      getPackages: () => [],
+      restart: () => true,
+      rebuild: () => true,
+      quit: () => {},
+      logControl: (message: string, pkg?: string) => logged.push({ message, pkg }),
+    });
+    const base = `http://127.0.0.1:${server.port}`;
+    await fetch(`${base}/command/restart/web`, { method: 'POST' });
+    await fetch(`${base}/command/rebuild/api`, { method: 'POST' });
+    await fetch(`${base}/command/quit`, { method: 'POST' });
+    expect(logged).toEqual([
+      { message: 'restart web', pkg: 'web' },
+      { message: 'rebuild api', pkg: 'api' },
+      { message: 'quit', pkg: undefined },
+    ]);
   });
 
   it('setOnQuit swaps which handler /command/quit invokes', async () => {

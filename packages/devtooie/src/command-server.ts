@@ -7,6 +7,12 @@ export interface ControlManager {
   restart(pkg: string): boolean;
   rebuild(pkg: string): boolean;
   quit(): void;
+  /**
+   * Emit a `[dt:control]` log line noting a mutating command arrived over the
+   * control API (as opposed to the same action triggered by a UI hotkey).
+   * `pkg`, when given, scopes the line to that package for output filtering.
+   */
+  logControl(message: string, pkg?: string): void;
 }
 
 export async function startCommandServer(opts: {
@@ -42,6 +48,7 @@ export async function startCommandServer(opts: {
     if (pathname === '/query/pid')
       return send(res, 200, { pid: process.pid, configPath: opts.configPath });
     if (pathname === '/command/quit') {
+      manager?.logControl('quit');
       send(res, 200, { ok: true });
       return void onQuit();
     }
@@ -57,6 +64,7 @@ export async function startCommandServer(opts: {
       return send(res, 200, manager.getPackages(url.searchParams.get('status') ?? undefined));
     }
     if (parts[0] === 'command' && (parts[1] === 'restart' || parts[1] === 'rebuild') && parts[2]) {
+      manager.logControl(`${parts[1]} ${parts[2]}`, parts[2]);
       const ok = parts[1] === 'restart' ? manager.restart(parts[2]) : manager.rebuild(parts[2]);
       return send(res, ok ? 202 : 404, { ok });
     }
