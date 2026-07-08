@@ -30,6 +30,7 @@
     "postinstall.mjs"
   ],
   "scripts": {
+    "build": "rm -rf dist && tsc -p ./tsconfig.build.json && chmod +x dist/cli.js",
     "postinstall": "node ./postinstall.mjs"
   },
   "exports": {

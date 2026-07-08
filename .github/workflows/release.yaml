@@ -72,7 +72,7 @@ jobs:
         run: npm version "$VERSION" --no-git-tag-version
 
       - name: Build
-        run: ./scripts/build.sh
+        run: pnpm build
 
       - name: Copy README into the package
         run: cp README.md packages/devtooie/README.md

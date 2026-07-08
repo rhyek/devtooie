@@ -6,7 +6,7 @@
     "node": ">=23.6"
   },
   "scripts": {
-    "build": "./scripts/build.sh",
+    "build": "pnpm --filter devtooie build",
     "lint": "eslint .",
     "format": "prettier --write .",
     "prepare": "simple-git-hooks",
