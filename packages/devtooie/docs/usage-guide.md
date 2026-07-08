@@ -4,11 +4,6 @@ devtooie is a dependency-aware CLI that runs a monorepo's local dev processes. T
 guide teaches an agent how to drive it headlessly, control a running session over its
 HTTP API, onboard a new package into it, and read a running session's logs for debugging.
 
-For the full human-facing reference — every `defineConfig` option, the `run` schema,
-tokens, and `.env` loading — see the package README, which ships alongside this guide:
-
-@node_modules/devtooie/README.md
-
 ## 1. Invoke headlessly
 
 Never launch devtooie's interactive TUI from an agent — there is no TTY to drive it.

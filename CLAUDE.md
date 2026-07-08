@@ -21,8 +21,10 @@ options, the package/`run` schema, tokens, CLI flags, or the control API — upd
 - `packages/devtooie/README.md` — the human-facing reference.
 - `packages/devtooie/docs/usage-guide.md` — the agent-facing guide (see below).
 - `packages/devtooie/assets/skill.md` — the installed skill. It is intentionally just
-  frontmatter + an `@node_modules/devtooie/docs/usage-guide.md` reference, so put actual
-  content in the usage guide, not here.
+  frontmatter + auto-expanded `@node_modules/devtooie/README.md` and
+  `@node_modules/devtooie/docs/usage-guide.md` references (README first), so put actual
+  content in those files, not here. Only a **top-level** skill-body reference auto-expands
+  — a reference nested inside one of those docs would not — which is why both live here.
 
 After touching any of that surface, grep `packages/devtooie/README.md` and
 `docs/usage-guide.md` for the affected names and reconcile.
