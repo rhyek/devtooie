@@ -877,12 +877,21 @@ export class ProcessManager implements ControlManager {
   }
 
   /**
-   * Clear the screen and scrollback with raw escape codes, positioning the
-   * cursor just above the reserved footer rows. Public so an interactive
-   * runner can reposition the cursor once at startup (before its first
-   * `startAll()`), avoiding a spurious scrollback gap on initial paint; used
-   * internally by `clearBuffer()`/`replayBuffer()` for the same reason on
-   * every subsequent clear.
+   * Clear the screen and scrollback, positioning the cursor just above the
+   * reserved footer rows. Public so an interactive runner can reposition the
+   * cursor once at startup (before its first `startAll()`), avoiding a spurious
+   * scrollback gap on initial paint; used internally by
+   * `clearBuffer()`/`replayBuffer()` for the same reason on every subsequent
+   * clear.
+   *
+   * The escape codes MUST go through a single `console.log`, not
+   * `process.stdout.write`. `console.log` passes through Ink's patched console
+   * (erase the previous render -> write these codes -> re-render the footer at
+   * the new cursor row), which keeps Ink's tracked cursor position in sync with
+   * the terminal. A raw `process.stdout.write` bypasses that pipeline: Ink's
+   * tracked position goes stale and the next render positions the footer wrong —
+   * a gap opens below the real content instead of the footer sitting flush at
+   * the bottom of the viewport on first paint.
    */
   resetScreen(): void {
     if (this.plain) {
@@ -892,7 +901,9 @@ export class ProcessManager implements ControlManager {
     const rows = process.stdout.rows || 24;
     const targetRow = Math.max(1, rows - this.footerHeight);
     debugLog(`resetScreen: rows=${rows} targetRow=${targetRow}`);
-    process.stdout.write(`\x1b[2J\x1b[H\x1b[3J\x1b[${targetRow};1H`);
+    console.log(`\x1b[2J\x1b[H\x1b[3J\x1b[${targetRow};1H`);
+    // Clear any scrollback the patched console's restore cycle may re-create.
+    process.stdout.write('\x1b[3J');
     this.visibleLineCount = 0;
   }
 

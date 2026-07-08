@@ -134,6 +134,12 @@ export type RenderAppOptions = AppProps;
  * between a state commit and its render.
  */
 export function renderApp(options: RenderAppOptions = {}): Instance {
+  // Clear the terminal (screen + scrollback) before Ink mounts, so the first
+  // phase's prompts start at the top of a clean viewport. A raw write is fine
+  // here — it runs before `render()`, so there's no Ink render state to desync
+  // (unlike ProcessManager.resetScreen, which must route through the patched
+  // console once Ink is live).
+  process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
   return render(<App {...options} />, {
     exitOnCtrlC: false,
     maxFps: 120,
