@@ -1,20 +1,23 @@
 import path from 'node:path';
-import { z } from 'zod';
+import type { z } from 'zod';
 import { DEFAULT_ENV_FILES } from './env.js';
+import {
+  type UrlLinkSchema,
+  type UrlEntrySchema,
+  type CommandSchema,
+  type RunConfigSchema,
+  type PackageConfigSchema,
+  DefineConfigSchema,
+} from './config-schema.js';
+import type {
+  GeneratedRunConfig,
+  GeneratedPackageConfig,
+  GeneratedDefineConfig,
+} from './config.generated.js';
 
 export const PackageType = { BACKEND: 'backend', BROWSER: 'browser', LIB: 'lib' } as const;
 export type PackageType = (typeof PackageType)[keyof typeof PackageType];
 export type PackageTypeValue = 'backend' | 'browser' | 'lib';
-
-// ---------------------------------------------------------------------------
-// Zod schemas — the single source of the config's shape, defaults, and
-// validation. Public types are derived from these (`z.input` for what
-// `defineConfig` accepts, `z.infer` for the resolved config), with a thin
-// generic overlay (`WithNames`) re-adding package-name type-safety.
-// ---------------------------------------------------------------------------
-
-const UrlLinkSchema = z.union([z.string(), z.object({ label: z.string(), url: z.string() })]);
-const UrlEntrySchema = z.union([UrlLinkSchema, z.array(UrlLinkSchema)]);
 
 /** A single link: a bare URL, or a labeled URL (the label is shown in place of the URL). */
 export type UrlLink = z.infer<typeof UrlLinkSchema>;
@@ -33,118 +36,76 @@ export function normalizeUrlEntry(entry: UrlEntry): UrlLine {
   return links.map((link) => (typeof link === 'string' ? { url: link } : link));
 }
 
-// `command` options as a union of the two *legal* shapes, so `{ watches: true, builds: false }`
-// (and `{ builds: false }`, since watches then defaults true) is rejected at the type level
-// AND at parse time: a watching command must also build.
-const CommandOptionsSchema = z.union([
-  z.strictObject({ watches: z.literal(true).optional(), builds: z.literal(true).optional() }),
-  z.strictObject({ watches: z.literal(false), builds: z.boolean().optional() }),
-]);
-
-const CommandSchema = z
-  .union([z.string(), z.tuple([z.string(), CommandOptionsSchema])])
-  .default('dev')
-  .transform((c) =>
-    typeof c === 'string'
-      ? { name: c, watches: true, builds: true }
-      : { name: c[0], watches: c[1].watches ?? true, builds: c[1].builds ?? true },
-  );
-
 /** A resolved `run.command`: which script to run and how it behaves on file changes. */
 export type Command = z.infer<typeof CommandSchema>;
 
-const RunConfigSchema = z.object({
-  selectable: z.boolean().optional().describe('Show in the interactive picker (default true).'),
-  shortName: z.string().optional().describe('Shorter label used in the TUI in place of `name`.'),
-  subdomain: z
-    .union([z.string(), z.array(z.string())])
-    .optional()
-    .describe('Reverse-proxy subdomain(s); the first feeds `$subdomain` substitution.'),
-  port: z.number().optional().describe('Dev port; injected as `PORT` and feeds `$port`.'),
-  hmrPort: z.number().optional().describe("A browser package's HMR socket port."),
-  command: CommandSchema.describe(
-    'The dev process to run and how it behaves. A script/target name, or `[name, { watches, ' +
-      "builds }]`. Default `['dev', { watches: true, builds: true }]`. `watches`: the script " +
-      'watches files and reloads itself. `builds`: the script (re)builds on start. ' +
-      '`watches:true` requires `builds:true`. Drives what to do after editing this package: ' +
-      'watches→nothing, else builds→restart, else rebuild.',
-  ),
-  urls: z
-    .array(UrlEntrySchema)
-    .optional()
-    .describe(
-      'Footer links; each entry is one line (string, {label,url}, or an array on one line).',
-    ),
-  healthcheck: z
-    .string()
-    .optional()
-    .describe('URL polled for readiness; required by `waitFor` targets.'),
-  waitFor: z
-    .array(z.string())
-    .optional()
-    .describe('Package names whose `healthcheck` must pass before this one starts.'),
-  deps: z
-    .object({
-      build: z.array(z.string()).optional(),
-      dev: z.array(z.string()).optional(),
-      runtime: z.array(z.string()).optional(),
-    })
-    .optional()
-    .describe('Other packages this one depends on (build / dev / runtime).'),
-});
-
-const PackageConfigSchema = z.object({
-  name: z.string(),
-  relativeDir: z.string().optional(),
-  types: z.array(z.enum(['backend', 'browser', 'lib'])),
-  run: RunConfigSchema.optional(),
-});
-
-const DefineConfigSchema = z.object({
-  apiPort: z.number().optional(),
-  packages: z.array(PackageConfigSchema),
-  urls: z.array(UrlEntrySchema).optional(),
-  workspaceDir: z.string().optional(),
-  tokens: z.record(z.string(), z.string().optional()).optional(),
-  env: z.object({ files: z.array(z.string()).optional() }).optional(),
-});
-
 // ---------------------------------------------------------------------------
-// Types: Zod-derived base + a generic overlay that re-adds package-name safety
-// on the relational fields (`name`, `waitFor`, `deps.*`). Everything else keeps
-// the Zod-inferred type verbatim.
+// Documented input types = generated types (JSDoc from the schema `.describe()`) with the
+// fields Zod can't represent well overridden here: `command` (a transform → `any`) and the
+// name-referencing `name`/`waitFor`/`deps` (pinned to the package names `N`, `NoInfer` so a
+// typo is a compile error). Docs on kept fields flow from `config.generated.ts`.
 // ---------------------------------------------------------------------------
+
+/** `run.command` options. A watching command must also build: `watches: true` requires `builds: true`. */
+export type CommandOptions =
+  { watches?: true; builds?: true } | { watches: false; builds?: boolean };
 
 /**
- * Overlays a package's name-referencing fields with the concrete name union `N`. `NoInfer`
- * keeps these values out of `N`'s inference, so a typo'd name is a compile error rather
- * than silently widening `N`.
+ * The dev process to run and how it behaves: a script/target name, or
+ * `[name, { watches, builds }]`.
  */
+export type CommandInput = string | [string, CommandOptions];
+
+export type RunConfig<N extends string> = Omit<
+  GeneratedRunConfig,
+  'command' | 'waitFor' | 'deps'
+> & {
+  /**
+   * The dev process to run and how it behaves. A script/target name, or
+   * `[name, { watches, builds }]`. Default `['dev', { watches: true, builds: true }]`.
+   *
+   * - `watches` — the script watches files and reloads itself.
+   * - `builds` — the script (re)builds on start. `watches: true` requires `builds: true`.
+   *
+   * Drives what to do after editing this package's code: `watches`→nothing, else
+   * `builds`→restart, else rebuild.
+   */
+  command?: CommandInput;
+  /** Package names whose `healthcheck` must pass before this package starts. */
+  waitFor?: NoInfer<N>[];
+  /** Other packages this one depends on, by category. */
+  deps?: {
+    /** Extends the build-time deps inferred from `tsconfig.build.json` (transitive). */
+    build?: NoInfer<N>[];
+    /** Compiled before running (currently like `build`). */
+    dev?: NoInfer<N>[];
+    /** Packages that must be running alongside this one (not transitive). */
+    runtime?: NoInfer<N>[];
+  };
+};
+
+export type PackageConfigInput<N extends string> = Omit<GeneratedPackageConfig, 'name' | 'run'> & {
+  /** Unique identifier; referenced from the CLI (`-p`), `waitFor`, and `deps`. */
+  name: N;
+  /** How to run/select/link the package; omit entirely for a build-only lib. */
+  run?: RunConfig<N>;
+};
+
+export type DefineConfigOptions<N extends string> = Omit<GeneratedDefineConfig, 'packages'> & {
+  /** Your package definitions. */
+  packages: PackageConfigInput<N>[];
+};
+
+// ---------------------------------------------------------------------------
+// Resolved (runtime) types — normalized `command`, substituted urls. Derived from the
+// schema via `z.infer`; name-referencing fields overlaid with `N`.
+// ---------------------------------------------------------------------------
+
 type RunWithNames<R, N extends string> = Omit<R, 'waitFor' | 'deps'> & {
   waitFor?: NoInfer<N>[];
   deps?: { build?: NoInfer<N>[]; dev?: NoInfer<N>[]; runtime?: NoInfer<N>[] };
 };
-
-/** A package's `run` block as authored (loose `command`, name-checked `waitFor`/`deps`). */
-export type RunConfig<N extends string> = RunWithNames<z.input<typeof RunConfigSchema>, N>;
-
-/** A package's resolved `run` block (normalized `command`, substituted urls). */
 type ResolvedRun<N extends string> = RunWithNames<z.infer<typeof RunConfigSchema>, N>;
-
-export type PackageConfigInput<N extends string> = Omit<
-  z.input<typeof PackageConfigSchema>,
-  'name' | 'run'
-> & { name: N; run?: RunConfig<N> };
-
-/**
- * The argument to {@link defineConfig}. Everything is typed straight from the Zod schema
- * except the relational fields, which are pinned to your package names for autocomplete
- * and typo errors.
- */
-export type DefineConfigOptions<N extends string> = Omit<
-  z.input<typeof DefineConfigSchema>,
-  'packages'
-> & { packages: PackageConfigInput<N>[] };
 
 export type ResolvedPackageConfig<N extends string> = Omit<
   z.infer<typeof PackageConfigSchema>,
