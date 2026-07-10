@@ -62,18 +62,15 @@ importers:
       '@clack/prompts':
         specifier: ^1.6.0
         version: 1.6.0
+      '@dotenvx/dotenvx':
+        specifier: ^2.3.4
+        version: 2.3.4
       chalk:
         specifier: ^5.6.2
         version: 5.6.2
       commander:
         specifier: ^15.0.0
         version: 15.0.0
-      dotenv:
-        specifier: ^17.4.2
-        version: 17.4.2
-      dotenv-expand:
-        specifier: ^13.0.0
-        version: 13.0.0
       execa:
         specifier: ^9.6.1
         version: 9.6.1
@@ -189,6 +186,16 @@ packages:
   '@clack/prompts@1.6.0':
     resolution: {integrity: sha512-EYlRokl8szrP9Z25qT5aepMdBjzBvHF9ZEhzIiUBc9guz/T31EqRgvD0QSgZcpE93xiwrr+OkB4nz0BZyF6fSA==}
     engines: {node: '>= 20.12.0'}
+
+  '@dotenvx/dotenvx@2.3.4':
+    resolution: {integrity: sha512-Yb8vBLQK/EbArDf/NrbS6poCHlcumUOrXelCcR217f+tjdC+dHz3pOaKzCtRm1GGQPF42j5pWNsGNgjZaxl2mw==}
+    hasBin: true
+
+  '@dotenvx/primitives@1.8.1':
+    resolution: {integrity: sha512-xcEkhZDDA9E/ElU27Ft6ZaBBZN4EkXDmD0H4kZB7CcEMfQr43P6RMb7AMU6xYvqLyg2zT8rb0lEuaE8gUlUEiw==}
+
+  '@dotenvx/tooling@1.0.2':
+    resolution: {integrity: sha512-yf4VwIZUzSqlLy2pe0kH2xk6dME73oYW5XqcHE7M1zA1H0RX/dSUThsSRmpCjp622iW9f6VGQl5Aa6szt5Xc0w==}
 
   '@emnapi/core@1.11.1':
     resolution: {integrity: sha512-RSvbQmHzdKzNsLYa/wHrbc3KN4sYLKAdPZxqiM2HATqv/SBk2/ENSHpvXGaLOMcsAyz0poEGqkmmKYG3OWiJEQ==}
@@ -711,14 +718,6 @@ packages:
   doctrine@2.1.0:
     resolution: {integrity: sha512-35mSku4ZXK0vfCuHEDAwt55dg2jNajHZ1odvF+8SSr82EsZY4QmXfuWso8oEd8zRhVObSN18aM0CjSdoBX7zIw==}
     engines: {node: '>=0.10.0'}
-
-  dotenv-expand@13.0.0:
-    resolution: {integrity: sha512-aBfBS8eYIeXmpHI9ThIlA7/WLq+SLt18iXUZhb52rW89QLKQFoIpPG1bPeewoPZsTyjSSO3T7234FBVUM1V2rA==}
-    engines: {node: '>=12'}
-
-  dotenv@17.4.2:
-    resolution: {integrity: sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw==}
-    engines: {node: '>=12'}
 
   dunder-proto@1.0.1:
     resolution: {integrity: sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A==}
@@ -1935,6 +1934,10 @@ packages:
     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
     engines: {node: '>=10'}
 
+  yocto-spinner@1.2.1:
+    resolution: {integrity: sha512-9cbFWLhbiZp+820O4pkHGNncI7+MrUGzBOjw8NMG+ewsY+aG0DdEXnr19Smxao32YOjLZRMdn1UtaxcrXOYOIg==}
+    engines: {node: '>=18.19'}
+
   yoctocolors@2.1.2:
     resolution: {integrity: sha512-CzhO+pFNo8ajLM2d2IW/R93ipy99LWjtwblvC1RsoSUMZgyLbYFr221TnSNT7GjGdYui6P459mw9JH/g/zW2ug==}
     engines: {node: '>=18'}
@@ -2075,6 +2078,16 @@ snapshots:
       fast-string-width: 3.0.2
       fast-wrap-ansi: 0.2.2
       sisteransi: 1.0.5
+
+  '@dotenvx/dotenvx@2.3.4':
+    dependencies:
+      '@dotenvx/primitives': 1.8.1
+      '@dotenvx/tooling': 1.0.2
+      yocto-spinner: 1.2.1
+
+  '@dotenvx/primitives@1.8.1': {}
+
+  '@dotenvx/tooling@1.0.2': {}
 
   '@emnapi/core@1.11.1':
     dependencies:
@@ -2604,12 +2617,6 @@ snapshots:
   doctrine@2.1.0:
     dependencies:
       esutils: 2.0.3
-
-  dotenv-expand@13.0.0:
-    dependencies:
-      dotenv: 17.4.2
-
-  dotenv@17.4.2: {}
 
   dunder-proto@1.0.1:
     dependencies:
@@ -3955,6 +3962,10 @@ snapshots:
   yaml@2.9.0: {}
 
   yocto-queue@0.1.0: {}
+
+  yocto-spinner@1.2.1:
+    dependencies:
+      yoctocolors: 2.1.2
 
   yoctocolors@2.1.2: {}
 

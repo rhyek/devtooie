@@ -741,17 +741,25 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
     ? args.rebuildableSet.has(focusedPackage.name)
     : false;
 
-  const hints: HotkeyHintItem[] = [
+  // Session-level hotkeys (act on the whole session) — pinned to the top of the footer.
+  // `t: truncate` lives next to the logfile path instead (see below).
+  const sessionHints: HotkeyHintItem[] = [
+    { header: 'logs' },
+    { key: 'k', label: 'clear' },
+    { key: 'f', label: 'filter' },
+    { separator: true },
+    { key: '^c', label: 'quit' },
+  ];
+
+  // Per-package hotkeys (act on the focused package) — rendered directly under the dots.
+  const packageHints: HotkeyHintItem[] = [
+    { key: '←→', label: 'select' },
+    { separator: true },
     { key: 'r', label: 'restart', dim: !focusedIsActive },
     { key: 'b', label: 'rebuild', dim: !focusedIsActive || !focusedIsRebuildable },
-    { key: 'x', label: 'stop', dim: !focusedIsActive },
-    { key: 's', label: 'start', dim: focusedIsActive },
+    // Merged start/stop toggle: show whichever action applies to the focused package.
+    focusedIsActive ? { key: 'x', label: 'stop' } : { key: 's', label: 'start' },
     { key: 'm', label: 'commands' },
-    { separator: true },
-    { key: 'k', label: 'clear' },
-    ...(args.logFile ? [{ key: 't', label: 'trunc logfile' }] : []),
-    { key: 'f', label: 'filter' },
-    { key: '^c', label: 'quit' },
   ];
 
   const filterLine = activeFilter ? (
@@ -833,10 +841,14 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
     </>
   ) : (
     <>
-      <HotkeyHints hints={hints} />
+      <HotkeyHints hints={sessionHints} />
       {filterLine}
     </>
   );
+
+  // Per-package hotkeys sit directly under the dots (no vertical gap) — only in
+  // normal mode, where the top section shows the session-level hotkeys.
+  const isNormal = !shuttingDown && !isFilter && !isCommands;
 
   const borderColor = shuttingDown ? 'yellow' : isFilter ? 'cyan' : isCommands ? 'magenta' : 'gray';
 
@@ -845,6 +857,7 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
       <Box flexDirection="column" flexGrow={1}>
         {topSection}
         <Box marginTop={1}>{packageStatusDots}</Box>
+        {isNormal && <HotkeyHints hints={packageHints} />}
         <Box flexDirection="column" marginTop={1}>
           {gitBranch && (
             <Text>
@@ -854,9 +867,12 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
             </Text>
           )}
           {args.logFile && (
-            <Text dimColor>
-              logfile: {path.relative(process.cwd(), args.logFile) || args.logFile}
-            </Text>
+            <Box columnGap={2}>
+              <Text dimColor>
+                logfile: {path.relative(process.cwd(), args.logFile) || args.logFile}
+              </Text>
+              {isNormal && <HotkeyHints hints={[{ key: 't', label: 'truncate' }]} />}
+            </Box>
           )}
         </Box>
       </Box>

@@ -141,9 +141,7 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
      (each named package must itself define a `healthcheck`).
 
    Keep `name` consistent with how the package should be referred to elsewhere (control
-   API paths, `-p` flags, etc). The `declare module 'devtooie'` block at the bottom of
-   `devtooie.config.ts` references the config's own `packages` (`typeof config.packages`),
-   so the new name is recognized inline with no extra codegen step.
+   API paths, `-p` flags, etc).
 
    For workspace-wide links not tied to any package (dashboards, docs), add a top-level
    `urls` array to `defineConfig` — same entry shape as a package's `run.urls`. These

@@ -1,59 +1,50 @@
 # devtooie
 
-Dependency-aware CLI for running a monorepo's local dev processes.
+A dependency-aware **terminal UI** (TUI) for running a monorepo's local dev
+processes — _dev_ + _TUI_ → **devtooie**.
 
 You describe your packages once, in a small typed config file. devtooie
 resolves build-time, dev-time, and runtime dependencies between them, builds
 whatever needs building (in the right order), and then runs the packages you
-picked — either in a full terminal UI or a plain log-streaming mode. Other
-tooling in your monorepo (a reverse proxy, a codegen script, ...) can import
-the same typed config instead of duplicating it.
+picked.
 
-devtooie ships two things from one package:
+![devtooie's terminal UI running three packages](https://raw.githubusercontent.com/rhyek/devtooie/main/packages/devtooie/assets/screenshot.png)
 
-- **A library** — `defineConfig`, `PackageType`, `findPackage`, and supporting
-  types, for authoring your config and importing it from other scripts.
-- **A CLI binary** (`devtooie`) — driven entirely by a small committed
-  `devtooie.config.ts` file. There are no `--config`/`--port` flags: the CLI
-  reads everything it needs from that file.
+## Features
+
+- **Dependency-aware builds.** Declare build/dev/runtime deps once; devtooie
+  builds what needs building, in the right order, before it runs anything.
+- **Two run modes.** An interactive terminal UI to pick and watch packages, or a
+  `--plain` log-streaming mode for CI and coding agents.
+- **Per-package hierarchical `.env` loading.** Each package's `.env` files (workspace- and
+  package-scoped) are resolved and injected into its process automatically — and
+  live-reloaded, restarting the affected package when a file changes.
+- **Readiness ordering.** `healthcheck` + `waitFor` hold a package until the
+  services it needs are actually up.
+- **Lifecycle-aware.** Each package declares whether its dev process watches or
+  just builds, so you (or an agent) know exactly what to do after a code edit.
+- **Control API + agent skill.** A localhost HTTP API drives a running session
+  headlessly and lets a second invocation hand off cleanly; an installable skill
+  teaches a coding agent to use it.
 
 ## Requirements
 
-- **Node ≥23.6** (Node 24 LTS recommended). devtooie loads your
-  `devtooie.config.ts` with a native dynamic `import()` of a `.ts` file, which
-  relies on Node's built-in TypeScript type-stripping — available starting in
-  Node 23.6, and on by default in Node 24 LTS. On an older Node you can use a
-  compiled `devtooie.config.js`/`.mjs` instead (runtime only — the inline type
-  augmentation described below requires the `.ts` form).
-- **Unix only** (macOS/Linux) for now. The dev-session handoff, port
-  sweeping, and process-group management devtooie uses under the hood are
-  POSIX-specific. Windows is not supported.
-- A `package.json` (or `Makefile`) per package with the scripts devtooie
-  drives (`dev`, `build`, ...) — see [CLI usage](#cli-usage) below.
+- **Node 20+.** A `.ts` config additionally needs **Node ≥23.6** (native
+  type-stripping); on older Node, use a compiled `devtooie.config.js`/`.mjs`.
+- **Unix only** (macOS/Linux). Windows is not supported.
+- A `package.json` (or `Makefile`) per package with the scripts devtooie drives
+  (`dev`, `build`, ...) — see [CLI usage](#cli-usage) below.
 
 ## Install
 
 ```bash
 pnpm add -D devtooie
-# or: npm install --save-dev devtooie / yarn add -D devtooie
 ```
-
-### The postinstall caveat
-
-devtooie's package ships a best-effort `postinstall` hook that, on a plain
-interactive install, offers to run `devtooie init` for you. **Don't rely on
-it.** Many package managers skip dependency lifecycle scripts by default —
-notably **pnpm ≥10**, which requires a package to be explicitly allow-listed
-before its `postinstall` runs at all. CI installs and non-interactive
-installs also skip the prompt intentionally.
-
-The reliable, documented setup path is always to run `devtooie init`
-yourself after installing.
 
 ## Getting started: `devtooie init`
 
 ```bash
-npx devtooie init
+pnpm devtooie init
 ```
 
 This is an interactive, idempotent setup flow. It will:
@@ -62,54 +53,45 @@ This is an interactive, idempotent setup flow. It will:
 2. Scaffold `devtooie.config.ts` at your repo root (an existing config file is
    left untouched).
 3. Reconcile a root `tsconfig.json` so the config type-checks with Node globals
-   in scope — creating one if absent, or just adding `devtooie.config.ts` to its
-   `include` (and `"node"` to a `types` array that lacks it) if one already
-   exists — so editors don't flag `process.env.*` in the config with TS2591.
-   Idempotent; your other settings are left untouched.
+   in scope (idempotent — your other settings are left untouched).
 4. If you opted in to the skill, install it.
 
-Pass `-y`/`--yes` to run it non-interactively (accepts the defaults — scaffold
-the config and install the skill — without prompting), handy for automation.
+Pass `-y`/`--yes` to accept the defaults non-interactively.
 
 After that, fill in the scaffolded config's `packages` array with your real
-packages (see below) and run `devtooie`.
+packages (see below) and run `pnpm devtooie`.
 
 ## `devtooie.config.ts`
 
 The one file you author and commit — the single source of truth the CLI reads
-on every run. There are no CLI flags for any of it. It holds your control-API
-port, whether the agent skill is managed, and your package definitions, and it
-wires your package _names_ into devtooie's exported types via a small inline
-augmentation block at the bottom:
+on every run.
 
-> **Note:** devtooie imports this file with a native `.ts` dynamic `import()`
-> (see [Requirements](#requirements) above). If your project's
-> `package.json` doesn't have `"type": "module"`, Node will still load it
-> correctly but will print a `MODULE_TYPELESS_PACKAGE_JSON` performance
-> warning. Add `"type": "module"` to your `package.json`, or name the file
-> `devtooie.config.mts`, to silence it.
+> **Note:** if your `package.json` lacks `"type": "module"`, Node prints a
+> `MODULE_TYPELESS_PACKAGE_JSON` warning when loading the config. Add
+> `"type": "module"`, or name the file `devtooie.config.mts`, to silence it.
 
 ```ts
 import { defineConfig } from 'devtooie';
 
-const config = defineConfig({
-  // Values for any extrinsic URL tokens you reference below.
-  tokens: { domain: process.env.APP_DOMAIN, proxyport: process.env.PROXY_PORT },
+export default defineConfig({
   packages: [
     {
       name: 'core-api',
       types: ['backend'],
       run: {
         port: 3001,
+        // `$port` is substituted with this package's `port`.
         healthcheck: 'http://localhost:$port/health',
       },
     },
     {
-      name: 'reverse-proxy',
+      name: 'worker',
       types: ['backend'],
       run: {
-        selectable: false, // infra dep, never shown in the picker
-        healthcheck: 'https://$domain:$proxyport/_health',
+        // A dev process that doesn't watch files: it builds once, then runs.
+        // devtooie will restart it for you after you edit its code — see
+        // Package lifecycle below.
+        command: ['start', { watches: false, builds: true }],
       },
     },
     {
@@ -117,35 +99,25 @@ const config = defineConfig({
       types: ['browser'],
       run: {
         port: 3000,
-        urls: ['https://app.$domain:$proxyport'],
-        waitFor: ['core-api'],
-        deps: { runtime: ['core-api', 'reverse-proxy'] },
+        waitFor: ['core-api'], // hold until core-api's healthcheck passes
+        deps: { runtime: ['core-api'] }, // selecting web also runs core-api
       },
     },
   ],
 });
-export default config;
-
-// Wires your package names into devtooie's types. Keep as-is.
-declare module 'devtooie' {
-  interface Register {
-    packageConfigs: typeof config.packages;
-  }
-}
 ```
+
+If no `devtooie.config.ts` (or `.mts`/`.js`/`.mjs`) exists, the CLI exits with
+a message pointing you at `devtooie init`.
 
 `defineConfig` accepts:
 
 | Field          | Meaning                                                                                |
 | -------------- | -------------------------------------------------------------------------------------- |
 | `packages`     | Your package definitions (see below).                                                  |
-| `urls`         | Workspace-wide links, not tied to a package — see [Top-level URLs](#top-level-urls).   |
 | `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.       |
-| `tokens`       | Values for extrinsic `$token` substitution — see [Tokens](#tokens).                    |
 | `env`          | `.env` files loaded per package — see [Environment loading](#environment-env-loading). |
-
-If no `devtooie.config.ts` (or `.mts`/`.js`/`.mjs`) exists, the CLI exits with
-a message pointing you at `devtooie init`.
+| `apiPort`      | Pin the [control API](#control-api) port (otherwise chosen automatically).             |
 
 Each package entry:
 
@@ -161,10 +133,8 @@ Each package entry:
   - `command` — the dev process to run and how it behaves. A script/target name, or
     `[name, { watches, builds }]`. Defaults to `['dev', { watches: true, builds: true }]`.
     See [Package lifecycle](#package-lifecycle-when-you-edit-code).
-  - `port`, `hmrPort` — the package's port(s); used for substitution and swept
-    on session handoff.
-  - `subdomain` — for reverse-proxy routing; used for `$subdomain`
-    substitution.
+  - `port`, `hmrPort` — the package's port(s); `$port` substitution and swept on
+    session handoff.
   - `urls` — links shown in the running footer, one entry per line. Each entry is a
     string, a `{ label, url }`, or an **array** of those (rendered on the same line,
     space-separated).
@@ -181,100 +151,56 @@ Three independent categories, resolved when you select a package:
 - **`deps.build`** — extends the build-time deps devtooie already infers
   from your `tsconfig.build.json` project references. Resolved
   transitively.
-- **`deps.dev`** — compiled before running; currently behaves like a build
-  dep, tracked separately for future divergence.
+- **`deps.dev`** — compiled before running (currently behaves like a build dep).
 - **`deps.runtime`** — other packages that must be _running_ alongside this
   one. **Not transitive**: only the packages you explicitly select have
   their runtime deps expanded. If a runtime dep needs its own runtime deps
   too, select it explicitly (or add it to your own selection).
 
 `devtooie resolvedeps -p <name> [...]` prints the resolved build/dev/runtime
-sets as JSON, which is handy for wiring other tooling (targeted typechecks,
-codegen, etc.) to the same dependency graph.
+sets as JSON — handy for wiring other tooling to the same dependency graph.
 
 ## Package lifecycle when you edit code
 
 `run.command` declares **how a package's dev process behaves**, which tells you (or an
-agent) what to do after editing that package's source:
+agent) what to do after editing that package's source. It's a script/target name or
+`[name, { watches, builds }]`:
 
-```ts
-run: { command: 'dev' }                              // = ['dev', { watches: true, builds: true }]
-run: { command: ['start', { watches: false }] }      // builds defaults to true
-run: { command: ['serve', { watches: false, builds: false }] }
-```
+- `command: 'dev'` — the default: `{ watches: true, builds: true }`.
+- `command: ['start', { watches: false }]` — `builds` defaults to `true`.
+- `command: ['serve', { watches: false, builds: false }]` — neither.
 
-- `command[0]` (or a bare string) is the npm script / Makefile target devtooie runs as the
-  dev process. Defaults to `dev`.
-- `watches` — the script watches files and reloads itself. `builds` — the script
-  (re)builds on start. Both default to `true`. `watches: true` with `builds: false` is
-  rejected (a watching script must also build) — at the type level and at load.
+`command[0]` (or a bare string) is the npm script / Makefile target run as the dev
+process (defaults to `dev`). `watches` — the script watches files and reloads itself;
+`builds` — it (re)builds on start. Both default to `true`; `watches: true` with
+`builds: false` is rejected (a watching script must also build).
 
-| resolved flags | after you edit the package's code |
-| --- | --- |
-| `watches: true` (default) | nothing — the script reloads itself |
-| `watches: false, builds: true` | `POST /command/restart/<pkg>` |
+| resolved flags                  | after you edit the package's code                       |
+| ------------------------------- | ------------------------------------------------------- |
+| `watches: true` (default)       | nothing — the script reloads itself                     |
+| `watches: false, builds: true`  | `POST /command/restart/<pkg>`                           |
 | `watches: false, builds: false` | `POST /command/rebuild/<pkg>` (clean build, then start) |
 
-The resolved flags are served by [`GET /query/config`](#control-api), so tooling can read
-them and act without parsing the config file.
-
-## Top-level URLs
-
-The top-level `urls` field holds workspace-wide links that aren't tied to any single
-package — dashboards, admin panels, docs. They render in the TUI footer **above** the
-per-package links, separated by a dim rule:
-
-```ts
-defineConfig({
-  urls: [
-    'https://status.internal',
-    { label: 'Grafana', url: 'https://grafana.$domain' },
-    // An array entry renders its links on one line, space-separated:
-    [
-      { label: 'repo', url: 'https://github.com/acme/app' },
-      { label: 'CI', url: 'https://ci.acme.dev' },
-    ],
-  ],
-  tokens: { domain: 'example.com' },
-  packages: [/* ... */],
-});
-```
-
-Same shape as a package's `run.urls` — each entry is a string, a `{ label, url }`, or an
-array of those. Only **extrinsic** tokens (from `tokens`) are substituted; there is no
-package, so an intrinsic `$name`/`$port`/`$subdomain` reference has nothing to resolve
-against and throws (see [Tokens](#tokens)).
-
-## Tokens
-
-`urls` and `healthcheck` strings support `$token` substitution, resolved once
-at `defineConfig()` call time. Using `$` (rather than `:`) keeps tokens from
-colliding with the `:` that precedes a port in a URL — e.g.
-`http://localhost:$port`:
-
-**Intrinsic** (always available, derived from the package's own config):
-
-- `$name` → the package's `name`
-- `$port` → `run.port` (throws if the package has no `port`)
-- `$subdomain` → `run.subdomain` (first element, if it's an array; throws if
-  the package has no `subdomain`)
-
-**Extrinsic** (yours to supply via `tokens: {...}`): any other `$key` in a
-`urls`/`healthcheck` string is looked up in the `tokens` map you pass to
-`defineConfig`. Referencing a `$key` with no matching entry — or one
-whose value is `undefined` — throws immediately, naming the source (the package, or
-`top-level url`) and the token, so misconfiguration fails loudly at startup instead of
-silently. Top-level `urls` support **only** these extrinsic tokens.
-
-This keeps devtooie itself free of any hardcoded environment-variable names:
-you decide what feeds `tokens` (env vars, computed values, constants).
+The resolved flags are served by [`GET /query/config`](#control-api) for tooling to read.
 
 ## Environment (`.env`) loading
 
 devtooie loads `.env` files for every package it runs and injects them into that
 package's child process — merged over the current `process.env` without mutating
-it. Files are resolved at two scopes (the workspace root and the package's own
-directory); only files that exist are loaded.
+it. Files are resolved at **two scopes**: the workspace root and the package's own
+directory. Only files that exist are loaded.
+
+```
+your-monorepo/
+├── .env                     # workspace scope — base for every package
+├── .env.local               # workspace scope, higher precedence
+└── packages/
+    ├── core-api/
+    │   ├── .env              # package scope — overrides workspace scope
+    │   └── .env.local        # highest precedence for core-api
+    └── web/
+        └── .env
+```
 
 Default files, **ascending precedence within a scope**:
 
@@ -283,15 +209,13 @@ Default files, **ascending precedence within a scope**:
 3. `.env.development`
 4. `.env.local`
 
-**Package scope always overrides workspace scope**, and within a scope a file
-later in the list overrides an earlier one — so a package's `.env.local` wins
-over everything and the workspace `.env` is the base. `${VAR}` references are
-expanded against already-loaded files and the current environment.
+**Package scope overrides workspace scope**, and within a scope a later file
+overrides an earlier one. `${VAR}` references expand against already-loaded files
+and the current environment; file values win over the ambient environment (so
+`NODE_OPTIONS=$NODE_OPTIONS --flag` extends the inherited value).
 
-A package's `run.port` is also injected as the `PORT` env var (so the app can
-read `process.env.PORT` without duplicating it), sitting between the inherited
-environment and the `.env` files — a default the config provides, which an
-explicit `.env` `PORT` still overrides.
+A package's `run.port` is also injected as `PORT` (an explicit `.env` `PORT`
+still overrides it).
 
 Customize the list via `env.files` (each name is still resolved at both scopes):
 
@@ -306,43 +230,9 @@ While a session runs, devtooie **watches these files (and where new ones would
 appear) and restarts the affected package(s)** on change — editing a
 workspace-level file restarts every running package that uses it.
 
-### `devtooie env`
-
-The same resolution is available as a standalone command — handy for running a
-one-off command with a package's env, or inspecting what resolves:
-
-```bash
-devtooie env                              # resolve for the current directory
-devtooie env --dir packages/api           # ...for a specific package
-devtooie env -- node ./scripts/seed.js    # run a command with them injected
-devtooie env --dir packages/api -- npm run migrate
-```
-
-It discovers the workspace root (the nearest ancestor holding a
-`devtooie.config.*`) and reads its `env.files`, so it works from anywhere.
-`--dir` is relative to that root and **defaults to your current directory** — so
-running it from inside a package resolves that package (workspace-level files
-included), just like devtooie would when it runs the package.
-
-## Type augmentation
-
-The `declare module 'devtooie'` block at the bottom of `devtooie.config.ts`
-wires up a fully-typed, literal union of your package names for anything that
-imports types from `devtooie`:
-
-```ts
-declare module 'devtooie' {
-  interface Register {
-    packageConfigs: typeof config.packages;
-  }
-}
-```
-
-Because it references the config's own `packages`, it can never drift and
-needs no code generation. Once it's present, `import type { PackageConfig,
-PackageName } from 'devtooie'` narrows to your actual packages instead of the
-generic wide types. `devtooie init` scaffolds this block for you; keep it as-is
-when you add packages.
+The same resolution is available as a standalone command for running a one-off
+command with a package's env, or inspecting what resolves — see
+[`devtooie env`](#devtooie-env) below.
 
 ## CLI usage
 
@@ -372,50 +262,82 @@ Subcommands:
 - **`devtooie reset`** — clear the saved package selection.
 - **`devtooie resolvedeps -p <name> [...]`** — print the resolved
   build/dev/runtime dependency sets as JSON.
-- **`devtooie env [--dir <relativeDir>] [-- <cmd...>]`** — resolve a package's
-  `.env` files and print them, or run a command with them injected. See
-  [Environment loading](#environment-env-loading).
+- **`devtooie env`** — resolve a package's `.env` files; see [below](#devtooie-env).
 
-There's no `--config` or `--api-port` flag. The control API port is chosen at
-startup and written to `node_modules/.devtooie/running.json`; read it from there.
+### `devtooie env`
+
+Resolve a package's `.env` files (per [Environment loading](#environment-env-loading))
+— handy for running a one-off command with a package's env, or inspecting what
+resolves:
+
+```bash
+devtooie env                              # resolve for the current directory
+devtooie env --dir packages/api           # ...for a specific package
+devtooie env -- node ./scripts/seed.js    # run a command with them injected
+devtooie env --dir packages/api -- npm run migrate
+```
+
+It works from anywhere (finding the nearest ancestor with a `devtooie.config.*`).
+`--dir` is relative to that root and **defaults to your current directory**, so
+running it inside a package resolves that package.
+
+### Agent skill
+
+If you opt in during `devtooie init`, devtooie installs an agent-facing skill
+file at `.claude/skills/devtooie/SKILL.md` (and, best-effort, under `.agents/` /
+`.cursor/` if those directories already exist). It teaches a coding agent how
+to run devtooie headlessly (`--plain -p <package>`), drive a running session
+through the control API, read the logfile for debugging, and onboard a new
+package. The installed file is **managed** — treat it as generated, not something
+to hand-edit. `devtooie init` and every `devtooie` run refresh it to the
+installed version.
 
 ### Control API
 
-While a session is running (either runner mode), devtooie exposes a
-localhost-only HTTP API. The port is picked at startup from a small range
-(`14000`–`14099`) and recorded — along with the session pid — in
-`node_modules/.devtooie/running.json`; read the `port` field there to reach it.
-Restarts of the same workspace reuse the recorded port, and a fixed port can be
-pinned with `apiPort` in `devtooie.config.ts`.
+While a session runs, devtooie exposes a localhost-only HTTP API — mostly useful
+for coding agents (via the [skill](#agent-skill) above), but open to any tooling.
+Its port is picked at startup and written (with the pid) to
+`node_modules/.devtooie/running.json` — read the `port` field there. Pin a fixed
+one with `apiPort` in `devtooie.config.ts`.
 
 - `GET /query/pid` — the running session's PID **and the absolute path to the
   `devtooie.config.*` it was started with** (`{ pid, configPath }`).
 - `GET /query/status[/<name>]` / `GET /query/packages[?status=...]` — package
   status.
 - `GET /query/config` — the whole **resolved** config (defaults applied,
-  `command` normalized to `{ name, watches, builds }`), same shape as
-  `defineConfig`'s output. It reflects the running session's config as loaded at
-  startup — editing `devtooie.config.ts` takes effect when you restart devtooie.
+  `command` normalized to `{ name, watches, builds }`), as loaded at startup
+  (restart devtooie to pick up edits).
 - `POST /command/restart/<name>` / `POST /command/rebuild/<name>` — restart
   or rebuild-then-restart a package.
 - `POST /command/quit` — graceful shutdown (same as Ctrl+C).
 
-This is what lets a second `devtooie` invocation cleanly hand off from a
-still-running one, and what an external tool (or the agent skill) can use to
-drive a session headlessly.
+This is what lets a second `devtooie` invocation hand off from a running one, and
+what an external tool (or the agent skill) uses to drive a session headlessly.
 
-## Agent skill
+## Typed package names (optional, advanced)
 
-If you opt in during `devtooie init`, devtooie installs an agent-facing skill
-file at `.claude/skills/devtooie/SKILL.md` (and, best-effort, under `.agents/` /
-`.cursor/` if those directories already exist). It teaches a coding agent how
-to run devtooie headlessly (`--plain -p <package>`), drive a running session
-through the control API, read the fixed default logfile for debugging, and
-onboard a new package into your `devtooie.config.ts`. The installed file is
-**managed** — treat it as generated, not something to hand-edit. `devtooie init`
-and the package's `postinstall` hook refresh it to match the installed devtooie
-version automatically (overwriting local changes), so it stays in lockstep with
-the package.
+Most people don't need this. If you want other scripts in your repo to import a
+literal union of your package names from `devtooie`, name the config value and
+augment the `'devtooie'` module with it:
+
+```ts
+import { defineConfig } from 'devtooie';
+
+const config = defineConfig({
+  packages: [/* … */],
+});
+export default config;
+
+declare module 'devtooie' {
+  interface Register {
+    packageConfigs: typeof config.packages;
+  }
+}
+```
+
+`import type { PackageConfig, PackageName } from 'devtooie'` then narrows to your
+actual package names instead of the generic wide types. Purely opt-in — the
+scaffolded config doesn't include it.
 
 ## License
 

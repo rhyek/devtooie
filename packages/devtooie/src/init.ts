@@ -5,24 +5,15 @@ import { findConfigPath } from './load-config.js';
 import { installSkill, isSkillInstalled, readOwnVersion } from './skill.js';
 import { reconcileTsconfig } from './tsconfig.js';
 
-/** The scaffolded `devtooie.config.ts`: meta + packages + the inline type augmentation. */
+/** The scaffolded `devtooie.config.ts`. */
 function configTemplate(): string {
   return `import { defineConfig } from 'devtooie';
 
-const config = defineConfig({
-  // tokens: { domain: process.env.APP_DOMAIN, proxyport: process.env.PROXY_PORT },
+export default defineConfig({
   packages: [
     // { name: 'my-pkg', types: ['backend'], run: { port: 3001 } },
   ],
 });
-export default config;
-
-// Wires your package names into devtooie's types. Keep as-is.
-declare module 'devtooie' {
-  interface Register {
-    packageConfigs: typeof config.packages;
-  }
-}
 `;
 }
 

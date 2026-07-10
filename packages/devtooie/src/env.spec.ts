@@ -85,6 +85,56 @@ describe('resolveEnv', () => {
     }
   });
 
+  it('a file var overrides an ambient env var of the same name', () => {
+    process.env.DEVTOOIE_ENV_OVERRIDE = 'ambient';
+    try {
+      write('.env', 'DEVTOOIE_ENV_OVERRIDE=fromfile\n');
+      const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
+      expect(env.DEVTOOIE_ENV_OVERRIDE).toBe('fromfile');
+    } finally {
+      delete process.env.DEVTOOIE_ENV_OVERRIDE;
+    }
+  });
+
+  it('a self-reference extends the ambient value (append pattern)', () => {
+    process.env.DEVTOOIE_ENV_APPEND = '--require /tmp/boot.js';
+    try {
+      write(
+        '.env',
+        'DEVTOOIE_ENV_APPEND=$DEVTOOIE_ENV_APPEND --disable-warning=ExperimentalWarning\n',
+      );
+      const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
+      expect(env.DEVTOOIE_ENV_APPEND).toBe(
+        '--require /tmp/boot.js --disable-warning=ExperimentalWarning',
+      );
+    } finally {
+      delete process.env.DEVTOOIE_ENV_APPEND;
+    }
+  });
+
+  it('a cross-reference prefers a file var over an ambient var of the same name', () => {
+    process.env.DEVTOOIE_ENV_CROSS = 'ambient';
+    try {
+      write('.env', 'DEVTOOIE_ENV_CROSS=fromfile\nDERIVED=${DEVTOOIE_ENV_CROSS}-x\n');
+      const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
+      expect(env.DERIVED).toBe('fromfile-x');
+    } finally {
+      delete process.env.DEVTOOIE_ENV_CROSS;
+    }
+  });
+
+  it('supports ${VAR:-default} and ${VAR:+alt} operators', () => {
+    write(
+      '.env',
+      'SET=yes\nA=${SET:-fallback}\nB=${MISSING:-fallback}\nC=${SET:+present}\nD=${MISSING:+present}\n',
+    );
+    const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
+    expect(env.A).toBe('yes');
+    expect(env.B).toBe('fallback');
+    expect(env.C).toBe('present');
+    expect(env.D).toBe('');
+  });
+
   it('returns only file-defined keys and does not mutate process.env', () => {
     write('.env', 'DEVTOOIE_ENV_SPEC_ONLY=x\n');
     const before = { ...process.env };

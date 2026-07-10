@@ -7,7 +7,8 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "https://github.com/rhyek/devtooie.git"
+    "url": "https://github.com/rhyek/devtooie.git",
+    "directory": "packages/devtooie"
   },
   "keywords": [
     "monorepo",
@@ -19,7 +20,7 @@
     "ink"
   ],
   "engines": {
-    "node": ">=23.6"
+    "node": ">=20"
   },
   "bin": {
     "devtooie": "./dist/cli.js"
@@ -27,13 +28,11 @@
   "files": [
     "dist",
     "assets",
-    "docs",
-    "postinstall.mjs"
+    "docs"
   ],
   "scripts": {
     "gen": "node scripts/gen-config-types.ts",
-    "build": "rm -rf dist && pnpm gen && tsc -p ./tsconfig.build.json && chmod +x dist/cli.js",
-    "postinstall": "node ./postinstall.mjs"
+    "build": "rm -rf dist && pnpm gen && tsc -p ./tsconfig.build.json && chmod +x dist/cli.js"
   },
   "exports": {
     ".": {
@@ -43,10 +42,9 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.6.0",
+    "@dotenvx/dotenvx": "^2.3.4",
     "chalk": "^5.6.2",
     "commander": "^15.0.0",
-    "dotenv": "^17.4.2",
-    "dotenv-expand": "^13.0.0",
     "execa": "^9.6.1",
     "ink": "^7.1.0",
     "ink-spinner": "^5.0.0",

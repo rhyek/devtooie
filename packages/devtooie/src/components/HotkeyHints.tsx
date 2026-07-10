@@ -1,8 +1,12 @@
 import { Box, Text } from 'ink';
 import React from 'react';
 
-/** One entry in a hotkey-hints row: a labelled key, or a visual separator between groups of keys. */
-export type HotkeyHintItem = { key: string; label: string; dim?: boolean } | { separator: true };
+/**
+ * One entry in a hotkey-hints row: a labelled key, a dim group `header` (e.g. `logs:`)
+ * prefixed to the keys that follow it, or a visual separator between groups of keys.
+ */
+export type HotkeyHintItem =
+  { key: string; label: string; dim?: boolean } | { separator: true } | { header: string };
 
 export type HotkeyHintsProps = {
   hints: HotkeyHintItem[];
@@ -19,6 +23,13 @@ export function HotkeyHints({ hints, gap = 2 }: HotkeyHintsProps) {
           return (
             <Text key={`separator-${i}`} dimColor>
               │
+            </Text>
+          );
+        }
+        if ('header' in hint) {
+          return (
+            <Text key={`header-${i}`} dimColor>
+              {hint.header}:
             </Text>
           );
         }

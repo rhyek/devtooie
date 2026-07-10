@@ -8,7 +8,6 @@ import {
   installSkill,
   refreshSkillIfStale,
   isSkillInstalled,
-  updateSkillIfPresent,
 } from './skill.js';
 
 describe('skill rendering', () => {
@@ -74,7 +73,7 @@ describe('skill install + refresh', () => {
   });
 });
 
-describe('isSkillInstalled + updateSkillIfPresent', () => {
+describe('isSkillInstalled', () => {
   let cwd: string;
   beforeEach(() => {
     cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-skill-'));
@@ -87,30 +86,5 @@ describe('isSkillInstalled + updateSkillIfPresent', () => {
     expect(isSkillInstalled(cwd)).toBe(false);
     installSkill({ cwd, version: '1.0.0' });
     expect(isSkillInstalled(cwd)).toBe(true);
-  });
-
-  it('overwrites an existing skill even when the version is not older (unlike refresh)', () => {
-    installSkill({ cwd, version: '2.0.0' });
-    const file = path.join(cwd, '.claude/skills/devtooie/SKILL.md');
-    // Simulate a template change under the SAME version — refresh would skip this.
-    fs.writeFileSync(file, 'STALE CONTENT\n');
-    const changed = updateSkillIfPresent({ cwd, version: '2.0.0' });
-    expect(changed).toBe(true);
-    const out = fs.readFileSync(file, 'utf8');
-    expect(out).not.toContain('STALE CONTENT');
-    expect(out).toContain('devtooie skill v2.0.0');
-  });
-
-  it('overwrites even a hand-edited skill file (managed file)', () => {
-    installSkill({ cwd, version: '1.0.0' });
-    const file = path.join(cwd, '.claude/skills/devtooie/SKILL.md');
-    fs.writeFileSync(file, fs.readFileSync(file, 'utf8') + '\nHAND EDIT\n');
-    updateSkillIfPresent({ cwd, version: '1.0.0' });
-    expect(fs.readFileSync(file, 'utf8')).not.toContain('HAND EDIT');
-  });
-
-  it('is a no-op returning false when the skill is not installed', () => {
-    expect(updateSkillIfPresent({ cwd, version: '1.0.0' })).toBe(false);
-    expect(fs.existsSync(path.join(cwd, '.claude/skills/devtooie/SKILL.md'))).toBe(false);
   });
 });

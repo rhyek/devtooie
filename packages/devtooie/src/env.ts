@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import dotenv from 'dotenv';
-import { expand } from 'dotenv-expand';
+import dotenvx from '@dotenvx/dotenvx';
 
 /**
  * Default `.env` filenames, in ascending precedence *within a scope*: a base `.env`,
@@ -52,29 +51,27 @@ export function envCandidatePaths({
  * Resolves the `.env` files for a package into a flat, expanded variable map without
  * touching `process.env`. Only files that exist are loaded; a later file (or a
  * package-scope file) overrides an earlier one. `${VAR}` references expand against
- * already-loaded files and the current `process.env`.
+ * already-resolved file vars (which win) and then the current `process.env`.
  */
 export function resolveEnv(opts: ResolveEnvOptions): EnvResolution {
   const candidates = envCandidatePaths(opts);
   const files = candidates.filter((p) => fs.existsSync(p));
 
-  const parsed: Record<string, string> = {};
-  for (const file of files) {
-    Object.assign(parsed, dotenv.parse(fs.readFileSync(file)));
-  }
-  const fileKeys = Object.keys(parsed);
-
-  // Expand against a throwaway copy of process.env (sans undefined values) so the real
-  // process.env is never mutated.
-  const processEnv: Record<string, string> = {};
+  // A copy of process.env (sans undefined values) is the source for `$VAR` lookups. dotenvx
+  // reads from it but writes to neither it nor the real process.env, so nothing is mutated.
+  const ambient: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) processEnv[key] = value;
+    if (value !== undefined) ambient[key] = value;
   }
-  const expanded = expand({ parsed: { ...parsed }, processEnv }).parsed ?? {};
 
-  const env: Record<string, string> = {};
-  for (const key of fileKeys) {
-    env[key] = expanded[key] ?? parsed[key]!;
-  }
+  // Concatenate the existing files in ascending precedence (later overrides earlier, and a
+  // later file may reference an earlier file's var), then parse + expand once. `overload:
+  // true` makes a file var win over an ambient one of the same name — the inverse of
+  // dotenvx's default, and what devtooie's "env files override process.env" contract needs.
+  // It's also what lets the self-append pattern `NODE_OPTIONS=$NODE_OPTIONS --flag` extend
+  // the ambient value instead of discarding it.
+  const source = files.map((p) => fs.readFileSync(p, 'utf8')).join('\n');
+  const env = source ? dotenvx.parse(source, { processEnv: ambient, overload: true }) : {};
+
   return { env, files, candidates };
 }

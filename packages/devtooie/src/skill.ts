@@ -135,18 +135,3 @@ export function refreshSkillIfStale(opts: { cwd?: string; version: string }): vo
 
   installSkill(opts);
 }
-
-/**
- * If the managed skill is already installed at `cwd`, silently re-render and overwrite it
- * (and every recorded install target) so it always matches the shipped template. Unlike
- * {@link refreshSkillIfStale} this is unconditional: it ignores the recorded version and
- * overwrites even a hand-edited file (the file is managed — "do not edit"). No-op when the
- * skill isn't installed. Returns whether an update happened. Used by `postinstall` and
- * `devtooie init` to keep the installed skill in lockstep without prompting.
- */
-export function updateSkillIfPresent(opts: { cwd?: string; version?: string } = {}): boolean {
-  const cwd = opts.cwd ?? process.cwd();
-  if (!isSkillInstalled(cwd)) return false;
-  installSkill({ cwd, version: opts.version ?? readOwnVersion() });
-  return true;
-}

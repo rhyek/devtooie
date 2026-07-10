@@ -134,6 +134,8 @@ importers:
         specifier: ^8.1.3
         version: 8.1.3(@types/node@26.1.0)(jiti@2.7.0)
 
+  packages/worker: {}
+
 packages:
 
   '@babel/code-frame@7.27.1':
