@@ -63,7 +63,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: '.tool-versions'
-          registry-url: 'https://registry.npmjs.org'
 
       - run: pnpm install --frozen-lockfile
 
@@ -89,8 +88,13 @@ jobs:
             --notes-file /tmp/release-notes.md \
             --target "${{ github.sha }}"
 
+      # Tokenless publish via npm Trusted Publishing (OIDC): no NPM_TOKEN secret.
+      # Requires npm >= 11.5.1, the id-token: write permission above, and a Trusted
+      # Publisher configured for this package on npmjs.com (GitHub Actions →
+      # rhyek/devtooie → release.yaml). Provenance is generated automatically.
+      - name: Upgrade npm (OIDC trusted publishing needs >= 11.5.1)
+        run: npm install -g npm@latest
+
       - name: Publish to npm
         working-directory: packages/devtooie
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

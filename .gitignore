@@ -6,3 +6,6 @@ docs/superpowers/
 
 # npm pack output
 *.tgz
+
+# LICENSE is copied into the package at release time (see release.yaml)
+packages/devtooie/LICENSE
