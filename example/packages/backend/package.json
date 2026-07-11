@@ -3,10 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch src/index.ts",
-    "build": "tsc --noEmit"
+    "dev": "node --watch src/index.ts"
   },
   "dependencies": {
+    "@example/isomorphic": "workspace:*",
     "express": "^5.2.1"
   },
   "devDependencies": {

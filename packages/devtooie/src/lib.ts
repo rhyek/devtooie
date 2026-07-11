@@ -46,18 +46,22 @@ export function hasScript(pkg: AnyPackageConfig, script: string): boolean {
 }
 
 /**
- * Whether a package can be cleanly rebuilt: it has a single `build:clean` script/target,
- * or separate `clean` and `build` ones (run in sequence). Makefile packages rely on the
- * latter, since a `make` target name can't contain the `:` in `build:clean`.
+ * Whether a package can be cleanly rebuilt. Either its dev command already clean-rebuilds on
+ * start (`command.cleans`, in which case a rebuild is just a restart — see
+ * {@link getRebuildCommands}), or it exposes the scripts to do it: a single `build:clean`, or
+ * separate `clean` and `build` (run in sequence). Makefile packages rely on the latter, since a
+ * `make` target name can't contain the `:` in `build:clean`.
  */
 export function canRebuild(pkg: AnyPackageConfig): boolean {
+  if (pkg.command?.cleans === true) return true;
   return hasScript(pkg, 'build:clean') || (hasScript(pkg, 'clean') && hasScript(pkg, 'build'));
 }
 
 /**
  * The command(s) a clean rebuild runs, in order: a single `build:clean` when the package
- * defines it, otherwise `clean` then `build`. Empty when the package can't rebuild (see
- * {@link canRebuild}).
+ * defines it, otherwise `clean` then `build`. Empty when there are no such scripts — either the
+ * package can't rebuild, or its dev command self-cleans (`command.cleans`), in which case a
+ * rebuild is just a restart (no pre-commands). See {@link canRebuild}.
  */
 export function getRebuildCommands(pkg: AnyPackageConfig): [string, string[]][] {
   if (hasScript(pkg, 'build:clean')) return [getExecArgs(pkg, 'build:clean')];
@@ -74,7 +78,11 @@ export function hasDevScript(pkg: AnyPackageConfig): boolean {
 export function getMakeTargets(pkg: AnyPackageConfig): string[] {
   try {
     const mk = fs.readFileSync(path.join(pkg.path, 'Makefile'), 'utf8');
-    return [...mk.matchAll(/^([a-zA-Z0-9_.-]+):/gm)].map((m) => m[1]!);
+    // Exclude make's special targets (`.PHONY`, `.DEFAULT`, …) — they start with `.` and aren't
+    // runnable targets, so they must not surface as commands.
+    return [...mk.matchAll(/^([a-zA-Z0-9_.-]+):/gm)]
+      .map((m) => m[1]!)
+      .filter((t) => !t.startsWith('.'));
   } catch {
     return [];
   }
@@ -101,8 +109,22 @@ function lookup(name: string): AnyPackageConfig | undefined {
   return getRegisteredPackages().find((a) => a.name === name);
 }
 
+/**
+ * The tsconfig file devtooie reads for a package dir's project references, by precedence:
+ * the registered package's `tsconfig` (explicit, no fallback) → `tsconfig.build.json` →
+ * `tsconfig.json`. Returns `null` when none applies.
+ */
+function resolveRefTsconfig(dir: string, byPath: Map<string, AnyPackageConfig>): string | null {
+  const custom = byPath.get(dir)?.tsconfig;
+  const candidates = custom
+    ? [path.join(dir, custom)]
+    : [path.join(dir, 'tsconfig.build.json'), path.join(dir, 'tsconfig.json')];
+  return candidates.find((c) => fs.existsSync(c)) ?? null;
+}
+
 export function getTsconfigBuildPackages(pkg: AnyPackageConfig): AnyPackageConfig[] {
-  // Resolve tsconfig.build.json project references transitively via the TS peer dep.
+  // Resolve TS project references transitively (via the TS peer dep), reading each package's
+  // tsconfig per `resolveRefTsconfig`'s precedence (tsconfig → tsconfig.build.json → tsconfig.json).
   let ts: typeof import('typescript');
   try {
     ts = require('typescript');
@@ -114,14 +136,16 @@ export function getTsconfigBuildPackages(pkg: AnyPackageConfig): AnyPackageConfi
   const seen = new Set<string>();
   const result: AnyPackageConfig[] = [];
   const visit = (dir: string) => {
-    const cfgPath = path.join(dir, 'tsconfig.build.json');
-    if (seen.has(cfgPath) || !fs.existsSync(cfgPath)) return;
-    seen.add(cfgPath);
+    const resolvedDir = path.resolve(dir);
+    if (seen.has(resolvedDir)) return;
+    seen.add(resolvedDir);
+    const cfgPath = resolveRefTsconfig(resolvedDir, byPath);
+    if (!cfgPath) return;
     const parsed = ts.readConfigFile(cfgPath, ts.sys.readFile);
     const refs = (parsed.config?.references ?? []) as { path: string }[];
     for (const ref of refs) {
-      const refDir = path.resolve(dir, ref.path.replace(/tsconfig.*\.json$/, ''));
-      const match = byPath.get(path.resolve(refDir));
+      const refDir = path.resolve(resolvedDir, ref.path.replace(/tsconfig.*\.json$/, ''));
+      const match = byPath.get(refDir);
       if (match && !result.includes(match)) result.push(match);
       visit(refDir);
     }
@@ -147,7 +171,7 @@ export function resolveDeps(
     runSet.add(pkg.name);
     reasons[pkg.name] = 'selected';
     if (depTypes.includes(DepType.RUNTIME)) {
-      for (const dep of pkg.run?.deps?.runtime ?? []) {
+      for (const dep of pkg.deps?.runtime ?? []) {
         if (!runSet.has(dep)) reasons[dep] = `runtime dep of ${pkg.name}`;
         runSet.add(dep);
       }
@@ -163,7 +187,7 @@ export function resolveDeps(
     if (depTypes.includes(DepType.BUILD)) {
       const buildDeps = [
         ...getTsconfigBuildPackages(pkg).map((a) => a.name),
-        ...(pkg.run?.deps?.build ?? []),
+        ...(pkg.deps?.build ?? []),
       ];
       for (const dep of buildDeps) {
         if (!buildSet.has(dep)) {
@@ -173,7 +197,7 @@ export function resolveDeps(
       }
     }
     if (depTypes.includes(DepType.DEV)) {
-      for (const dep of pkg.run?.deps?.dev ?? []) {
+      for (const dep of pkg.deps?.dev ?? []) {
         if (!buildSet.has(dep)) {
           buildSet.add(dep);
           queue.push(dep);
@@ -223,53 +247,83 @@ export function getGitBranch(): string | null {
   }
 }
 
-const typeRank = (pkg: AnyPackageConfig): number => {
-  if (pkg.types.includes('backend')) return 0;
-  if (pkg.types.includes('browser')) return 1;
-  return 2; // lib / infra
-};
-
 const byName = (a: AnyPackageConfig, b: AnyPackageConfig) => a.name.localeCompare(b.name);
 
-/** Selectable, dev-scripted packages grouped for the interactive selector. */
-export function getPackageGroups(): { backend: AnyPackageConfig[]; frontend: AnyPackageConfig[] } {
-  const packages = getRegisteredPackages().filter(
-    (a) => a.run?.selectable !== false && hasDevScript(a),
+type DepKind = 'build' | 'dev' | 'runtime';
+
+/**
+ * A package's direct deps for one kind; `build` folds in `tsconfig.build.json` project refs.
+ * Always returns a fresh array — callers ({@link closureSize}) drain it in place, so it must
+ * never hand back the package's own `run.deps` array.
+ */
+function directDeps(pkg: AnyPackageConfig, kind: DepKind): string[] {
+  if (kind === 'build') {
+    return [...getTsconfigBuildPackages(pkg).map((a) => a.name), ...(pkg.deps?.build ?? [])];
+  }
+  return [...(pkg.deps?.[kind] ?? [])];
+}
+
+/** Size of the transitive closure reachable from `pkg` following only `kind` edges. */
+function closureSize(pkg: AnyPackageConfig, kind: DepKind): number {
+  const seen = new Set<string>();
+  const queue = directDeps(pkg, kind);
+  while (queue.length) {
+    const name = queue.shift()!;
+    if (name === pkg.name || seen.has(name)) continue;
+    seen.add(name);
+    const dep = lookup(name);
+    if (dep) queue.push(...directDeps(dep, kind));
+  }
+  return seen.size;
+}
+
+/**
+ * A package's "weight": how many packages it pulls in across build, dev and runtime edges,
+ * counted per edge type so a package reached via two kinds (e.g. build *and* runtime) counts
+ * once per kind. Intrinsic to the dependency graph — independent of the current selection.
+ */
+export function depScore(pkg: AnyPackageConfig): number {
+  return (['build', 'dev', 'runtime'] as const).reduce(
+    (sum, kind) => sum + closureSize(pkg, kind),
+    0,
   );
-  return {
-    backend: packages.filter((a) => a.types.includes('backend')).sort(byName),
-    frontend: packages.filter((a) => a.types.includes('browser')).sort(byName),
-  };
+}
+
+/**
+ * A package's sort points: its `depScore` (dependency weight), plus one point if it was
+ * explicitly selected in the picker. The selection point lifts a directly-chosen package
+ * above equally-weighted deps that were only pulled in transitively.
+ */
+export function packagePoints(pkg: AnyPackageConfig, selectedSet?: Set<string>): number {
+  return depScore(pkg) + (selectedSet?.has(pkg.name) ? 1 : 0);
+}
+
+/**
+ * The one display order: most points first (`packagePoints` — dependency weight plus a point
+ * for being selected), ties broken by name. Drives both the running process list and the
+ * per-package URL column in the footer, and the interactive selector's list.
+ */
+export function sortPackages(
+  packages: AnyPackageConfig[],
+  selectedSet?: Set<string>,
+): AnyPackageConfig[] {
+  const score = new Map(packages.map((a) => [a.name, packagePoints(a, selectedSet)] as const));
+  return [...packages].sort((a, b) => score.get(b.name)! - score.get(a.name)! || byName(a, b));
+}
+
+/** Selectable, dev-scripted packages for the interactive selector, in display order. */
+export function getSelectablePackages(): AnyPackageConfig[] {
+  return sortPackages(
+    getRegisteredPackages().filter((a) => a.selectable !== false && hasDevScript(a)),
+  );
 }
 
 export function getRuntimeDepsMap(): Record<string, string[]> {
   const map: Record<string, string[]> = {};
   for (const a of getRegisteredPackages()) {
-    map[a.name] = a.run?.deps?.runtime ?? [];
+    map[a.name] = a.deps?.runtime ?? [];
   }
   return map;
-}
-
-/**
- * Display order: selected → selectable deps → non-selectable infra; within each,
- * backend → frontend → libs, then alphabetical.
- */
-export function sortForDisplay(
-  packages: AnyPackageConfig[],
-  selectedSet: Set<string>,
-): AnyPackageConfig[] {
-  const bucket = (a: AnyPackageConfig): number => {
-    if (selectedSet.has(a.name)) return 0;
-    if (a.run?.selectable !== false) return 1;
-    return 2;
-  };
-  return [...packages].sort((a, b) => {
-    const bd = bucket(a) - bucket(b);
-    if (bd !== 0) return bd;
-    const td = typeRank(a) - typeRank(b);
-    if (td !== 0) return td;
-    return byName(a, b);
-  });
 }
 
 export function buildRunnerArgs(
@@ -277,17 +331,17 @@ export function buildRunnerArgs(
   deps: ResolveResult,
 ): RunnerArgs {
   const selectedSet = new Set(selectedPackages.map((a) => a.name));
-  const sortedPackages = sortForDisplay(deps.allPackages, selectedSet);
+  const sortedPackages = sortPackages(deps.allPackages, selectedSet);
   const rebuildableSet = new Set(deps.allPackages.filter(canRebuild).map((a) => a.name));
   const waitForMap: Record<string, string[]> = {};
   const healthcheckUrls: Record<string, string> = {};
   const extraCommandsMap: Record<string, string[]> = {};
   for (const a of deps.allPackages) {
-    if (a.run?.waitFor?.length) {
-      waitForMap[a.name] = a.run.waitFor;
+    if (a.waitFor?.length) {
+      waitForMap[a.name] = a.waitFor;
     }
-    if (a.run?.healthcheck) {
-      healthcheckUrls[a.name] = a.run.healthcheck;
+    if (a.healthcheck) {
+      healthcheckUrls[a.name] = a.healthcheck;
     }
     const extra = getExtraCommands(a);
     if (extra.length) {

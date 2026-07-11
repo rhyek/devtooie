@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+- Flat, typed per-package config: options like `command`, `port`, `deps`, and `healthcheck` now sit directly on the package (the `run` nesting is gone), backed by a Zod schema with editor hover docs.
+- TypeScript project references & live shared libraries: build-time deps are inferred from your tsconfig `references` and built first, and a shared lib with a watching `dev` script re-emits on edit so consumers pick it up live.
+- Language-agnostic packages (drive Go/Rust/… via a `Makefile`) plus lifecycle-aware `command` flags (`watches`/`builds`/`cleans`) that tell you whether to restart or rebuild after a code edit, and a per-package log `color`.
+
 ## 0.1.0
 
 - Initial release: `defineConfig` library + `devtooie` CLI (dependency-aware local dev orchestration, TUI + plain runners, control API, `devtooie init`, agent skill).

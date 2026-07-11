@@ -1,5 +1,7 @@
 {
   "include": ["**/*.ts", "**/*.tsx"],
+  // devtooie reads these project references to discover @example/isomorphic as a build dep.
+  "references": [{ "path": "../isomorphic" }],
   "compilerOptions": {
     "target": "ES2022",
     "jsx": "react-jsx",

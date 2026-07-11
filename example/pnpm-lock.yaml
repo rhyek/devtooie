@@ -50,6 +50,9 @@ importers:
 
   packages/backend:
     dependencies:
+      '@example/isomorphic':
+        specifier: workspace:*
+        version: link:../isomorphic
       express:
         specifier: ^5.2.1
         version: 5.2.1
@@ -60,6 +63,9 @@ importers:
 
   packages/frontend:
     dependencies:
+      '@example/isomorphic':
+        specifier: workspace:*
+        version: link:../isomorphic
       '@tailwindcss/vite':
         specifier: ^4.3.2
         version: 4.3.2(vite@8.1.3(@types/node@26.1.0)(jiti@2.7.0))
@@ -134,7 +140,7 @@ importers:
         specifier: ^8.1.3
         version: 8.1.3(@types/node@26.1.0)(jiti@2.7.0)
 
-  packages/worker: {}
+  packages/isomorphic: {}
 
 packages:
 

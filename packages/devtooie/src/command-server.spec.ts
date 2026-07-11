@@ -148,7 +148,7 @@ describe('command-server', () => {
   it('GET /query/config returns the resolved config from the manager', async () => {
     const config = {
       apiPort: undefined,
-      packages: [{ name: 'web', run: { command: { name: 'dev', watches: true, builds: true } } }],
+      packages: [{ name: 'web', command: { name: 'dev', watches: true, builds: true } }],
       envFiles: [],
     };
     server = await startCommandServer({ onQuit: () => {}, port: 0 });

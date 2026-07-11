@@ -14,17 +14,20 @@ import {
   saveSelection,
   loadSelection,
   resetSelection,
-  sortForDisplay,
+  sortPackages,
+  depScore,
   buildRunnerArgs,
   canRebuild,
   getRebuildCommands,
+  getTsconfigBuildPackages,
+  getMakeTargets,
 } from './lib.js';
 import type { AnyPackageConfig } from './config.js';
 import { defineConfig } from './config.js';
 
 let dir: string;
 function pkg(over: Partial<AnyPackageConfig> & { path: string }): AnyPackageConfig {
-  return { name: 'x', types: [], relativeDir: 'x', ...over } as AnyPackageConfig;
+  return { name: 'x', relativeDir: 'x', ...over } as AnyPackageConfig;
 }
 
 beforeAll(() => {
@@ -60,18 +63,16 @@ describe('resolveDeps (§8)', () => {
     return defineConfig({
       workspaceDir: '/repo',
       packages: [
-        { name: 'reverse-proxy', types: ['backend'], run: { selectable: false } },
+        { name: 'reverse-proxy', selectable: false },
         {
           name: 'core-svc',
-          types: ['backend'],
-          run: { deps: { runtime: ['reverse-proxy'] } },
+          deps: { runtime: ['reverse-proxy'] },
         },
         {
           name: 'web',
-          types: ['browser'],
-          run: { deps: { runtime: ['core-svc', 'reverse-proxy'], dev: ['graphql-codegen'] } },
+          deps: { runtime: ['core-svc', 'reverse-proxy'], dev: ['graphql-codegen'] },
         },
-        { name: 'graphql-codegen', types: [] },
+        { name: 'graphql-codegen' },
       ],
     }).packages;
   }
@@ -103,6 +104,81 @@ describe('resolveDeps (§8)', () => {
   });
 });
 
+describe('tsconfig project-reference inference', () => {
+  let ws: string;
+  const write = (rel: string, content: object) => {
+    const p = path.join(ws, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(content));
+  };
+  beforeAll(() => {
+    ws = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-tsref-'));
+    fs.mkdirSync(path.join(ws, 'packages/lib-a'), { recursive: true });
+    fs.mkdirSync(path.join(ws, 'packages/lib-b'), { recursive: true });
+    // app-json: references live only in tsconfig.json (no tsconfig.build.json).
+    write('packages/app-json/tsconfig.json', { references: [{ path: '../lib-a' }] });
+    // app-both: a build variant (refs lib-b) AND a plain tsconfig.json (refs lib-a).
+    write('packages/app-both/tsconfig.build.json', { references: [{ path: '../lib-b' }] });
+    write('packages/app-both/tsconfig.json', { references: [{ path: '../lib-a' }] });
+    // app-custom: a build variant (refs lib-b) AND a custom-named config (refs lib-a).
+    write('packages/app-custom/tsconfig.build.json', { references: [{ path: '../lib-b' }] });
+    write('packages/app-custom/tsconfig.app.json', { references: [{ path: '../lib-a' }] });
+  });
+  afterAll(() => fs.rmSync(ws, { recursive: true, force: true }));
+
+  it('falls back to tsconfig.json when no tsconfig.build.json exists', () => {
+    const packages = defineConfig({
+      workspaceDir: ws,
+      packages: [{ name: 'lib-a' }, { name: 'lib-b' }, { name: 'app-json' }],
+    }).packages;
+    const app = packages.find((p) => p.name === 'app-json')!;
+    expect(getTsconfigBuildPackages(app).map((p) => p.name)).toEqual(['lib-a']);
+  });
+
+  it('prefers tsconfig.build.json over tsconfig.json', () => {
+    const packages = defineConfig({
+      workspaceDir: ws,
+      packages: [{ name: 'lib-a' }, { name: 'lib-b' }, { name: 'app-both' }],
+    }).packages;
+    const app = packages.find((p) => p.name === 'app-both')!;
+    expect(getTsconfigBuildPackages(app).map((p) => p.name)).toEqual(['lib-b']);
+  });
+
+  it('prefers run.tsconfig over tsconfig.build.json', () => {
+    const packages = defineConfig({
+      workspaceDir: ws,
+      packages: [
+        { name: 'lib-a' },
+        { name: 'lib-b' },
+        { name: 'app-custom', tsconfig: 'tsconfig.app.json' },
+      ],
+    }).packages;
+    const app = packages.find((p) => p.name === 'app-custom')!;
+    expect(getTsconfigBuildPackages(app).map((p) => p.name)).toEqual(['lib-a']);
+  });
+});
+
+describe('make targets', () => {
+  let mkdir: string;
+  beforeAll(() => {
+    mkdir = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-phony-'));
+    fs.writeFileSync(path.join(mkdir, 'Makefile'), '.PHONY: start\nstart:\n\t@go run .\n');
+  });
+  afterAll(() => fs.rmSync(mkdir, { recursive: true, force: true }));
+
+  it('excludes make special targets like .PHONY', () => {
+    expect(getMakeTargets(pkg({ path: mkdir }))).toEqual(['start']);
+  });
+
+  it('getExtraCommands does not surface .PHONY (nor the configured dev target)', () => {
+    const p = pkg({
+      path: mkdir,
+      command: { name: 'start', watches: false, builds: true, cleans: true },
+    });
+    expect(getExtraCommands(p)).toEqual([]);
+  });
+});
+
 describe('state + persistence', () => {
   it('round-trips the saved selection', () => {
     resetSelection();
@@ -123,20 +199,45 @@ describe('display sort + runner args', () => {
     return defineConfig({
       workspaceDir: '/repo',
       packages: [
-        { name: 'proxy', types: ['backend'], run: { selectable: false } },
-        { name: 'api', types: ['backend'], run: { deps: { runtime: ['proxy'] } } },
-        { name: 'web', types: ['browser'], run: { deps: { runtime: ['api', 'proxy'] } } },
-        { name: 'lib-x', types: ['lib'] },
+        { name: 'proxy', selectable: false },
+        { name: 'api', deps: { runtime: ['proxy'] } },
+        { name: 'web', deps: { runtime: ['api', 'proxy'] } },
+        { name: 'lib-x' },
       ],
     }).packages;
   }
 
-  it('orders selected first, then selectable deps, then non-selectable infra', () => {
+  it('orders by dependency weight (heaviest first), ties broken by name', () => {
     const all = packages();
-    const selected = new Set(['web']);
-    const sorted = sortForDisplay(all, selected);
-    expect(sorted[0]!.name).toBe('web'); // selected first
-    expect(sorted[sorted.length - 1]!.name).toBe('proxy'); // non-selectable infra last
+    const sorted = sortPackages(all).map((a) => a.name);
+    // web pulls in api + proxy (2), api pulls in proxy (1), proxy & lib-x pull in nothing (0).
+    // Zero-weight packages fall to the bottom, alphabetical among themselves.
+    expect(sorted).toEqual(['web', 'api', 'lib-x', 'proxy']);
+  });
+
+  it('depScore counts a dep reached via two kinds once per kind', () => {
+    const [both] = defineConfig({
+      workspaceDir: '/repo',
+      packages: [{ name: 'both', deps: { build: ['leaf'], runtime: ['leaf'] } }, { name: 'leaf' }],
+    }).packages;
+    // `leaf` is a build dep AND a runtime dep of `both`, so it counts twice.
+    expect(depScore(both!)).toBe(2);
+  });
+
+  it('depScore is pure — repeated calls do not drain the package deps', () => {
+    const web = packages().find((a) => a.name === 'web')!;
+    const before = [...(web.deps!.runtime ?? [])];
+    expect(depScore(web)).toBe(2);
+    expect(depScore(web)).toBe(2); // stable, not 1
+    expect(web.deps!.runtime).toEqual(before); // config array untouched
+  });
+
+  it('gives a selected package one extra point, lifting it above equal-weight deps', () => {
+    const all = packages();
+    // proxy (selectable:false, weight 0) selected; lib-x (weight 0) not.
+    const sorted = sortPackages(all, new Set(['proxy'])).map((a) => a.name);
+    // web(2) > api(1) > proxy(0+1=1) > lib-x(0). The selection point lifts proxy over lib-x.
+    expect(sorted).toEqual(['web', 'api', 'proxy', 'lib-x']);
   });
 
   it('buildRunnerArgs marks the selected set and produces sorted packages', () => {
@@ -157,7 +258,7 @@ describe('display sort + runner args', () => {
         { label: 'Grafana', url: 'https://grafana.internal' },
         ['https://logs.internal', { label: 'Traces', url: 'https://traces.internal' }],
       ],
-      packages: [{ name: 'web', types: ['browser'] }],
+      packages: [{ name: 'web' }],
     }).packages;
     const web = all.find((a) => a.name === 'web')!;
     const args = buildRunnerArgs([web], resolveDeps([web]));
@@ -182,6 +283,7 @@ describe('rebuild resolution', () => {
   let cb: string; // has separate clean + build, no build:clean
   let bonly: string; // only build
   let mk: string; // Makefile with build + clean
+  let startonly: string; // only a `start` script — no build/clean (relies on command.cleans)
   beforeAll(() => {
     bc = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-bc-'));
     fs.writeFileSync(
@@ -200,9 +302,29 @@ describe('rebuild resolution', () => {
       path.join(mk, 'Makefile'),
       'dev:\n\t@go run .\nbuild:\n\t@go build\nclean:\n\t@rm -rf bin\n',
     );
+    startonly = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-start-'));
+    fs.writeFileSync(path.join(startonly, 'package.json'), JSON.stringify({ scripts: { start: 'x' } })); // prettier-ignore
   });
   afterAll(() => {
-    for (const d of [bc, cb, bonly, mk]) fs.rmSync(d, { recursive: true, force: true });
+    for (const d of [bc, cb, bonly, mk, startonly]) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  it('canRebuild: true when the command cleans on start, even without clean/build scripts', () => {
+    const p = pkg({
+      path: startonly,
+      command: { name: 'start', watches: false, builds: true, cleans: true },
+    });
+    expect(canRebuild(p)).toBe(true);
+    // Nothing to run — a rebuild is just a restart of the (self-cleaning) dev command.
+    expect(getRebuildCommands(p)).toEqual([]);
+  });
+
+  it('canRebuild: false for cleans:false with no clean/build scripts', () => {
+    const p = pkg({
+      path: startonly,
+      command: { name: 'start', watches: false, builds: true, cleans: false },
+    });
+    expect(canRebuild(p)).toBe(false);
   });
 
   it('canRebuild: build:clean OR (clean AND build); false otherwise', () => {

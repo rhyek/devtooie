@@ -1,10 +1,10 @@
 import { render, type Instance } from 'ink';
 import React, { useCallback, useRef, useState } from 'react';
-import { getRuntimeDepsMap, getPackageGroups, loadSelection, saveSelection } from '../lib.js';
+import { getRuntimeDepsMap, getSelectablePackages, loadSelection, saveSelection } from '../lib.js';
 import type { RunnerArgs } from '../runners/types.js';
 import { BuildProgress, type ControlServer } from './BuildProgress.js';
 import { NativeRunner } from './NativeRunner.js';
-import { PackageSelector, type PackageSelectorGroup } from './PackageSelector.js';
+import { PackageSelector } from './PackageSelector.js';
 
 type Phase =
   | { type: 'package-select' }
@@ -38,13 +38,6 @@ function getInitialPhase(
   return { type: 'package-select' };
 }
 
-function toSelectorGroups(groups: ReturnType<typeof getPackageGroups>): PackageSelectorGroup[] {
-  return [
-    { label: 'Backend', items: groups.backend },
-    { label: 'Frontend', items: groups.frontend },
-  ];
-}
-
 /**
  * Root component: a phase state machine (`package-select` -> `building` -> `running`)
  * that owns the one thing shared across those phases — the control server, received
@@ -57,7 +50,7 @@ export function App({ packages = [], lastAnswers = false, logFile }: AppProps) {
   // Computed once: the registered-package catalog is fixed for the process's lifetime, and a
   // stable identity here means these props are never a reason for PackageSelector to redo
   // its own memoized derivations.
-  const [groups] = useState(() => toSelectorGroups(getPackageGroups()));
+  const [items] = useState(getSelectablePackages);
   const [runtimeDeps] = useState(getRuntimeDepsMap);
   const [savedSelection] = useState(() => loadSelection() ?? []);
 
@@ -91,7 +84,7 @@ export function App({ packages = [], lastAnswers = false, logFile }: AppProps) {
     case 'package-select':
       return (
         <PackageSelector
-          groups={groups}
+          items={items}
           runtimeDeps={runtimeDeps}
           initialSelected={savedSelection}
           onSubmit={onPackagesSubmit}

@@ -11,8 +11,7 @@ describe('public exports', () => {
   it('PackageName falls back to string when Register is unaugmented', () => {
     // Compile-time assertion: a plain string is assignable to PackageName.
     const n: PackageName = 'anything';
-    const pkg: AnyPackageConfig | undefined = defineConfig({ packages: [{ name: n, types: [] }] })
-      .packages[0];
+    const pkg: AnyPackageConfig | undefined = defineConfig({ packages: [{ name: n }] }).packages[0];
     expect(pkg?.name).toBe('anything');
   });
 });

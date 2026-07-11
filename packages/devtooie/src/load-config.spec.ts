@@ -26,7 +26,7 @@ describe('loadConfig', () => {
     fs.writeFileSync(
       path.join(dir, 'devtooie.config.mjs'),
       `import { defineConfig } from ${JSON.stringify(pkgIndex)};\n` +
-        `export default defineConfig({ apiPort: 4099, packages: [{ name: 'svc', types: ['backend'] }] });\n`,
+        `export default defineConfig({ apiPort: 4099, packages: [{ name: 'svc' }] });\n`,
     );
     const packages = await loadConfig(dir);
     expect(packages.map((p: (typeof packages)[0]) => p.name)).toContain('svc');

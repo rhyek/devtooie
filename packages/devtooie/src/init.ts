@@ -11,7 +11,7 @@ function configTemplate(): string {
 
 export default defineConfig({
   packages: [
-    // { name: 'my-pkg', types: ['backend'], run: { port: 3001 } },
+    // { name: 'my-pkg', run: { port: 3001 } },
   ],
 });
 `;

@@ -1,9 +1,0 @@
-{
-  "name": "@example/worker",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "start": "node src/index.ts",
-    "build": "tsc --noEmit"
-  }
-}

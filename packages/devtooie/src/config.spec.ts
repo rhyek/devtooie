@@ -10,7 +10,7 @@ import {
 
 describe('defineConfig path resolution', () => {
   it('defaults relativeDir to packages/<name> and resolves path against cwd', () => {
-    const { packages } = defineConfig({ packages: [{ name: 'svc', types: ['backend'] }] });
+    const { packages } = defineConfig({ packages: [{ name: 'svc' }] });
     const [pkg] = packages;
     expect(pkg!.relativeDir).toBe('packages/svc');
     expect(pkg!.path).toBe(path.resolve(process.cwd(), 'packages/svc'));
@@ -19,7 +19,7 @@ describe('defineConfig path resolution', () => {
   it('honors explicit relativeDir and workspaceDir', () => {
     const { packages } = defineConfig({
       workspaceDir: '/repo',
-      packages: [{ name: 'svc', relativeDir: 'apps/svc', types: [] }],
+      packages: [{ name: 'svc', relativeDir: 'apps/svc' }],
     });
     expect(packages[0]!.path).toBe(path.resolve('/repo', 'apps/svc'));
   });
@@ -27,21 +27,21 @@ describe('defineConfig path resolution', () => {
 
 describe('meta defaults', () => {
   it('leaves apiPort undefined when unset (random port chosen at startup)', () => {
-    const cfg = defineConfig({ packages: [{ name: 'svc', types: [] }] });
+    const cfg = defineConfig({ packages: [{ name: 'svc' }] });
     expect(cfg.apiPort).toBeUndefined();
   });
 
   it('passes through a pinned apiPort and exposes it via getLoadedConfig', () => {
     const cfg = defineConfig({
       apiPort: 5000,
-      packages: [{ name: 'svc', types: [] }],
+      packages: [{ name: 'svc' }],
     });
     expect(cfg.apiPort).toBe(5000);
     expect(getLoadedConfig()?.apiPort).toBe(5000);
   });
 
   it('defaults envFiles to the standard set', () => {
-    const cfg = defineConfig({ packages: [{ name: 'svc', types: [] }] });
+    const cfg = defineConfig({ packages: [{ name: 'svc' }] });
     expect(cfg.envFiles).toEqual([
       '.env',
       '.env.development.pre',
@@ -53,7 +53,7 @@ describe('meta defaults', () => {
   it('honors an env.files override', () => {
     const cfg = defineConfig({
       env: { files: ['.env', '.env.test'] },
-      packages: [{ name: 'svc', types: [] }],
+      packages: [{ name: 'svc' }],
     });
     expect(cfg.envFiles).toEqual(['.env', '.env.test']);
   });
@@ -65,19 +65,17 @@ describe('token substitution', () => {
       packages: [
         {
           name: 'core',
-          types: ['backend'],
-          run: {
-            port: 3001,
-            subdomain: ['core', 'core-bg'],
-            healthcheck: 'http://localhost:$port/health',
-            urls: ['https://$subdomain.local/$name'],
-          },
+
+          port: 3001,
+          subdomain: ['core', 'core-bg'],
+          healthcheck: 'http://localhost:$port/health',
+          urls: ['https://$subdomain.local/$name'],
         },
       ],
     });
     const [pkg] = packages;
-    expect(pkg!.run!.healthcheck).toBe('http://localhost:3001/health');
-    expect(pkg!.run!.urls![0]).toBe('https://core.local/core');
+    expect(pkg!.healthcheck).toBe('http://localhost:3001/health');
+    expect(pkg!.urls![0]).toBe('https://core.local/core');
   });
 
   it('substitutes extrinsic tokens from opts.tokens (string and object urls)', () => {
@@ -86,12 +84,11 @@ describe('token substitution', () => {
       packages: [
         {
           name: 'web',
-          types: ['browser'],
-          run: { urls: [{ label: 'home', url: 'https://app.$domain:$proxyport' }] },
+          urls: [{ label: 'home', url: 'https://app.$domain:$proxyport' }],
         },
       ],
     });
-    expect(packages[0]!.run!.urls![0]).toEqual({
+    expect(packages[0]!.urls![0]).toEqual({
       label: 'home',
       url: 'https://app.example.com:8443',
     });
@@ -103,15 +100,13 @@ describe('token substitution', () => {
       packages: [
         {
           name: 'web',
-          types: ['browser'],
-          run: {
-            port: 3000,
-            urls: [['http://localhost:$port', { label: 'app', url: 'https://app.$domain' }]],
-          },
+
+          port: 3000,
+          urls: [['http://localhost:$port', { label: 'app', url: 'https://app.$domain' }]],
         },
       ],
     });
-    expect(packages[0]!.run!.urls![0]).toEqual([
+    expect(packages[0]!.urls![0]).toEqual([
       'http://localhost:3000',
       { label: 'app', url: 'https://app.example.com' },
     ]);
@@ -123,7 +118,7 @@ describe('top-level urls', () => {
     const cfg = defineConfig({
       tokens: { domain: 'example.com' },
       urls: ['https://grafana.$domain'],
-      packages: [{ name: 'svc', types: [] }],
+      packages: [{ name: 'svc' }],
     });
     expect(cfg.urls![0]).toBe('https://grafana.example.com');
   });
@@ -132,7 +127,7 @@ describe('top-level urls', () => {
     const cfg = defineConfig({
       tokens: { domain: 'example.com', proxyport: '8443' },
       urls: [{ label: 'Grafana', url: 'https://grafana.$domain:$proxyport' }],
-      packages: [{ name: 'svc', types: [] }],
+      packages: [{ name: 'svc' }],
     });
     const url = cfg.urls![0];
     expect(url).toEqual({ label: 'Grafana', url: 'https://grafana.example.com:8443' });
@@ -142,7 +137,7 @@ describe('top-level urls', () => {
     const cfg = defineConfig({
       tokens: { domain: 'example.com' },
       urls: [['https://grafana.$domain', { label: 'Logs', url: 'https://logs.$domain' }]],
-      packages: [{ name: 'svc', types: [] }],
+      packages: [{ name: 'svc' }],
     });
     expect(cfg.urls![0]).toEqual([
       'https://grafana.example.com',
@@ -153,13 +148,13 @@ describe('top-level urls', () => {
   it('leaves a top-level url with no tokens verbatim', () => {
     const cfg = defineConfig({
       urls: ['https://dashboard.internal'],
-      packages: [{ name: 'svc', types: [] }],
+      packages: [{ name: 'svc' }],
     });
     expect(cfg.urls![0]).toBe('https://dashboard.internal');
   });
 
   it('leaves urls undefined when none are given', () => {
-    const cfg = defineConfig({ packages: [{ name: 'svc', types: [] }] });
+    const cfg = defineConfig({ packages: [{ name: 'svc' }] });
     expect(cfg.urls).toBeUndefined();
   });
 
@@ -167,7 +162,7 @@ describe('top-level urls', () => {
     expect(() =>
       defineConfig({
         urls: ['http://localhost:$port'],
-        packages: [{ name: 'svc', types: [] }],
+        packages: [{ name: 'svc' }],
       }),
     ).toThrow(/top-level url.*\$port/);
   });
@@ -176,30 +171,35 @@ describe('top-level urls', () => {
     expect(() =>
       defineConfig({
         urls: ['https://$domain'],
-        packages: [{ name: 'svc', types: [] }],
+        packages: [{ name: 'svc' }],
       }),
     ).toThrow(/top-level url.*\$domain/);
   });
 });
 
-describe('run.command', () => {
-  const cmd = (run: object) =>
-    defineConfig({ packages: [{ name: 'a', types: ['backend'], run: run as never }] }).packages[0]!
-      .run!.command;
+describe('command', () => {
+  const cmd = (fields: object) =>
+    defineConfig({ packages: [{ name: 'a', ...fields } as never] }).packages[0]!.command;
 
-  it('defaults to dev / watches:true / builds:true when omitted', () => {
-    expect(cmd({})).toEqual({ name: 'dev', watches: true, builds: true });
+  it('defaults to dev / watches:true / builds:true / cleans:false when omitted', () => {
+    expect(cmd({})).toEqual({ name: 'dev', watches: true, builds: true, cleans: false });
   });
 
-  it('accepts a bare string (defaults watches:true, builds:true)', () => {
-    expect(cmd({ command: 'start' })).toEqual({ name: 'start', watches: true, builds: true });
+  it('accepts a bare string (defaults watches:true, builds:true, cleans:false)', () => {
+    expect(cmd({ command: 'start' })).toEqual({
+      name: 'start',
+      watches: true,
+      builds: true,
+      cleans: false,
+    });
   });
 
-  it('a tuple with watches:false defaults builds to true', () => {
+  it('a tuple with watches:false defaults builds to true, cleans to false', () => {
     expect(cmd({ command: ['start', { watches: false }] })).toEqual({
       name: 'start',
       watches: false,
       builds: true,
+      cleans: false,
     });
   });
 
@@ -208,14 +208,25 @@ describe('run.command', () => {
       name: 'start',
       watches: false,
       builds: false,
+      cleans: false,
     });
   });
 
-  it('an empty options object defaults to watches:true, builds:true', () => {
+  it('keeps cleans:true (a dev command that clean-rebuilds on start)', () => {
+    expect(cmd({ command: ['start', { watches: false, builds: true, cleans: true }] })).toEqual({
+      name: 'start',
+      watches: false,
+      builds: true,
+      cleans: true,
+    });
+  });
+
+  it('an empty options object defaults to watches:true, builds:true, cleans:false', () => {
     expect(cmd({ command: ['start', {}] })).toEqual({
       name: 'start',
       watches: true,
       builds: true,
+      cleans: false,
     });
   });
 
@@ -227,13 +238,15 @@ describe('run.command', () => {
     expect(() => cmd({ command: ['start', { builds: false }] })).toThrow();
   });
 
+  it('throws at runtime for cleans:true + builds:false (cleaning implies building)', () => {
+    expect(() =>
+      cmd({ command: ['start', { watches: false, builds: false, cleans: true }] }),
+    ).toThrow();
+  });
+
   it('getDevScript returns the configured command name, else dev', () => {
     const { packages } = defineConfig({
-      packages: [
-        { name: 'a', types: [], run: { command: 'start' } },
-        { name: 'b', types: [], run: {} },
-        { name: 'c', types: [] },
-      ],
+      packages: [{ name: 'a', command: 'start' }, { name: 'b' }, { name: 'c' }],
     });
     expect(getDevScript(packages[0]!)).toBe('start');
     expect(getDevScript(packages[1]!)).toBe('dev');
@@ -242,11 +255,14 @@ describe('run.command', () => {
 
   it('rejects the illegal combos at the type level', () => {
     // @ts-expect-error watches:true requires builds:true
-    const a = (): unknown => defineConfig({ packages: [{ name: 'a', types: [], run: { command: ['x', { watches: true, builds: false }] } }] }); // prettier-ignore
+    const a = (): unknown => defineConfig({ packages: [{ name: 'a',  command: ['x', { watches: true, builds: false }]  }] }); // prettier-ignore
     // @ts-expect-error builds:false requires watches:false
-    const b = (): unknown => defineConfig({ packages: [{ name: 'a', types: [], run: { command: ['x', { builds: false }] } }] }); // prettier-ignore
+    const b = (): unknown => defineConfig({ packages: [{ name: 'a',  command: ['x', { builds: false }]  }] }); // prettier-ignore
+    // @ts-expect-error cleans:true requires builds:true
+    const c = (): unknown => defineConfig({ packages: [{ name: 'a',  command: ['x', { watches: false, builds: false, cleans: true }]  }] }); // prettier-ignore
     void a;
     void b;
+    void c;
   });
 });
 
@@ -254,10 +270,7 @@ describe('validation', () => {
   it('throws when waitFor targets a package without a healthcheck', () => {
     expect(() =>
       defineConfig({
-        packages: [
-          { name: 'a', types: ['backend'], run: { waitFor: ['b'] } },
-          { name: 'b', types: ['backend'], run: {} },
-        ],
+        packages: [{ name: 'a', waitFor: ['b'] }, { name: 'b' }],
       }),
     ).toThrow(/waitFor "b".*no healthcheck/);
   });
@@ -265,7 +278,7 @@ describe('validation', () => {
   it('throws when waitFor targets a missing package', () => {
     expect(() =>
       defineConfig({
-        packages: [{ name: 'a', types: ['backend'], run: { waitFor: ['ghost' as any] } }],
+        packages: [{ name: 'a', waitFor: ['ghost' as any] }],
       }),
     ).toThrow(/waitFor "ghost"/);
   });
@@ -273,7 +286,7 @@ describe('validation', () => {
   it('throws when a url uses an unknown extrinsic token', () => {
     expect(() =>
       defineConfig({
-        packages: [{ name: 'a', types: ['browser'], run: { urls: ['https://$domain'] } }],
+        packages: [{ name: 'a', urls: ['https://$domain'] }],
       }),
     ).toThrow(/\$domain/);
   });
@@ -282,10 +295,7 @@ describe('validation', () => {
 describe('registry + findPackage', () => {
   it('populates the registry on define and looks packages up by name', () => {
     defineConfig({
-      packages: [
-        { name: 'alpha', types: [] },
-        { name: 'beta', types: [] },
-      ],
+      packages: [{ name: 'alpha' }, { name: 'beta' }],
     });
     expect(getRegisteredPackages().map((p) => p.name)).toEqual(
       expect.arrayContaining(['alpha', 'beta']),
@@ -294,7 +304,7 @@ describe('registry + findPackage', () => {
   });
 
   it('throws for an unknown package', () => {
-    defineConfig({ packages: [{ name: 'alpha', types: [] }] });
+    defineConfig({ packages: [{ name: 'alpha' }] });
     expect(() => findPackage('nope')).toThrow(/nope/);
   });
 });

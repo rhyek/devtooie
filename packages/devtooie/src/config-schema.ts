@@ -15,25 +15,53 @@ export const UrlLinkSchema = z.union([
 ]);
 export const UrlEntrySchema = z.union([UrlLinkSchema, z.array(UrlLinkSchema)]);
 
-// `command` options as a union of the two *legal* shapes, so `{ watches: true, builds: false }`
-// (and `{ builds: false }`, since watches then defaults true) is rejected at parse time.
-export const CommandOptionsSchema = z.union([
-  z.strictObject({ watches: z.literal(true).optional(), builds: z.literal(true).optional() }),
-  z.strictObject({ watches: z.literal(false), builds: z.boolean().optional() }),
-]);
+// `command` options. `watches`/`cleans` both imply building, so `builds: false` is only legal
+// when the command neither watches nor cleans — rejected at parse time otherwise (e.g.
+// `{ watches: true, builds: false }`, `{ builds: false }` since watches then defaults true, and
+// `{ cleans: true, builds: false }`).
+export const CommandOptionsSchema = z
+  .strictObject({
+    watches: z.boolean().optional(),
+    builds: z.boolean().optional(),
+    cleans: z.boolean().optional(),
+  })
+  .refine((o) => (o.builds ?? true) || (!(o.watches ?? true) && !(o.cleans ?? false)), {
+    message: 'a command that watches or cleans must also build (builds cannot be false)',
+  });
 
 export const CommandSchema = z
   .union([z.string(), z.tuple([z.string(), CommandOptionsSchema])])
   .default('dev')
   .transform((c) =>
     typeof c === 'string'
-      ? { name: c, watches: true, builds: true }
-      : { name: c[0], watches: c[1].watches ?? true, builds: c[1].builds ?? true },
+      ? { name: c, watches: true, builds: true, cleans: false }
+      : {
+          name: c[0],
+          watches: c[1].watches ?? true,
+          builds: c[1].builds ?? true,
+          cleans: c[1].cleans ?? false,
+        },
   );
 
-export const RunConfigSchema = z.object({
+// All per-package config is flat (no `run` nesting). `name`/`relativeDir` identify the package;
+// the rest describe how to run/select/link it (omit them all for a build-only lib).
+export const PackageConfigSchema = z.object({
+  // Overridden in config.ts (pinned to `N`); documented there.
+  name: z.string(),
+  relativeDir: z
+    .string()
+    .optional()
+    .describe(
+      'Directory holding the package, relative to `workspaceDir`. Defaults to `packages/<name>`.',
+    ),
   selectable: z.boolean().optional().describe('Show in the interactive picker (default `true`).'),
   shortName: z.string().optional().describe('Shorter label used in the TUI in place of `name`.'),
+  color: z
+    .string()
+    .optional()
+    .describe(
+      "Color for this package's log-prefix label, overriding the auto-assigned palette color. Any Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`), `'rgb(175,135,255)'`, or `'ansi256(140)'`.",
+    ),
   subdomain: z
     .union([z.string(), z.array(z.string())])
     .optional()
@@ -59,6 +87,12 @@ export const RunConfigSchema = z.object({
     ),
   // Overridden in config.ts (pinned to package names); documented there.
   waitFor: z.array(z.string()).optional(),
+  tsconfig: z
+    .string()
+    .optional()
+    .describe(
+      'tsconfig file (relative to the package dir) devtooie reads for project references to infer build-time deps. Defaults to `tsconfig.build.json`, then `tsconfig.json`.',
+    ),
   deps: z
     .object({
       build: z.array(z.string()).optional(),
@@ -66,22 +100,6 @@ export const RunConfigSchema = z.object({
       runtime: z.array(z.string()).optional(),
     })
     .optional(),
-});
-
-export const PackageConfigSchema = z.object({
-  // Overridden in config.ts (pinned to `N`); documented there.
-  name: z.string(),
-  relativeDir: z
-    .string()
-    .optional()
-    .describe(
-      'Directory holding the package, relative to `workspaceDir`. Defaults to `packages/<name>`.',
-    ),
-  types: z
-    .array(z.enum(['backend', 'browser', 'lib']))
-    .describe("One or more of `'backend' | 'browser' | 'lib'`; drives grouping in the picker."),
-  // Overridden in config.ts (→ RunConfig<N>); documented there.
-  run: RunConfigSchema.optional(),
 });
 
 export const DefineConfigSchema = z.object({

@@ -7,7 +7,7 @@ import { zodToTs, createTypeAlias, printNode, createAuxiliaryTypeStore } from 'z
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import path from 'node:path';
-import { RunConfigSchema, PackageConfigSchema, DefineConfigSchema } from '../src/config-schema.ts';
+import { PackageConfigSchema, DefineConfigSchema } from '../src/config-schema.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const outFile = path.join(here, '..', 'src', 'config.generated.ts');
@@ -22,13 +22,12 @@ function gen(schema: Parameters<typeof zodToTs>[0], name: string): string {
 
 const header = `// AUTO-GENERATED from config-schema.ts by scripts/gen-config-types.ts — DO NOT EDIT.
 // Regenerate with \`pnpm --filter devtooie gen\` (also runs as part of \`pnpm build\`).
-// Field docs come from the schemas' \`.describe()\`; \`command\`/\`waitFor\`/\`deps\`/\`name\`/\`run\`/
+// Field docs come from the schemas' \`.describe()\`; \`command\`/\`waitFor\`/\`deps\`/\`name\`/
 // \`packages\` are overridden in config.ts, so their generated form here is intentionally ignored.
 /* eslint-disable */
 `;
 
 const body = [
-  gen(RunConfigSchema, 'GeneratedRunConfig'),
   gen(PackageConfigSchema, 'GeneratedPackageConfig'),
   gen(DefineConfigSchema, 'GeneratedDefineConfig'),
 ].join('\n\n');

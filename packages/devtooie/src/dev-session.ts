@@ -39,7 +39,7 @@ export function dedupePorts(ports: (number | undefined)[]): number[] {
 export function collectDevPorts(): number[] {
   const ports: (number | undefined)[] = [];
   for (const a of getRegisteredPackages()) {
-    ports.push(a.run?.port, a.run?.hmrPort);
+    ports.push(a.port, a.hmrPort);
   }
   return dedupePorts(ports);
 }

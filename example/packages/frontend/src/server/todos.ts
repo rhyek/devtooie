@@ -1,17 +1,15 @@
 import { createServerFn } from '@tanstack/react-start';
 import { queryOptions } from '@tanstack/react-query';
+import type { Todo } from '@example/isomorphic';
 
 // Every backend call goes through a TanStack Start server function. Server fns run on the frontend's
 // Node server (never the browser), so they can reach the Express API directly — the browser never
 // touches :3001, which is why the API needs no CORS. Base URL is a single env-driven constant.
 const BACKEND_URL = process.env.BACKEND_URL ?? 'http://localhost:3001';
 
-export type Todo = {
-  id: number;
-  title: string;
-  completed: boolean;
-  createdAt: string;
-};
+// The Todo shape is shared with the backend via @example/isomorphic; re-export it so callers
+// in this app can keep importing it from here.
+export type { Todo };
 
 async function readError(res: Response, fallback: string): Promise<never> {
   const body = (await res.json().catch(() => null)) as { error?: string } | null;
