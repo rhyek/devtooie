@@ -18,13 +18,8 @@ function write(rel: string, contents: string): void {
 }
 
 describe('DEFAULT_ENV_FILES', () => {
-  it('is base → dev.pre → dev → local, ascending precedence within a scope', () => {
-    expect(DEFAULT_ENV_FILES).toEqual([
-      '.env',
-      '.env.development.pre',
-      '.env.development',
-      '.env.local',
-    ]);
+  it('is base → dev → local, ascending precedence within a scope', () => {
+    expect(DEFAULT_ENV_FILES).toEqual(['.env', '.env.development', '.env.local']);
   });
 });
 

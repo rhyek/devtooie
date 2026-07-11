@@ -9,11 +9,9 @@ devtooie is a dependency-aware CLI that runs a monorepo's local dev processes. I
 be driven headlessly, controlled over an HTTP API, taught about new packages, and
 queried for logs while a session runs.
 
-The README and usage guide below both ship inside the installed `devtooie` package, so
-they always match the version currently in `node_modules`. Read both before acting — the
-README is the full configuration reference; the usage guide covers driving devtooie
-headlessly, the control API, onboarding a package, and reading logs:
+The consolidated guide below ships inside the installed `devtooie` package, so it always
+matches the version currently in `node_modules`. Read it before acting — it covers driving
+devtooie headlessly, the control API, onboarding a package, reading logs, and the full
+configuration/CLI/API reference:
 
-@node_modules/devtooie/README.md
-
-@node_modules/devtooie/docs/usage-guide.md
+@node_modules/devtooie/docs/agents.md
