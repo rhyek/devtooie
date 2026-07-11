@@ -93,7 +93,10 @@ jobs:
       # Publisher configured for this package on npmjs.com (GitHub Actions →
       # rhyek/devtooie → release.yaml). Provenance is generated automatically.
       - name: Upgrade npm (OIDC trusted publishing needs >= 11.5.1)
-        run: npm install -g npm@latest
+        # Pin to the 11.x line rather than @latest: newer npm majors (12+) require a newer
+        # Node than the one pinned in .tool-versions, so `npm@latest` fails with EBADENGINE
+        # on the runner. Every 11.x runs on Node >=22.9 and is already >= 11.5.1.
+        run: npm install -g npm@11
 
       - name: Publish to npm
         working-directory: packages/devtooie
