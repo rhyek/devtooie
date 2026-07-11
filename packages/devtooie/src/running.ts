@@ -14,6 +14,12 @@ export const CONTROL_PORT_COUNT = 100;
 export interface RunningState {
   port: number;
   pid: number;
+  /**
+   * Absolute directory the session writes its timestamped logs into (`dev-<timestamp>.log`).
+   * Lets a tool find the current session's logs even when started with `--log-dir`. Omitted
+   * by callers that don't run a session (e.g. tests).
+   */
+  logDir?: string;
 }
 
 /** Identity of a live devtooie instance, as reported by its `/query/pid` endpoint. */
@@ -109,13 +115,16 @@ export async function decideControlPort(opts: {
   configPath: string;
   apiPortOverride?: number;
   pid?: number;
+  /** Directory this session writes its logs into; recorded in `running.json` as `logDir`. */
+  logDir?: string;
   env: PortEnv;
   onStatus?: (message: string) => void;
 }): Promise<number> {
   const pid = opts.pid ?? process.pid;
   const onStatus = opts.onStatus ?? (() => {});
   const finalize = (port: number): number => {
-    writeRunning(opts.cwd, { port, pid });
+    // `logDir: undefined` is dropped by JSON.stringify, so it's simply omitted when unset.
+    writeRunning(opts.cwd, { port, pid, logDir: opts.logDir });
     return port;
   };
 

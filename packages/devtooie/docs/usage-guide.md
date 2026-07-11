@@ -30,9 +30,10 @@ devtooie --plain -p <package> [-p <other-package> ...]
 
 A running devtooie session (whether started by you or a human) exposes a localhost
 HTTP control API on a port chosen at startup. **Read the active port from the JSON file
-`node_modules/.devtooie/running.json`** — devtooie writes the current `{ "port", "pid" }`
-there. Always resolve the port from that file rather than assuming one; a project may pin
-a fixed port with `apiPort` in `devtooie.config.ts`, but `running.json` is always current.
+`node_modules/.devtooie/running.json`** — devtooie writes the current
+`{ "port", "pid", "logDir" }` there (`logDir` is where this session's logs go, see §5).
+Always resolve the port from that file rather than assuming one; a project may pin a fixed
+port with `apiPort` in `devtooie.config.ts`, but `running.json` is always current.
 
 Endpoints (all plain HTTP, no auth — localhost-only):
 
@@ -184,30 +185,37 @@ or it has `clean` + `build` (or `build:clean`) scripts. Otherwise it's a no-op; 
 ## 5. Read running-package logs for debugging
 
 A running devtooie session streams the combined stdout/stderr of every package it
-runs into a single logfile at the fixed, literal path:
+runs into a timestamped logfile. The directory it writes into is recorded in
+`node_modules/.devtooie/running.json` as **`logDir`**; it defaults to
+`node_modules/.devtooie/logs/` and only differs when the session was started with
+`--log-dir`.
 
-```
-node_modules/.devtooie/devlog.txt
-```
-
-To debug a package's runtime behavior — crashes, stack traces, request logs — read,
-tail, or grep that file directly, e.g.:
+Each session (and each in-session log rotation) writes a **fresh** file named
+`dev-<timestamp>.log`. devtooie never truncates or overwrites an existing log, so
+logs from earlier sessions stay on disk. To debug the **current** session, resolve
+that directory and read the most recent file in it:
 
 ```sh
-tail -n 200 node_modules/.devtooie/devlog.txt
-grep -i error node_modules/.devtooie/devlog.txt
+# the session's log dir from running.json, falling back to the default
+dir=$(node -e "process.stdout.write(require('./node_modules/.devtooie/running.json').logDir)" 2>/dev/null || echo node_modules/.devtooie/logs)
+log=$(ls -t "$dir"/dev-*.log | head -1)   # newest = current session
+tail -n 200 "$log"
+grep -i error "$log"
 ```
+
+`ls -t` sorts newest-first, and the running session's file is always the most
+recently written, so `$log` is the current session. To dig into an **earlier** run,
+pick an older file from `ls -t "$dir"` instead — prior logs are still there.
 
 Mutating commands received over the control API (restart, rebuild, quit) are echoed
 into the same log as `[dt:control]` lines (e.g. `[dt:control] restart backend`),
 so you can confirm a command you sent (per §2) actually landed and see the package's
 own output that followed it.
 
-**This skill always reads logs from that exact path, regardless of any `--logfile`
-override.** The `--logfile` flag only changes where the _running_ devtooie session
-writes its combined log — it does not change where this skill looks. So if you are
-the one starting the session (per §1), do **not** pass `--logfile`, otherwise the
-logs you need to debug with will end up somewhere other than the path above.
+**You generally don't need `--log-dir`.** If you start the session yourself (per §1),
+leave it off and logs land in the default `node_modules/.devtooie/logs/`. The flag only
+changes which directory the _running_ session writes into — and because that directory is
+recorded in `running.json` (`logDir`), the command above finds the logs either way.
 
 ## 6. Run a one-off command with a package's environment
 

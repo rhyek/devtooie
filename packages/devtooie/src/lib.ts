@@ -20,6 +20,23 @@ export function getStateDir(): string {
   return dir;
 }
 
+/** Default directory for timestamped session logs: `node_modules/.devtooie/logs/`. */
+export function getLogDir(): string {
+  return path.join(getStateDir(), 'logs');
+}
+
+/**
+ * A fresh, timestamped log file path (`dev-<timestamp>.log`) inside `dir` (created
+ * if needed). Each run — and each in-session rotation — gets a unique name so
+ * previous sessions' logs are never overwritten. Pass `dir` to choose the location
+ * (e.g. the `--log-dir` override, or the current logfile's dir when rotating);
+ * defaults to `getLogDir()`.
+ */
+export function getDefaultLogFile(dir: string = getLogDir()): string {
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `dev-${Date.now()}.log`);
+}
+
 const RUNNER_MANAGED = new Set(['dev', 'build', 'build:clean', 'build-clean', 'clean']);
 
 function readPackageJson(pkg: AnyPackageConfig): { scripts?: Record<string, string> } | null {

@@ -89,6 +89,7 @@ export function BuildProgress({
           port = await acquireDevSession({
             configPath,
             apiPortOverride: getLoadedConfig()?.apiPort,
+            logFile,
             onStatus: (message) => {
               if (!cancelled) {
                 setState({ phase: 'handoff', message });
