@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- Docs: corrected the `devtooie.config.ts` example — devtooie doesn't watch your source or restart a package for you; after editing its code you (or an agent, via the control API) restart it.
+- Tidied the terminal-UI screenshot.
+
 ## 0.2.0
 
 - Flat, typed per-package config: options like `command`, `port`, `deps`, and `healthcheck` now sit directly on the package (the `run` nesting is gone), backed by a Zod schema with editor hover docs.
