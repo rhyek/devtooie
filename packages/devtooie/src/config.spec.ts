@@ -42,12 +42,7 @@ describe('meta defaults', () => {
 
   it('defaults envFiles to the standard set', () => {
     const cfg = defineConfig({ packages: [{ name: 'svc' }] });
-    expect(cfg.envFiles).toEqual([
-      '.env',
-      '.env.development.pre',
-      '.env.development',
-      '.env.local',
-    ]);
+    expect(cfg.envFiles).toEqual(['.env', '.env.development', '.env.local']);
   });
 
   it('honors an env.files override', () => {

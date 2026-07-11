@@ -9,3 +9,6 @@ docs/superpowers/
 
 # LICENSE is copied into the package at release time (see release.yaml)
 packages/devtooie/LICENSE
+
+# README is copied into the package at release time (see release.yaml)
+packages/devtooie/README.md

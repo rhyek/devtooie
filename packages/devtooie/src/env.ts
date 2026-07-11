@@ -4,10 +4,10 @@ import dotenvx from '@dotenvx/dotenvx';
 
 /**
  * Default `.env` filenames, in ascending precedence *within a scope*: a base `.env`,
- * a pre-seed `.env.development.pre`, the dev config `.env.development`, and the
- * developer's personal `.env.local`. Overridable via `defineConfig({ env: { files } })`.
+ * the dev config `.env.development`, and the developer's personal `.env.local`.
+ * Overridable via `defineConfig({ env: { files } })`.
  */
-export const DEFAULT_ENV_FILES = ['.env', '.env.development.pre', '.env.development', '.env.local'];
+export const DEFAULT_ENV_FILES = ['.env', '.env.development', '.env.local'];
 
 export interface EnvResolution {
   /**

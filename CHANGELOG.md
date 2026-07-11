@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- Docs restructured: the README is now a slim landing page that links to focused topic docs under `docs/` (`configuration.md`, `package-lifecycle.md`, `cli.md`, `control-api.md`), and the installed agent skill now loads a single consolidated guide, `docs/agents.md` (replacing `docs/usage-guide.md`).
+- `.env.development.pre` is no longer loaded by default. The default `.env` files are now `.env`, `.env.development`, and `.env.local`; re-add any other name (including `.env.development.pre`) via `defineConfig({ env: { files } })` if you relied on it.
+- Docs: the Features list now highlights that per-package logs are **filterable** in the terminal UI — the `f` hotkey narrows the combined stream to a package name or search term — instead of just noting the colored name prefix.
+
 ## 0.3.0
 
 - Session logs are no longer truncated on startup. Each run writes a **fresh, timestamped** logfile — `dev-<timestamp>.log` under `node_modules/.devtooie/logs/` — so previous sessions' logs are always preserved.
