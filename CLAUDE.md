@@ -24,7 +24,13 @@ Human-facing:
 
 - `packages/devtooie/README.md` — the slim landing page (overview, install, getting started,
   config example, running, supporting scripts, environment loading, agent skill). It links
-  out to the topic docs for the deep reference.
+  out to the topic docs for the deep reference using **relative** `docs/*.md` paths — keep
+  them relative in source. npmjs.com renders only the README and rewrites relative links
+  against the repo **root** (ignoring `repository.directory`), which would 404 for this
+  monorepo package — so `release.yaml` rewrites them to version-pinned absolute GitHub URLs at
+  publish time (runner checkout only; the commit stays relative). Don't "fix" these to
+  absolute in source. (Relative links between the `docs/*.md` files themselves need no
+  rewrite — npm never renders those.)
 - `packages/devtooie/docs/configuration.md` — full `defineConfig` / package-field reference
   (fields, dependencies, TypeScript project references, typed package names).
 - `packages/devtooie/docs/package-lifecycle.md` — how `command` flags decide
