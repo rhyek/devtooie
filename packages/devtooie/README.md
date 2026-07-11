@@ -35,6 +35,15 @@ picked.
   headlessly and lets a second invocation hand off cleanly; an installable skill
   teaches a coding agent to use it.
 
+## Example
+
+A complete, runnable example monorepo lives in
+[`example/`](https://github.com/rhyek/devtooie/tree/main/example): four packages — a shared
+TypeScript library (`isomorphic`), a Node API (`backend`), a Go worker driven through a
+`Makefile` (`worker`), and a web `frontend` — wired up with dependency-aware builds, `.env`
+loading, healthchecks, and `waitFor` readiness ordering. Clone the repo and run `pnpm dev`
+inside `example/` to watch devtooie drive a real workspace.
+
 ## Requirements
 
 - **Node 20+.** A `.ts` config additionally needs **Node ≥23.6** (native

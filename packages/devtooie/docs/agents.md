@@ -10,6 +10,13 @@ headlessly, control a running session over its HTTP API, onboard a package, read
 debugging, plus the full configuration/CLI/API reference. It consolidates everything a human
 reads across the README and the topic docs, so you only need this one file.
 
+A complete, runnable example monorepo — a shared TypeScript library, a Node API, a Go worker
+driven through a `Makefile`, and a web frontend — lives at
+[`example/`](https://github.com/rhyek/devtooie/tree/main/example) in the devtooie repo (it's
+not shipped inside the installed package, so use that URL rather than a `node_modules` path).
+It's a good reference for how a real workspace is wired: project-reference build ordering,
+`.env` loading, healthchecks, and `waitFor`.
+
 ## Overview
 
 - **Dependency-aware builds.** Declare build/dev/runtime deps once; devtooie builds what
