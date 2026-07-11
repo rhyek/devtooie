@@ -5,15 +5,10 @@ import {
   type UrlLinkSchema,
   type UrlEntrySchema,
   type CommandSchema,
-  type RunConfigSchema,
   type PackageConfigSchema,
   DefineConfigSchema,
 } from './config-schema.js';
-import type {
-  GeneratedRunConfig,
-  GeneratedPackageConfig,
-  GeneratedDefineConfig,
-} from './config.generated.js';
+import type { GeneratedPackageConfig, GeneratedDefineConfig } from './config.generated.js';
 
 export const PackageType = { BACKEND: 'backend', BROWSER: 'browser', LIB: 'lib' } as const;
 export type PackageType = (typeof PackageType)[keyof typeof PackageType];
@@ -36,7 +31,7 @@ export function normalizeUrlEntry(entry: UrlEntry): UrlLine {
   return links.map((link) => (typeof link === 'string' ? { url: link } : link));
 }
 
-/** A resolved `run.command`: which script to run and how it behaves on file changes. */
+/** A resolved `command`: which script to run and how it behaves on file changes. */
 export type Command = z.infer<typeof CommandSchema>;
 
 // ---------------------------------------------------------------------------
@@ -46,31 +41,22 @@ export type Command = z.infer<typeof CommandSchema>;
 // typo is a compile error). Docs on kept fields flow from `config.generated.ts`.
 // ---------------------------------------------------------------------------
 
-/** `run.command` options. A watching command must also build: `watches: true` requires `builds: true`. */
+/**
+ * `command` options. `watches` and `cleans` both imply building, so `builds: false` is only
+ * legal when the command neither watches nor cleans.
+ */
 export type CommandOptions =
-  { watches?: true; builds?: true } | { watches: false; builds?: boolean };
+  | { watches?: boolean; builds?: true; cleans?: boolean }
+  | { watches: false; builds: false; cleans?: false };
 
 /**
  * The dev process to run and how it behaves: a script/target name, or
- * `[name, { watches, builds }]`.
+ * `[name, { watches, builds, cleans }]`.
  */
 export type CommandInput = string | [string, CommandOptions];
 
-export type RunConfig<N extends string> = Omit<
-  GeneratedRunConfig,
-  'command' | 'waitFor' | 'deps'
-> & {
-  /**
-   * The dev process to run and how it behaves. A script/target name, or
-   * `[name, { watches, builds }]`. Default `['dev', { watches: true, builds: true }]`.
-   *
-   * - `watches` — the script watches files and reloads itself.
-   * - `builds` — the script (re)builds on start. `watches: true` requires `builds: true`.
-   *
-   * Drives what to do after editing this package's code: `watches`→nothing, else
-   * `builds`→restart, else rebuild.
-   */
-  command?: CommandInput;
+/** Name-referencing fields shared by the input and resolved package types (pinned to `N`). */
+type PackageNameRefs<N extends string> = {
   /** Package names whose `healthcheck` must pass before this package starts. */
   waitFor?: NoInfer<N>[];
   /** Other packages this one depends on, by category. */
@@ -84,12 +70,27 @@ export type RunConfig<N extends string> = Omit<
   };
 };
 
-export type PackageConfigInput<N extends string> = Omit<GeneratedPackageConfig, 'name' | 'run'> & {
-  /** Unique identifier; referenced from the CLI (`-p`), `waitFor`, and `deps`. */
-  name: N;
-  /** How to run/select/link the package; omit entirely for a build-only lib. */
-  run?: RunConfig<N>;
-};
+export type PackageConfigInput<N extends string> = Omit<
+  GeneratedPackageConfig,
+  'name' | 'command' | 'waitFor' | 'deps'
+> &
+  PackageNameRefs<N> & {
+    /** Unique identifier; referenced from the CLI (`-p`), `waitFor`, and `deps`. */
+    name: N;
+    /**
+     * The dev process to run and how it behaves. A script/target name, or
+     * `[name, { watches, builds, cleans }]`. Default `['dev', { watches: true, builds: true }]`.
+     *
+     * - `watches` — the script watches files and reloads itself.
+     * - `builds` — the script (re)builds on start. `watches: true` requires `builds: true`.
+     * - `cleans` — the script does a *clean* rebuild on start (no stale output to clear). Enables
+     *   the `rebuild` command even without separate `clean`/`build` scripts; requires `builds: true`.
+     *
+     * Drives what to do after editing this package's code: `watches`→nothing, else
+     * `builds`→restart, else rebuild.
+     */
+    command?: CommandInput;
+  };
 
 export type DefineConfigOptions<N extends string> = Omit<GeneratedDefineConfig, 'packages'> & {
   /** Your package definitions. */
@@ -101,16 +102,11 @@ export type DefineConfigOptions<N extends string> = Omit<GeneratedDefineConfig, 
 // schema via `z.infer`; name-referencing fields overlaid with `N`.
 // ---------------------------------------------------------------------------
 
-type RunWithNames<R, N extends string> = Omit<R, 'waitFor' | 'deps'> & {
-  waitFor?: NoInfer<N>[];
-  deps?: { build?: NoInfer<N>[]; dev?: NoInfer<N>[]; runtime?: NoInfer<N>[] };
-};
-type ResolvedRun<N extends string> = RunWithNames<z.infer<typeof RunConfigSchema>, N>;
-
 export type ResolvedPackageConfig<N extends string> = Omit<
   z.infer<typeof PackageConfigSchema>,
-  'name' | 'run'
-> & { name: N; relativeDir: string; path: string; run?: ResolvedRun<N> };
+  'name' | 'waitFor' | 'deps'
+> &
+  PackageNameRefs<N> & { name: N; relativeDir: string; path: string };
 
 export type AnyPackageConfig = ResolvedPackageConfig<string>;
 
@@ -146,9 +142,9 @@ export function findPackage(name: string): AnyPackageConfig {
   return pkg;
 }
 
-/** The dev-process script/target name for a package (`run.command.name`, default `'dev'`). */
+/** The dev-process script/target name for a package (`command.name`, default `'dev'`). */
 export function getDevScript(pkg: AnyPackageConfig): string {
-  return pkg.run?.command.name ?? 'dev';
+  return pkg.command?.name ?? 'dev';
 }
 
 // ---------------------------------------------------------------------------
@@ -190,35 +186,35 @@ function substituteUrlEntry(entry: UrlEntry, replace: (s: string) => string): Ur
     : substituteUrlLink(entry, replace);
 }
 
-type ResolvedRunAny = z.infer<typeof RunConfigSchema>;
+type ParsedPackage = z.infer<typeof PackageConfigSchema>;
 
-function substituteRun(
-  name: string,
-  run: ResolvedRunAny,
+/** Substitutes intrinsic (`$name`/`$subdomain`/`$port`) then extrinsic tokens in a package's
+ * token-bearing fields (`urls`, `healthcheck`), returning just those resolved fields. */
+function substitutePackageTokens(
+  pkg: ParsedPackage,
   tokens: Record<string, string | undefined>,
-): ResolvedRunAny {
-  const primarySubdomain = Array.isArray(run.subdomain) ? run.subdomain[0] : run.subdomain;
+): Pick<ParsedPackage, 'urls' | 'healthcheck'> {
+  const primarySubdomain = Array.isArray(pkg.subdomain) ? pkg.subdomain[0] : pkg.subdomain;
   const replace = (s: string): string => {
-    let out = s.replaceAll('$name', name);
+    let out = s.replaceAll('$name', pkg.name);
     if (out.includes('$subdomain')) {
       if (!primarySubdomain) {
-        throw new Error(`${name} uses $subdomain but run.subdomain is not defined`);
+        throw new Error(`${pkg.name} uses $subdomain but subdomain is not defined`);
       }
       out = out.replaceAll('$subdomain', primarySubdomain);
     }
     if (out.includes('$port')) {
-      if (run.port === undefined) {
-        throw new Error(`${name} uses $port but run.port is not defined`);
+      if (pkg.port === undefined) {
+        throw new Error(`${pkg.name} uses $port but port is not defined`);
       }
-      out = out.replaceAll('$port', String(run.port));
+      out = out.replaceAll('$port', String(pkg.port));
     }
     // Extrinsic tokens: any remaining $key must resolve from tokens.
-    return substituteTokens(out, tokens, name);
+    return substituteTokens(out, tokens, pkg.name);
   };
   return {
-    ...run,
-    urls: run.urls?.map((entry) => substituteUrlEntry(entry, replace)),
-    healthcheck: run.healthcheck ? replace(run.healthcheck) : undefined,
+    urls: pkg.urls?.map((entry) => substituteUrlEntry(entry, replace)),
+    healthcheck: pkg.healthcheck ? replace(pkg.healthcheck) : undefined,
   };
 }
 
@@ -227,7 +223,7 @@ function formatConfigError(err: z.ZodError): string {
   const lines = err.issues.map((issue) => {
     const at = issue.path.length ? issue.path.join('.') : '(root)';
     const hint = issue.path.includes('command')
-      ? ' — a command that watches must also build (watches:true requires builds:true)'
+      ? ' — a command that watches or cleans must also build (builds:false requires watches:false and cleans:false)'
       : '';
     return `  - ${at}: ${issue.message}${hint}`;
   });
@@ -244,10 +240,10 @@ export function defineConfig<const N extends string>(opts: DefineConfigOptions<N
   const workspaceDir = parsed.workspaceDir ?? process.cwd();
 
   // Validate waitFor targets: each must exist and define a healthcheck.
-  const healthcheckPackages = new Set(parsed.packages.filter((c) => c.run?.healthcheck).map((c) => c.name)); // prettier-ignore
+  const healthcheckPackages = new Set(parsed.packages.filter((c) => c.healthcheck).map((c) => c.name)); // prettier-ignore
   const allNames = new Set(parsed.packages.map((c) => c.name));
   for (const config of parsed.packages) {
-    for (const waitName of config.run?.waitFor ?? []) {
+    for (const waitName of config.waitFor ?? []) {
       if (!allNames.has(waitName)) {
         throw new Error(`${config.name} has waitFor "${waitName}" but no such package exists`);
       }
@@ -267,7 +263,7 @@ export function defineConfig<const N extends string>(opts: DefineConfigOptions<N
       ...config,
       relativeDir,
       path: path.resolve(workspaceDir, relativeDir),
-      run: config.run ? substituteRun(config.name, config.run, tokens) : undefined,
+      ...substitutePackageTokens(config, tokens),
     };
   });
 

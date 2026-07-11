@@ -10,13 +10,13 @@ jobs:
     env:
       SKIP_SIMPLE_GIT_HOOKS: 1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.9.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version-file: '.tool-versions'
 
@@ -24,6 +24,7 @@ jobs:
 
       - run: pnpm lint
 
-      - run: pnpm test
-
+      # Build before test: some tests import the package's compiled `dist/`.
       - run: pnpm build
+
+      - run: pnpm test

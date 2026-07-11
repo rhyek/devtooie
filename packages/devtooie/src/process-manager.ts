@@ -67,18 +67,56 @@ function logTimestamp(): string {
   return `${hh}:${mm}:${ss}`;
 }
 
+// Package-identity colors for log prefixes: a vivid, full-spectrum palette ordered so adjacent
+// packages land far apart on the color wheel. These are bright truecolor shades — distinct from
+// the dull basic-ANSI colors the status text/dots use (green/cyan/yellow/red) — and skip
+// pink/pastels.
 const PALETTE = [
-  chalk.cyan,
-  chalk.yellow,
-  chalk.green,
-  chalk.magenta,
-  chalk.hex('#FF8C00'),
-  chalk.blue,
-  chalk.red,
-  chalk.hex('#00CED1'),
-  chalk.hex('#DA70D6'),
-  chalk.hex('#32CD32'),
+  chalk.hex('#4C9AFF'), // blue
+  chalk.hex('#FF9636'), // orange
+  chalk.hex('#3FCF7F'), // emerald
+  chalk.hex('#A56EFF'), // purple
+  chalk.hex('#FFC53D'), // gold
+  chalk.hex('#22C3C3'), // teal
+  chalk.hex('#FF6B57'), // coral
+  chalk.hex('#6C79FF'), // indigo
+  chalk.hex('#A8D93C'), // lime
+  chalk.hex('#C77DFF'), // violet
 ];
+
+// The chalk foreground color names accepted by `run.color` (a subset guard, so a stray
+// `run.color: 'bold'`/`'constructor'` can't reach into non-color chalk members).
+const NAMED_COLORS = new Set([
+  'black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white', 'gray', 'grey',
+  'blackBright', 'redBright', 'greenBright', 'yellowBright', 'blueBright', 'magentaBright',
+  'cyanBright', 'whiteBright',
+]); // prettier-ignore
+
+/**
+ * Resolve a `run.color` spec — hex (`#af87ff`), `rgb(r,g,b)`, `ansi256(n)`, or a chalk/Ink color
+ * name (`magenta`, `blueBright`) — to a chalk formatter. Unrecognized specs fall back to no color
+ * rather than throwing, so a typo degrades gracefully.
+ */
+export function resolveColorSpec(spec: string): (s: string) => string {
+  const s = spec.trim();
+  if (/^#?[0-9a-f]{6}$/i.test(s) || /^#?[0-9a-f]{3}$/i.test(s)) {
+    return chalk.hex(s.startsWith('#') ? s : `#${s}`);
+  }
+  const rgb = /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/i.exec(s);
+  if (rgb) return chalk.rgb(Number(rgb[1]), Number(rgb[2]), Number(rgb[3]));
+  const ansi = /^ansi256\(\s*(\d{1,3})\s*\)$/i.exec(s);
+  if (ansi) return chalk.ansi256(Number(ansi[1]));
+  if (NAMED_COLORS.has(s)) return chalk[s as keyof typeof chalk] as (t: string) => string;
+  return (t: string) => t;
+}
+
+/**
+ * The color function for a package's log prefix: its `run.color` override when set, else the
+ * palette slot for its position `index` in the run.
+ */
+export function packagePrefixColor(pkg: AnyPackageConfig, index: number): (s: string) => string {
+  return pkg.color ? resolveColorSpec(pkg.color) : PALETTE[index % PALETTE.length]!;
+}
 
 const MAX_BUFFER_LINES = 50_000;
 const SHUTDOWN_GRACE_MS = 3000;
@@ -150,17 +188,17 @@ export class ProcessManager implements ControlManager {
     this.envFiles = envFiles ?? DEFAULT_ENV_FILES;
     this.cwd = cwd ?? process.cwd();
 
-    const displayName = (a: AnyPackageConfig) => a.run?.shortName ?? a.name;
+    const displayName = (a: AnyPackageConfig) => a.shortName ?? a.name;
     const maxNameLen = sortedPackages.reduce((m, a) => Math.max(m, displayName(a).length), 0);
     this.prefixWidth = maxNameLen + 3; // "[" + padded name + "]" + " "
     this.continuationPad = ' '.repeat(this.prefixWidth);
 
     for (let i = 0; i < sortedPackages.length; i++) {
       const pkg = sortedPackages[i]!;
-      const color = PALETTE[i % PALETTE.length]!;
+      const color = packagePrefixColor(pkg, i);
       const label = displayName(pkg);
       const padded = label + ' '.repeat(maxNameLen - label.length);
-      const shortName = pkg.run?.shortName;
+      const shortName = pkg.shortName;
       this.processes.set(pkg.name, {
         pkg,
         proc: null,
@@ -338,7 +376,7 @@ export class ProcessManager implements ControlManager {
       relativeDir: pkg.relativeDir,
       files: this.envFiles,
     });
-    const port = pkg.run?.port;
+    const port = pkg.port;
     return Object.assign({}, process.env, port !== undefined ? { PORT: String(port) } : {}, env);
   }
 
@@ -822,7 +860,7 @@ export class ProcessManager implements ControlManager {
       if (filter && status !== filter) {
         continue;
       }
-      out.push({ name, shortName: managed.pkg.run?.shortName, status });
+      out.push({ name, shortName: managed.pkg.shortName, status });
     }
     return out.sort((a, b) => a.name.localeCompare(b.name));
   }

@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ProcessManager } from './process-manager.js';
+import chalk from 'chalk';
+import { ProcessManager, resolveColorSpec, packagePrefixColor } from './process-manager.js';
 import type { AnyPackageConfig } from './config.js';
 import type { RunnerArgs } from './runners/types.js';
 
@@ -32,8 +33,50 @@ afterAll(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+describe('package prefix colors', () => {
+  const original = chalk.level;
+  beforeAll(() => {
+    chalk.level = 3; // force truecolor so each branch actually emits ANSI to compare
+  });
+  afterAll(() => {
+    chalk.level = original;
+  });
+
+  const p = (color?: string): AnyPackageConfig =>
+    ({ name: 'a', relativeDir: 'a', path: '/x', color }) as AnyPackageConfig;
+
+  it('resolveColorSpec: hex (with or without #)', () => {
+    expect(resolveColorSpec('#af87ff')('x')).toBe(chalk.hex('#af87ff')('x'));
+    expect(resolveColorSpec('af87ff')('x')).toBe(chalk.hex('#af87ff')('x'));
+  });
+
+  it('resolveColorSpec: rgb() and ansi256()', () => {
+    expect(resolveColorSpec('rgb(175, 135, 255)')('x')).toBe(chalk.rgb(175, 135, 255)('x'));
+    expect(resolveColorSpec('ansi256(140)')('x')).toBe(chalk.ansi256(140)('x'));
+  });
+
+  it('resolveColorSpec: a named color', () => {
+    expect(resolveColorSpec('magenta')('x')).toBe(chalk.magenta('x'));
+    expect(resolveColorSpec('blueBright')('x')).toBe(chalk.blueBright('x'));
+  });
+
+  it('resolveColorSpec: unknown/unsafe specs fall back to no color (no throw)', () => {
+    expect(resolveColorSpec('not-a-color')('x')).toBe('x');
+    expect(resolveColorSpec('constructor')('x')).toBe('x');
+    expect(resolveColorSpec('bold')('x')).toBe('x'); // a chalk modifier, not a color
+  });
+
+  it('packagePrefixColor: run.color overrides the palette', () => {
+    expect(packagePrefixColor(p('#af87ff'), 0)('x')).toBe(chalk.hex('#af87ff')('x'));
+  });
+
+  it('packagePrefixColor: falls back to a distinct palette slot per index', () => {
+    expect(packagePrefixColor(p(), 0)('x')).not.toBe(packagePrefixColor(p(), 1)('x'));
+  });
+});
+
 function pkg(): AnyPackageConfig {
-  return { name: 'fixture', types: [], relativeDir: '.', path: dir };
+  return { name: 'fixture', relativeDir: '.', path: dir };
 }
 
 function runnerArgs(a: AnyPackageConfig): RunnerArgs {
@@ -91,7 +134,6 @@ describe('ProcessManager', () => {
   it('logControl pads the [dt:control] label to align with the widest service name', () => {
     const wide: AnyPackageConfig = {
       name: 'whatsapp-bridge',
-      types: [],
       relativeDir: '.',
       path: dir,
     };
@@ -129,7 +171,7 @@ describe('ProcessManager env injection', () => {
   });
 
   it('injects resolved .env vars into the spawned dev process', async () => {
-    const a: AnyPackageConfig = { name: 'envfixture', types: [], relativeDir: '.', path: envDir };
+    const a: AnyPackageConfig = { name: 'envfixture', relativeDir: '.', path: envDir };
     mgr = new ProcessManager(
       {
         sortedPackages: [a],
@@ -181,10 +223,10 @@ describe('ProcessManager PORT injection', () => {
   it("injects a package's run.port as the PORT env var", async () => {
     const a: AnyPackageConfig = {
       name: 'portfix',
-      types: [],
       relativeDir: '.',
       path: portDir,
-      run: { port: 4321, command: { name: 'dev', watches: true, builds: true } },
+      port: 4321,
+      command: { name: 'dev', watches: true, builds: true },
     };
     mgr = new ProcessManager(
       {
@@ -236,7 +278,7 @@ describe('ProcessManager env-change restart', () => {
   });
 
   it('restarts a running package when its .env changes, picking up the new value', async () => {
-    const a: AnyPackageConfig = { name: 'wfixture', types: [], relativeDir: '.', path: d };
+    const a: AnyPackageConfig = { name: 'wfixture', relativeDir: '.', path: d };
     m = new ProcessManager(
       {
         sortedPackages: [a],
@@ -295,7 +337,7 @@ describe('ProcessManager rebuild (clean + build)', () => {
   });
 
   it('runs clean then build (in order) and restarts when there is no build:clean', async () => {
-    const a: AnyPackageConfig = { name: 'rbfix', types: [], relativeDir: '.', path: rbDir };
+    const a: AnyPackageConfig = { name: 'rbfix', relativeDir: '.', path: rbDir };
     mgr = new ProcessManager(
       {
         sortedPackages: [a],

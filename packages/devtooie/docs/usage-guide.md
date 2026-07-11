@@ -43,8 +43,8 @@ Endpoints (all plain HTTP, no auth — localhost-only):
 - `GET /query/status` — status of every package. `GET /query/status/<name>` — one
   package.
 - `GET /query/packages?status=<status>` — list package names filtered by status.
-- `GET /query/config` — the whole resolved config (defaults applied, `run.command`
-  normalized to `{ name, watches, builds }`). Use it to decide package lifecycle — see §4.
+- `GET /query/config` — the whole resolved config (defaults applied, `command`
+  normalized to `{ name, watches, builds, cleans }`). Use it to decide package lifecycle — see §4.
 
 Do not hardcode package names. Discover them either from a running session
 (`GET /query/status`) or by asking devtooie directly:
@@ -64,41 +64,34 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
    scripts (`pnpm run <name>`); with a `Makefile` and no `package.json` it runs
    `make <target>`. (`package.json` wins if a package somehow has both.)
 
-   In all cases a package needs `dev`, `build`, and `clean`. devtooie's clean-rebuild (the
-   `b` hotkey in the interactive UI and the control API's rebuild endpoint) runs
-   `build:clean` if the package defines it, otherwise it runs `clean` then `build` in
-   sequence — so `dev` + `build` + `clean` is enough to be "rebuildable".
+   Only the **dev entry point** is always required. `build` and `clean` are situational:
+   - **`build`** — only if another package build-depends on this one, or to build it with
+     `--build`. A leaf app that nothing depends on needs none (`--build` on it builds its deps,
+     not the package itself).
+   - **`clean`** — with `build` (or a single `build:clean`) it makes the package cleanly
+     rebuildable: rebuild (the `b` hotkey / `POST /command/rebuild`) runs `clean` then `build`.
+     A self-cleaning dev command needs neither — see `cleans` below.
 
-   For a **Node package**, these are npm scripts. You may add a combined `build:clean`
-   script (running `clean` then `build`) as a shortcut, but it's optional now that separate
-   `clean` + `build` are used automatically.
+   For a **Node package**, these are npm scripts. For a **non-Node package** (no
+   `package.json`), they're the equivalent **`make` targets**, invoked as `make <target>`.
+   **If the package has neither a `package.json` nor a `Makefile`, create a `Makefile`** (a
+   package with neither can't be driven); if it already has one, add whatever targets are missing.
 
-   For a **non-Node package** (no `package.json`), the entry points come from a `Makefile`
-   with the equivalent **`make` targets** `dev`, `build`, and `clean`, which devtooie
-   invokes as `make dev` / `make build` / `make clean`. **If the package has no `Makefile`,
-   create one** (a package with neither a `package.json` nor a `Makefile` can't be driven);
-   if it already has one, add whatever targets are missing. Each target wraps whatever the
-   app's toolchain needs — e.g. for a Go service `dev` is `go run .`, `build` is
-   `go build`, and `clean` removes the build output:
+   Example — a Go service whose dev command is `go run .`. Because `go run .` compiles from
+   current source on every start, it's a clean rebuild on its own, so a single `start` target
+   suffices; set `command: ['start', { watches: false, builds: true, cleans: true }]` (see §4)
+   and both restart and rebuild work without `build`/`clean` targets:
 
    ```makefile
-   SHELL=/bin/bash -o pipefail
-   .PHONY: dev build clean
-
-   dev:
+   .PHONY: start
+   start:
    	@go run .
-
-   build:
-   	@go build -o ./bin/app .
-
-   clean:
-   	@rm -rf ./bin
    ```
 
-   Recipe lines must be indented with a real tab. A `make` target name can't contain a
-   colon, so a Makefile package can't have a `build:clean` target — but it doesn't need one:
-   with `build` and `clean` targets, devtooie's rebuild runs `make clean` then `make build`,
-   so a Makefile package with `dev`/`build`/`clean` is fully rebuildable.
+   Recipe lines must be indented with a real tab. (If instead you want a compiled artifact —
+   e.g. because another package build-depends on this one — add `build` (`go build -o ./bin/app .`)
+   and `clean` (`rm -rf ./bin`) targets. A `make` target name can't contain a colon, so Makefile
+   packages use the `clean` + `build` pair, never `build:clean`.)
 
 2. **Rename equivalent existing scripts rather than duplicate them.** If the package
    already has a script that does the same job under a different name, rename it
@@ -113,17 +106,14 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
    ```ts
    {
      name: 'my-pkg',
-     types: ['backend'],
-     run: {
-       port: 3001,
-       healthcheck: 'http://localhost:$port/health',
-       deps: { runtime: ['other-pkg'] },
-       waitFor: ['other-pkg'],
-     },
+     port: 3001,
+     healthcheck: 'http://localhost:$port/health',
+     deps: { runtime: ['other-pkg'] },
+     waitFor: ['other-pkg'],
    }
    ```
 
-   Infer `types` (`backend` / `browser` / `lib`) and the `run` block from what the
+   All package fields are flat (there is no `run` nesting). Infer them from what the
    package actually is:
    - `port` — the dev port it listens on (`hmrPort` for a browser package's HMR socket).
      devtooie injects this into the package's process as the `PORT` env var, so the app can
@@ -137,6 +127,11 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
      entry's links render on one footer line, space-separated).
    - `deps: { build, dev, runtime }` — names of other packages this one depends on;
      drives build/start ordering and what gets pulled in when this package is selected.
+     For **TypeScript** deps you usually don't need `deps.build`: devtooie infers build-time
+     deps from project references — it reads `tsconfig` if set, else `tsconfig.build.json`,
+     else `tsconfig.json`, and follows their `references` to other packages. Wire the real
+     dependency the normal way (a `workspace:*` entry in the consumer's `package.json` so pnpm
+     links it, plus a tsconfig `references` entry). Use `deps.build` only for edges TS can't express.
    - `waitFor` — names of packages whose `healthcheck` must pass before this one starts
      (each named package must itself define a `healthcheck`).
 
@@ -144,14 +139,25 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
    API paths, `-p` flags, etc).
 
    For workspace-wide links not tied to any package (dashboards, docs), add a top-level
-   `urls` array to `defineConfig` — same entry shape as a package's `run.urls`. These
+   `urls` array to `defineConfig` — same entry shape as a package's `urls`. These
    render in the TUI footer above the per-package links and substitute only extrinsic
    `tokens` (no `$port`/`$name`/`$subdomain`).
+
+4. **Shared TypeScript libraries.** A package others depend on (shared types/logic) is
+   onboarded like any other, plus:
+   - Give consumers a `workspace:*` dependency on it (pnpm links it) and a tsconfig
+     `references` entry pointing at it — that's what makes devtooie build it first.
+   - To make it update **live**, give it a watching `dev` script that emits its output
+     (e.g. `tsc --watch` → `dist`) and `selectable: false`. devtooie runs its watcher
+     alongside the apps; consumers import its emitted `dist` and pick up edits automatically.
+     With no `dev` script it's just built once — edits then need an explicit rebuild of the lib.
+   - Keep each package's `dev`/`build` building only itself; never root a whole-graph
+     `tsc --build --watch` in an app (devtooie already builds the deps).
 
 ## 4. Handle a package's lifecycle when you change its code
 
 devtooie does **not** watch source files. How a package should react to a code edit is
-declared by its `run.command`, which you read from `GET /query/config`.
+declared by its `command`, which you read from `GET /query/config`.
 
 **Fetch the config early, and re-fetch before acting.** On first involvement with a running
 session, read `node_modules/.devtooie/running.json` (for the port) and `GET /query/config`
@@ -160,7 +166,8 @@ once. Then, each time you're about to restart/rebuild a package, **re-read `runn
 may have edited the config and restarted the session, changing what a package needs. Don't
 trust a cached copy across a possible restart.
 
-For the package you edited, look at its resolved `run.command` (`{ name, watches, builds }`):
+For the package you edited, look at its resolved `command`
+(`{ name, watches, builds, cleans }`):
 
 - `watches: true` (the default) — the dev script watches files and reloads itself.
   **Do nothing.**
@@ -168,6 +175,11 @@ For the package you edited, look at its resolved `run.command` (`{ name, watches
 - `watches: false, builds: false` — `POST /command/rebuild/<name>` (clean build, then start).
 
 Rule: `watches` → nothing; else `builds` → restart; else rebuild.
+
+`POST /command/rebuild/<name>` only succeeds when the package can clean-rebuild — its command
+has `cleans: true` (a self-cleaning dev command like `go run .`, where rebuild just restarts it),
+or it has `clean` + `build` (or `build:clean`) scripts. Otherwise it's a no-op; use restart.
+`POST /command/restart/<name>` works for any running package.
 
 ## 5. Read running-package logs for debugging
 
@@ -223,3 +235,37 @@ devtooie env --dir <relativeDir>
 Precedence: files in the package's own directory override the workspace-root ones, and a
 `.env.local` overrides a `.env`. You do not need this for packages devtooie is already
 running (§1 injects their env automatically) — it's for driving commands yourself.
+
+## 7. Convert or improve a TypeScript monorepo for devtooie
+
+When asked to improve a Node/TypeScript monorepo so its packages work well with devtooie —
+typically **converting to TypeScript project references** and **reshaping dev scripts** — aim
+for the end state below, then apply the per-package specifics from §3.
+
+1. **Let project references drive the build graph.** For every cross-package import:
+   - Make the dependency a real workspace package and add a `workspace:*` entry to each
+     consumer's `package.json` (so pnpm links it and the consumer imports its published
+     `exports`, not a relative path into its source).
+   - Add a tsconfig `references` entry from each consumer to the package it imports. devtooie
+     reads these to discover build-time deps and builds shared packages **first, in dependency
+     order**. It reads `tsconfig` if set, else `tsconfig.build.json`, else `tsconfig.json` —
+     so the references can live in a package's plain `tsconfig.json`; a separate build config
+     is optional.
+   - Make each **shared library** a composite project that **emits** its output
+     (`composite: true`, `declaration: true`, `outDir: dist`). Consumers import the emitted
+     `dist` (via the package's `exports`), never its source.
+
+2. **Make each package's `dev`/`build` build only itself.** devtooie already builds a package's
+   deps before running it, so nothing should rebuild the whole graph.
+   - A **library**: a watching `dev` that re-emits (e.g. `tsc --watch`) plus
+     `selectable: false`. devtooie runs its watcher alongside the apps, so edits to it
+     propagate live to every consumer (see §3.4).
+   - An **app**: a `dev` that watches only its own source (`node --watch`, `tsx watch`,
+     `vite dev`, …) and consumes libraries through their emitted `dist`. **Never** root a
+     whole-graph `tsc --build --watch` in an app — the library owns its watcher.
+   - Normalize script names to `dev`/`build`/`clean` (§3.1–§3.2). A leaf app that nothing
+     build-depends on needs only its dev script; drop its `build`/`clean` if present.
+
+3. **Verify the graph.** `devtooie resolvedeps -p <app>` should now list the shared libraries
+   under `build`; `devtooie --build -p <app>` then builds them in dependency order, and
+   `devtooie --plain -p <app>` runs the app with its library watchers alongside it.

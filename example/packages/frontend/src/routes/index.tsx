@@ -3,6 +3,8 @@ import { createFileRoute } from '@tanstack/react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Trash2 } from 'lucide-react';
 
+import { TITLE_MAX_LENGTH } from '@example/isomorphic';
+
 import { cn } from '~/lib/utils';
 import { addTodo, deleteTodo, toggleTodo, todosQueryOptions } from '~/server/todos';
 
@@ -65,6 +67,7 @@ function TodosPage() {
             onChange={(event) => setTitle(event.target.value)}
             placeholder="What needs doing?"
             aria-label="New todo"
+            maxLength={TITLE_MAX_LENGTH}
             className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-slate-400 focus:ring-2 focus:ring-slate-900/10 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-slate-500 dark:focus:ring-slate-100/10"
           />
           <button

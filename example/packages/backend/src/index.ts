@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import express from 'express';
+import { type Todo, validateNewTodo } from '@example/isomorphic';
 
 const PORT = 3001;
 
@@ -17,7 +18,7 @@ db.exec(`
 
 // node:sqlite returns untyped rows; SQLite has no boolean type, so `completed`
 // is stored as 0/1. Coerce a raw row into the JSON shape the frontend expects.
-const toTodo = (row: Record<string, unknown>) => ({
+const toTodo = (row: Record<string, unknown>): Todo => ({
   id: Number(row.id),
   title: String(row.title),
   completed: Boolean(row.completed),
@@ -40,12 +41,13 @@ app.get('/todos', (_req, res) => {
 });
 
 app.post('/todos', (req, res) => {
-  const title = String(req.body?.title ?? '').trim();
-  if (!title) {
-    res.status(400).json({ error: 'title is required' });
+  // Same validation rules the frontend enforces — shared from @example/isomorphic.
+  const result = validateNewTodo(req.body);
+  if (!result.ok) {
+    res.status(400).json({ error: result.error });
     return;
   }
-  const { lastInsertRowid } = db.prepare('INSERT INTO todos (title) VALUES (?)').run(title);
+  const { lastInsertRowid } = db.prepare('INSERT INTO todos (title) VALUES (?)').run(result.title);
   res.status(201).json(toTodo(selectById.get(lastInsertRowid)!));
 });
 

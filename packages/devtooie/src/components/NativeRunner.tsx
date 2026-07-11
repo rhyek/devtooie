@@ -364,7 +364,7 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
     () =>
       args.sortedPackages.map((pkg) => ({
         name: pkg.name,
-        displayName: pkg.run?.shortName ?? pkg.name,
+        displayName: pkg.shortName ?? pkg.name,
         selected: args.selectedSet.has(pkg.name),
       })),
     [args.sortedPackages, args.selectedSet],
@@ -373,12 +373,12 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
   const packageUrlGroups = useMemo<PackageUrlGroup[]>(() => {
     const groups: PackageUrlGroup[] = [];
     for (const pkg of args.sortedPackages) {
-      const urls = pkg.run?.urls;
+      const urls = pkg.urls;
       if (!urls || urls.length === 0) {
         continue;
       }
       groups.push({
-        name: pkg.run?.shortName ?? pkg.name,
+        name: pkg.shortName ?? pkg.name,
         selected: args.selectedSet.has(pkg.name),
         urls: urls.map(normalizeUrlEntry),
       });
@@ -752,9 +752,12 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
   ];
 
   // Per-package hotkeys (act on the focused package) — rendered directly under the dots.
+  // `← →: select` (and its separator) only make sense when there's more than one package
+  // to move the cursor between; with a single package it's dropped.
   const packageHints: HotkeyHintItem[] = [
-    { key: '←→', label: 'select' },
-    { separator: true },
+    ...(displayPackages.length > 1
+      ? [{ key: '← →', label: 'select' } as HotkeyHintItem, { separator: true } as HotkeyHintItem]
+      : []),
     { key: 'r', label: 'restart', dim: !focusedIsActive },
     { key: 'b', label: 'rebuild', dim: !focusedIsActive || !focusedIsRebuildable },
     // Merged start/stop toggle: show whichever action applies to the focused package.

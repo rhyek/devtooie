@@ -11,5 +11,8 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // devtooie reads these project references (no separate tsconfig.build.json) to build
+  // @example/isomorphic before this package runs.
+  "references": [{ "path": "../isomorphic" }]
 }
