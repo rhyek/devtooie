@@ -334,7 +334,7 @@ Common options:
 | `--last-answers`       | Skip selection; reuse the last saved selection.                                                              |
 | `--build`              | Build the selected packages and their build-time deps, then exit (no run phase).                             |
 | `--rebuild`            | Like `--build`, but first clears `dist/` for every build target.                                             |
-| `--logfile <path>`     | Write all package output to this file (truncated each run). Defaults to `node_modules/.devtooie/devlog.txt`. |
+| `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/`. Each run gets a fresh `dev-<timestamp>.log`; previous sessions' logs are kept. |
 
 Subcommands:
 
@@ -376,9 +376,9 @@ installed version.
 
 While a session runs, devtooie exposes a localhost-only HTTP API — mostly useful
 for coding agents (via the [skill](#agent-skill) above), but open to any tooling.
-Its port is picked at startup and written (with the pid) to
-`node_modules/.devtooie/running.json` — read the `port` field there. Pin a fixed
-one with `apiPort` in `devtooie.config.ts`.
+Its port is picked at startup and written (with the pid and the session's
+`logDir`) to `node_modules/.devtooie/running.json` — read the `port` field there.
+Pin a fixed one with `apiPort` in `devtooie.config.ts`.
 
 - `GET /query/pid` — the running session's PID **and the absolute path to the
   `devtooie.config.*` it was started with** (`{ pid, configPath }`).

@@ -389,6 +389,8 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
   const topLevelUrls = useMemo<UrlLine[]>(() => args.topLevelUrls ?? [], [args.topLevelUrls]);
 
   const [manager] = useState(() => new ProcessManager(args));
+  // Current logfile path shown in the footer; updated when the log is rotated (`t`).
+  const [logFilePath, setLogFilePath] = useState(args.logFile);
   const [mode, setMode] = useState<Mode>('normal');
   const [cursor, setCursor] = useState(0);
   const [shuttingDown, setShuttingDown] = useState(false);
@@ -655,7 +657,7 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
     }
 
     if (input === 't' && args.logFile) {
-      manager.truncateLogFile();
+      setLogFilePath(manager.rotateLogFile());
       return;
     }
 
@@ -742,7 +744,7 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
     : false;
 
   // Session-level hotkeys (act on the whole session) — pinned to the top of the footer.
-  // `t: truncate` lives next to the logfile path instead (see below).
+  // `t: rotate` lives next to the logfile path instead (see below).
   const sessionHints: HotkeyHintItem[] = [
     { header: 'logs' },
     { key: 'k', label: 'clear' },
@@ -869,12 +871,12 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
               <Text color="cyan">)</Text>
             </Text>
           )}
-          {args.logFile && (
+          {logFilePath && (
             <Box columnGap={2}>
               <Text dimColor>
-                logfile: {path.relative(process.cwd(), args.logFile) || args.logFile}
+                logfile: {path.relative(process.cwd(), logFilePath) || logFilePath}
               </Text>
-              {isNormal && <HotkeyHints hints={[{ key: 't', label: 'truncate' }]} />}
+              {isNormal && <HotkeyHints hints={[{ key: 't', label: 'rotate' }]} />}
             </Box>
           )}
         </Box>
