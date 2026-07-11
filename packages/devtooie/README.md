@@ -89,9 +89,9 @@ export default defineConfig({
     },
     {
       name: 'worker',
-      // A dev process that doesn't watch files: it builds once, then runs.
-      // devtooie will restart it for you after you edit its code — see
-      // Package lifecycle below.
+      // A dev process that doesn't watch files: it builds once, then runs. devtooie
+      // doesn't watch your source, so after you edit its code you (or an agent, via the
+      // control API) restart it — the command's flags say which. See Package lifecycle below.
       command: ['start', { watches: false, builds: true }],
     },
     {
