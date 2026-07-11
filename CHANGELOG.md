@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- Session logs are no longer truncated on startup. Each run writes a **fresh, timestamped** logfile — `dev-<timestamp>.log` under `node_modules/.devtooie/logs/` — so previous sessions' logs are always preserved.
+- Replaced `--logfile <path>` with `--log-dir <dir>`: choose the directory devtooie writes its timestamped session log into (defaults to `node_modules/.devtooie/logs/`).
+- The terminal-UI `t` hotkey now **rotates** the log (stops writing to the current file and starts a fresh timestamped one, leaving the old file intact) instead of truncating it in place.
+- `running.json` now records the session's `logDir`, so tooling and agents can locate the current session's logs even when it was started with `--log-dir`.
+
 ## 0.2.1
 
 - Docs: corrected the `devtooie.config.ts` example — devtooie doesn't watch your source or restart a package for you; after editing its code you (or an agent, via the control API) restart it.

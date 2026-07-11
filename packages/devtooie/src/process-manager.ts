@@ -10,7 +10,7 @@ import type { ControlManager } from './command-server.js';
 import { debugLog } from './debug-log.js';
 import { DEFAULT_ENV_FILES, resolveEnv } from './env.js';
 import { watchEnvFiles, type WatchTarget } from './env-watch.js';
-import { getExecArgs, getRebuildCommands, getStateDir, hasScript } from './lib.js';
+import { getDefaultLogFile, getExecArgs, getRebuildCommands, hasScript } from './lib.js';
 import type { RunnerArgs } from './runners/types.js';
 
 type ProcessState = 'running' | 'stopped' | 'waiting';
@@ -221,7 +221,7 @@ export class ProcessManager implements ControlManager {
     };
     process.on('exit', this.exitHandler);
 
-    this.logFilePath = logFile ?? path.join(getStateDir(), 'devlog.txt');
+    this.logFilePath = logFile ?? getDefaultLogFile();
     this.logFd = fs.openSync(this.logFilePath, 'w');
   }
 
@@ -918,10 +918,16 @@ export class ProcessManager implements ControlManager {
     this.footerHeight = height;
   }
 
-  /** Truncate the logfile in place (close + reopen). */
-  truncateLogFile(): void {
+  /**
+   * Rotate the logfile: stop writing to the current file and start a fresh,
+   * timestamped one in the same directory. The previous file is left intact on
+   * disk. Returns the new logfile path.
+   */
+  rotateLogFile(): string {
     fs.closeSync(this.logFd);
+    this.logFilePath = getDefaultLogFile(path.dirname(this.logFilePath));
     this.logFd = fs.openSync(this.logFilePath, 'w');
+    return this.logFilePath;
   }
 
   private addLine(prefix: string, text: string, searchName: string, isError: boolean): void {

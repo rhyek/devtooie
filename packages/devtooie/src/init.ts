@@ -25,8 +25,8 @@ export default defineConfig({
  * the defaults (install the agent skill) without prompting — used by `-y/--yes` and by
  * automation.
  *
- * Does NOT prompt for a logfile location — that default is fixed at
- * `node_modules/.devtooie/devlog.txt` and is only overridable via the `--logfile` CLI flag.
+ * Does NOT prompt for a log location — each run writes a fresh timestamped log under
+ * `node_modules/.devtooie/`, and the directory is only overridable via the `--log-dir` CLI flag.
  */
 export async function runInit(
   opts: { cwd?: string; force?: boolean; yes?: boolean } = {},

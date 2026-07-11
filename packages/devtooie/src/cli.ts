@@ -25,8 +25,8 @@ import {
 import {
   DepType,
   buildRunnerArgs,
+  getDefaultLogFile,
   getExecArgs,
-  getStateDir,
   hasScript,
   loadSelection,
   resetSelection,
@@ -45,7 +45,7 @@ interface RootOptions {
   phase: string;
   build: boolean;
   rebuild: boolean;
-  logfile?: string;
+  logDir?: string;
 }
 
 /** Commander option-parser for repeatable `-p/--package <name>` flags. */
@@ -191,7 +191,10 @@ const program = new Command()
     "like --build, but clears each build target's dist/ first (implies --build)",
     false,
   )
-  .option('--logfile <path>', 'write all package output to this file (truncated on each run)');
+  .option(
+    '--log-dir <dir>',
+    'write the timestamped session log into this directory (default: node_modules/.devtooie/logs/)',
+  );
 
 program
   .command('init')
@@ -335,7 +338,7 @@ program.action(async () => {
     return;
   }
 
-  const logFile = opts.logfile ?? path.join(getStateDir(), 'devlog.txt');
+  const logFile = getDefaultLogFile(opts.logDir);
 
   if (opts.plain) {
     const names = resolveSelectedNames(opts, '--plain');
@@ -347,6 +350,7 @@ program.action(async () => {
       const port = await acquireDevSession({
         configPath,
         apiPortOverride: getLoadedConfig()?.apiPort,
+        logFile,
         onStatus: (msg) => statusReporter.update(msg),
       });
       statusReporter.done();

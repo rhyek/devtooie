@@ -1,4 +1,5 @@
 import os from 'node:os';
+import path from 'node:path';
 import { execa } from 'execa';
 import { getRegisteredPackages } from './config.js';
 import { decideControlPort, isPortListening, probeInstance } from './running.js';
@@ -124,6 +125,8 @@ export async function acquireDevSession(opts: {
   configPath: string;
   /** A user-pinned `apiPort`, if any; when set, the port is fixed instead of random. */
   apiPortOverride?: number;
+  /** This session's logfile; its directory is recorded in `running.json` as `logDir`. */
+  logFile?: string;
   onStatus?: (msg: string) => void;
 }): Promise<number> {
   const onStatus = opts.onStatus ?? (() => {});
@@ -131,6 +134,7 @@ export async function acquireDevSession(opts: {
     cwd: process.cwd(),
     configPath: opts.configPath,
     apiPortOverride: opts.apiPortOverride,
+    logDir: opts.logFile ? path.dirname(opts.logFile) : undefined,
     env: { isListening: isPortListening, probe: probeInstance, shutdown: shutdownInstance },
     onStatus,
   });
