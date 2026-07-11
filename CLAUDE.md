@@ -6,11 +6,14 @@ Monorepo for the published `devtooie` npm package.
 - `example/` — a self-contained example monorepo that consumes the package via
   `devtooie: link:../packages/devtooie` (see `example/package.json`).
 
-`README.md` lives **inside the package** at `packages/devtooie/README.md` (not the repo
-root). It's the canonical copy — edit it in place. Keeping it in the package means it's
-published to npm and is present when the package is consumed via `pnpm link` locally
-(`npm publish` drops symlinks, so a root-level symlink is not an option). Only `LICENSE`
-is still copied in from the repo root at release time.
+`README.md` is the **repo-root** file — edit it there; it's the canonical copy. It lives at
+the root (not inside the package) so its relative `docs/*.md` links resolve when the README is
+viewed from the repo root on GitHub. The human-facing topic docs live at repo-root `docs/`;
+only `docs/agents.md` (the consolidated agent guide the installed skill loads) lives inside
+the package, at `packages/devtooie/docs/agents.md`. At release time `release.yaml` copies the
+root `README.md` into `packages/devtooie/` (like `LICENSE`), rewriting its relative doc links
+to version-pinned absolute URLs so the npm page works. Because the skill loads `agents.md`
+(not the README), the README no longer needs a live in-package copy for `pnpm link` consumers.
 
 ## Documentation — keep in lockstep
 
@@ -22,7 +25,7 @@ leave stale — treat keeping it current as mandatory.
 
 Human-facing:
 
-- `packages/devtooie/README.md` — the slim landing page (overview, install, getting started,
+- `README.md` (repo root) — the slim landing page (overview, install, getting started,
   config example, running, supporting scripts, environment loading, agent skill). It links
   out to the topic docs for the deep reference using **relative** `docs/*.md` paths — keep
   them relative in source. npmjs.com renders only the README and rewrites relative links
@@ -31,12 +34,12 @@ Human-facing:
   publish time (runner checkout only; the commit stays relative). Don't "fix" these to
   absolute in source. (Relative links between the `docs/*.md` files themselves need no
   rewrite — npm never renders those.)
-- `packages/devtooie/docs/configuration.md` — full `defineConfig` / package-field reference
+- `docs/configuration.md` — full `defineConfig` / package-field reference
   (fields, dependencies, TypeScript project references, typed package names).
-- `packages/devtooie/docs/package-lifecycle.md` — how `command` flags decide
+- `docs/package-lifecycle.md` — how `command` flags decide
   restart-vs-rebuild after a code edit.
-- `packages/devtooie/docs/cli.md` — every CLI flag and subcommand, plus `devtooie env`.
-- `packages/devtooie/docs/control-api.md` — the localhost HTTP control-API reference.
+- `docs/cli.md` — every CLI flag and subcommand, plus `devtooie env`.
+- `docs/control-api.md` — the localhost HTTP control-API reference.
 
 Agent-facing:
 

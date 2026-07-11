@@ -88,16 +88,20 @@ jobs:
             --notes-file /tmp/release-notes.md \
             --target "${{ github.sha }}"
 
-      # The published README links to the topic docs with relative `docs/*.md` paths. npm
-      # renders relative README links against the repo ROOT (it ignores repository.directory),
-      # so on this monorepo package they'd 404 on npmjs.com. Rewrite them to absolute URLs
-      # pinned to the just-created "$VERSION" tag — only in the runner's checkout, so the
-      # committed README stays relative. Just this file needs it; the docs/*.md files link to
-      # each other relatively and npm never renders them.
-      - name: Pin README doc links to this version for npm
-        working-directory: packages/devtooie
+      # The npm package needs the README inside packages/devtooie/, but the canonical README
+      # lives at the repo ROOT so its relative docs/ links resolve when it's viewed from the
+      # repo root on GitHub. Copy it in, then rewrite its relative docs/*.md links to absolute
+      # URLs pinned to the just-created "$VERSION" tag: npm renders relative README links
+      # against the repo root (ignoring repository.directory), so they'd 404 on npmjs.com
+      # otherwise. Runner checkout only — the committed root README stays relative. The
+      # docs/*.md files link to each other relatively and npm never renders them.
+      - name: Copy README into the package and version-pin its doc links
         run: |
-          sed -i -E "s#\]\(docs/#](https://github.com/rhyek/devtooie/blob/$VERSION/packages/devtooie/docs/#g" README.md
+          cp README.md packages/devtooie/README.md
+          sed -i -E \
+            -e "s#\]\(docs/#](https://github.com/rhyek/devtooie/blob/$VERSION/docs/#g" \
+            -e "s#\]\(packages/devtooie/docs/#](https://github.com/rhyek/devtooie/blob/$VERSION/packages/devtooie/docs/#g" \
+            packages/devtooie/README.md
 
       # Tokenless publish via npm Trusted Publishing (OIDC): no NPM_TOKEN secret.
       # Requires npm >= 11.5.1, the id-token: write permission above, and a Trusted
