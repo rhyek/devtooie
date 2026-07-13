@@ -1,20 +1,32 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import path from 'node:path';
 import chalk from 'chalk';
-import { Box, type DOMElement, Text, measureElement, useApp, useInput, useWindowSize } from 'ink';
+import {
+  Box,
+  type DOMElement,
+  Text,
+  measureElement,
+  useApp,
+  useInput,
+  useStdout,
+  useWindowSize,
+} from 'ink';
 import type { startCommandServer } from '../command-server.js';
 import { normalizeUrlEntry, type UrlLine } from '../config.js';
-import { debugLog } from '../debug-log.js';
 import { watchGitBranch } from '../git-watch.js';
 import { getGitBranch } from '../lib.js';
+import { ALT_SCROLL_DISABLE, ALT_SCROLL_ENABLE } from '../mouse.js';
 import { ProcessManager } from '../process-manager.js';
 import type { RunnerArgs } from '../runners/types.js';
 import { HotkeyHints, type HotkeyHintItem } from './HotkeyHints.js';
+import { LogPane, useLogViewport } from './LogPane.js';
 
 export type NativeRunnerProps = {
   args: RunnerArgs;
   /** Control API server, already listening, started by the caller before this component mounts. */
   server: Awaited<ReturnType<typeof startCommandServer>>;
+  /** Kept in sync with the active logfile path so `renderApp`'s exit line can print it. */
+  logFileRef?: { current: string | undefined };
 };
 
 type Mode = 'normal' | 'filter' | 'commands';
@@ -94,17 +106,6 @@ function estimateRightColumnWidth(urlGroups: PackageUrlGroup[], topLevelUrls: Ur
   return maxWidth;
 }
 
-/** Available width for the left (package dot) column once the right (URL) column and chrome are subtracted. */
-function leftColumnAvailableWidth(
-  terminalWidth: number,
-  urlGroups: PackageUrlGroup[],
-  topLevelUrls: UrlLine[],
-): number {
-  const rightColWidth = estimateRightColumnWidth(urlGroups, topLevelUrls);
-  const rightTotal = rightColWidth > 0 ? rightColWidth + 4 : 0; // +4 = the gap between the two columns
-  return Math.max(terminalWidth - 4 - rightTotal, 20); // -4 = border (2) + horizontal padding (2)
-}
-
 /**
  * The right-hand footer column of links: workspace-wide (top-level) links first, then a
  * dim rule, then a bold-headed group per package. The rule shows only when both are
@@ -143,34 +144,6 @@ export function LinksColumn({
       ))}
     </Box>
   );
-}
-
-/**
- * Lays out each package dot's row and horizontal center, wrapping to a new
- * row once it would overflow `availableWidth`. Used purely for up/down arrow
- * navigation, so the cursor moves to whichever item on the adjacent row sits
- * closest to its current horizontal position.
- */
-function computePackageLayout(
-  packageNames: string[],
-  availableWidth: number,
-): { row: number; centerX: number }[] {
-  const gap = 2;
-  const positions: { row: number; centerX: number }[] = [];
-  let row = 0;
-  let x = 0;
-  for (let i = 0; i < packageNames.length; i++) {
-    const itemWidth = 2 + packageNames[i]!.length; // "● name"
-    if (i > 0 && x + gap + itemWidth > availableWidth) {
-      row++;
-      x = 0;
-    } else if (i > 0) {
-      x += gap;
-    }
-    positions.push({ row, centerX: x + itemWidth / 2 });
-    x += itemWidth;
-  }
-  return positions;
 }
 
 /** Seed status for a package once it's (re)started: `starting` if it has a healthcheck, else `unknown`. */
@@ -355,7 +328,7 @@ function usePackageStatuses(args: RunnerArgs, manager: ProcessManager) {
  * back into the manager so its scrollback-clearing logic never clears rows
  * the footer itself occupies.
  */
-export function NativeRunner({ args, server }: NativeRunnerProps) {
+export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
   const { exit } = useApp();
 
   const [gitBranch] = useState(getGitBranch);
@@ -391,13 +364,23 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
   const [manager] = useState(() => new ProcessManager(args));
   // Current logfile path shown in the footer; updated when the log is rotated (`t`).
   const [logFilePath, setLogFilePath] = useState(args.logFile);
+  // Mirror the active logfile into the shared holder so `renderApp`'s exit line —
+  // which runs after Ink tears down — can print the last logfile written to.
+  useEffect(() => {
+    if (logFileRef) {
+      logFileRef.current = logFilePath;
+    }
+  }, [logFileRef, logFilePath]);
   const [mode, setMode] = useState<Mode>('normal');
   const [cursor, setCursor] = useState(0);
   const [shuttingDown, setShuttingDown] = useState(false);
   const [filterInput, setFilterInput] = useState('');
   const [activeFilter, setActiveFilter] = useState('');
   const [pulse, setPulse] = useState(true);
-  const [ready, setReady] = useState(false);
+  /** Measured height of the bottom section (scroll indicator + footer); the log pane fills the rest. */
+  const [bottomHeight, setBottomHeight] = useState(0);
+  /** Measured height of the top "older lines" indicator (0 or 1 rows). */
+  const [topHeight, setTopHeight] = useState(0);
   const [commandsCursor, setCommandsCursor] = useState(0);
   const [customCommandInput, setCustomCommandInput] = useState('');
 
@@ -449,91 +432,68 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
     ]);
     await server.close();
     manager.dispose();
+    // Ink's teardown drives the exit from here: `exit()` unmounts, restores the
+    // primary screen, and resolves `waitUntilExit` in renderApp, which prints the
+    // "exited after Ns" line on the restored screen and exits the process.
     exit();
-    process.exit(0);
+    // Safety net: force-exit if that teardown ever stalls, so a fully-cleaned-up
+    // session (every child already killed above) can't leave a lingering parent
+    // process. In the normal path renderApp exits first and this never fires.
+    setTimeout(() => process.exit(0), 1500);
   }, [manager, server, exit, markAllStopped]);
 
-  const packageNames = useMemo(() => displayPackages.map((a) => a.displayName), [displayPackages]);
-
-  // Measures the footer's real height every render and syncs it (plus any
-  // filter change) into the ProcessManager, so its scrollback-clearing logic
-  // never treats footer rows as clearable content.
-  //
-  // Startup sequencing: the first successful measurement schedules
-  // resetScreen + startAll via `setTimeout(0)`, letting Ink paint the footer
-  // first. That guarantees the manager knows the footer's height before it
-  // positions the cursor, avoiding a spurious scrollback gap on first paint.
-  const footerRef = useRef<DOMElement>(null);
-  const measuredHeightRef = useRef(0);
-  const prevActiveFilterRef = useRef(activeFilter);
+  // Measure the bottom section (scroll indicator + footer) every render so the
+  // log pane above it can size itself to the remaining rows. The first
+  // measurement also starts every package.
+  const bottomRef = useRef<DOMElement>(null);
+  const topRef = useRef<DOMElement>(null);
   const startedRef = useRef(false);
+  // Runs every render to re-measure the chrome (top indicator + footer) as its
+  // content changes; the setState calls bail on unchanged values, so no loop.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useLayoutEffect(() => {
-    if (!footerRef.current) {
-      return;
+    if (bottomRef.current) {
+      setBottomHeight(measureElement(bottomRef.current).height);
     }
-    const { height } = measureElement(footerRef.current);
-    const prevHeight = measuredHeightRef.current;
-    measuredHeightRef.current = height;
-    debugLog(`NativeRunner: measured footer height ${prevHeight} -> ${height}`);
-    manager.setFooterHeight(height);
-
+    if (topRef.current) {
+      setTopHeight(measureElement(topRef.current).height);
+    }
     if (!startedRef.current) {
       startedRef.current = true;
-      setTimeout(() => {
-        manager.resetScreen();
-        manager.startAll();
-        markAllStarted();
-        for (const name of manager.getWaiting()) {
-          markWaiting(name);
-        }
-      }, 0);
-      return;
-    }
-
-    const prevFilter = prevActiveFilterRef.current;
-    prevActiveFilterRef.current = activeFilter;
-    const filterChanged = activeFilter !== prevFilter;
-
-    if (filterChanged) {
-      // setFilter clears + replays the screen, which also absorbs any height change.
-      manager.setFilter(activeFilter ? activeFilter.split(/\s+/) : []);
-    } else if (height !== prevHeight) {
-      // Any footer-height change resizes the log viewport — not only a shrink. Entering
-      // filter-input mode *grows* the footer (its multi-line prompt), shrinking the viewport;
-      // replay now so existing content reflows, instead of the next streamed line pushing the
-      // taller footer off the bottom of the screen.
-      manager.refresh();
+      manager.startAll();
+      markAllStarted();
+      for (const name of manager.getWaiting()) {
+        markWaiting(name);
+      }
     }
   });
 
-  // Repaint the footer at the new terminal geometry whenever the window is
-  // resized. Ink repaints its own footer on resize, but this app hand-anchors the
-  // footer to the bottom edge (see ProcessManager.resetScreen), and that
-  // re-anchor otherwise has no trigger for a resize that leaves the footer's own
-  // measured height unchanged — so growing the terminal leaves a gap below the
-  // footer and shrinking leaves ghost footers behind. `useWindowSize` re-renders
-  // on every resize; each change runs the same authoritative repaint (`refresh`)
-  // as every other geometry change, re-anchoring the footer and reflowing the
-  // buffer to the new width. See docs/rendering-architecture.md.
-  const { columns, rows } = useWindowSize();
+  // Apply the active filter to the manager; the log pane re-renders from the
+  // filtered buffer on the resulting notify.
   useEffect(() => {
-    // Nothing to re-anchor before the initial resetScreen + startAll — which also
-    // covers the mount invocation, since startedRef only flips true after startup
-    // and no genuine resize has changed columns/rows yet.
-    if (!startedRef.current) {
-      return;
-    }
-    manager.refresh();
-  }, [columns, rows, manager]);
+    manager.setFilter(activeFilter ? activeFilter.split(/\s+/) : []);
+  }, [manager, activeFilter]);
 
-  // Delay the first real paint slightly so Ink's throttled render has time to
-  // settle into the run-phase layout before anything is shown; suppressing
-  // render until then (see the `!ready` guard below) avoids a one-frame flash
-  // of the footer positioned incorrectly.
+  // Terminal size drives the full-screen flex layout and the virtualized log
+  // viewport; both reflow automatically on resize because Ink owns the screen.
+  const { columns, rows } = useWindowSize();
+  const paneHeight = Math.max(0, rows - topHeight - bottomHeight);
+  const viewport = useLogViewport(manager, columns, paneHeight);
+
+  // Enable the terminal's alternate-scroll mode so the wheel scrolls the log
+  // viewport (delivered as Up/Down) without capturing the mouse — native
+  // click-drag text selection keeps working. Disabled on unmount.
+  const { stdout } = useStdout();
   useEffect(() => {
-    const id = setTimeout(() => setReady(true), 50);
+    stdout.write(ALT_SCROLL_ENABLE);
     return () => {
-      clearTimeout(id);
+      stdout.write(ALT_SCROLL_DISABLE);
+    };
+  }, [stdout]);
+
+  // Kill every child process when this run phase unmounts.
+  useEffect(() => {
+    return () => {
       manager.killAll();
     };
   }, [manager]);
@@ -609,6 +569,18 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
         setCommandsCursor((c) => (c - 1 + commandMenuItems.length) % commandMenuItems.length);
       } else if (key.downArrow) {
         setCommandsCursor((c) => (c + 1) % commandMenuItems.length);
+      } else if (key.leftArrow || key.rightArrow) {
+        // Switch the focused package without leaving the menu, so commands on
+        // another package can be picked without esc + re-navigate + m. Blocked
+        // only while the custom row holds typed text (which the switch clears),
+        // so an in-progress custom command is never silently discarded.
+        const blocked = isCustomFocused && customCommandInput.length > 0;
+        if (!blocked && displayPackages.length > 1) {
+          const delta = key.rightArrow ? 1 : -1;
+          setCursor((c) => (c + delta + displayPackages.length) % displayPackages.length);
+          setCommandsCursor(0);
+          setCustomCommandInput('');
+        }
       } else if (key.return) {
         const focusedPackage = displayPackages[cursor];
         if (!focusedItem || !focusedPackage) {
@@ -637,41 +609,40 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
 
     // Normal mode.
 
+    // Log viewport scrolling. The mouse wheel arrives here as Up/Down via the
+    // terminal's alternate-scroll mode (see mouse.ts), so the wheel and the arrow
+    // keys drive the same scroll; left/right navigate packages.
+    if (key.pageUp) {
+      viewport.scrollPages(1);
+      return;
+    }
+    if (key.pageDown) {
+      viewport.scrollPages(-1);
+      return;
+    }
+    if (key.home) {
+      viewport.scrollToTop();
+      return;
+    }
+    if (key.end) {
+      viewport.scrollToBottom();
+      return;
+    }
+    if (key.upArrow) {
+      viewport.scrollLines(1);
+      return;
+    }
+    if (key.downArrow) {
+      viewport.scrollLines(-1);
+      return;
+    }
+
     if (key.leftArrow) {
       setCursor((c) => (c - 1 + displayPackages.length) % displayPackages.length);
       return;
     }
     if (key.rightArrow) {
       setCursor((c) => (c + 1) % displayPackages.length);
-      return;
-    }
-    if (key.upArrow || key.downArrow) {
-      const availWidth = leftColumnAvailableWidth(
-        process.stdout.columns || 120,
-        packageUrlGroups,
-        topLevelUrls,
-      );
-      const positions = computePackageLayout(packageNames, availWidth);
-      const cur = positions[cursor];
-      if (!cur) {
-        return;
-      }
-      const targetRow = key.upArrow ? cur.row - 1 : cur.row + 1;
-      let best = -1;
-      let bestDist = Infinity;
-      for (let i = 0; i < positions.length; i++) {
-        const pos = positions[i];
-        if (pos && pos.row === targetRow) {
-          const dist = Math.abs(pos.centerX - cur.centerX);
-          if (dist < bestDist) {
-            bestDist = dist;
-            best = i;
-          }
-        }
-      }
-      if (best >= 0) {
-        setCursor(best);
-      }
       return;
     }
 
@@ -729,7 +700,7 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
       return;
     }
 
-    if (input === 'x' && isActive) {
+    if (input === 's' && isActive) {
       markStopped(focusedName);
       void manager.stop(focusedName).catch(() => {});
       return;
@@ -747,11 +718,12 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
     }
   });
 
-  // Suppressed until the first footer measurement + resetScreen have run, so
-  // Ink never paints the footer at the top of the screen for one frame before
-  // the manager positions it at the bottom.
-  if (!ready) {
-    return null;
+  // While shutting down, collapse to a single non-fullscreen line. Ink clears the
+  // terminal when it unmounts a *fullscreen* frame (its shouldClearOnUnmount
+  // path), which can leave a blank block on the restored primary screen after the
+  // alternate screen is torn down. A short final frame avoids that.
+  if (shuttingDown) {
+    return <Text color="yellow">Shutting down… (press Ctrl+C again to force kill)</Text>;
   }
 
   const linksColumn = (
@@ -787,7 +759,7 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
     { key: 'r', label: 'restart', dim: !focusedIsActive },
     { key: 'b', label: 'rebuild', dim: !focusedIsActive || !focusedIsRebuildable },
     // Merged start/stop toggle: show whichever action applies to the focused package.
-    focusedIsActive ? { key: 'x', label: 'stop' } : { key: 's', label: 'start' },
+    focusedIsActive ? { key: 's', label: 'stop' } : { key: 's', label: 'start' },
     { key: 'm', label: 'commands' },
   ];
 
@@ -866,7 +838,11 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
           </Text>
         );
       })}
-      <Text dimColor>{'  ↑↓: navigate   enter: run   esc: cancel'}</Text>
+      <Text dimColor>
+        {displayPackages.length > 1
+          ? '  ↑↓: navigate   ←→: package   enter: run   esc: cancel'
+          : '  ↑↓: navigate   enter: run   esc: cancel'}
+      </Text>
     </>
   ) : (
     <>
@@ -882,30 +858,50 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
   const borderColor = shuttingDown ? 'yellow' : isFilter ? 'cyan' : isCommands ? 'magenta' : 'gray';
 
   return (
-    <Box ref={footerRef} borderStyle="single" borderColor={borderColor} paddingX={1} columnGap={4}>
-      <Box flexDirection="column" flexGrow={1}>
-        {topSection}
-        <Box marginTop={1}>{packageStatusDots}</Box>
-        {isNormal && <HotkeyHints hints={packageHints} />}
-        <Box flexDirection="column" marginTop={1}>
-          {gitBranch && (
-            <Text>
-              <Text color="cyan">git:(</Text>
-              <Text color="green">{gitBranch}</Text>
-              <Text color="cyan">)</Text>
-            </Text>
-          )}
-          {logFilePath && (
-            <Box columnGap={2}>
-              <Text dimColor>
-                logfile: {path.relative(process.cwd(), logFilePath) || logFilePath}
-              </Text>
-              {isNormal && <HotkeyHints hints={[{ key: 't', label: 'rotate' }]} />}
+    <Box flexDirection="column" width={columns} height={rows} overflow="hidden">
+      <Box ref={topRef} flexShrink={0}>
+        {viewport.hiddenAbove > 0 && (
+          <Text dimColor>
+            {`  ↑ ${viewport.hiddenAbove} older line${viewport.hiddenAbove === 1 ? '' : 's'} — press Home to jump to oldest`}
+          </Text>
+        )}
+      </Box>
+      {/* Always rendered so flexGrow pins the footer to the bottom from the first
+          frame; paneHeight is briefly the full height until the footer is measured,
+          which is harmless (the run-phase buffer starts empty). */}
+      <LogPane rows={viewport.rows} />
+      <Box ref={bottomRef} flexDirection="column" flexShrink={0}>
+        {viewport.hiddenBelow > 0 && (
+          <Text dimColor>
+            {`  ↓ ${viewport.hiddenBelow} newer line${viewport.hiddenBelow === 1 ? '' : 's'} — press End to jump to latest`}
+          </Text>
+        )}
+        <Box borderStyle="single" borderColor={borderColor} paddingX={1} columnGap={4}>
+          <Box flexDirection="column" flexGrow={1}>
+            {topSection}
+            <Box marginTop={1}>{packageStatusDots}</Box>
+            {isNormal && <HotkeyHints hints={packageHints} />}
+            <Box flexDirection="column" marginTop={1}>
+              {gitBranch && (
+                <Text>
+                  <Text color="cyan">git:(</Text>
+                  <Text color="green">{gitBranch}</Text>
+                  <Text color="cyan">)</Text>
+                </Text>
+              )}
+              {logFilePath && (
+                <Box columnGap={2}>
+                  <Text dimColor>
+                    logfile: {path.relative(process.cwd(), logFilePath) || logFilePath}
+                  </Text>
+                  {isNormal && <HotkeyHints hints={[{ key: 't', label: 'rotate' }]} />}
+                </Box>
+              )}
             </Box>
-          )}
+          </Box>
+          {linksColumn}
         </Box>
       </Box>
-      {linksColumn}
     </Box>
   );
 }

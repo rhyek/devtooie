@@ -97,11 +97,13 @@ cd example && pnpm dev   # runs the `devtooie` bin
 
 ## Terminal UI rendering (internals)
 
-The interactive TUI is a hybrid: Ink renders **only the footer**, while the
-scrolling logs are written straight to stdout (into native scrollback) and the
-footer is hand-anchored to the bottom edge. Before changing anything about the
-footer, log stream, screen clearing, scrollback, or resize behavior, read
-[`docs/rendering-architecture.md`](docs/rendering-architecture.md) — it documents
-the write-above/patched-console mechanism, `ProcessManager`'s repaint model, and
-why resize needs the `useWindowSize` + debounced `refresh` handling. (Internal
-contributor doc — not part of the user-facing docs or `agents.md`.)
+The interactive TUI is a **fullscreen alternate-screen app**: Ink owns the whole
+viewport, a **virtualized `LogPane`** renders only the log rows that fit the
+screen (from a subscribable `ProcessManager` buffer), and the footer is pinned to
+the bottom by flex layout. Mouse-wheel + keyboard scrolling replace the terminal's
+native scrollback. Before changing anything about the log viewport, scrolling, the
+footer, or how output reaches the screen, read
+[`docs/architecture/rendering.md`](docs/architecture/rendering.md) — it documents
+the virtualization (`log-window.ts`/`scroll.ts`), the buffer subscription, and the
+mouse handling (`mouse.ts`). (Internal contributor doc — not part of the
+user-facing docs or `agents.md`.)

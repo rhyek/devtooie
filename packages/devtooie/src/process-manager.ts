@@ -19,6 +19,7 @@ import {
   stripAnsi,
 } from './lib.js';
 import type { RunnerArgs } from './runners/types.js';
+import { stripTitleSequences } from './terminal-title.js';
 
 type ProcessState = 'running' | 'stopped' | 'waiting';
 type Status = ProcessState | 'rebuilding' | 'restarting';
@@ -44,8 +45,11 @@ interface BufferedLine {
   isError: boolean;
   /** Lines sharing a groupId are shown together when any one of them matches the active filter. */
   groupId: number;
-  /** Whether this line has already been written to the terminal. */
+  /** Whether this line has already been written to the terminal (plain mode). */
   rendered: boolean;
+  /** Memoized rendered-row count for the fullscreen viewport, and the width it was computed at. */
+  rowCount?: number;
+  rowCountWidth?: number;
 }
 
 /**
@@ -172,6 +176,13 @@ export class ProcessManager implements ControlManager {
   /** Bound `process.on('exit')` handler, kept so `dispose()` can remove it. */
   private exitHandler: () => void;
   private disposed = false;
+  /** Fullscreen (Ink) subscribers, notified when the buffer changes. */
+  private listeners = new Set<() => void>();
+  /** Monotonic buffer version, used as the useSyncExternalStore snapshot. */
+  private version = 0;
+  private notifyScheduled = false;
+  /** Memoized group-aware filter result, keyed by {@link version}. */
+  private visibleCache: { version: number; lines: readonly BufferedLine[] } | null = null;
 
   constructor(
     {
@@ -342,7 +353,7 @@ export class ProcessManager implements ControlManager {
 
     if (proc.stdout) {
       proc.stdout.on('data', (data: Buffer) => {
-        for (const line of data.toString().split('\n')) {
+        for (const line of stripTitleSequences(data.toString()).split('\n')) {
           if (line) {
             this.addLine(pfx, line, searchName, false);
           }
@@ -352,7 +363,7 @@ export class ProcessManager implements ControlManager {
 
     if (proc.stderr) {
       proc.stderr.on('data', (data: Buffer) => {
-        for (const line of data.toString().split('\n')) {
+        for (const line of stripTitleSequences(data.toString()).split('\n')) {
           if (line) {
             this.addLine(pfx, chalk.red(line), searchName, true);
           }
@@ -615,7 +626,7 @@ export class ProcessManager implements ControlManager {
 
     if (proc.stdout) {
       proc.stdout.on('data', (data: Buffer) => {
-        for (const line of data.toString().split('\n')) {
+        for (const line of stripTitleSequences(data.toString()).split('\n')) {
           if (line) {
             this.addLine(pfx, line, searchName, false);
           }
@@ -625,7 +636,7 @@ export class ProcessManager implements ControlManager {
 
     if (proc.stderr) {
       proc.stderr.on('data', (data: Buffer) => {
-        for (const line of data.toString().split('\n')) {
+        for (const line of stripTitleSequences(data.toString()).split('\n')) {
           if (line) {
             this.addLine(pfx, chalk.red(line), searchName, true);
           }
@@ -878,11 +889,93 @@ export class ProcessManager implements ControlManager {
 
   setFilter(terms: string[]): void {
     this.filterTerms = terms.map(normalizeForFilter);
-    this.replayBuffer();
+    if (this.plain) {
+      this.replayBuffer();
+    }
+    this.notify();
   }
 
   getFilter(): string[] {
     return this.filterTerms;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Fullscreen (Ink) subscription + buffer queries
+  // ---------------------------------------------------------------------------
+
+  /** Subscribe to buffer changes (for useSyncExternalStore). Returns an unsubscribe fn. */
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  /** Snapshot token for useSyncExternalStore; changes whenever the buffer does. */
+  getVersion(): number {
+    return this.version;
+  }
+
+  /** Bump the version and notify subscribers, coalescing a burst into a single flush. */
+  private notify(): void {
+    this.version++;
+    if (this.notifyScheduled) {
+      return;
+    }
+    this.notifyScheduled = true;
+    queueMicrotask(() => {
+      this.notifyScheduled = false;
+      for (const listener of this.listeners) {
+        listener();
+      }
+    });
+  }
+
+  /**
+   * The lines currently visible under the active filter, in order. Group-aware:
+   * if any line in a group matches, the whole group is shown so multi-line log
+   * entries stay intact. Memoized per buffer version.
+   */
+  getVisibleLines(): readonly BufferedLine[] {
+    if (this.visibleCache && this.visibleCache.version === this.version) {
+      return this.visibleCache.lines;
+    }
+    let lines: readonly BufferedLine[];
+    if (this.filterTerms.length === 0) {
+      lines = this.buffer;
+    } else {
+      const matchingGroups = new Set<number>();
+      for (const line of this.buffer) {
+        if (this.matchesFilter(line.searchName, line.text)) {
+          matchingGroups.add(line.groupId);
+        }
+      }
+      lines = this.buffer.filter((line) => matchingGroups.has(line.groupId));
+    }
+    this.visibleCache = { version: this.version, lines };
+    return lines;
+  }
+
+  /** Rendered-row count of a line at the given terminal width (memoized on the line). */
+  countRows(line: BufferedLine, cols: number): number {
+    if (line.rowCountWidth === cols && line.rowCount !== undefined) {
+      return line.rowCount;
+    }
+    const rows = this.wrapLine(line, cols).length;
+    line.rowCount = rows;
+    line.rowCountWidth = cols;
+    return rows;
+  }
+
+  /** Rendered rows (prefix + wrapped, continuation-padded text) of a line at `cols` width. */
+  wrapLine(line: BufferedLine, cols: number): string[] {
+    const contentWidth = cols - this.prefixWidth;
+    if (contentWidth <= 20 || stringWidth(line.text) <= contentWidth) {
+      return [`${line.prefix}${line.text}`];
+    }
+    return wrapAnsi(line.text, contentWidth, { hard: true })
+      .split('\n')
+      .map((row, i) => (i === 0 ? `${line.prefix}${row}` : `${this.continuationPad}${row}`));
   }
 
   /** Re-clear the screen and replay the buffer through the active filter. */
@@ -896,7 +989,11 @@ export class ProcessManager implements ControlManager {
     debugLog('clearBuffer');
     this.buffer = [];
     this.lastGroupId.clear();
-    this.resetScreen();
+    this.visibleLineCount = 0;
+    if (this.plain) {
+      this.resetScreen();
+    }
+    this.notify();
   }
 
   /** Emit a system-level line (e.g. shutdown notices), interleaved like any package's output. */
@@ -959,7 +1056,12 @@ export class ProcessManager implements ControlManager {
     fs.writeSync(this.logFd, plainLine);
 
     debugLog(`addLine: visibleLineCount=${this.visibleLineCount} searchName="${searchName}"`);
-    this.renderNewLine();
+    // Plain mode streams each line straight to stdout; the interactive
+    // (fullscreen Ink) UI re-renders from the buffer when notified instead.
+    if (this.plain) {
+      this.renderNewLine();
+    }
+    this.notify();
   }
 
   /** Render the line just appended (and any unrendered group siblings) if it matches the filter. */
