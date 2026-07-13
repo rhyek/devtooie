@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DEFAULT_ENV_FILES, envCandidatePaths, resolveEnv } from './env.js';
+import { DEFAULT_ENV_FILES, envCandidatePaths, resolveEnv, packageEnvLayer } from './env.js';
+import type { AnyPackageConfig } from './config.js';
 
 let cwd: string;
 beforeEach(() => {
@@ -137,5 +138,22 @@ describe('resolveEnv', () => {
     expect(Object.keys(env)).toEqual(['DEVTOOIE_ENV_SPEC_ONLY']);
     expect(process.env.DEVTOOIE_ENV_SPEC_ONLY).toBeUndefined();
     expect(process.env).toEqual(before);
+  });
+});
+
+describe('packageEnvLayer', () => {
+  const mkPkg = (over: Partial<AnyPackageConfig>): AnyPackageConfig =>
+    ({ name: 'api', relativeDir: 'packages/api', path: '/x', ...over }) as AnyPackageConfig;
+
+  it('injects the package port as PORT, below its resolved .env vars', () => {
+    write('.env', 'A=1\n');
+    const layer = packageEnvLayer(mkPkg({ port: 3001 }), { cwd });
+    expect(layer).toEqual({ PORT: '3001', A: '1' });
+  });
+
+  it('omits PORT when the package has no port, and an explicit .env PORT wins', () => {
+    write('packages/api/.env', 'PORT=9999\n');
+    expect(packageEnvLayer(mkPkg({}), { cwd }).PORT).toBe('9999');
+    expect(packageEnvLayer(mkPkg({ port: 3001 }), { cwd }).PORT).toBe('9999');
   });
 });

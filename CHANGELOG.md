@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0
+
+- **New `devtooie cmd` subcommand** — run a **one-off command** with a package's exact environment, without starting a session (migrations, seed scripts, scrapers, a REPL). It runs the command in the package's directory with that package's resolved `.env` and its `port` (as `PORT`) injected — the same environment the TUI would give it. The package is inferred from your current directory (the nearest ancestor package, or the workspace root when you're inside none), or named explicitly with `-p, --package <name>`. Use `-c, --cmd <script>` to run one of the package's `package.json` scripts / `Makefile` targets (forwarding args after `--`) instead of a literal command. Output streams to your terminal and is teed to a fresh timestamped logfile.
+- **Removed the `devtooie env` subcommand** — `devtooie cmd` supersedes it. To just inspect a package's resolved vars, run `devtooie cmd -- env` (or `printenv`). _(Breaking.)_
+- **`devtooie resolvedeps` now takes a positional `<package>`** (`devtooie resolvedeps api`) instead of the `-p <name>` flag. _(Breaking.)_
+- **Every command now works from any subdirectory.** As a first step devtooie walks up to the nearest `devtooie.config.*`, switches to that directory, and loads its workspace-scope `.env` into devtooie's own environment — so running from a subdirectory behaves the same as running from the repo root.
+- **Session logfiles dropped the `dev-` prefix** — a run's log is now `<timestamp>.log` (still under `node_modules/.devtooie/logs/`, or `--log-dir`). _(Breaking if you matched the old filename.)_
+- **`command: null`** — declare a package with **no dev process**: devtooie never starts it (it's build/dep-only) and it's hidden from the interactive picker. Its `build`/dep role is unaffected.
+- **New per-package `autostart` option** (default `true`). Set `autostart: false` to keep a package from auto-starting in the run phase; it stays stopped until you start it with the `s` hotkey (or a control-API `restart`). Handy for packages you only run on demand.
+- **Removed the per-package `hmrPort` field.** Its only role was adding a second port to the startup dev-port sweep; declare that port as the package's `port` (or rely on the process-tree cleanup) instead. _(Breaking if you set it.)_
+
 ## 0.3.1
 
 - Docs restructured: the README is now a slim landing page that links to focused topic docs under `docs/` (`configuration.md`, `package-lifecycle.md`, `cli.md`, `control-api.md`), and the installed agent skill now loads a single consolidated guide, `docs/agents.md` (replacing `docs/usage-guide.md`).

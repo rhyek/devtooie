@@ -12,7 +12,7 @@ import {
   getRegisteredPackages,
   getLoadedConfig,
 } from './config.js';
-import { DEFAULT_ENV_FILES, resolveEnv } from './env.js';
+import { DEFAULT_ENV_FILES, packageEnvLayer, resolveEnv } from './env.js';
 import { acquireDevSession } from './dev-session.js';
 import { handleShellError } from './errors.js';
 import { runInit } from './init.js';
@@ -25,13 +25,16 @@ import {
 import {
   DepType,
   buildRunnerArgs,
+  findAncestorPackage,
   getDefaultLogFile,
   getExecArgs,
   hasScript,
   loadSelection,
+  logTimestamp,
   resetSelection,
   resolveDeps,
   saveSelection,
+  stripAnsi,
 } from './lib.js';
 import { createPlainStatusReporter } from './plain-status.js';
 import { runPlain } from './runners/plain.js';
@@ -46,6 +49,32 @@ interface RootOptions {
   build: boolean;
   rebuild: boolean;
   logDir?: string;
+}
+
+/**
+ * The directory devtooie was invoked from, captured before {@link anchorAtConfigRoot} may
+ * `chdir` us to the config root. `cmd` uses it to figure out which package you're "inside".
+ */
+const INVOCATION_CWD = process.cwd();
+
+/**
+ * Very early step (runs for every command): find the workspace root (nearest ancestor with a
+ * devtooie config), `chdir` into it so devtooie behaves identically from any subdirectory, and
+ * merge that root's workspace-scope `.env` into our own `process.env`. Best-effort — a no-op when
+ * there's no config (e.g. `devtooie init` in a fresh repo).
+ */
+async function anchorAtConfigRoot(invocationCwd: string): Promise<void> {
+  const root = findWorkspaceRoot(invocationCwd);
+  if (!root) return;
+  if (root !== process.cwd()) process.chdir(root);
+  try {
+    await loadConfig(root);
+    const files = getLoadedConfig()?.envFiles ?? DEFAULT_ENV_FILES;
+    const { env } = resolveEnv({ cwd: root, relativeDir: '.', files });
+    Object.assign(process.env, env);
+  } catch {
+    /* no/invalid config here — nothing to anchor or load */
+  }
 }
 
 /** Commander option-parser for repeatable `-p/--package <name>` flags. */
@@ -115,6 +144,104 @@ async function clearDist(pkg: AnyPackageConfig): Promise<void> {
   if (result.exitCode !== 0) {
     console.error(`warning: could not clear ${path.join(pkg.path, 'dist')}`);
   }
+}
+
+/**
+ * Runs `cmd`/`args` in `cwd` with `env` merged over the current environment; stdin is inherited
+ * so the command stays interactive, and this returns once the command exits. stdout/stderr stream
+ * to the terminal (raw, colors intact) *and* are teed into `logFile` — line-buffered, timestamped,
+ * and ANSI-stripped, matching how a `--plain` session logs. Returns the command's exit code.
+ */
+async function runCommand(
+  cmd: string,
+  args: string[],
+  opts: { cwd: string; env: Record<string, string>; logFile: string },
+): Promise<number> {
+  const logFd = fs.openSync(opts.logFile, 'w');
+  // Tee one child stream: raw bytes to the terminal, then line-buffered timestamped+stripped
+  // lines to the logfile. Returns a flush for any trailing line with no final newline.
+  const tee = (src: NodeJS.ReadableStream | null, term: NodeJS.WriteStream): (() => void) => {
+    if (!src) return () => {};
+    let buf = '';
+    src.on('data', (chunk: Buffer) => {
+      term.write(chunk);
+      buf += chunk.toString('utf8');
+      let nl: number;
+      while ((nl = buf.indexOf('\n')) !== -1) {
+        fs.writeSync(logFd, `${logTimestamp()} ${stripAnsi(buf.slice(0, nl))}\n`);
+        buf = buf.slice(nl + 1);
+      }
+    });
+    return () => {
+      if (buf.length > 0) {
+        fs.writeSync(logFd, `${logTimestamp()} ${stripAnsi(buf)}\n`);
+        buf = '';
+      }
+    };
+  };
+
+  try {
+    const child = execa(cmd, args, {
+      cwd: opts.cwd,
+      env: Object.assign({}, process.env, opts.env),
+      stdin: 'inherit',
+      reject: false,
+    });
+    const flushOut = tee(child.stdout, process.stdout);
+    const flushErr = tee(child.stderr, process.stderr);
+    const result = await child;
+    flushOut();
+    flushErr();
+    return result.exitCode ?? 1;
+  } finally {
+    fs.closeSync(logFd);
+  }
+}
+
+/**
+ * Resolves the target for the `cmd` subcommand. With an explicit `-p/--package` name, that
+ * configured package is the target. Otherwise it's inferred from the directory devtooie was
+ * invoked in: the nearest **ancestor package** of the invocation dir, or — below the root but
+ * inside no package — the root itself (working dir = root, workspace-scope vars only). For a
+ * package the working dir is its dir and the env its (`PORT` + `.env`) layer, exactly what the
+ * TUI would spawn it with. Exits if there's no config, or if `--package` names an unknown one.
+ * Returns the working dir and the env layer to merge over `process.env`.
+ */
+async function resolveCmdTargetOrExit(
+  invocationCwd: string,
+  explicitName: string | undefined,
+): Promise<{ dir: string; envLayer: Record<string, string> }> {
+  const root = findWorkspaceRoot(invocationCwd);
+  if (!root) {
+    console.error(`No devtooie config found from ${invocationCwd}.`);
+    process.exit(1);
+  }
+  try {
+    await loadConfig(root);
+  } catch {
+    /* fall through to the no-config error below */
+  }
+  const config = getLoadedConfig();
+  if (!config) {
+    console.error(`No devtooie config found from ${invocationCwd}.`);
+    process.exit(1);
+  }
+  const files = config.envFiles ?? DEFAULT_ENV_FILES;
+
+  if (explicitName !== undefined) {
+    const pkg = config.packages.find((p) => p.name === explicitName);
+    if (!pkg) {
+      console.error(`Package "${explicitName}" not found in the devtooie config.`);
+      process.exit(1);
+    }
+    return { dir: pkg.path, envLayer: packageEnvLayer(pkg, { cwd: root, files }) };
+  }
+
+  const pkg = findAncestorPackage(invocationCwd, config.packages, root);
+  if (pkg) {
+    return { dir: pkg.path, envLayer: packageEnvLayer(pkg, { cwd: root, files }) };
+  }
+  return { dir: root, envLayer: resolveEnv({ cwd: root, relativeDir: '.', files }).env };
 }
 
 async function buildOne(pkg: AnyPackageConfig, script: string): Promise<void> {
@@ -218,20 +345,12 @@ program
 
 program
   .command('resolvedeps')
-  .description('print the build/dev/runtime deps for one or more --package names, as JSON')
-  .action(async () => {
-    // Reuses the root `-p/--package` option rather than redeclaring its own: commander
-    // resolves a single option's value against whichever command owns it, so a second,
-    // identically-flagged option on this subcommand would just shadow the root one and
-    // silently swallow its value.
-    const names = program.opts<RootOptions>().package;
-    if (names.length === 0) {
-      console.error('resolvedeps requires at least one --package <name>');
-      process.exit(1);
-    }
+  .description('print the build/dev/runtime deps for a single package, as JSON')
+  .argument('<package>', 'configured package name to resolve dependencies for')
+  .action(async (packageName: string) => {
     await loadConfigOrExit();
-    validatePackageNames(names);
-    const packages = names.map((n) => findPackage(n));
+    validatePackageNames([packageName]);
+    const packages = [findPackage(packageName)];
     const selectedNames = new Set(packages.map((p) => p.name));
 
     const build = resolveDeps(packages, [DepType.BUILD]);
@@ -253,47 +372,53 @@ program
   });
 
 program
-  .command('env')
-  .description("resolve a package's .env files, then print them or run a command with them")
-  .option(
-    '--dir <relativeDir>',
-    'package dir to resolve .env files for, relative to the workspace root; defaults to the current directory',
+  .command('cmd')
+  .description(
+    "run a one-off command with a package's environment (its dir + resolved .env); package inferred from the cwd or named with -p/--package",
   )
-  .argument('[command...]', 'command to run with the resolved envs (pass after `--`)')
-  .action(async (command: string[], opts: { dir?: string }) => {
-    // Discover the workspace root (nearest ancestor with a devtooie config) so this works
-    // from anywhere; fall back to cwd + default file list when there's no project.
-    const startCwd = process.cwd();
-    const workspaceRoot = findWorkspaceRoot(startCwd) ?? startCwd;
-    let files = DEFAULT_ENV_FILES;
-    try {
-      await loadConfig(workspaceRoot);
-      files = getLoadedConfig()?.envFiles ?? DEFAULT_ENV_FILES;
-    } catch {
-      /* no devtooie config here — use the default file list */
+  .option(
+    '-c, --cmd <script>',
+    'run this package script / make target instead of a literal command; args after `--` are forwarded to it',
+  )
+  .argument(
+    '[args...]',
+    'a literal command to run (after `--`), or — with -c/--cmd — the args forwarded to that script',
+  )
+  .action(async (args: string[], opts: { cmd?: string }) => {
+    // Explicit target via the root `-p/--package` global (reused rather than redeclared — see
+    // the `resolvedeps` note); if omitted, the package is inferred from the directory devtooie
+    // was invoked in (not the config root we may have chdir'd to — see anchorAtConfigRoot).
+    const packageNames = program.opts<RootOptions>().package;
+    if (packageNames.length > 1) {
+      console.error('cmd targets a single package — pass --package at most once.');
+      process.exit(1);
+    }
+    const { dir, envLayer } = await resolveCmdTargetOrExit(INVOCATION_CWD, packageNames[0]);
+
+    let cmd: string;
+    let cmdArgs: string[];
+    if (opts.cmd !== undefined) {
+      // `-c` names a package script / make target: resolve how to invoke it in this dir, then
+      // forward the operands as its args. getExecArgs/hasScript key off `.path` only, so a
+      // minimal package view over the resolved dir suffices.
+      const pkgAtDir = { path: dir } as AnyPackageConfig;
+      if (!hasScript(pkgAtDir, opts.cmd)) {
+        console.error(`No "${opts.cmd}" script or make target found in ${dir}.`);
+        process.exit(1);
+      }
+      [cmd, cmdArgs] = getExecArgs(pkgAtDir, opts.cmd, args);
+    } else {
+      // No `-c`: the operands are a literal command.
+      if (args.length === 0) {
+        console.error('cmd requires a command (after `--`) or a -c/--cmd script name.');
+        process.exit(1);
+      }
+      [cmd, ...cmdArgs] = args as [string, ...string[]];
     }
 
-    // --dir is relative to the workspace root (matching config `relativeDir`s); with no
-    // --dir, default to the current directory expressed relative to that root.
-    const relativeDir = opts.dir ?? (path.relative(workspaceRoot, startCwd) || '.');
-
-    const { env } = resolveEnv({ cwd: workspaceRoot, relativeDir, files });
-
-    if (command.length > 0) {
-      const [cmd, ...args] = command;
-      const result = await execa(cmd!, args, {
-        cwd: process.cwd(),
-        env: Object.assign({}, process.env, env),
-        stdio: 'inherit',
-        reject: false,
-      });
-      process.exit(result.exitCode ?? 1);
-    }
-
-    for (const key of Object.keys(env).sort()) {
-      console.log(`${key}=${env[key]}`);
-    }
-    process.exit(0);
+    const logFile = getDefaultLogFile(program.opts<RootOptions>().logDir);
+    console.error(`devtooie cmd: running in ${dir}; logging output to ${logFile}`);
+    process.exit(await runCommand(cmd, cmdArgs, { cwd: dir, env: envLayer, logFile }));
   });
 
 // ---------------------------------------------------------------------------
@@ -369,4 +494,7 @@ program.action(async () => {
   renderApp({ packages: opts.package, lastAnswers: opts.lastAnswers, logFile });
 });
 
+// Anchor at the config root (chdir + load its workspace-scope env) before dispatching any
+// command, so devtooie behaves the same from anywhere in the tree.
+await anchorAtConfigRoot(INVOCATION_CWD);
 await program.parseAsync(process.argv).catch((err: unknown) => handleShellError(err));

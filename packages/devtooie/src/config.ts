@@ -80,6 +80,8 @@ export type PackageConfigInput<N extends string> = Omit<
     /**
      * The dev process to run and how it behaves. A script/target name, or
      * `[name, { watches, builds, cleans }]`. Default `['dev', { watches: true, builds: true }]`.
+     * Pass `null` for a package with no dev process — devtooie never starts it (it's build/dep-only)
+     * and it's hidden from the interactive picker.
      *
      * - `watches` — the script watches files and reloads itself.
      * - `builds` — the script (re)builds on start. `watches: true` requires `builds: true`.
@@ -89,7 +91,7 @@ export type PackageConfigInput<N extends string> = Omit<
      * Drives what to do after editing this package's code: `watches`→nothing, else
      * `builds`→restart, else rebuild.
      */
-    command?: CommandInput;
+    command?: CommandInput | null;
   };
 
 export type DefineConfigOptions<N extends string> = Omit<GeneratedDefineConfig, 'packages'> & {

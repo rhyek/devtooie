@@ -18,9 +18,9 @@ export type GeneratedPackageConfig = {
     subdomain?: (string | string[]) | undefined;
     /** Dev port; injected into the process as `PORT` and feeds `$port` substitution. */
     port?: number | undefined;
-    /** A browser package's HMR socket port. */
-    hmrPort?: number | undefined;
     command: any;
+    /** Automatically start this package during the run phase (default `true`). When `false`, devtooie leaves it stopped — start it yourself with the `s` hotkey (or a control-API `restart`). Ignored when `command` is `null` (that package never starts). */
+    autostart?: boolean | undefined;
     /** Footer links; each entry is one line (a string, `{ label, url }`, or an array on one line). */
     urls?: ((string | {
         label: string;
@@ -58,9 +58,9 @@ export type GeneratedDefineConfig = {
         subdomain?: (string | string[]) | undefined;
         /** Dev port; injected into the process as `PORT` and feeds `$port` substitution. */
         port?: number | undefined;
-        /** A browser package's HMR socket port. */
-        hmrPort?: number | undefined;
         command: any;
+        /** Automatically start this package during the run phase (default `true`). When `false`, devtooie leaves it stopped — start it yourself with the `s` hotkey (or a control-API `restart`). Ignored when `command` is `null` (that package never starts). */
+        autostart?: boolean | undefined;
         /** Footer links; each entry is one line (a string, `{ label, url }`, or an array on one line). */
         urls?: ((string | {
             label: string;

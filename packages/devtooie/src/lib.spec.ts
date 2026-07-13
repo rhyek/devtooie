@@ -21,6 +21,7 @@ import {
   getRebuildCommands,
   getTsconfigBuildPackages,
   getMakeTargets,
+  findAncestorPackage,
 } from './lib.js';
 import type { AnyPackageConfig } from './config.js';
 import { defineConfig } from './config.js';
@@ -39,14 +40,54 @@ beforeAll(() => {
 });
 afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
 
+describe('findAncestorPackage', () => {
+  const root = '/repo';
+  const packages = [
+    pkg({ name: 'api', path: '/repo/packages/api' }),
+    pkg({ name: 'web', path: '/repo/packages/web' }),
+  ];
+
+  it('matches the package dir itself', () => {
+    expect(findAncestorPackage('/repo/packages/api', packages, root)?.name).toBe('api');
+  });
+  it('matches from a directory nested below the package', () => {
+    expect(findAncestorPackage('/repo/packages/api/src/deep', packages, root)?.name).toBe('api');
+  });
+  it('returns null below the root but inside no package', () => {
+    expect(findAncestorPackage('/repo/scripts', packages, root)).toBeNull();
+    expect(findAncestorPackage('/repo', packages, root)).toBeNull();
+  });
+  it('picks the deepest package when packages nest', () => {
+    const nested = [
+      pkg({ name: 'outer', path: '/repo/a' }),
+      pkg({ name: 'inner', path: '/repo/a/b' }),
+    ];
+    expect(findAncestorPackage('/repo/a/b/c', nested, root)?.name).toBe('inner');
+    expect(findAncestorPackage('/repo/a/x', nested, root)?.name).toBe('outer');
+  });
+  it('matches a package rooted at the config root', () => {
+    const atRoot = [pkg({ name: 'mono', path: '/repo' })];
+    expect(findAncestorPackage('/repo/anywhere', atRoot, root)?.name).toBe('mono');
+  });
+});
+
 describe('runner detection', () => {
   it('detects pnpm for a package.json pkg', () => {
     expect(getCommandRunner(pkg({ path: dir }))).toBe('pnpm');
     expect(getExecArgs(pkg({ path: dir }), 'dev')).toEqual(['pnpm', ['run', 'dev']]);
   });
+  it('forwards extra args after the script/target name (no `--` separator)', () => {
+    expect(getExecArgs(pkg({ path: dir }), 'start', ['--bank-key=x', 'foo'])).toEqual([
+      'pnpm',
+      ['run', 'start', '--bank-key=x', 'foo'],
+    ]);
+  });
   it('reads scripts', () => {
     expect(hasScript(pkg({ path: dir }), 'build')).toBe(true);
     expect(hasDevScript(pkg({ path: dir }))).toBe(true);
+  });
+  it('hasDevScript is false for `command: null` even when a dev script exists', () => {
+    expect(hasDevScript(pkg({ path: dir, command: null }))).toBe(false);
   });
   it('excludes runner-managed scripts from extra commands', () => {
     expect(getExtraCommands(pkg({ path: dir }))).toEqual(['codegen']);
@@ -168,6 +209,14 @@ describe('make targets', () => {
 
   it('excludes make special targets like .PHONY', () => {
     expect(getMakeTargets(pkg({ path: mkdir }))).toEqual(['start']);
+  });
+
+  it('getExecArgs uses `make <target>` and forwards extra args', () => {
+    expect(getExecArgs(pkg({ path: mkdir }), 'start')).toEqual(['make', ['start']]);
+    expect(getExecArgs(pkg({ path: mkdir }), 'start', ['--bank-key=x'])).toEqual([
+      'make',
+      ['start', '--bank-key=x'],
+    ]);
   });
 
   it('getExtraCommands does not surface .PHONY (nor the configured dev target)', () => {

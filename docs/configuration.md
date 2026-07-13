@@ -25,9 +25,15 @@ build-only lib):
   package's position in the run.
 - **`command`** — the dev process to run and how it behaves. A script/target name, or
   `[name, { watches, builds, cleans }]`. Defaults to `['dev', { watches: true, builds: true }]`.
-  See [Package lifecycle](./package-lifecycle.md).
-- **`port`, `hmrPort`** — the package's port(s); `$port` substitution and swept on
-  session handoff.
+  Pass **`null`** for a package with **no dev process** — devtooie never starts it (it's
+  build/dep-only) and it's hidden from the interactive picker. See
+  [Package lifecycle](./package-lifecycle.md).
+- **`autostart`** (default `true`) — whether to auto-start this package during the run phase.
+  Set **`false`** to leave it stopped; start it yourself with the **`s`** hotkey (or a
+  control-API `restart`). Ignored when `command` is `null`. (If a package `waitFor`s an
+  `autostart: false` one, it waits until you start it.)
+- **`port`** — the package's dev port; feeds `$port` substitution, injected as `PORT`, and
+  swept on session handoff.
 - **`urls`** — links shown in the running footer, one entry per line. Each entry is a
   string, a `{ label, url }`, or an **array** of those (rendered on the same line,
   space-separated).
@@ -53,8 +59,9 @@ Three independent categories, resolved when you select a package:
   their runtime deps expanded. If a runtime dep needs its own runtime deps
   too, select it explicitly (or add it to your own selection).
 
-`devtooie resolvedeps -p <name> [...]` prints the resolved build/dev/runtime
-sets as JSON — handy for wiring other tooling to the same dependency graph.
+`devtooie resolvedeps <package>` prints the resolved build/dev/runtime
+sets for a single package as JSON — handy for wiring other tooling to the same
+dependency graph.
 
 ## TypeScript project references & shared libraries
 

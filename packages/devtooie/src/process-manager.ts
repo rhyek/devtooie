@@ -8,9 +8,16 @@ import type { AnyPackageConfig } from './config.js';
 import { getDevScript, getLoadedConfig } from './config.js';
 import type { ControlManager } from './command-server.js';
 import { debugLog } from './debug-log.js';
-import { DEFAULT_ENV_FILES, resolveEnv } from './env.js';
+import { DEFAULT_ENV_FILES, packageEnvLayer } from './env.js';
 import { watchEnvFiles, type WatchTarget } from './env-watch.js';
-import { getDefaultLogFile, getExecArgs, getRebuildCommands, hasScript } from './lib.js';
+import {
+  getDefaultLogFile,
+  getExecArgs,
+  getRebuildCommands,
+  hasDevScript,
+  logTimestamp,
+  stripAnsi,
+} from './lib.js';
 import type { RunnerArgs } from './runners/types.js';
 
 type ProcessState = 'running' | 'stopped' | 'waiting';
@@ -52,19 +59,16 @@ function isContinuationLine(text: string): boolean {
   return stripped.length > 0 && (stripped.startsWith(' ') || stripped.startsWith('\t'));
 }
 
-/** Strip ANSI (SGR) escape sequences from a string. */
-function stripAnsi(text: string): string {
-  // eslint-disable-next-line no-control-regex -- matches ANSI SGR escape sequences
-  return text.replace(/\x1b\[[0-9;]*m/g, '');
-}
-
-/** Local `HH:MM:SS` (24h) timestamp used to prefix logfile lines. */
-function logTimestamp(): string {
-  const d = new Date();
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  const ss = String(d.getSeconds()).padStart(2, '0');
-  return `${hh}:${mm}:${ss}`;
+/**
+ * Normalize text for filter matching: lowercase and strip diacritics (NFD decomposition
+ * drops combining accent marks). Applied to both the log haystack and the typed terms, so
+ * matching is case- and accent-insensitive — a typed `gonzalez` finds a logged `González`.
+ */
+function normalizeForFilter(s: string): string {
+  return s
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
 }
 
 // Package-identity colors for log prefixes: a vivid, full-spectrum palette ordered so adjacent
@@ -205,7 +209,7 @@ export class ProcessManager implements ControlManager {
         status: 'stopped',
         prefix: color(`[${padded}]`) + ' ',
         searchName: (shortName ? `${pkg.name} ${shortName}` : pkg.name).toLowerCase(),
-        canDev: hasScript(pkg, getDevScript(pkg)),
+        canDev: hasDevScript(pkg),
         extraProcs: new Set(),
       });
     }
@@ -232,6 +236,11 @@ export class ProcessManager implements ControlManager {
   startAll(): void {
     debugLog(`startAll: starting ${this.processes.size} processes`);
     for (const [name, managed] of this.processes) {
+      if (managed.pkg.autostart === false) {
+        // Opted out of auto-start: leave it stopped (not waiting) for a manual start via the
+        // `s` hotkey or a control-API `restart`.
+        continue;
+      }
       const waitFor = this.waitForMap[name];
       if (waitFor && waitFor.length > 0 && managed.canDev) {
         managed.status = 'waiting';
@@ -371,13 +380,11 @@ export class ProcessManager implements ControlManager {
    * mutates `process.env`.
    */
   private packageEnv(pkg: AnyPackageConfig): NodeJS.ProcessEnv {
-    const { env } = resolveEnv({
-      cwd: this.cwd,
-      relativeDir: pkg.relativeDir,
-      files: this.envFiles,
-    });
-    const port = pkg.port;
-    return Object.assign({}, process.env, port !== undefined ? { PORT: String(port) } : {}, env);
+    return Object.assign(
+      {},
+      process.env,
+      packageEnvLayer(pkg, { cwd: this.cwd, files: this.envFiles }),
+    );
   }
 
   /**
@@ -870,7 +877,7 @@ export class ProcessManager implements ControlManager {
   // ---------------------------------------------------------------------------
 
   setFilter(terms: string[]): void {
-    this.filterTerms = terms.map((t) => t.toLowerCase());
+    this.filterTerms = terms.map(normalizeForFilter);
     this.replayBuffer();
   }
 
@@ -1004,6 +1011,44 @@ export class ProcessManager implements ControlManager {
   }
 
   /**
+   * Emit many buffered lines with a SINGLE terminal write. This is what keeps a
+   * filter switch / replay instant: an interactive host patches `console.*` and,
+   * on every call, erases its footer, writes the line, then repaints the footer.
+   * Emitting one line at a time therefore repaints the footer once per line, so
+   * replaying the buffer visibly re-streams it. Routing the whole batch through
+   * one `console.log` collapses that to a single footer erase+repaint.
+   *
+   * Everything (including error lines) goes through the one stdout write so
+   * ordering is preserved in a single atomic emit — the red color of error
+   * lines is already baked into their text, and in an interactive session
+   * stdout and stderr are the same terminal.
+   */
+  private emitBatch(lines: BufferedLine[]): void {
+    if (lines.length > 0) {
+      const parts: string[] = [];
+      let rowCount = 0;
+      for (const line of lines) {
+        const { rendered, rows } = this.formatLine(line.prefix, line.text);
+        parts.push(rendered);
+        rowCount += rows;
+      }
+      this.visibleLineCount += rowCount;
+      console.log(parts.join('\n'));
+    }
+
+    // Same not-yet-filled-viewport scrollback guard as emitLine, applied once
+    // for the whole batch: while the visible content is shorter than the
+    // viewport, drop any scrollback so the terminal can't scroll past it. Once
+    // the content overflows, scrollback is left intact so it stays reachable.
+    if (!this.plain) {
+      const viewportRows = process.stdout.rows || 24;
+      if (this.visibleLineCount < viewportRows - this.footerHeight) {
+        process.stdout.write('\x1b[3J');
+      }
+    }
+  }
+
+  /**
    * Clear the screen and replay the buffer through the current filter.
    * Group-aware: if any line in a group matches, the whole group is shown.
    */
@@ -1013,8 +1058,8 @@ export class ProcessManager implements ControlManager {
     if (this.filterTerms.length === 0) {
       for (const line of this.buffer) {
         line.rendered = true;
-        this.emitLine(line);
       }
+      this.emitBatch(this.buffer);
       return;
     }
 
@@ -1026,12 +1071,14 @@ export class ProcessManager implements ControlManager {
       }
     }
 
+    const visible: BufferedLine[] = [];
     for (const line of this.buffer) {
       if (matchingGroups.has(line.groupId)) {
         line.rendered = true;
-        this.emitLine(line);
+        visible.push(line);
       }
     }
+    this.emitBatch(visible);
   }
 
   /**
@@ -1069,26 +1116,37 @@ export class ProcessManager implements ControlManager {
     if (this.filterTerms.length === 0) {
       return true;
     }
-    const haystack = `${searchName} ${text}`.toLowerCase();
+    const haystack = normalizeForFilter(`${searchName} ${text}`);
     return this.filterTerms.every((term) => haystack.includes(term));
   }
 
-  /** Print one line, wrapping to the terminal width. Returns the number of rows it consumed. */
-  private outputLine(prefix: string, text: string, isError: boolean): number {
-    const logger = isError ? console.error : console.log;
+  /**
+   * Render one line to its terminal string — the prefix followed by the text,
+   * hard-wrapped to the content width with wrapped rows aligned under the
+   * prefix. Returns the string (no trailing newline) and the number of terminal
+   * rows it occupies. Pure (writes nothing), so the live single-line path and
+   * the batched replay path produce byte-identical layout.
+   */
+  private formatLine(prefix: string, text: string): { rendered: string; rows: number } {
     const cols = process.stdout.columns || 120;
     const contentWidth = cols - this.prefixWidth;
 
     if (contentWidth <= 20 || stringWidth(text) <= contentWidth) {
-      logger(`${prefix}${text}`);
-      return 1;
+      return { rendered: `${prefix}${text}`, rows: 1 };
     }
 
     const wrapped = wrapAnsi(text, contentWidth, { hard: true });
     const lines = wrapped.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      logger(i === 0 ? `${prefix}${lines[i]}` : `${this.continuationPad}${lines[i]}`);
-    }
-    return lines.length;
+    const rendered = lines
+      .map((line, i) => (i === 0 ? `${prefix}${line}` : `${this.continuationPad}${line}`))
+      .join('\n');
+    return { rendered, rows: lines.length };
+  }
+
+  /** Print one line, wrapping to the terminal width. Returns the number of rows it consumed. */
+  private outputLine(prefix: string, text: string, isError: boolean): number {
+    const { rendered, rows } = this.formatLine(prefix, text);
+    (isError ? console.error : console.log)(rendered);
+    return rows;
   }
 }

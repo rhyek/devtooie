@@ -3,13 +3,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch src/index.ts"
+    "dev": "node --watch src/index.ts",
+    "add-random-todo": "node src/cmd/add-random-todo.ts"
   },
   "dependencies": {
     "@example/isomorphic": "workspace:*",
     "express": "^5.2.1"
   },
   "devDependencies": {
+    "@faker-js/faker": "^10.5.0",
     "@types/express": "^5.0.6"
   }
 }

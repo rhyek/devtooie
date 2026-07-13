@@ -497,7 +497,11 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
     if (filterChanged) {
       // setFilter clears + replays the screen, which also absorbs any height change.
       manager.setFilter(activeFilter ? activeFilter.split(/\s+/) : []);
-    } else if (height < prevHeight) {
+    } else if (height !== prevHeight) {
+      // Any footer-height change resizes the log viewport — not only a shrink. Entering
+      // filter-input mode *grows* the footer (its multi-line prompt), shrinking the viewport;
+      // replay now so existing content reflows, instead of the next streamed line pushing the
+      // taller footer off the bottom of the screen.
       manager.refresh();
     }
   });
@@ -667,7 +671,7 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
       return;
     }
 
-    if (input === 'c' && activeFilter) {
+    if (key.escape && activeFilter) {
       setActiveFilter('');
       setFilterInput('');
       return;
@@ -768,7 +772,7 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
   ];
 
   const filterLine = activeFilter ? (
-    <Text color="cyan">[filter: {activeFilter}] c: clear filter</Text>
+    <Text color="cyan">[filter: {activeFilter}] esc: clear filter</Text>
   ) : null;
 
   const packageStatusDots = (

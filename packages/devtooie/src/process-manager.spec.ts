@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -107,6 +107,19 @@ describe('ProcessManager', () => {
     expect(manager.getStatus('fixture')).toBe('stopped');
   }, 10_000);
 
+  it('startAll skips an autostart:false package but a manual start still works', async () => {
+    manager = new ProcessManager(runnerArgs({ ...pkg(), autostart: false }), { plain: true });
+    manager.startAll();
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    // Left stopped by auto-start (not 'waiting').
+    expect(manager.getStatus('fixture')).toBe('stopped');
+
+    // The `s` hotkey / control-API path still starts it.
+    manager.start('fixture');
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(manager.getStatus('fixture')).toBe('running');
+  }, 10_000);
+
   it('ControlManager adapter: restart/rebuild return false for an unknown package', () => {
     manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
     expect(manager.restart('does-not-exist')).toBe(false);
@@ -142,6 +155,106 @@ describe('ProcessManager', () => {
     const contents = fs.readFileSync(logFile, 'utf8');
     // "dt:control" (10) padded to "whatsapp-bridge" width (15) → 5 trailing spaces.
     expect(contents).toContain('[dt:control     ] restart whatsapp-bridge');
+  });
+});
+
+describe('ProcessManager filter replay batching', () => {
+  // A filter switch clears the screen and replays the buffer through the new
+  // filter. That replay must go out as ONE terminal write, not one-per-line:
+  // an interactive host patches `console.*` and erases+repaints its footer on
+  // every call, so per-line emits turn the switch into a visible, one-by-one
+  // re-stream instead of an instant swap.
+
+  it('replays the whole matching buffer in a single write on filter change', () => {
+    manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const N = 25;
+      for (let i = 0; i < N; i++) manager.logSystem(`payload-${i}`);
+      logSpy.mockClear();
+      errSpy.mockClear();
+
+      manager.setFilter(['payload']); // matches every seeded line
+
+      // One write for the entire replayed batch.
+      expect(logSpy.mock.calls.length + errSpy.mock.calls.length).toBe(1);
+      // ...carrying every line, in buffer order.
+      const emitted = String(logSpy.mock.calls[0]?.[0] ?? '');
+      for (let i = 0; i < N; i++) expect(emitted).toContain(`payload-${i}`);
+      expect(emitted.indexOf('payload-0')).toBeLessThan(emitted.indexOf(`payload-${N - 1}`));
+    } finally {
+      logSpy.mockRestore();
+      errSpy.mockRestore();
+    }
+  });
+
+  it('emits nothing when the new filter matches no buffered line', () => {
+    manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      for (let i = 0; i < 10; i++) manager.logSystem(`item-${i}`);
+      logSpy.mockClear();
+
+      manager.setFilter(['does-not-match-anything']);
+
+      expect(logSpy).not.toHaveBeenCalled();
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('replays the full buffer in a single write when the filter is cleared', () => {
+    manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (let i = 0; i < 15; i++) manager.logSystem(`row-${i}`);
+      manager.setFilter(['row-1']); // narrow down first
+      logSpy.mockClear();
+      errSpy.mockClear();
+
+      manager.setFilter([]); // clear the filter -> replay everything
+
+      expect(logSpy.mock.calls.length + errSpy.mock.calls.length).toBe(1);
+      const emitted = String(logSpy.mock.calls[0]?.[0] ?? '');
+      expect(emitted).toContain('row-0');
+      expect(emitted).toContain('row-14');
+    } finally {
+      logSpy.mockRestore();
+      errSpy.mockRestore();
+    }
+  });
+});
+
+describe('ProcessManager filter: case- and accent-insensitive', () => {
+  // Matching normalizes both the log text and the typed terms (lowercase + diacritic
+  // strip), so accents never hide a match: a typed `gonzalez` finds a logged `González`,
+  // and vice-versa.
+  function seedAndFilter(line: string, terms: string[]): string {
+    manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      manager.logSystem(line);
+      logSpy.mockClear();
+      manager.setFilter(terms);
+      return logSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    } finally {
+      logSpy.mockRestore();
+    }
+  }
+
+  it('matches an accented log line from an unaccented term', () => {
+    expect(seedAndFilter('Añadido González', ['anadido'])).toContain('Añadido González');
+    expect(seedAndFilter('Añadido González', ['gonzalez'])).toContain('González');
+  });
+
+  it('matches an unaccented log line from an accented term', () => {
+    expect(seedAndFilter('Added Gonzalez', ['gonzález'])).toContain('Added Gonzalez');
+  });
+
+  it('is case-insensitive', () => {
+    expect(seedAndFilter('Added TODO item', ['added', 'todo'])).toContain('Added TODO item');
   });
 });
 

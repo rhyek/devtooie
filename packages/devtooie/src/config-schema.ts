@@ -30,17 +30,20 @@ export const CommandOptionsSchema = z
   });
 
 export const CommandSchema = z
-  .union([z.string(), z.tuple([z.string(), CommandOptionsSchema])])
+  // `null` = the package has no dev process; devtooie never starts it (build/dep-only).
+  .union([z.string(), z.tuple([z.string(), CommandOptionsSchema]), z.null()])
   .default('dev')
   .transform((c) =>
-    typeof c === 'string'
-      ? { name: c, watches: true, builds: true, cleans: false }
-      : {
-          name: c[0],
-          watches: c[1].watches ?? true,
-          builds: c[1].builds ?? true,
-          cleans: c[1].cleans ?? false,
-        },
+    c === null
+      ? null
+      : typeof c === 'string'
+        ? { name: c, watches: true, builds: true, cleans: false }
+        : {
+            name: c[0],
+            watches: c[1].watches ?? true,
+            builds: c[1].builds ?? true,
+            cleans: c[1].cleans ?? false,
+          },
   );
 
 // All per-package config is flat (no `run` nesting). `name`/`relativeDir` identify the package;
@@ -70,9 +73,14 @@ export const PackageConfigSchema = z.object({
     .number()
     .optional()
     .describe('Dev port; injected into the process as `PORT` and feeds `$port` substitution.'),
-  hmrPort: z.number().optional().describe("A browser package's HMR socket port."),
   // Overridden in config.ts (transform → `any`); documented there.
   command: CommandSchema,
+  autostart: z
+    .boolean()
+    .optional()
+    .describe(
+      'Automatically start this package during the run phase (default `true`). When `false`, devtooie leaves it stopped — start it yourself with the `s` hotkey (or a control-API `restart`). Ignored when `command` is `null` (that package never starts).',
+    ),
   urls: z
     .array(UrlEntrySchema)
     .optional()

@@ -25,9 +25,13 @@ It's a good reference for how a real workspace is wired: project-reference build
   it can be a Node package (via its `package.json`) or a Go/Rust/… package (via a `Makefile`
   with the equivalent targets). See [Package supporting scripts](#package-supporting-scripts).
 - **Streamed, filterable logs.** Every package's output is streamed live into one combined
-  view; in the TUI you can filter it down to a package or a search term (the `f` hotkey).
+  view; in the TUI you can filter it down to a package or a search term (the `f` hotkey;
+  matching is case- and accent-insensitive).
 - **Two run modes.** An interactive terminal UI, or a `--plain` log-streaming mode for
   coding agents.
+- **One-off commands.** `devtooie cmd` runs a single command (or a package script/target) in a
+  package's directory with that package's resolved environment — for migrations, seeds,
+  scrapers, or an agent driving your project.
 - **Per-package hierarchical `.env` loading.** Each package's `.env` files (workspace- and
   package-scoped) are resolved and injected into its process — and live-reloaded, restarting
   the affected package on change.
@@ -177,8 +181,12 @@ build-only lib):
   package's position in the run.
 - **`command`** — the dev process to run and how it behaves. A script/target name, or
   `[name, { watches, builds, cleans }]`. Defaults to `['dev', { watches: true, builds: true }]`.
-  See [Package lifecycle](#package-lifecycle-when-you-change-code).
-- **`port`, `hmrPort`** — the package's port(s); `$port` substitution and swept on session handoff.
+  Pass **`null`** for a package with **no dev process** — devtooie never starts it (build/dep-only)
+  and it's hidden from the picker. See [Package lifecycle](#package-lifecycle-when-you-change-code).
+- **`autostart`** (default `true`) — whether to auto-start this package in the run phase. Set
+  **`false`** to leave it stopped; start it with the **`s`** hotkey or a control-API `restart`
+  (`POST /command/restart/<name>` starts a stopped package). Ignored when `command` is `null`.
+- **`port`** — the package's dev port; feeds `$port` substitution, injected as `PORT`, and swept on session handoff.
 - **`urls`** — links shown in the running footer, one entry per line. Each entry is a string, a
   `{ label, url }`, or an **array** of those (rendered on the same line, space-separated).
 - **`healthcheck`** — a URL polled for readiness; also required by anything that lists this
@@ -201,8 +209,8 @@ Three independent categories, resolved when you select a package:
   transitive**: only the packages you explicitly select have their runtime deps expanded. If a
   runtime dep needs its own runtime deps too, select it explicitly (or add it to your selection).
 
-`devtooie resolvedeps -p <name> [...]` prints the resolved build/dev/runtime sets as JSON —
-handy for wiring other tooling to the same dependency graph.
+`devtooie resolvedeps <package>` prints the resolved build/dev/runtime sets for a single
+package as JSON — handy for wiring other tooling to the same dependency graph.
 
 ### TypeScript project references & shared libraries
 
@@ -245,6 +253,11 @@ devtooie --build -p web   # build `web` + its build-time deps, then exit
 devtooie --rebuild -p web # like --build, but clears dist/ first
 ```
 
+Every command works from **anywhere in the repo**: as a first step devtooie walks up to the
+nearest `devtooie.config.*`, switches to that directory, and loads its workspace-scope `.env` —
+so running from a subdirectory behaves the same as from the root. (`devtooie cmd` additionally
+uses your original directory to decide which package you're inside.)
+
 Common options:
 
 | Option                 | Description                                                                                   |
@@ -255,16 +268,17 @@ Common options:
 | `--last-answers`       | Skip selection; reuse the last saved selection.                                               |
 | `--build`              | Build the selected packages and their build-time deps, then exit (no run phase).              |
 | `--rebuild`            | Like `--build`, but first clears `dist/` for every build target.                              |
-| `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/`. Each run gets a fresh `dev-<timestamp>.log`; previous sessions' logs are kept. |
+| `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/`. Each run gets a fresh `<timestamp>.log`; previous sessions' logs are kept. Also used by `devtooie cmd`. |
 
 Subcommands:
 
 - **`devtooie init`** — interactive setup; see [Getting started](#getting-started-devtooie-init).
 - **`devtooie reset`** — clear the saved package selection.
-- **`devtooie resolvedeps -p <name> [...]`** — print the resolved build/dev/runtime dependency
-  sets as JSON.
-- **`devtooie env`** — resolve a package's `.env` files; see
-  [Environment loading](#environment-env-loading).
+- **`devtooie resolvedeps <package>`** — print the resolved build/dev/runtime dependency
+  sets for a single package as JSON.
+- **`devtooie cmd`** — run a **one-off command** with a package's environment (its dir +
+  resolved `.env`); package inferred from the cwd or named with `-p`; see
+  [Run a one-off command in a package's dir](#run-a-one-off-command-in-a-packages-dir-with-its-environment).
 
 ## Environment (`.env`) loading
 
@@ -311,27 +325,33 @@ While a session runs, devtooie **watches these files (and where new ones would a
 restarts the affected package(s)** on change — editing a workspace-level file restarts every
 running package that uses it.
 
-### Run a one-off command with a package's environment
+### Run a one-off command in a package's dir with its environment
 
-The same resolution is available as a standalone command — use it to run scripts, migrations, or
-checks with the exact env a package would run under:
-
-```sh
-devtooie env --dir <relativeDir> -- <command> [args...]
-```
-
-- `--dir <relativeDir>` — the package's `relativeDir` from `devtooie.config.ts`, relative to the
-  workspace root. Omit it to default to your current directory — so running from inside a package
-  resolves that package (workspace-level files included). Pass `--dir .` to resolve at the
-  workspace root only.
-- Everything after `--` is run with the resolved vars merged over the current environment; the
-  command's exit code is propagated.
-- Omit the `-- <command>` to instead **print** the resolved `KEY=value` pairs — useful for seeing
-  what a package will get:
+`devtooie cmd` runs a **single one-off command with a package's environment** — without starting
+a session. The command runs in the package's directory with that package's resolved `.env` and
+its `port` as `PORT` injected — the exact environment the TUI would spawn it with. Use it to
+drive scripts, migrations, or scrapers. The package is chosen by **where you run it**: by default
+there's no package argument — `cd` into the package's directory (or any subdirectory of it) and
+run (or name one explicitly with `-p`, below):
 
 ```sh
-devtooie env --dir <relativeDir>
+devtooie cmd -- <command> [args...]         # run a literal command in the package dir
+devtooie cmd -c <script> -- [args...]       # run the package's script/make target
+devtooie cmd -p <name> -c <script> -- ...   # target <name> explicitly (from anywhere)
 ```
+
+- **Which package**: the nearest **ancestor** directory that is a configured package. Below the
+  config root but inside no package, it falls back to the **root** (working dir = root, only
+  workspace-scope vars). Errors only if there's no `devtooie.config.*` at all (any supported
+  extension: `.ts`/`.mts`/`.js`/`.mjs`). Pass `-p, --package <name>` to target a package
+  explicitly (overrides the cwd inference), e.g. `devtooie cmd -p api -c start -- …`.
+- `-c, --cmd <script>` — run a package **script or make target** (resolved the way devtooie runs
+  a package: `pnpm run <script>` or `make <target>`, found in that dir's `package.json`/`Makefile`),
+  forwarding anything after `--` to it as arguments. Errors if there's no such script/target.
+- Without `-c`, a literal command after `--` is required.
+- The command's exit code is propagated, and `devtooie cmd` exits as soon as the command does.
+- Output streams to your terminal **and** is teed to a fresh timestamped logfile under
+  `node_modules/.devtooie/logs/` (or `--log-dir`) — the path is printed on start.
 
 You do not need this for packages devtooie is already running (their env is injected
 automatically) — it's for driving commands yourself.
@@ -409,7 +429,7 @@ Do not hardcode package names. Discover them either from a running session (`GET
 or by asking devtooie directly:
 
 ```sh
-devtooie resolvedeps -p <package>
+devtooie resolvedeps <package>
 ```
 
 which prints that package's build/dev/runtime dependency names as JSON.
@@ -421,8 +441,9 @@ timestamped logfile. The directory it writes into is recorded in
 `node_modules/.devtooie/running.json` as **`logDir`**; it defaults to `node_modules/.devtooie/logs/`
 and only differs when the session was started with `--log-dir`.
 
-Each session (and each in-session log rotation) writes a **fresh** file named `dev-<timestamp>.log`.
-devtooie never truncates or overwrites an existing log, so logs from earlier sessions stay on disk.
+Each session (and each in-session log rotation) writes a **fresh** file named `<timestamp>.log`;
+`devtooie cmd` writes one too. devtooie never truncates or overwrites an existing log, so logs
+from earlier sessions stay on disk.
 To debug the **current** session, resolve that directory and read the most recent file in it:
 
 ```sh
@@ -507,9 +528,9 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
 
    All package fields are flat (there is no `run` nesting). Infer them from what the package
    actually is:
-   - `port` — the dev port it listens on (`hmrPort` for a browser package's HMR socket). devtooie
-     injects this into the package's process as the `PORT` env var, so the app can read
-     `process.env.PORT` without you duplicating it in a `.env` (an explicit `.env` `PORT` still wins).
+   - `port` — the dev port it listens on. devtooie injects this into the package's process as the
+     `PORT` env var, so the app can read `process.env.PORT` without you duplicating it in a `.env`
+     (an explicit `.env` `PORT` still wins).
    - `healthcheck` / `urls` — strings that may contain **tokens** substituted at load time:
      `$port`, `$name`, `$subdomain` (intrinsic), plus any extrinsic `$key` you declare in the
      top-level `tokens` map passed to `defineConfig`. Write `http://localhost:$port/health` rather
@@ -572,7 +593,7 @@ the end state below, then apply the per-package specifics from
    - Normalize script names to `dev`/`build`/`clean`. A leaf app that nothing build-depends on needs
      only its dev script; drop its `build`/`clean` if present.
 
-3. **Verify the graph.** `devtooie resolvedeps -p <app>` should now list the shared libraries under
+3. **Verify the graph.** `devtooie resolvedeps <app>` should now list the shared libraries under
    `build`; `devtooie --build -p <app>` then builds them in dependency order, and
    `devtooie --plain -p <app>` runs the app with its library watchers alongside it.
 
