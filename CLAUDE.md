@@ -94,3 +94,14 @@ example:
 ```sh
 cd example && pnpm dev   # runs the `devtooie` bin
 ```
+
+## Terminal UI rendering (internals)
+
+The interactive TUI is a hybrid: Ink renders **only the footer**, while the
+scrolling logs are written straight to stdout (into native scrollback) and the
+footer is hand-anchored to the bottom edge. Before changing anything about the
+footer, log stream, screen clearing, scrollback, or resize behavior, read
+[`docs/rendering-architecture.md`](docs/rendering-architecture.md) — it documents
+the write-above/patched-console mechanism, `ProcessManager`'s repaint model, and
+why resize needs the `useWindowSize` + debounced `refresh` handling. (Internal
+contributor doc — not part of the user-facing docs or `agents.md`.)

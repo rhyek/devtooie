@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import path from 'node:path';
 import chalk from 'chalk';
-import { Box, type DOMElement, Text, measureElement, useApp, useInput } from 'ink';
+import { Box, type DOMElement, Text, measureElement, useApp, useInput, useWindowSize } from 'ink';
 import type { startCommandServer } from '../command-server.js';
 import { normalizeUrlEntry, type UrlLine } from '../config.js';
 import { debugLog } from '../debug-log.js';
@@ -505,6 +505,26 @@ export function NativeRunner({ args, server }: NativeRunnerProps) {
       manager.refresh();
     }
   });
+
+  // Repaint the footer at the new terminal geometry whenever the window is
+  // resized. Ink repaints its own footer on resize, but this app hand-anchors the
+  // footer to the bottom edge (see ProcessManager.resetScreen), and that
+  // re-anchor otherwise has no trigger for a resize that leaves the footer's own
+  // measured height unchanged — so growing the terminal leaves a gap below the
+  // footer and shrinking leaves ghost footers behind. `useWindowSize` re-renders
+  // on every resize; each change runs the same authoritative repaint (`refresh`)
+  // as every other geometry change, re-anchoring the footer and reflowing the
+  // buffer to the new width. See docs/rendering-architecture.md.
+  const { columns, rows } = useWindowSize();
+  useEffect(() => {
+    // Nothing to re-anchor before the initial resetScreen + startAll — which also
+    // covers the mount invocation, since startedRef only flips true after startup
+    // and no genuine resize has changed columns/rows yet.
+    if (!startedRef.current) {
+      return;
+    }
+    manager.refresh();
+  }, [columns, rows, manager]);
 
   // Delay the first real paint slightly so Ink's throttled render has time to
   // settle into the run-phase layout before anything is shown; suppressing
