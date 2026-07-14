@@ -30,17 +30,20 @@ export const CommandOptionsSchema = z
   });
 
 export const CommandSchema = z
-  .union([z.string(), z.tuple([z.string(), CommandOptionsSchema])])
+  // `null` = the package has no dev process; devtooie never starts it (build/dep-only).
+  .union([z.string(), z.tuple([z.string(), CommandOptionsSchema]), z.null()])
   .default('dev')
   .transform((c) =>
-    typeof c === 'string'
-      ? { name: c, watches: true, builds: true, cleans: false }
-      : {
-          name: c[0],
-          watches: c[1].watches ?? true,
-          builds: c[1].builds ?? true,
-          cleans: c[1].cleans ?? false,
-        },
+    c === null
+      ? null
+      : typeof c === 'string'
+        ? { name: c, watches: true, builds: true, cleans: false }
+        : {
+            name: c[0],
+            watches: c[1].watches ?? true,
+            builds: c[1].builds ?? true,
+            cleans: c[1].cleans ?? false,
+          },
   );
 
 // All per-package config is flat (no `run` nesting). `name`/`relativeDir` identify the package;
@@ -70,9 +73,14 @@ export const PackageConfigSchema = z.object({
     .number()
     .optional()
     .describe('Dev port; injected into the process as `PORT` and feeds `$port` substitution.'),
-  hmrPort: z.number().optional().describe("A browser package's HMR socket port."),
   // Overridden in config.ts (transform → `any`); documented there.
   command: CommandSchema,
+  autostart: z
+    .boolean()
+    .optional()
+    .describe(
+      'Automatically start this package during the run phase (default `true`). When `false`, devtooie leaves it stopped — start it yourself with the `s` hotkey (or a control-API `restart`). Ignored when `command` is `null` (that package never starts).',
+    ),
   urls: z
     .array(UrlEntrySchema)
     .optional()
@@ -98,6 +106,20 @@ export const PackageConfigSchema = z.object({
       build: z.array(z.string()).optional(),
       dev: z.array(z.string()).optional(),
       runtime: z.array(z.string()).optional(),
+    })
+    .optional(),
+  // Overridden in config.ts — `logs.formatter` is a function Zod can't usefully type (`z.custom`
+  // erases to `any`), so the whole object is re-typed there. `z.custom` validates it's a function
+  // and passes it through untouched, so the exact user callback (not a validating wrapper) reaches
+  // the runtime.
+  logs: z
+    .object({
+      timestamps: z.boolean().optional(),
+      formatter: z
+        .custom<(line: string) => string>((v) => typeof v === 'function', {
+          message: 'logs.formatter must be a function',
+        })
+        .optional(),
     })
     .optional(),
 });
@@ -127,4 +149,15 @@ export const DefineConfigSchema = z.object({
     .object({ files: z.array(z.string()).optional() })
     .optional()
     .describe('`.env` filenames loaded per package (defaults to the standard set).'),
+  logs: z
+    .object({
+      timestamps: z
+        .boolean()
+        .optional()
+        .describe(
+          'Prefix each on-screen log line with a `YYYY-MM-DD HH:MM:SS` (24-hour) timestamp. Defaults to `false`. The on-disk log file always includes timestamps regardless of this setting.',
+        ),
+    })
+    .optional()
+    .describe('Log display options.'),
 });

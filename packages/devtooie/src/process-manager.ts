@@ -6,12 +6,21 @@ import stringWidth from 'string-width';
 import wrapAnsi from 'wrap-ansi';
 import type { AnyPackageConfig } from './config.js';
 import { getDevScript, getLoadedConfig } from './config.js';
+import { defaultFormatter } from './log-formatter.js';
 import type { ControlManager } from './command-server.js';
 import { debugLog } from './debug-log.js';
-import { DEFAULT_ENV_FILES, resolveEnv } from './env.js';
+import { DEFAULT_ENV_FILES, packageEnvLayer } from './env.js';
 import { watchEnvFiles, type WatchTarget } from './env-watch.js';
-import { getDefaultLogFile, getExecArgs, getRebuildCommands, hasScript } from './lib.js';
+import {
+  getDefaultLogFile,
+  getExecArgs,
+  getRebuildCommands,
+  hasDevScript,
+  logTimestamp,
+  stripAnsi,
+} from './lib.js';
 import type { RunnerArgs } from './runners/types.js';
+import { stripTitleSequences } from './terminal-title.js';
 
 type ProcessState = 'running' | 'stopped' | 'waiting';
 type Status = ProcessState | 'rebuilding' | 'restarting';
@@ -33,12 +42,19 @@ interface ManagedProcess {
 interface BufferedLine {
   prefix: string;
   text: string;
+  /** `YYYY-MM-DD HH:MM:SS` stamp captured when the line was logged (shown when timestamps are on). */
+  ts: string;
+  /** Whether this line's package (or the top-level default) shows the timestamp on screen. */
+  showTs: boolean;
   searchName: string;
   isError: boolean;
   /** Lines sharing a groupId are shown together when any one of them matches the active filter. */
   groupId: number;
-  /** Whether this line has already been written to the terminal. */
+  /** Whether this line has already been written to the terminal (plain mode). */
   rendered: boolean;
+  /** Memoized rendered-row count for the fullscreen viewport, and the width it was computed at. */
+  rowCount?: number;
+  rowCountWidth?: number;
 }
 
 /**
@@ -52,19 +68,16 @@ function isContinuationLine(text: string): boolean {
   return stripped.length > 0 && (stripped.startsWith(' ') || stripped.startsWith('\t'));
 }
 
-/** Strip ANSI (SGR) escape sequences from a string. */
-function stripAnsi(text: string): string {
-  // eslint-disable-next-line no-control-regex -- matches ANSI SGR escape sequences
-  return text.replace(/\x1b\[[0-9;]*m/g, '');
-}
-
-/** Local `HH:MM:SS` (24h) timestamp used to prefix logfile lines. */
-function logTimestamp(): string {
-  const d = new Date();
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  const ss = String(d.getSeconds()).padStart(2, '0');
-  return `${hh}:${mm}:${ss}`;
+/**
+ * Normalize text for filter matching: lowercase and strip diacritics (NFD decomposition
+ * drops combining accent marks). Applied to both the log haystack and the typed terms, so
+ * matching is case- and accent-insensitive — a typed `gonzalez` finds a logged `González`.
+ */
+function normalizeForFilter(s: string): string {
+  return s
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
 }
 
 // Package-identity colors for log prefixes: a vivid, full-spectrum palette ordered so adjacent
@@ -119,6 +132,8 @@ export function packagePrefixColor(pkg: AnyPackageConfig, index: number): (s: st
 }
 
 const MAX_BUFFER_LINES = 50_000;
+/** Rendered width of a displayed timestamp gutter: `"YYYY-MM-DD HH:MM:SS "` (19 chars + a space). */
+const TIMESTAMP_GUTTER_WIDTH = 20;
 const SHUTDOWN_GRACE_MS = 3000;
 const WAIT_FOR_POLL_MS = 2000;
 
@@ -134,7 +149,10 @@ export class ProcessManager implements ControlManager {
   private processes = new Map<string, ManagedProcess>();
   /** Rendered width of `"[name] "`, used to align wrapped continuation lines. */
   private prefixWidth: number;
-  private continuationPad: string;
+  /** Default on-screen timestamp visibility (top-level `logs.timestamps`); a package can override. */
+  private defaultShowTimestamps: boolean;
+  /** Per-package resolved on-screen timestamp visibility, keyed by the line's `searchName`. */
+  private showTsBySearchName = new Map<string, boolean>();
   private filterTerms: string[] = [];
   private buffer: BufferedLine[] = [];
   private rebuildableSet: Set<string>;
@@ -168,6 +186,13 @@ export class ProcessManager implements ControlManager {
   /** Bound `process.on('exit')` handler, kept so `dispose()` can remove it. */
   private exitHandler: () => void;
   private disposed = false;
+  /** Fullscreen (Ink) subscribers, notified when the buffer changes. */
+  private listeners = new Set<() => void>();
+  /** Monotonic buffer version, used as the useSyncExternalStore snapshot. */
+  private version = 0;
+  private notifyScheduled = false;
+  /** Memoized group-aware filter result, keyed by {@link version}. */
+  private visibleCache: { version: number; lines: readonly BufferedLine[] } | null = null;
 
   constructor(
     {
@@ -178,10 +203,12 @@ export class ProcessManager implements ControlManager {
       logFile,
       envFiles,
       cwd,
+      logTimestamps = false,
     }: RunnerArgs,
     { plain = false }: { plain?: boolean } = {},
   ) {
     this.plain = plain;
+    this.defaultShowTimestamps = logTimestamps;
     this.rebuildableSet = rebuildableSet;
     this.waitForMap = waitForMap;
     this.healthcheckUrls = healthcheckUrls;
@@ -191,7 +218,6 @@ export class ProcessManager implements ControlManager {
     const displayName = (a: AnyPackageConfig) => a.shortName ?? a.name;
     const maxNameLen = sortedPackages.reduce((m, a) => Math.max(m, displayName(a).length), 0);
     this.prefixWidth = maxNameLen + 3; // "[" + padded name + "]" + " "
-    this.continuationPad = ' '.repeat(this.prefixWidth);
 
     for (let i = 0; i < sortedPackages.length; i++) {
       const pkg = sortedPackages[i]!;
@@ -199,13 +225,18 @@ export class ProcessManager implements ControlManager {
       const label = displayName(pkg);
       const padded = label + ' '.repeat(maxNameLen - label.length);
       const shortName = pkg.shortName;
+      const searchName = (shortName ? `${pkg.name} ${shortName}` : pkg.name).toLowerCase();
+      // Effective on-screen timestamp visibility: the package's own `logs.timestamps` if set,
+      // else the top-level default. Keyed by searchName so every line for this package (output,
+      // status, and control lines) renders the same.
+      this.showTsBySearchName.set(searchName, pkg.logs?.timestamps ?? this.defaultShowTimestamps);
       this.processes.set(pkg.name, {
         pkg,
         proc: null,
         status: 'stopped',
         prefix: color(`[${padded}]`) + ' ',
-        searchName: (shortName ? `${pkg.name} ${shortName}` : pkg.name).toLowerCase(),
-        canDev: hasScript(pkg, getDevScript(pkg)),
+        searchName,
+        canDev: hasDevScript(pkg),
         extraProcs: new Set(),
       });
     }
@@ -232,6 +263,11 @@ export class ProcessManager implements ControlManager {
   startAll(): void {
     debugLog(`startAll: starting ${this.processes.size} processes`);
     for (const [name, managed] of this.processes) {
+      if (managed.pkg.autostart === false) {
+        // Opted out of auto-start: leave it stopped (not waiting) for a manual start via the
+        // `s` hotkey or a control-API `restart`.
+        continue;
+      }
       const waitFor = this.waitForMap[name];
       if (waitFor && waitFor.length > 0 && managed.canDev) {
         managed.status = 'waiting';
@@ -333,9 +369,9 @@ export class ProcessManager implements ControlManager {
 
     if (proc.stdout) {
       proc.stdout.on('data', (data: Buffer) => {
-        for (const line of data.toString().split('\n')) {
+        for (const line of stripTitleSequences(data.toString()).split('\n')) {
           if (line) {
-            this.addLine(pfx, line, searchName, false);
+            this.addOutput(managed, line, false);
           }
         }
       });
@@ -343,9 +379,9 @@ export class ProcessManager implements ControlManager {
 
     if (proc.stderr) {
       proc.stderr.on('data', (data: Buffer) => {
-        for (const line of data.toString().split('\n')) {
+        for (const line of stripTitleSequences(data.toString()).split('\n')) {
           if (line) {
-            this.addLine(pfx, chalk.red(line), searchName, true);
+            this.addOutput(managed, line, true);
           }
         }
       });
@@ -371,13 +407,11 @@ export class ProcessManager implements ControlManager {
    * mutates `process.env`.
    */
   private packageEnv(pkg: AnyPackageConfig): NodeJS.ProcessEnv {
-    const { env } = resolveEnv({
-      cwd: this.cwd,
-      relativeDir: pkg.relativeDir,
-      files: this.envFiles,
-    });
-    const port = pkg.port;
-    return Object.assign({}, process.env, port !== undefined ? { PORT: String(port) } : {}, env);
+    return Object.assign(
+      {},
+      process.env,
+      packageEnvLayer(pkg, { cwd: this.cwd, files: this.envFiles }),
+    );
   }
 
   /**
@@ -608,9 +642,9 @@ export class ProcessManager implements ControlManager {
 
     if (proc.stdout) {
       proc.stdout.on('data', (data: Buffer) => {
-        for (const line of data.toString().split('\n')) {
+        for (const line of stripTitleSequences(data.toString()).split('\n')) {
           if (line) {
-            this.addLine(pfx, line, searchName, false);
+            this.addOutput(managed, line, false);
           }
         }
       });
@@ -618,9 +652,9 @@ export class ProcessManager implements ControlManager {
 
     if (proc.stderr) {
       proc.stderr.on('data', (data: Buffer) => {
-        for (const line of data.toString().split('\n')) {
+        for (const line of stripTitleSequences(data.toString()).split('\n')) {
           if (line) {
-            this.addLine(pfx, chalk.red(line), searchName, true);
+            this.addOutput(managed, line, true);
           }
         }
       });
@@ -870,12 +904,106 @@ export class ProcessManager implements ControlManager {
   // ---------------------------------------------------------------------------
 
   setFilter(terms: string[]): void {
-    this.filterTerms = terms.map((t) => t.toLowerCase());
-    this.replayBuffer();
+    this.filterTerms = terms.map(normalizeForFilter);
+    if (this.plain) {
+      this.replayBuffer();
+    }
+    this.notify();
   }
 
   getFilter(): string[] {
     return this.filterTerms;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Fullscreen (Ink) subscription + buffer queries
+  // ---------------------------------------------------------------------------
+
+  /** Subscribe to buffer changes (for useSyncExternalStore). Returns an unsubscribe fn. */
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  /** Snapshot token for useSyncExternalStore; changes whenever the buffer does. */
+  getVersion(): number {
+    return this.version;
+  }
+
+  /** Bump the version and notify subscribers, coalescing a burst into a single flush. */
+  private notify(): void {
+    this.version++;
+    if (this.notifyScheduled) {
+      return;
+    }
+    this.notifyScheduled = true;
+    queueMicrotask(() => {
+      this.notifyScheduled = false;
+      for (const listener of this.listeners) {
+        listener();
+      }
+    });
+  }
+
+  /**
+   * The lines currently visible under the active filter, in order. Group-aware:
+   * if any line in a group matches, the whole group is shown so multi-line log
+   * entries stay intact. Memoized per buffer version.
+   */
+  getVisibleLines(): readonly BufferedLine[] {
+    if (this.visibleCache && this.visibleCache.version === this.version) {
+      return this.visibleCache.lines;
+    }
+    let lines: readonly BufferedLine[];
+    if (this.filterTerms.length === 0) {
+      lines = this.buffer;
+    } else {
+      const matchingGroups = new Set<number>();
+      for (const line of this.buffer) {
+        if (this.matchesFilter(line.searchName, line.text)) {
+          matchingGroups.add(line.groupId);
+        }
+      }
+      lines = this.buffer.filter((line) => matchingGroups.has(line.groupId));
+    }
+    this.visibleCache = { version: this.version, lines };
+    return lines;
+  }
+
+  /** Rendered-row count of a line at the given terminal width (memoized on the line). */
+  countRows(line: BufferedLine, cols: number): number {
+    if (line.rowCountWidth === cols && line.rowCount !== undefined) {
+      return line.rowCount;
+    }
+    const rows = this.wrapLine(line, cols).length;
+    line.rowCount = rows;
+    line.rowCountWidth = cols;
+    return rows;
+  }
+
+  /** Dimmed `"YYYY-MM-DD HH:MM:SS "` gutter for a line, or `''` when its timestamp is hidden. */
+  private tsPrefix(line: BufferedLine): string {
+    return line.showTs ? `${chalk.dim(line.ts)} ` : '';
+  }
+
+  /** Left-gutter width for a line: the `[name]` prefix, plus the timestamp column when shown. */
+  private gutterWidth(line: BufferedLine): number {
+    return this.prefixWidth + (line.showTs ? TIMESTAMP_GUTTER_WIDTH : 0);
+  }
+
+  /** Rendered rows (timestamp + prefix + wrapped, continuation-padded text) of a line at `cols` width. */
+  wrapLine(line: BufferedLine, cols: number): string[] {
+    const ts = this.tsPrefix(line);
+    const contentWidth = cols - this.gutterWidth(line);
+    if (contentWidth <= 20 || stringWidth(line.text) <= contentWidth) {
+      return [`${ts}${line.prefix}${line.text}`];
+    }
+    const pad = ' '.repeat(this.gutterWidth(line));
+    return wrapAnsi(line.text, contentWidth, { hard: true })
+      .split('\n')
+      .map((row, i) => (i === 0 ? `${ts}${line.prefix}${row}` : `${pad}${row}`));
   }
 
   /** Re-clear the screen and replay the buffer through the active filter. */
@@ -889,7 +1017,11 @@ export class ProcessManager implements ControlManager {
     debugLog('clearBuffer');
     this.buffer = [];
     this.lastGroupId.clear();
-    this.resetScreen();
+    this.visibleLineCount = 0;
+    if (this.plain) {
+      this.resetScreen();
+    }
+    this.notify();
   }
 
   /** Emit a system-level line (e.g. shutdown notices), interleaved like any package's output. */
@@ -930,6 +1062,51 @@ export class ProcessManager implements ControlManager {
     return this.logFilePath;
   }
 
+  /**
+   * Render one raw output line from a package's child process for display/logging. A package's own
+   * `logs.formatter` (when set) fully owns presentation — its string result is used verbatim, and
+   * if it throws or returns a non-string we fall back to the default rendering (red stderr / plain
+   * stdout). With no custom formatter, devtooie's {@link defaultFormatter} runs: lines it leaves
+   * unchanged (non-structured output) keep the default rendering, and structured logs it formats
+   * are used verbatim. Only real process output goes through here; devtooie's own status lines
+   * (`started`, `stopping…`, …) never do.
+   */
+  private formatOutput(managed: ManagedProcess, line: string, isError: boolean): string {
+    const custom = managed.pkg.logs?.formatter;
+    if (custom) {
+      try {
+        const out = custom(line);
+        if (typeof out === 'string') return out;
+      } catch {
+        /* fall back to the default rendering below */
+      }
+      return isError ? chalk.red(line) : line;
+    }
+    let out = line;
+    try {
+      const formatted = defaultFormatter(line);
+      if (typeof formatted === 'string') out = formatted;
+    } catch {
+      /* keep the raw line */
+    }
+    // The default formatter passes non-structured output through unchanged; keep the plain/red
+    // rendering for those, and use the formatted string for logs it recognized.
+    return out === line ? (isError ? chalk.red(line) : line) : out;
+  }
+
+  /**
+   * Format one raw output line for a package and buffer the result. A formatter may return
+   * multiple display lines (e.g. a structured log rendered as a header plus indented property
+   * lines); each becomes its own buffer line, so the indented ones group as continuations and
+   * every line gets its own prefix in the logfile. Empty lines are dropped.
+   */
+  private addOutput(managed: ManagedProcess, rawLine: string, isError: boolean): void {
+    const formatted = this.formatOutput(managed, rawLine, isError);
+    for (const out of formatted.split('\n')) {
+      if (out) this.addLine(managed.prefix, out, managed.searchName, isError);
+    }
+  }
+
   private addLine(prefix: string, text: string, searchName: string, isError: boolean): void {
     // Consecutive lines from the same package are grouped: a continuation
     // line shares the group of the entry it belongs to, so filtering and
@@ -943,16 +1120,26 @@ export class ProcessManager implements ControlManager {
       this.lastGroupId.set(searchName, groupId);
     }
 
-    this.buffer.push({ prefix, text, searchName, isError, groupId, rendered: false });
+    // Capture the timestamp once so the on-disk log file and the on-screen
+    // (timestamped) view show the exact same time for a line. Whether it's shown on
+    // screen is resolved per package (falling back to the top-level default).
+    const ts = logTimestamp();
+    const showTs = this.showTsBySearchName.get(searchName) ?? this.defaultShowTimestamps;
+    this.buffer.push({ prefix, text, ts, showTs, searchName, isError, groupId, rendered: false });
     if (this.buffer.length > MAX_BUFFER_LINES) {
       this.buffer.splice(0, this.buffer.length - MAX_BUFFER_LINES);
     }
 
-    const plainLine = `${logTimestamp()} ${stripAnsi(prefix)}${stripAnsi(text)}\n`;
+    const plainLine = `${ts} ${stripAnsi(prefix)}${stripAnsi(text)}\n`;
     fs.writeSync(this.logFd, plainLine);
 
     debugLog(`addLine: visibleLineCount=${this.visibleLineCount} searchName="${searchName}"`);
-    this.renderNewLine();
+    // Plain mode streams each line straight to stdout; the interactive
+    // (fullscreen Ink) UI re-renders from the buffer when notified instead.
+    if (this.plain) {
+      this.renderNewLine();
+    }
+    this.notify();
   }
 
   /** Render the line just appended (and any unrendered group siblings) if it matches the filter. */
@@ -989,7 +1176,7 @@ export class ProcessManager implements ControlManager {
   }
 
   private emitLine(line: BufferedLine): void {
-    const rowsUsed = this.outputLine(line.prefix, line.text, line.isError);
+    const rowsUsed = this.outputLine(line);
     this.visibleLineCount += rowsUsed;
 
     // While content hasn't filled the viewport yet, repeated writes can push
@@ -998,6 +1185,44 @@ export class ProcessManager implements ControlManager {
     if (!this.plain) {
       const rows = process.stdout.rows || 24;
       if (this.visibleLineCount < rows - this.footerHeight) {
+        process.stdout.write('\x1b[3J');
+      }
+    }
+  }
+
+  /**
+   * Emit many buffered lines with a SINGLE terminal write. This is what keeps a
+   * filter switch / replay instant: an interactive host patches `console.*` and,
+   * on every call, erases its footer, writes the line, then repaints the footer.
+   * Emitting one line at a time therefore repaints the footer once per line, so
+   * replaying the buffer visibly re-streams it. Routing the whole batch through
+   * one `console.log` collapses that to a single footer erase+repaint.
+   *
+   * Everything (including error lines) goes through the one stdout write so
+   * ordering is preserved in a single atomic emit — the red color of error
+   * lines is already baked into their text, and in an interactive session
+   * stdout and stderr are the same terminal.
+   */
+  private emitBatch(lines: BufferedLine[]): void {
+    if (lines.length > 0) {
+      const parts: string[] = [];
+      let rowCount = 0;
+      for (const line of lines) {
+        const { rendered, rows } = this.formatLine(line);
+        parts.push(rendered);
+        rowCount += rows;
+      }
+      this.visibleLineCount += rowCount;
+      console.log(parts.join('\n'));
+    }
+
+    // Same not-yet-filled-viewport scrollback guard as emitLine, applied once
+    // for the whole batch: while the visible content is shorter than the
+    // viewport, drop any scrollback so the terminal can't scroll past it. Once
+    // the content overflows, scrollback is left intact so it stays reachable.
+    if (!this.plain) {
+      const viewportRows = process.stdout.rows || 24;
+      if (this.visibleLineCount < viewportRows - this.footerHeight) {
         process.stdout.write('\x1b[3J');
       }
     }
@@ -1013,8 +1238,8 @@ export class ProcessManager implements ControlManager {
     if (this.filterTerms.length === 0) {
       for (const line of this.buffer) {
         line.rendered = true;
-        this.emitLine(line);
       }
+      this.emitBatch(this.buffer);
       return;
     }
 
@@ -1026,12 +1251,14 @@ export class ProcessManager implements ControlManager {
       }
     }
 
+    const visible: BufferedLine[] = [];
     for (const line of this.buffer) {
       if (matchingGroups.has(line.groupId)) {
         line.rendered = true;
-        this.emitLine(line);
+        visible.push(line);
       }
     }
+    this.emitBatch(visible);
   }
 
   /**
@@ -1069,26 +1296,40 @@ export class ProcessManager implements ControlManager {
     if (this.filterTerms.length === 0) {
       return true;
     }
-    const haystack = `${searchName} ${text}`.toLowerCase();
+    const haystack = normalizeForFilter(`${searchName} ${text}`);
     return this.filterTerms.every((term) => haystack.includes(term));
   }
 
-  /** Print one line, wrapping to the terminal width. Returns the number of rows it consumed. */
-  private outputLine(prefix: string, text: string, isError: boolean): number {
-    const logger = isError ? console.error : console.log;
+  /**
+   * Render one line to its terminal string — the timestamp (when enabled) and
+   * prefix followed by the text, hard-wrapped to the content width with wrapped
+   * rows aligned under the prefix. Returns the string (no trailing newline) and
+   * the number of terminal rows it occupies. Pure (writes nothing), so the live
+   * single-line path and the batched replay path produce byte-identical layout.
+   */
+  private formatLine(line: BufferedLine): { rendered: string; rows: number } {
+    const { prefix, text } = line;
+    const ts = this.tsPrefix(line);
     const cols = process.stdout.columns || 120;
-    const contentWidth = cols - this.prefixWidth;
+    const contentWidth = cols - this.gutterWidth(line);
 
     if (contentWidth <= 20 || stringWidth(text) <= contentWidth) {
-      logger(`${prefix}${text}`);
-      return 1;
+      return { rendered: `${ts}${prefix}${text}`, rows: 1 };
     }
 
+    const pad = ' '.repeat(this.gutterWidth(line));
     const wrapped = wrapAnsi(text, contentWidth, { hard: true });
     const lines = wrapped.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      logger(i === 0 ? `${prefix}${lines[i]}` : `${this.continuationPad}${lines[i]}`);
-    }
-    return lines.length;
+    const rendered = lines
+      .map((row, i) => (i === 0 ? `${ts}${prefix}${row}` : `${pad}${row}`))
+      .join('\n');
+    return { rendered, rows: lines.length };
+  }
+
+  /** Print one line, wrapping to the terminal width. Returns the number of rows it consumed. */
+  private outputLine(line: BufferedLine): number {
+    const { rendered, rows } = this.formatLine(line);
+    (line.isError ? console.error : console.log)(rendered);
+    return rows;
   }
 }

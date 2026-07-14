@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import dotenvx from '@dotenvx/dotenvx';
+import type { AnyPackageConfig } from './config.js';
 
 /**
  * Default `.env` filenames, in ascending precedence *within a scope*: a base `.env`,
@@ -74,4 +75,18 @@ export function resolveEnv(opts: ResolveEnvOptions): EnvResolution {
   const env = source ? dotenvx.parse(source, { processEnv: ambient, overload: true }) : {};
 
   return { env, files, candidates };
+}
+
+/**
+ * The `.env`-derived environment layer for a package's child process: the package's configured
+ * `port` as `PORT` (an explicit `.env` `PORT` still wins), then its resolved `.env` files.
+ * Excludes `process.env` — merge this over it at spawn time (`Object.assign({}, process.env,
+ * layer)`). Shared by the TUI/plain session and `devtooie cmd` so both build the same env.
+ */
+export function packageEnvLayer(
+  pkg: AnyPackageConfig,
+  opts: { cwd: string; files?: string[] },
+): Record<string, string> {
+  const { env } = resolveEnv({ cwd: opts.cwd, relativeDir: pkg.relativeDir, files: opts.files });
+  return pkg.port !== undefined ? Object.assign({ PORT: String(pkg.port) }, env) : env;
 }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- **Reworked terminal UI.** The interactive session now runs as a fullscreen app, for far more solid rendering: it reflows cleanly on terminal resize (no more gaps or a misplaced footer), has much less jitter during normal operation, and stays smooth however fast logs stream. History now scrolls **in-app** (mouse wheel or keyboard) instead of through the terminal's own scrollback, and log text is selectable and copyable.
+- **New `devtooie cmd` subcommand** (replaces `devtooie env`) — run a one-off command with a package's exact environment without starting a session. See [docs/cli.md](docs/cli.md#devtooie-cmd). _(Breaking: `devtooie env` removed.)_
+- **Every command now works from any subdirectory** — devtooie walks up to the nearest `devtooie.config.*`, switches to it, and loads its workspace-scope `.env` first, so a subdirectory behaves the same as the repo root.
+- **Session logfiles** — a run's log is now `<timestamp>.log` (under `node_modules/.devtooie/logs/`, or `--log-dir`).
+- **Structured-log formatting, by default.** Every package's JSON logs (Go `slog`, pino, winston, …) are auto-formatted for dev as a colored `[LEVEL] message` with indented properties — non-JSON passes through untouched. Override or customize per package via `logs.formatter` (with the exported `logging` helpers), and opt into on-screen timestamps with `logs.timestamps`. See [docs/logging.md](docs/logging.md).
+
 ## 0.3.1
 
 - Docs restructured: the README is now a slim landing page that links to focused topic docs under `docs/` (`configuration.md`, `package-lifecycle.md`, `cli.md`, `control-api.md`), and the installed agent skill now loads a single consolidated guide, `docs/agents.md` (replacing `docs/usage-guide.md`).

@@ -26,7 +26,7 @@ export function getLogDir(): string {
 }
 
 /**
- * A fresh, timestamped log file path (`dev-<timestamp>.log`) inside `dir` (created
+ * A fresh, timestamped log file path (`<timestamp>.log`) inside `dir` (created
  * if needed). Each run — and each in-session rotation — gets a unique name so
  * previous sessions' logs are never overwritten. Pass `dir` to choose the location
  * (e.g. the `--log-dir` override, or the current logfile's dir when rotating);
@@ -34,10 +34,52 @@ export function getLogDir(): string {
  */
 export function getDefaultLogFile(dir: string = getLogDir()): string {
   fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, `dev-${Date.now()}.log`);
+  return path.join(dir, `${Date.now()}.log`);
+}
+
+/** Strips ANSI SGR (color) escape sequences, so logfiles hold plain text. */
+export function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex -- matches ANSI SGR escape sequences
+  return text.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+/** `YYYY-MM-DD HH:MM:SS` local-time (24-hour) stamp prefixed to each logged line. */
+export function logTimestamp(): string {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${yyyy}-${mo}-${dd} ${hh}:${mm}:${ss}`;
 }
 
 const RUNNER_MANAGED = new Set(['dev', 'build', 'build:clean', 'build-clean', 'clean']);
+
+/**
+ * The configured package whose directory is `startDir` itself or the nearest ancestor of it —
+ * i.e. which package you're "inside" when running from `startDir`. Walks up until it matches a
+ * package `path` or reaches `root` (the config dir), returning `null` if it reaches `root`
+ * without a match (below the root but not inside any package). Deepest match wins.
+ */
+export function findAncestorPackage(
+  startDir: string,
+  packages: AnyPackageConfig[],
+  root: string,
+): AnyPackageConfig | null {
+  const byPath = new Map(packages.map((p) => [path.resolve(p.path), p]));
+  const stop = path.resolve(root);
+  let dir = path.resolve(startDir);
+  for (;;) {
+    const pkg = byPath.get(dir);
+    if (pkg) return pkg;
+    if (dir === stop) return null;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
 
 function readPackageJson(pkg: AnyPackageConfig): { scripts?: Record<string, string> } | null {
   try {
@@ -53,8 +95,16 @@ export function getCommandRunner(pkg: AnyPackageConfig): 'pnpm' | 'make' {
   return 'pnpm';
 }
 
-export function getExecArgs(pkg: AnyPackageConfig, script: string): [string, string[]] {
-  return getCommandRunner(pkg) === 'make' ? ['make', [script]] : ['pnpm', ['run', script]];
+export function getExecArgs(
+  pkg: AnyPackageConfig,
+  script: string,
+  extraArgs: string[] = [],
+): [string, string[]] {
+  // pnpm and make both forward args that follow the script/target name straight to it — no `--`
+  // separator (which pnpm would pass through literally).
+  return getCommandRunner(pkg) === 'make'
+    ? ['make', [script, ...extraArgs]]
+    : ['pnpm', ['run', script, ...extraArgs]];
 }
 
 export function hasScript(pkg: AnyPackageConfig, script: string): boolean {
@@ -88,8 +138,13 @@ export function getRebuildCommands(pkg: AnyPackageConfig): [string, string[]][] 
   return [];
 }
 
+/**
+ * Whether devtooie can run this package as a dev process — the single "is it startable?" check
+ * (used for the picker and `ProcessManager`'s `canDev`). `command: null` opts out explicitly;
+ * otherwise the package must expose its dev script/target.
+ */
 export function hasDevScript(pkg: AnyPackageConfig): boolean {
-  return hasScript(pkg, getDevScript(pkg));
+  return pkg.command !== null && hasScript(pkg, getDevScript(pkg));
 }
 
 export function getMakeTargets(pkg: AnyPackageConfig): string[] {
@@ -252,6 +307,12 @@ export function resetSelection(): void {
 
 /** Current git branch; short SHA on detached HEAD; null when not a repo. */
 export function getGitBranch(): string | null {
+  // When recording a demo/screenshot (DEVTOOIE_DEMO_RECORDING set), force the branch to read
+  // `main` regardless of the real checked-out one. The branch-change watcher then sees only
+  // `main`, so it won't trip.
+  if (process.env.DEVTOOIE_DEMO_RECORDING) {
+    return 'main';
+  }
   try {
     const { stdout } = execaSync('git', ['rev-parse', '--abbrev-ref', 'HEAD']);
     if (stdout.trim() === 'HEAD') {
@@ -376,6 +437,7 @@ export function buildRunnerArgs(
     extraCommandsMap,
     topLevelUrls: config?.urls?.map(normalizeUrlEntry),
     envFiles: config?.envFiles ?? DEFAULT_ENV_FILES,
+    logTimestamps: config?.logTimestamps ?? false,
     cwd: process.cwd(),
   };
 }

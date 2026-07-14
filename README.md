@@ -9,7 +9,7 @@ resolves build-time, dev-time, and runtime dependencies between them, builds
 whatever needs building (in the right order), and then runs the packages you
 picked.
 
-![devtooie's terminal UI running three packages](https://raw.githubusercontent.com/rhyek/devtooie/main/packages/devtooie/assets/screenshot.png)
+![devtooie's terminal UI driving the example monorepo](https://raw.githubusercontent.com/rhyek/devtooie/main/packages/devtooie/assets/demo.gif)
 
 ## Features
 
@@ -21,9 +21,16 @@ picked.
   targets). See [Package supporting scripts](#package-supporting-scripts).
 - **Streamed, filterable logs.** Every package's output is streamed live into one
   combined view; filter it down to a single package or a search term on the fly
-  (the `f` hotkey).
+  (the `f` hotkey; matching is case- and accent-insensitive).
+- **Structured logs, by default.** devtooie auto-formats every package's JSON logs (Go `slog`,
+  pino, winston, …) as a colored `[LEVEL] message` for local dev — no `NODE_ENV` branching in your
+  app, and nothing to configure. See [Logging](docs/logging.md).
 - **Two run modes.** An interactive terminal UI to pick and watch packages, or a
   `--plain` log-streaming mode for coding agents.
+- **One-off commands.** `devtooie cmd` runs a single command (or a package
+  script/target) in a package's directory with that package's resolved environment —
+  for migrations, seeds, scrapers, or an agent driving your project. See
+  [Running one-off commands](#running-one-off-commands-devtooie-cmd).
 - **Per-package hierarchical `.env` loading.** Each package's `.env` files (workspace- and
   package-scoped) are resolved and injected into its process automatically — and
   live-reloaded, restarting the affected package when a file changes.
@@ -92,13 +99,13 @@ export default defineConfig({
   packages: [
     {
       name: 'core-api',
-      port: 3001, // Is provided as PORT environment variable to the process
+      port: 3001, // is provided as PORT environment variable to the process
       // `$port` is substituted with this package's `port`.
       healthcheck: 'http://localhost:$port/health',
     },
     {
       name: 'worker',
-      // A dev process that doesn't watch files: it builds once, then runs. devtooie
+      // a dev process that doesn't watch files: it builds once, then runs. devtooie
       // doesn't watch your source, so after you edit its code you (or an agent, via the
       // control API) restart it — the command's flags say which. See docs/package-lifecycle.md.
       command: ['start', { watches: false, builds: true }],
@@ -106,8 +113,8 @@ export default defineConfig({
     {
       name: 'web',
       port: 3000,
-      waitFor: ['core-api'], // Hold until core-api's healthcheck passes
-      deps: { runtime: ['core-api'] }, // Selecting web also runs core-api
+      waitFor: ['core-api'], // hold until core-api's healthcheck passes
+      deps: { runtime: ['core-api'] }, // selecting web also runs core-api
     },
   ],
 });
@@ -116,7 +123,7 @@ export default defineConfig({
 See **[Configuration options](docs/configuration.md)** for every `defineConfig`
 and package field.
 
-## Running
+## Running the Terminal UI
 
 ```bash
 pnpm devtooie
@@ -171,11 +178,36 @@ An app can add `build` + `clean` too, for the occasional case where you need to 
 scratch to clear stale build output — those enable the rebuild command (the `b` hotkey /
 `POST /command/rebuild`); see [Package lifecycle](docs/package-lifecycle.md).
 
+## Running one-off commands (`devtooie cmd`)
+
+Sometimes you don't want the whole session — you just need to run **one** command with a
+package's exact environment: a migration, a seed script, a scraper, a REPL. `devtooie cmd`
+does that. It runs a command in a package's directory with that package's resolved env vars injected — the same environment the TUI would give it:
+
+```bash
+cd packages/api
+devtooie cmd -- pnpm run migrate     # a literal command, in api's dir with api's env
+devtooie cmd -c seed -- --rows=100   # run api's `seed` script/target, forwarding args
+cd ../..
+devtooie cmd -p api -- pnpm start    # or target a package by name, from anywhere
+```
+
+The package is inferred from your current directory (or named explicitly with `-p`). Output
+streams to your terminal and is also written to a logfile. It's especially handy for a coding
+agent driving your project. Full reference: [`devtooie cmd`](docs/cli.md#devtooie-cmd).
+
 ## Configuration options
 
 The full `defineConfig` and per-package field reference — including dependencies,
 TypeScript project references, and typed package names — lives in
 **[docs/configuration.md](docs/configuration.md)**.
+
+## Logging
+
+devtooie **auto-formats structured (JSON) logs** — from Go `slog`, pino, winston, … — into a
+colored `[LEVEL] message` for local dev, with no `NODE_ENV` branching and nothing to configure. You
+can add on-screen timestamps, and override or customize the formatter per package. See
+**[docs/logging.md](docs/logging.md)**.
 
 ## Package lifecycle when you edit code
 
@@ -230,13 +262,14 @@ While a session runs, devtooie **watches these files (and where new ones would
 appear) and restarts the affected package(s)** on change — editing a
 workspace-level file restarts every running package that uses it.
 
-The same resolution is available as a standalone command for running a one-off
-command with a package's env, or inspecting what resolves — see
-[`devtooie env`](docs/cli.md#devtooie-env).
+The same resolution is available as a standalone command: from inside a package's directory,
+`devtooie cmd -- <command>` runs a one-off command **in** that package's dir with its resolved
+env (or invoke one of its scripts/targets with `-c`) — see
+[`devtooie cmd`](docs/cli.md#devtooie-cmd).
 
 ## Advanced CLI usage
 
-Every flag and subcommand — plus `devtooie env` for resolving a package's
+Every flag and subcommand — plus `devtooie cmd` for running a command in a package's
 environment on demand — is documented in **[docs/cli.md](docs/cli.md)**.
 
 ## Agent skill

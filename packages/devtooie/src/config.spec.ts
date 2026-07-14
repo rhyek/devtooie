@@ -8,6 +8,31 @@ import {
   getDevScript,
 } from './config.js';
 
+describe('command / autostart', () => {
+  it('resolves an omitted command to the `dev` default', () => {
+    const { packages } = defineConfig({ packages: [{ name: 'svc' }] });
+    expect(packages[0]!.command).toEqual({
+      name: 'dev',
+      watches: true,
+      builds: true,
+      cleans: false,
+    });
+  });
+
+  it('passes `command: null` through (no dev process)', () => {
+    const { packages } = defineConfig({ packages: [{ name: 'lib', command: null }] });
+    expect(packages[0]!.command).toBeNull();
+  });
+
+  it('honors autostart and leaves it undefined (⇒ true) by default', () => {
+    const { packages } = defineConfig({
+      packages: [{ name: 'a', autostart: false }, { name: 'b' }],
+    });
+    expect(packages[0]!.autostart).toBe(false);
+    expect(packages[1]!.autostart).toBeUndefined();
+  });
+});
+
 describe('defineConfig path resolution', () => {
   it('defaults relativeDir to packages/<name> and resolves path against cwd', () => {
     const { packages } = defineConfig({ packages: [{ name: 'svc' }] });
@@ -51,6 +76,45 @@ describe('meta defaults', () => {
       packages: [{ name: 'svc' }],
     });
     expect(cfg.envFiles).toEqual(['.env', '.env.test']);
+  });
+
+  it('defaults logTimestamps to false', () => {
+    const cfg = defineConfig({ packages: [{ name: 'svc' }] });
+    expect(cfg.logTimestamps).toBe(false);
+  });
+
+  it('honors a logs.timestamps override', () => {
+    const cfg = defineConfig({ logs: { timestamps: true }, packages: [{ name: 'svc' }] });
+    expect(cfg.logTimestamps).toBe(true);
+  });
+});
+
+describe('logs (per-package)', () => {
+  it('passes a logs.formatter through unchanged (not a validating wrapper)', () => {
+    const fmt = (line: string): string => `[fmt] ${line}`;
+    const { packages } = defineConfig({ packages: [{ name: 'svc', logs: { formatter: fmt } }] });
+    expect(packages[0]!.logs?.formatter).toBe(fmt);
+    expect(packages[0]!.logs?.formatter!('hi')).toBe('[fmt] hi');
+  });
+
+  it('stores a package-level logs.timestamps override', () => {
+    const { packages } = defineConfig({
+      packages: [{ name: 'a', logs: { timestamps: true } }, { name: 'b' }],
+    });
+    expect(packages[0]!.logs?.timestamps).toBe(true);
+    expect(packages[1]!.logs).toBeUndefined();
+  });
+
+  it('leaves logs undefined when not set', () => {
+    const { packages } = defineConfig({ packages: [{ name: 'svc' }] });
+    expect(packages[0]!.logs).toBeUndefined();
+  });
+
+  it('rejects a non-function logs.formatter', () => {
+    expect(() =>
+      // @ts-expect-error logs.formatter must be a function
+      defineConfig({ packages: [{ name: 'svc', logs: { formatter: 'nope' } }] }),
+    ).toThrow(/logs\.formatter/);
   });
 });
 

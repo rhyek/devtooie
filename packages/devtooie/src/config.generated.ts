@@ -1,7 +1,8 @@
 // AUTO-GENERATED from config-schema.ts by scripts/gen-config-types.ts — DO NOT EDIT.
 // Regenerate with `pnpm --filter devtooie gen` (also runs as part of `pnpm build`).
 // Field docs come from the schemas' `.describe()`; `command`/`waitFor`/`deps`/`name`/
-// `packages` are overridden in config.ts, so their generated form here is intentionally ignored.
+// `packages` and the package-level `logs` are overridden in config.ts, so their generated form
+// here is intentionally ignored.
 /* eslint-disable */
 
 export type GeneratedPackageConfig = {
@@ -18,9 +19,9 @@ export type GeneratedPackageConfig = {
     subdomain?: (string | string[]) | undefined;
     /** Dev port; injected into the process as `PORT` and feeds `$port` substitution. */
     port?: number | undefined;
-    /** A browser package's HMR socket port. */
-    hmrPort?: number | undefined;
     command: any;
+    /** Automatically start this package during the run phase (default `true`). When `false`, devtooie leaves it stopped — start it yourself with the `s` hotkey (or a control-API `restart`). Ignored when `command` is `null` (that package never starts). */
+    autostart?: boolean | undefined;
     /** Footer links; each entry is one line (a string, `{ label, url }`, or an array on one line). */
     urls?: ((string | {
         label: string;
@@ -38,6 +39,10 @@ export type GeneratedPackageConfig = {
         build?: string[] | undefined;
         dev?: string[] | undefined;
         runtime?: string[] | undefined;
+    } | undefined;
+    logs?: {
+        timestamps?: boolean | undefined;
+        formatter?: any | undefined;
     } | undefined;
 };
 
@@ -58,9 +63,9 @@ export type GeneratedDefineConfig = {
         subdomain?: (string | string[]) | undefined;
         /** Dev port; injected into the process as `PORT` and feeds `$port` substitution. */
         port?: number | undefined;
-        /** A browser package's HMR socket port. */
-        hmrPort?: number | undefined;
         command: any;
+        /** Automatically start this package during the run phase (default `true`). When `false`, devtooie leaves it stopped — start it yourself with the `s` hotkey (or a control-API `restart`). Ignored when `command` is `null` (that package never starts). */
+        autostart?: boolean | undefined;
         /** Footer links; each entry is one line (a string, `{ label, url }`, or an array on one line). */
         urls?: ((string | {
             label: string;
@@ -78,6 +83,10 @@ export type GeneratedDefineConfig = {
             build?: string[] | undefined;
             dev?: string[] | undefined;
             runtime?: string[] | undefined;
+        } | undefined;
+        logs?: {
+            timestamps?: boolean | undefined;
+            formatter?: any | undefined;
         } | undefined;
     }[];
     /** Workspace-wide footer links, not tied to a package (extrinsic `$token`s only). */
@@ -97,5 +106,10 @@ export type GeneratedDefineConfig = {
     /** `.env` filenames loaded per package (defaults to the standard set). */
     env?: {
         files?: string[] | undefined;
+    } | undefined;
+    /** Log display options. */
+    logs?: {
+        /** Prefix each on-screen log line with a `YYYY-MM-DD HH:MM:SS` (24-hour) timestamp. Defaults to `false`. The on-disk log file always includes timestamps regardless of this setting. */
+        timestamps?: boolean | undefined;
     } | undefined;
 };

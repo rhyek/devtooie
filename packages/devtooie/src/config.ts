@@ -72,14 +72,56 @@ type PackageNameRefs<N extends string> = {
 
 export type PackageConfigInput<N extends string> = Omit<
   GeneratedPackageConfig,
-  'name' | 'command' | 'waitFor' | 'deps'
+  'name' | 'command' | 'waitFor' | 'deps' | 'logs'
 > &
   PackageNameRefs<N> & {
     /** Unique identifier; referenced from the CLI (`-p`), `waitFor`, and `deps`. */
     name: N;
+    /** Per-package log options, overriding the top-level {@link DefineConfigOptions.logs}. */
+    logs?: {
+      /**
+       * Prefix this package's on-screen log lines with a `YYYY-MM-DD HH:MM:SS` (24-hour)
+       * timestamp. Overrides the top-level `logs.timestamps` for this package; when omitted, it
+       * inherits that setting (which itself defaults to `false`). The on-disk log file is always
+       * timestamped regardless of this option.
+       */
+      timestamps?: boolean;
+      /**
+       * Transform each raw output line from this package's dev process before it's shown and
+       * logged. Receives one line of the process's stdout/stderr (no devtooie prefix or
+       * timestamp) and returns the string to display. Ideal for pretty-printing a "production"
+       * **structured (JSON) logger** — parse the line, and on a match return a compact
+       * human-readable form; otherwise return it unchanged:
+       *
+       * ```ts
+       * import { defineConfig, z } from 'devtooie';
+       * const Log = z.object({ level: z.string(), msg: z.string() });
+       * // ...
+       * logs: {
+       *   formatter: (line) => {
+       *     try {
+       *       const o = JSON.parse(line);
+       *       if (!Log.safeParse(o).success) return line;
+       *       return `${o.level} ${o.msg}`;
+       *     } catch {
+       *       return line; // not JSON — leave it as-is
+       *     }
+       *   },
+       * },
+       * ```
+       *
+       * devtooie owns the timestamp (its own, shown per `logs.timestamps` and always in the log
+       * file), so drop the log's own time field rather than printing it. The returned string
+       * (ANSI color allowed) is what's buffered, displayed, and written to the log file. A
+       * formatter that throws or returns a non-string falls back to the raw line.
+       */
+      formatter?: (line: string) => string;
+    };
     /**
      * The dev process to run and how it behaves. A script/target name, or
      * `[name, { watches, builds, cleans }]`. Default `['dev', { watches: true, builds: true }]`.
+     * Pass `null` for a package with no dev process — devtooie never starts it (it's build/dep-only)
+     * and it's hidden from the interactive picker.
      *
      * - `watches` — the script watches files and reloads itself.
      * - `builds` — the script (re)builds on start. `watches: true` requires `builds: true`.
@@ -89,7 +131,7 @@ export type PackageConfigInput<N extends string> = Omit<
      * Drives what to do after editing this package's code: `watches`→nothing, else
      * `builds`→restart, else rebuild.
      */
-    command?: CommandInput;
+    command?: CommandInput | null;
   };
 
 export type DefineConfigOptions<N extends string> = Omit<GeneratedDefineConfig, 'packages'> & {
@@ -118,6 +160,8 @@ export interface Config<N extends string> {
   urls?: UrlEntry[];
   /** Resolved `.env` filenames loaded per package (defaults to {@link DEFAULT_ENV_FILES}). */
   envFiles: string[];
+  /** Whether to prefix on-screen log lines with a timestamp (defaults to `false`). */
+  logTimestamps: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +320,7 @@ export function defineConfig<const N extends string>(opts: DefineConfigOptions<N
     packages: packages as unknown as ResolvedPackageConfig<N>[],
     urls,
     envFiles: parsed.env?.files ?? DEFAULT_ENV_FILES,
+    logTimestamps: parsed.logs?.timestamps ?? false,
   };
   registeredPackages = resolved.packages as AnyPackageConfig[];
   loadedConfig = resolved as Config<string>;

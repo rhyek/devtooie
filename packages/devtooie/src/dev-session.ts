@@ -40,7 +40,7 @@ export function dedupePorts(ports: (number | undefined)[]): number[] {
 export function collectDevPorts(): number[] {
   const ports: (number | undefined)[] = [];
   for (const a of getRegisteredPackages()) {
-    ports.push(a.port, a.hmrPort);
+    ports.push(a.port);
   }
   return dedupePorts(ports);
 }

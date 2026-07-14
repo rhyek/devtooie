@@ -1,15 +1,26 @@
+import chalk from 'chalk';
 import { render, type Instance } from 'ink';
+import path from 'node:path';
 import React, { useCallback, useRef, useState } from 'react';
 import { getRuntimeDepsMap, getSelectablePackages, loadSelection, saveSelection } from '../lib.js';
 import type { RunnerArgs } from '../runners/types.js';
 import { BuildProgress, type ControlServer } from './BuildProgress.js';
 import { NativeRunner } from './NativeRunner.js';
 import { PackageSelector } from './PackageSelector.js';
+import { setTitleSequence } from '../terminal-title.js';
 
 type Phase =
   | { type: 'package-select' }
   | { type: 'building'; selectedNames: string[] }
   | { type: 'running'; runnerArgs: RunnerArgs };
+
+/**
+ * A mutable holder for the session's current logfile path. The run phase updates
+ * `current` whenever the log is rotated (`t`) so `renderApp`'s exit closure — which
+ * runs outside the React tree, after Ink has torn down — can print the path of the
+ * last logfile written to.
+ */
+export type LogFileRef = { current: string | undefined };
 
 export type AppProps = {
   /** Explicit `--package` selections from the CLI; non-empty bypasses the selector entirely. */
@@ -17,6 +28,8 @@ export type AppProps = {
   /** `--last-answers`: reuse the previously saved selection and skip the selector. */
   lastAnswers?: boolean;
   logFile?: string;
+  /** Set by `renderApp`; the run phase keeps its `current` in sync with the active logfile. */
+  logFileRef?: LogFileRef;
 };
 
 /**
@@ -46,7 +59,7 @@ function getInitialPhase(
  * only when it actually came from the selector (a `--package`/`--last-answers` run
  * never touches it).
  */
-export function App({ packages = [], lastAnswers = false, logFile }: AppProps) {
+export function App({ packages = [], lastAnswers = false, logFile, logFileRef }: AppProps) {
   // Computed once: the registered-package catalog is fixed for the process's lifetime, and a
   // stable identity here means these props are never a reason for PackageSelector to redo
   // its own memoized derivations.
@@ -112,7 +125,7 @@ export function App({ packages = [], lastAnswers = false, logFile }: AppProps) {
       // phase.runnerArgs keeps its identity across re-renders (it only changes via
       // this same setPhase call, which doesn't repeat once in the run phase), so
       // NativeRunner's `args` prop is stable for as long as this phase lasts.
-      return <NativeRunner args={phase.runnerArgs} server={control} />;
+      return <NativeRunner args={phase.runnerArgs} server={control} logFileRef={logFileRef} />;
     }
   }
 }
@@ -127,14 +140,43 @@ export type RenderAppOptions = AppProps;
  * between a state commit and its render.
  */
 export function renderApp(options: RenderAppOptions = {}): Instance {
-  // Clear the terminal (screen + scrollback) before Ink mounts, so the first
-  // phase's prompts start at the top of a clean viewport. A raw write is fine
-  // here — it runs before `render()`, so there's no Ink render state to desync
-  // (unlike ProcessManager.resetScreen, which must route through the patched
-  // console once Ink is live).
-  process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
-  return render(<App {...options} />, {
+  // Render the whole app in the terminal's alternate screen (like vim/htop): Ink
+  // owns the full viewport, the footer stays glued to the bottom via flex layout,
+  // and the original terminal contents are restored on exit. Child-process logs
+  // are captured into the buffer and drawn by the virtualized LogPane rather than
+  // streamed onto the primary screen.
+  //
+  // The alternate screen otherwise leaves no trace on the primary screen, so
+  // bookend the session with a line before Ink takes over and one after it tears
+  // down — both land on the primary screen. The "started" line is preserved across
+  // the alt-screen save/restore; the "exited" line prints once `waitUntilExit`
+  // resolves, which is after Ink has restored the primary screen. Ink's own
+  // teardown drives the process exit from here (NativeRunner just calls `exit()`).
+  const startedAt = Date.now();
+  // Threaded into the run phase, which keeps `current` pointed at the active logfile
+  // (updated on rotation) so the exit line below can print the last one written to.
+  const logFileRef: LogFileRef = { current: options.logFile };
+  // Pin the tab/window title to the project (the config-root basename). Child dev
+  // processes emit their own title sequences, but those are stripped from captured
+  // output (see terminal-title.ts / process-manager.ts) so this one stays put.
+  if (process.stdout.isTTY) {
+    process.stdout.write(setTitleSequence(`devtooie: ${path.basename(process.cwd())}`));
+  }
+  process.stdout.write(`${chalk.green('▶')} ${chalk.bold('devtooie')} ${chalk.dim('started')}\n`);
+  const instance = render(<App {...options} logFileRef={logFileRef} />, {
     exitOnCtrlC: false,
     maxFps: 120,
+    alternateScreen: true,
   });
+  void instance.waitUntilExit().finally(() => {
+    const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+    let message = chalk.dim(`■ devtooie exited after ${seconds}s\n`);
+    if (logFileRef.current) {
+      message += chalk.dim(`  logfile: ${path.resolve(logFileRef.current)}\n`);
+    }
+    process.stdout.write(message, () => {
+      process.exit(0);
+    });
+  });
+  return instance;
 }

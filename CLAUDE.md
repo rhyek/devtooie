@@ -26,7 +26,7 @@ leave stale — treat keeping it current as mandatory.
 Human-facing:
 
 - `README.md` (repo root) — the slim landing page (overview, install, getting started,
-  config example, running, supporting scripts, environment loading, agent skill). It links
+  config example, running, supporting scripts, logging, environment loading, agent skill). It links
   out to the topic docs for the deep reference using **relative** `docs/*.md` paths — keep
   them relative in source. npmjs.com renders only the README and rewrites relative links
   against the repo **root** (ignoring `repository.directory`), which would 404 for this
@@ -35,7 +35,10 @@ Human-facing:
   absolute in source. (Relative links between the `docs/*.md` files themselves need no
   rewrite — npm never renders those.)
 - `docs/configuration.md` — full `defineConfig` / package-field reference
-  (fields, dependencies, TypeScript project references, typed package names).
+  (fields, dependencies, TypeScript project references, typed package names). Links out to
+  `docs/logging.md` for the `logs` option.
+- `docs/logging.md` — timestamps and structured-log (JSON) formatting: the top-level and
+  per-package `logs` options, the default formatter, the `logging` helpers, writing your own.
 - `docs/package-lifecycle.md` — how `command` flags decide
   restart-vs-rebuild after a code edit.
 - `docs/cli.md` — every CLI flag and subcommand, plus `devtooie env`.
@@ -94,3 +97,20 @@ example:
 ```sh
 cd example && pnpm dev   # runs the `devtooie` bin
 ```
+
+## Terminal UI rendering (internals)
+
+The interactive TUI is a **fullscreen alternate-screen app**: Ink owns the whole
+viewport, a **virtualized `LogPane`** renders only the log rows that fit the
+screen (from a subscribable `ProcessManager` buffer), and the footer is pinned to
+the bottom by flex layout. Mouse-wheel + keyboard scrolling replace the terminal's
+native scrollback, and text selection is **app-managed** (SGR mouse reporting +
+drag-to-copy) since native selection can't survive Ink's in-place repaints. Before
+changing anything about the log viewport, scrolling, the footer, selection, or how
+output reaches the screen, read
+[`docs/architecture/rendering.md`](docs/architecture/rendering.md) — it documents
+the virtualization (`log-window.ts`/`scroll.ts`), the buffer subscription, and the
+mouse/selection/clipboard handling (`mouse.ts`/`selection.ts`/`clipboard.ts`). Exit
+behavior (including releasing the mouse) is in
+[`docs/architecture/exiting.md`](docs/architecture/exiting.md). (Internal
+contributor docs — not part of the user-facing docs or `agents.md`.)
