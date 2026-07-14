@@ -15,11 +15,11 @@ import type { startCommandServer } from '../command-server.js';
 import { normalizeUrlEntry, type UrlLine } from '../config.js';
 import { watchGitBranch } from '../git-watch.js';
 import { getGitBranch } from '../lib.js';
-import { ALT_SCROLL_DISABLE, ALT_SCROLL_ENABLE } from '../mouse.js';
+import { MOUSE_DISABLE, MOUSE_ENABLE, isMouseSequence, parseMouseEvents } from '../mouse.js';
 import { ProcessManager } from '../process-manager.js';
 import type { RunnerArgs } from '../runners/types.js';
 import { HotkeyHints, type HotkeyHintItem } from './HotkeyHints.js';
-import { LogPane, useLogViewport } from './LogPane.js';
+import { LogPane, useDragSelection, useLogViewport } from './LogPane.js';
 
 export type NativeRunnerProps = {
   args: RunnerArgs;
@@ -80,6 +80,9 @@ const STATUS_COLORS: Record<PackageStatus, string> = {
  * `/command/quit`) never has to wait indefinitely for a stuck child process.
  */
 const SHUTDOWN_TIMEOUT_MS = 10_000;
+
+/** Rendered rows scrolled per mouse-wheel notch. */
+const WHEEL_STEP = 3;
 
 /** Wraps `text` in an OSC 8 terminal hyperlink; terminals without support just show the text. */
 function hyperlink(url: string, text: string): string {
@@ -420,10 +423,16 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
   // repeat Ctrl+C) skips straight to a hard kill.
   const shutdown = useCallback(async () => {
     if (shuttingDownRef.current) {
+      // Hard kill: exits immediately, before the unmount effect's cleanup runs,
+      // so release the mouse here too.
+      process.stdout.write(MOUSE_DISABLE);
       manager.forceKillAll();
       process.exit(1);
     }
     shuttingDownRef.current = true;
+    // Hand the mouse back to the terminal before the UI collapses (the unmount
+    // effect also does this, but only once Ink tears the tree down).
+    process.stdout.write(MOUSE_DISABLE);
     setShuttingDown(true);
     markAllStopped();
     await Promise.race([
@@ -480,16 +489,41 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
   const paneHeight = Math.max(0, rows - topHeight - bottomHeight);
   const viewport = useLogViewport(manager, columns, paneHeight);
 
-  // Enable the terminal's alternate-scroll mode so the wheel scrolls the log
-  // viewport (delivered as Up/Down) without capturing the mouse — native
-  // click-drag text selection keeps working. Disabled on unmount.
+  // App-managed drag-to-select-and-copy over the log pane (native terminal
+  // selection can't survive our in-place repaints — see selection.ts).
+  const dragSelection = useDragSelection({
+    rows: viewport.rows,
+    firstVisibleFlatRow: viewport.firstVisibleFlatRow,
+    topHeight,
+    paneHeight,
+  });
+  const {
+    clear: clearSelection,
+    copy: copySelection,
+    onMouse: onMouseSelect,
+    highlights,
+    copiedNotice,
+    hasSelection,
+  } = dragSelection;
+
+  // Enable SGR mouse reporting so the wheel scrolls the viewport and click-drag
+  // drives the app-managed selection (see mouse.ts / selection.ts). Reporting
+  // takes over the mouse from the terminal while active, so it MUST be disabled
+  // on unmount — and defensively in `shutdown()` — to hand the mouse back.
   const { stdout } = useStdout();
   useEffect(() => {
-    stdout.write(ALT_SCROLL_ENABLE);
+    stdout.write(MOUSE_ENABLE);
     return () => {
-      stdout.write(ALT_SCROLL_DISABLE);
+      stdout.write(MOUSE_DISABLE);
     };
   }, [stdout]);
+
+  // A resize (wrapping changes) or a filter change re-flows the visible content,
+  // invalidating the flat-row/column coordinates a selection is anchored to — so
+  // drop any active selection.
+  useEffect(() => {
+    clearSelection();
+  }, [columns, rows, activeFilter, clearSelection]);
 
   // Kill every child process when this run phase unmounts.
   useEffect(() => {
@@ -543,6 +577,22 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
     }
 
     if (shuttingDown) {
+      return;
+    }
+
+    // Mouse: SGR reports arrive as `input`. The wheel scrolls the viewport;
+    // press/drag/release drive the app-managed selection (see mouse.ts /
+    // selection.ts). Handled before the mode branches so a report never leaks
+    // into filter/command text entry.
+    if (isMouseSequence(input)) {
+      for (const report of parseMouseEvents(input)) {
+        if (report.type === 'wheel') {
+          // A selection is content-anchored, so it survives wheel scrolling too.
+          viewport.scrollLines(report.dir === 'up' ? WHEEL_STEP : -WHEEL_STEP);
+        } else {
+          onMouseSelect(report);
+        }
+      }
       return;
     }
 
@@ -609,9 +659,9 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
 
     // Normal mode.
 
-    // Log viewport scrolling. The mouse wheel arrives here as Up/Down via the
-    // terminal's alternate-scroll mode (see mouse.ts), so the wheel and the arrow
-    // keys drive the same scroll; left/right navigate packages.
+    // Log viewport scrolling via the keyboard (the mouse wheel is handled in the
+    // mouse block above); left/right navigate packages. A selection is anchored to
+    // content, so it rides along with scrolling and is intentionally kept.
     if (key.pageUp) {
       viewport.scrollPages(1);
       return;
@@ -647,6 +697,7 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
     }
 
     if (input === 'k') {
+      clearSelection();
       manager.clearBuffer();
       return;
     }
@@ -662,9 +713,21 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
       return;
     }
 
-    if (key.escape && activeFilter) {
-      setActiveFilter('');
-      setFilterInput('');
+    // Copy the current drag-selection (no-op when nothing is selected).
+    if (input === 'c') {
+      copySelection();
+      return;
+    }
+
+    if (key.escape) {
+      // Escape clears an active selection first, then an active filter.
+      if (clearSelection()) {
+        return;
+      }
+      if (activeFilter) {
+        setActiveFilter('');
+        setFilterInput('');
+      }
       return;
     }
 
@@ -745,6 +808,8 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
     { header: 'logs' },
     { key: 'k', label: 'clear' },
     { key: 'f', label: 'filter' },
+    // `c: copy` only shows once a drag-selection exists (there's nothing to copy otherwise).
+    ...(hasSelection ? [{ key: 'c', label: 'copy' } as HotkeyHintItem] : []),
     { separator: true },
     { key: '^c', label: 'quit' },
   ];
@@ -846,7 +911,10 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
     </>
   ) : (
     <>
-      <HotkeyHints hints={sessionHints} />
+      <Box>
+        <HotkeyHints hints={sessionHints} />
+        {copiedNotice && <Text color="green">{`    ✓ ${copiedNotice} to clipboard`}</Text>}
+      </Box>
       {filterLine}
     </>
   );
@@ -869,7 +937,7 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
       {/* Always rendered so flexGrow pins the footer to the bottom from the first
           frame; paneHeight is briefly the full height until the footer is measured,
           which is harmless (the run-phase buffer starts empty). */}
-      <LogPane rows={viewport.rows} />
+      <LogPane rows={viewport.rows} highlights={highlights} />
       <Box ref={bottomRef} flexDirection="column" flexShrink={0}>
         {viewport.hiddenBelow > 0 && (
           <Text dimColor>

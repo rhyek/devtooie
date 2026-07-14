@@ -33,25 +33,29 @@ cleanup is identical no matter how the exit was requested.
 `shutdown()` (`components/NativeRunner.tsx`), in order:
 
 1. **Re-entry guard.** If a shutdown is already in progress, this is a second
-   Ctrl+C — `manager.forceKillAll()` and `process.exit(1)` immediately (no waiting).
-2. **Mark the UI shutting down** (`setShuttingDown(true)` + `markAllStopped()`).
+   Ctrl+C — write `MOUSE_DISABLE` (this path exits before the unmount cleanup
+   runs), `manager.forceKillAll()`, and `process.exit(1)` immediately (no waiting).
+2. **Hand the mouse back.** Write `MOUSE_DISABLE` so SGR mouse reporting (enabled
+   for drag-to-select) is off before the UI collapses; the unmount effect's
+   cleanup also writes it, but only once Ink tears the tree down.
+3. **Mark the UI shutting down** (`setShuttingDown(true)` + `markAllStopped()`).
    The run-phase render collapses to a single non-fullscreen `Shutting down…`
    line (see rendering doc — a fullscreen final frame would make Ink clear the
    terminal on unmount and risk a blank block on the restored screen).
-3. **Kill every child**, bounded: `await Promise.race([manager.shutdownAll(),
+4. **Kill every child**, bounded: `await Promise.race([manager.shutdownAll(),
    timeout(SHUTDOWN_TIMEOUT_MS)])` — a stuck child can't hang the exit past
    `SHUTDOWN_TIMEOUT_MS` (10s).
-4. **Close the control server** (`await server.close()`).
-5. **Dispose the manager** (`manager.dispose()` — env-file watchers, the
+5. **Close the control server** (`await server.close()`).
+6. **Dispose the manager** (`manager.dispose()` — env-file watchers, the
    `process.on('exit')` handler, buffers).
-6. **Hand off to Ink** (`exit()`, from `useApp()`): unmount the tree, which
+7. **Hand off to Ink** (`exit()`, from `useApp()`): unmount the tree, which
    restores the primary screen and resolves `waitUntilExit`.
-7. **Safety net:** `setTimeout(() => process.exit(0), 1500)`. The process normally
+8. **Safety net:** `setTimeout(() => process.exit(0), 1500)`. The process normally
    exits from `renderApp` (below) within milliseconds, so this never fires; it
    exists only so a stalled teardown can't leave a lingering **parent** process
-   (all children are already dead by step 3).
+   (all children are already dead by step 4).
 
-Everything that could leave something running (steps 3–5) happens **before**
+Everything that could leave something running (steps 4–6) happens **before**
 `exit()`. Nothing about the process-exit mechanism can affect it.
 
 ## Process exit + screen restore
@@ -111,10 +115,14 @@ applies (the plain runner drives the same `ProcessManager`).
   the same `shutdown()`. Don't fork them.
 - **The process must always exit.** The `renderApp` handler is the normal exit;
   the `NativeRunner` `setTimeout` is the guaranteed fallback. Keep both.
-- **Second Ctrl+C is a hard kill** — `forceKillAll()` + `process.exit(1)`, no
-  waiting.
+- **Second Ctrl+C is a hard kill** — `MOUSE_DISABLE` + `forceKillAll()` +
+  `process.exit(1)`, no waiting.
 - **The exit line prints after `waitUntilExit`**, never before — otherwise it
   lands on the alternate screen and is discarded on restore.
+- **Release the mouse on every exit.** SGR mouse reporting is on during the run
+  phase (for drag-to-select); write `MOUSE_DISABLE` on the way out of every path —
+  the unmount cleanup, `shutdown()`, and the hard-kill branch all do — or the
+  terminal is left capturing the mouse after devtooie exits.
 
 ## File map
 

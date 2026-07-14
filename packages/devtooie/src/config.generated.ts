@@ -1,7 +1,8 @@
 // AUTO-GENERATED from config-schema.ts by scripts/gen-config-types.ts — DO NOT EDIT.
 // Regenerate with `pnpm --filter devtooie gen` (also runs as part of `pnpm build`).
 // Field docs come from the schemas' `.describe()`; `command`/`waitFor`/`deps`/`name`/
-// `packages` are overridden in config.ts, so their generated form here is intentionally ignored.
+// `packages` and the package-level `logs` are overridden in config.ts, so their generated form
+// here is intentionally ignored.
 /* eslint-disable */
 
 export type GeneratedPackageConfig = {
@@ -38,6 +39,10 @@ export type GeneratedPackageConfig = {
         build?: string[] | undefined;
         dev?: string[] | undefined;
         runtime?: string[] | undefined;
+    } | undefined;
+    logs?: {
+        timestamps?: boolean | undefined;
+        formatter?: any | undefined;
     } | undefined;
 };
 
@@ -79,6 +84,10 @@ export type GeneratedDefineConfig = {
             dev?: string[] | undefined;
             runtime?: string[] | undefined;
         } | undefined;
+        logs?: {
+            timestamps?: boolean | undefined;
+            formatter?: any | undefined;
+        } | undefined;
     }[];
     /** Workspace-wide footer links, not tied to a package (extrinsic `$token`s only). */
     urls?: ((string | {
@@ -97,5 +106,10 @@ export type GeneratedDefineConfig = {
     /** `.env` filenames loaded per package (defaults to the standard set). */
     env?: {
         files?: string[] | undefined;
+    } | undefined;
+    /** Log display options. */
+    logs?: {
+        /** Prefix each on-screen log line with a `YYYY-MM-DD HH:MM:SS` (24-hour) timestamp. Defaults to `false`. The on-disk log file always includes timestamps regardless of this setting. */
+        timestamps?: boolean | undefined;
     } | undefined;
 };

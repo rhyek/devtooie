@@ -22,6 +22,9 @@ picked.
 - **Streamed, filterable logs.** Every package's output is streamed live into one
   combined view; filter it down to a single package or a search term on the fly
   (the `f` hotkey; matching is case- and accent-insensitive).
+- **Structured logs, by default.** devtooie auto-formats every package's JSON logs (Go `slog`,
+  pino, winston, …) as a colored `[LEVEL] message` for local dev — no `NODE_ENV` branching in your
+  app, and nothing to configure. See [Logging](docs/logging.md).
 - **Two run modes.** An interactive terminal UI to pick and watch packages, or a
   `--plain` log-streaming mode for coding agents.
 - **One-off commands.** `devtooie cmd` runs a single command (or a package
@@ -198,6 +201,13 @@ agent driving your project. Full reference: [`devtooie cmd`](docs/cli.md#devtooi
 The full `defineConfig` and per-package field reference — including dependencies,
 TypeScript project references, and typed package names — lives in
 **[docs/configuration.md](docs/configuration.md)**.
+
+## Logging
+
+devtooie **auto-formats structured (JSON) logs** — from Go `slog`, pino, winston, … — into a
+colored `[LEVEL] message` for local dev, with no `NODE_ENV` branching and nothing to configure. You
+can add on-screen timestamps, and override or customize the formatter per package. See
+**[docs/logging.md](docs/logging.md)**.
 
 ## Package lifecycle when you edit code
 

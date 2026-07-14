@@ -108,6 +108,20 @@ export const PackageConfigSchema = z.object({
       runtime: z.array(z.string()).optional(),
     })
     .optional(),
+  // Overridden in config.ts — `logs.formatter` is a function Zod can't usefully type (`z.custom`
+  // erases to `any`), so the whole object is re-typed there. `z.custom` validates it's a function
+  // and passes it through untouched, so the exact user callback (not a validating wrapper) reaches
+  // the runtime.
+  logs: z
+    .object({
+      timestamps: z.boolean().optional(),
+      formatter: z
+        .custom<(line: string) => string>((v) => typeof v === 'function', {
+          message: 'logs.formatter must be a function',
+        })
+        .optional(),
+    })
+    .optional(),
 });
 
 export const DefineConfigSchema = z.object({
@@ -135,4 +149,15 @@ export const DefineConfigSchema = z.object({
     .object({ files: z.array(z.string()).optional() })
     .optional()
     .describe('`.env` filenames loaded per package (defaults to the standard set).'),
+  logs: z
+    .object({
+      timestamps: z
+        .boolean()
+        .optional()
+        .describe(
+          'Prefix each on-screen log line with a `YYYY-MM-DD HH:MM:SS` (24-hour) timestamp. Defaults to `false`. The on-disk log file always includes timestamps regardless of this setting.',
+        ),
+    })
+    .optional()
+    .describe('Log display options.'),
 });

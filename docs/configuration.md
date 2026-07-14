@@ -9,6 +9,7 @@
 | `packages`     | Your package definitions (see below).                                                       |
 | `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.            |
 | `env`          | `.env` files loaded per package — see [Environment loading](../README.md#environment-env-loading). |
+| `logs`         | Top-level log options (`{ timestamps? }`); timestamps + structured-log formatting — see [Logging](./logging.md). |
 | `apiPort`      | Pin the [control API](./control-api.md) port (otherwise chosen automatically).              |
 
 Each package entry has a flat set of fields (only `name` is required; omit the rest for a
@@ -45,6 +46,15 @@ build-only lib):
   this package's project references. Defaults to `tsconfig.build.json`, then
   `tsconfig.json`. See [project references](#typescript-project-references--shared-libraries).
 - **`deps.build`** / **`deps.dev`** / **`deps.runtime`** — see below.
+- **`logs`** — per-package log options `{ timestamps?, formatter? }`. `timestamps` overrides the
+  top-level [`logs.timestamps`](./logging.md#timestamps) for this package (inheriting it when
+  omitted); `formatter` (`(line: string) => string`) **overrides the default structured-log
+  formatter** that devtooie already applies to every package. See [Logging](./logging.md).
+
+## Logging
+
+Timestamps and structured-log (JSON) formatting — the top-level and per-package `logs` options —
+have their own page: **[Logging](./logging.md)**.
 
 ## Dependencies
 

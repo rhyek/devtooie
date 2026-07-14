@@ -2,14 +2,11 @@
 
 ## 0.4.0
 
-- **New `devtooie cmd` subcommand** — run a **one-off command** with a package's exact environment, without starting a session (migrations, seed scripts, scrapers, a REPL). It runs the command in the package's directory with that package's resolved `.env` and its `port` (as `PORT`) injected — the same environment the TUI would give it. The package is inferred from your current directory (the nearest ancestor package, or the workspace root when you're inside none), or named explicitly with `-p, --package <name>`. Use `-c, --cmd <script>` to run one of the package's `package.json` scripts / `Makefile` targets (forwarding args after `--`) instead of a literal command. Output streams to your terminal and is teed to a fresh timestamped logfile.
-- **Removed the `devtooie env` subcommand** — `devtooie cmd` supersedes it. To just inspect a package's resolved vars, run `devtooie cmd -- env` (or `printenv`). _(Breaking.)_
-- **`devtooie resolvedeps` now takes a positional `<package>`** (`devtooie resolvedeps api`) instead of the `-p <name>` flag. _(Breaking.)_
-- **Every command now works from any subdirectory.** As a first step devtooie walks up to the nearest `devtooie.config.*`, switches to that directory, and loads its workspace-scope `.env` into devtooie's own environment — so running from a subdirectory behaves the same as running from the repo root.
-- **Session logfiles dropped the `dev-` prefix** — a run's log is now `<timestamp>.log` (still under `node_modules/.devtooie/logs/`, or `--log-dir`). _(Breaking if you matched the old filename.)_
-- **`command: null`** — declare a package with **no dev process**: devtooie never starts it (it's build/dep-only) and it's hidden from the interactive picker. Its `build`/dep role is unaffected.
-- **New per-package `autostart` option** (default `true`). Set `autostart: false` to keep a package from auto-starting in the run phase; it stays stopped until you start it with the `s` hotkey (or a control-API `restart`). Handy for packages you only run on demand.
-- **Removed the per-package `hmrPort` field.** Its only role was adding a second port to the startup dev-port sweep; declare that port as the package's `port` (or rely on the process-tree cleanup) instead. _(Breaking if you set it.)_
+- **Reworked terminal UI.** The interactive session now runs as a fullscreen app, for far more solid rendering: it reflows cleanly on terminal resize (no more gaps or a misplaced footer), has much less jitter during normal operation, and stays smooth however fast logs stream. History now scrolls **in-app** (mouse wheel or keyboard) instead of through the terminal's own scrollback, and log text is selectable and copyable.
+- **New `devtooie cmd` subcommand** (replaces `devtooie env`) — run a one-off command with a package's exact environment without starting a session. See [docs/cli.md](docs/cli.md#devtooie-cmd). _(Breaking: `devtooie env` removed.)_
+- **Every command now works from any subdirectory** — devtooie walks up to the nearest `devtooie.config.*`, switches to it, and loads its workspace-scope `.env` first, so a subdirectory behaves the same as the repo root.
+- **Session logfiles** — a run's log is now `<timestamp>.log` (under `node_modules/.devtooie/logs/`, or `--log-dir`).
+- **Structured-log formatting, by default.** Every package's JSON logs (Go `slog`, pino, winston, …) are auto-formatted for dev as a colored `[LEVEL] message` with indented properties — non-JSON passes through untouched. Override or customize per package via `logs.formatter` (with the exported `logging` helpers), and opt into on-screen timestamps with `logs.timestamps`. See [docs/logging.md](docs/logging.md).
 
 ## 0.3.1
 

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -12,17 +12,31 @@ import (
 // process (`start` → `go run .`) does NOT watch files (see the package's
 // `run.command` in devtooie.config.ts), so after editing this file you restart the
 // process to recompile and pick up the change rather than relying on a reloader.
+//
+// Logging is structured (JSON) via the standard library's `log/slog` — the idiomatic
+// Go way. In real apps you'd emit this "production" format unconditionally instead of
+// branching logger behavior on an environment (dev vs prod). devtooie's per-package
+// `logs.formatter` (see devtooie.config.ts) reshapes these JSON lines into a readable
+// form for the TUI; in deployment the same JSON is what your log pipeline ingests.
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})))
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "3002"
 	}
 
-	log.Println("[worker] started")
+	slog.Info("worker started", "port", port)
 
 	go func() {
-		for now := range time.Tick(5 * time.Second) {
-			log.Printf("[worker] tick @ %s", now.UTC().Format(time.RFC3339))
+		ticks := 0
+		// devtooie stamps each line with its own timestamp, so the worker doesn't emit one —
+		// it just logs a structured event with a couple of attributes.
+		for range time.Tick(5 * time.Second) {
+			ticks++
+			slog.Info("tick", "count", ticks)
 		}
 	}()
 
@@ -32,6 +46,10 @@ func main() {
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	log.Printf("[worker] health endpoint on http://localhost:%s/health", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	slog.Info("health endpoint ready", "url", "http://localhost:"+port+"/health")
+
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
+		slog.Error("server stopped", "err", err.Error())
+		os.Exit(1)
+	}
 }

@@ -43,13 +43,16 @@ export function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
-/** `HH:MM:SS` local-time stamp prefixed to each logged line. */
+/** `YYYY-MM-DD HH:MM:SS` local-time (24-hour) stamp prefixed to each logged line. */
 export function logTimestamp(): string {
   const d = new Date();
+  const yyyy = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
   const ss = String(d.getSeconds()).padStart(2, '0');
-  return `${hh}:${mm}:${ss}`;
+  return `${yyyy}-${mo}-${dd} ${hh}:${mm}:${ss}`;
 }
 
 const RUNNER_MANAGED = new Set(['dev', 'build', 'build:clean', 'build-clean', 'clean']);
@@ -304,6 +307,12 @@ export function resetSelection(): void {
 
 /** Current git branch; short SHA on detached HEAD; null when not a repo. */
 export function getGitBranch(): string | null {
+  // When recording a demo/screenshot (DEVTOOIE_DEMO_RECORDING set), force the branch to read
+  // `main` regardless of the real checked-out one. The branch-change watcher then sees only
+  // `main`, so it won't trip.
+  if (process.env.DEVTOOIE_DEMO_RECORDING) {
+    return 'main';
+  }
   try {
     const { stdout } = execaSync('git', ['rev-parse', '--abbrev-ref', 'HEAD']);
     if (stdout.trim() === 'HEAD') {
@@ -428,6 +437,7 @@ export function buildRunnerArgs(
     extraCommandsMap,
     topLevelUrls: config?.urls?.map(normalizeUrlEntry),
     envFiles: config?.envFiles ?? DEFAULT_ENV_FILES,
+    logTimestamps: config?.logTimestamps ?? false,
     cwd: process.cwd(),
   };
 }

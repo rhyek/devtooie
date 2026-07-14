@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import chalk from 'chalk';
 import { ProcessManager, resolveColorSpec, packagePrefixColor } from './process-manager.js';
+import { createFormatter } from './log-formatter.js';
+import { stripAnsi } from './lib.js';
 import type { AnyPackageConfig } from './config.js';
 import type { RunnerArgs } from './runners/types.js';
 
@@ -11,8 +13,22 @@ let dir: string;
 let logFile: string;
 let manager: ProcessManager | undefined;
 
+/**
+ * Test teardown for a manager: SIGKILL any child process groups it still owns,
+ * THEN release its handles. `dispose()` on its own only removes the
+ * `process.on('exit')` safety net and the instance-registry entry — by contract
+ * it does NOT kill children — so a test that leaves a dev process running (e.g.
+ * a `start` with no matching `stop`) would otherwise orphan a detached process
+ * group. The fixtures idle on `setInterval`, so an orphan never exits and piles
+ * up across runs. Always kill before disposing in tests.
+ */
+function disposeManager(m: ProcessManager | undefined): void {
+  m?.killAll();
+  m?.dispose();
+}
+
 afterEach(() => {
-  manager?.dispose();
+  disposeManager(manager);
   manager = undefined;
 });
 
@@ -91,6 +107,60 @@ function runnerArgs(a: AnyPackageConfig): RunnerArgs {
     logFile,
   };
 }
+
+describe('on-screen log timestamps', () => {
+  const TS = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[/;
+
+  function lastRow(mgr: ProcessManager): string {
+    const lines = mgr.getVisibleLines();
+    const line = lines[lines.length - 1]!;
+    return stripAnsi(mgr.wrapLine(line, 200)[0]!);
+  }
+
+  it('prefixes rows with a `YYYY-MM-DD HH:MM:SS` timestamp when logs.timestamps is enabled', () => {
+    manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: true });
+    manager.logSystem('hello world');
+    const row = lastRow(manager);
+    expect(row).toMatch(TS);
+    expect(row).toContain('hello world');
+  });
+
+  it('leaves rows un-timestamped by default', () => {
+    manager = new ProcessManager(runnerArgs(pkg()));
+    manager.logSystem('hello world');
+    const row = lastRow(manager);
+    expect(row).not.toMatch(TS);
+    expect(row).toContain('hello world');
+  });
+
+  it('always timestamps the on-disk log file, even with the on-screen option off', () => {
+    manager = new ProcessManager(runnerArgs(pkg()));
+    manager.logSystem('to disk');
+    expect(fs.readFileSync(logFile, 'utf8')).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[/m);
+  });
+
+  // A control line tagged with a package's name shares that package's timestamp resolution,
+  // so it's a spawn-free way to observe the per-package override.
+  it("a package's logs.timestamps: true overrides a top-level default of false", () => {
+    const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', path: dir, logs: { timestamps: true } }; // prettier-ignore
+    manager = new ProcessManager({ ...runnerArgs(p), logTimestamps: false });
+    manager.logControl('hi', 'fixture');
+    expect(lastRow(manager)).toMatch(TS);
+  });
+
+  it("a package's logs.timestamps: false overrides a top-level default of true", () => {
+    const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', path: dir, logs: { timestamps: false } }; // prettier-ignore
+    manager = new ProcessManager({ ...runnerArgs(p), logTimestamps: true });
+    manager.logControl('hi', 'fixture');
+    expect(lastRow(manager)).not.toMatch(TS);
+  });
+
+  it('a package without logs.timestamps inherits the top-level default', () => {
+    manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: true });
+    manager.logControl('hi', 'fixture');
+    expect(lastRow(manager)).toMatch(TS);
+  });
+});
 
 describe('ProcessManager', () => {
   it('starts a package, tracks it as running, then stops it cleanly', async () => {
@@ -279,7 +349,7 @@ describe('ProcessManager env injection', () => {
     envLog = path.join(envDir, 'devlog.txt');
   });
   afterAll(() => {
-    mgr?.dispose();
+    disposeManager(mgr);
     fs.rmSync(envDir, { recursive: true, force: true });
   });
 
@@ -329,7 +399,7 @@ describe('ProcessManager PORT injection', () => {
     portLog = path.join(portDir, 'devlog.txt');
   });
   afterAll(() => {
-    mgr?.dispose();
+    disposeManager(mgr);
     fs.rmSync(portDir, { recursive: true, force: true });
   });
 
@@ -386,7 +456,7 @@ describe('ProcessManager env-change restart', () => {
     log = path.join(d, 'devlog.txt');
   });
   afterAll(() => {
-    m?.dispose();
+    disposeManager(m);
     fs.rmSync(d, { recursive: true, force: true });
   });
 
@@ -420,6 +490,123 @@ describe('ProcessManager env-change restart', () => {
   }, 15_000);
 });
 
+describe('ProcessManager logs.formatter', () => {
+  let fmtDir: string;
+  let fmtLog: string;
+  let mgr: ProcessManager | undefined;
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  // Emits one structured (JSON) log line, then a plain non-JSON line, then idles.
+  beforeAll(() => {
+    fmtDir = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-pm-fmt-'));
+    fs.writeFileSync(
+      path.join(fmtDir, 'package.json'),
+      JSON.stringify({
+        name: 'fmtfix',
+        version: '1.0.0',
+        scripts: {
+          dev: `node -e "console.log(JSON.stringify({level:'INFO',msg:'hello world',n:1}));console.log('plain non-json line');setInterval(()=>{},1e9)"`,
+        },
+      }),
+    );
+    fmtLog = path.join(fmtDir, 'devlog.txt');
+  });
+  afterAll(() => {
+    disposeManager(mgr);
+    fs.rmSync(fmtDir, { recursive: true, force: true });
+  });
+
+  function argsWith(formatter?: (line: string) => string): RunnerArgs {
+    const a: AnyPackageConfig = {
+      name: 'fmtfix',
+      relativeDir: '.',
+      path: fmtDir,
+      ...(formatter ? { logs: { formatter } } : {}),
+    };
+    return {
+      sortedPackages: [a],
+      selectedSet: new Set([a.name]),
+      buildDepSet: new Set(),
+      rebuildableSet: new Set(),
+      waitForMap: {},
+      healthcheckUrls: {},
+      extraCommandsMap: {},
+      logFile: fmtLog,
+      cwd: fmtDir,
+    };
+  }
+
+  it('formats structured lines and passes non-structured output through', async () => {
+    const formatter = (line: string): string => {
+      try {
+        const o = JSON.parse(line) as { level?: unknown; msg?: unknown };
+        if (typeof o.level === 'string' && typeof o.msg === 'string') return `${o.level} ${o.msg}`;
+      } catch {
+        /* not json — fall through */
+      }
+      return line;
+    };
+    mgr = new ProcessManager(argsWith(formatter), { plain: true });
+    mgr.start('fmtfix');
+    await wait(1500);
+    await mgr.stop('fmtfix');
+
+    const contents = fs.readFileSync(fmtLog, 'utf8');
+    expect(contents).toContain('INFO hello world'); // structured line reshaped
+    expect(contents).not.toContain('{"level"'); // raw JSON not written
+    expect(contents).toContain('plain non-json line'); // non-structured passed through
+    disposeManager(mgr);
+    mgr = undefined;
+  }, 10_000);
+
+  it('applies the default formatter when a package has no logs.formatter', async () => {
+    mgr = new ProcessManager(argsWith(), { plain: true }); // no per-package formatter
+    mgr.start('fmtfix');
+    await wait(1500);
+    await mgr.stop('fmtfix');
+
+    // The default formatter runs automatically: the JSON line is formatted, the plain one isn't.
+    const contents = fs.readFileSync(fmtLog, 'utf8');
+    expect(contents).toMatch(/\[fmtfix\] \[INFO\] hello world$/m);
+    expect(contents).toContain('plain non-json line');
+    disposeManager(mgr);
+    mgr = undefined;
+  }, 10_000);
+
+  it('splits a multi-line formatter result (createFormatter) into separate, prefixed lines', async () => {
+    mgr = new ProcessManager(argsWith(createFormatter()), { plain: true });
+    mgr.start('fmtfix');
+    await wait(1500);
+    await mgr.stop('fmtfix');
+
+    // The header and the indented property each land on their own prefixed logfile line.
+    const contents = fs.readFileSync(fmtLog, 'utf8');
+    expect(contents).toMatch(/\[fmtfix\] \[INFO\] hello world$/m);
+    expect(contents).toMatch(/\[fmtfix\] {3}n: 1$/m);
+    expect(contents).toContain('plain non-json line'); // non-JSON still passes through
+    disposeManager(mgr);
+    mgr = undefined;
+  }, 10_000);
+
+  it('falls back to the raw line when the formatter throws', async () => {
+    mgr = new ProcessManager(
+      argsWith(() => {
+        throw new Error('boom');
+      }),
+      { plain: true },
+    );
+    mgr.start('fmtfix');
+    await wait(1500);
+    await mgr.stop('fmtfix');
+
+    // A throwing formatter must not drop output — the raw line survives.
+    const contents = fs.readFileSync(fmtLog, 'utf8');
+    expect(contents).toContain('hello world');
+    disposeManager(mgr);
+    mgr = undefined;
+  }, 10_000);
+});
+
 describe('ProcessManager rebuild (clean + build)', () => {
   let rbDir: string;
   let rbLog: string;
@@ -445,7 +632,7 @@ describe('ProcessManager rebuild (clean + build)', () => {
     );
   });
   afterAll(() => {
-    mgr?.dispose();
+    disposeManager(mgr);
     fs.rmSync(rbDir, { recursive: true, force: true });
   });
 

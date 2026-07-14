@@ -1,4 +1,4 @@
-import { defineConfig } from 'devtooie';
+import { defineConfig, logging } from 'devtooie';
 
 export default defineConfig({
   packages: [
@@ -30,6 +30,14 @@ export default defineConfig({
       command: ['start', { watches: false, builds: true, cleans: true }],
       port: 3002,
       healthcheck: 'http://localhost:$port/health',
+      // devtooie applies a default structured-log formatter to every package (non-JSON passes
+      // through, JSON is pretty-printed as `[LEVEL] message`), so the worker's `log/slog` output is
+      // already formatted with no config. Here we override only to hide slog's own `time` field,
+      // since devtooie stamps its own timestamp — `logging.formatter` is that same default, with a
+      // `custom` tweak. (Node services would use `logging.nodejs.pino.formatter()` etc.)
+      logs: {
+        formatter: logging.formatter({ fields: { custom: { time: { show: false } } } }),
+      },
     },
     {
       name: 'frontend',

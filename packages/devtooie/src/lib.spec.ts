@@ -22,6 +22,7 @@ import {
   getTsconfigBuildPackages,
   getMakeTargets,
   findAncestorPackage,
+  logTimestamp,
 } from './lib.js';
 import type { AnyPackageConfig } from './config.js';
 import { defineConfig } from './config.js';
@@ -324,6 +325,26 @@ describe('display sort + runner args', () => {
     const web = all.find((a) => a.name === 'web')!;
     const args = buildRunnerArgs([web], resolveDeps([web]));
     expect(args.topLevelUrls).toBeUndefined();
+  });
+
+  it('buildRunnerArgs carries logTimestamps from the loaded config (default false)', () => {
+    const off = defineConfig({ workspaceDir: '/repo', packages: [{ name: 'web' }] }).packages;
+    const web = off.find((a) => a.name === 'web')!;
+    expect(buildRunnerArgs([web], resolveDeps([web])).logTimestamps).toBe(false);
+
+    const on = defineConfig({
+      workspaceDir: '/repo',
+      logs: { timestamps: true },
+      packages: [{ name: 'web' }],
+    }).packages;
+    const web2 = on.find((a) => a.name === 'web')!;
+    expect(buildRunnerArgs([web2], resolveDeps([web2])).logTimestamps).toBe(true);
+  });
+});
+
+describe('logTimestamp', () => {
+  it('formats as `YYYY-MM-DD HH:MM:SS` (24-hour, with date)', () => {
+    expect(logTimestamp()).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   });
 });
 

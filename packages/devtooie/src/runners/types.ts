@@ -16,6 +16,8 @@ export interface RunnerArgs {
   logFile?: string;
   /** `.env` filenames resolved per package (defaults to the standard set when omitted). */
   envFiles?: string[];
+  /** Prefix each on-screen log line with a `YYYY-MM-DD HH:MM:SS` timestamp (default `false`). */
+  logTimestamps?: boolean;
   /** Workspace root that package `relativeDir`s resolve against (defaults to `process.cwd()`). */
   cwd?: string;
 }

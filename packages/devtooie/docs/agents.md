@@ -165,6 +165,7 @@ scratch to clear stale build output — those enable the rebuild command (the `b
 | `packages`     | Your package definitions (see below).                                              |
 | `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.   |
 | `env`          | `.env` files loaded per package — see [Environment loading](#environment-env-loading). |
+| `logs`         | Log display options: `{ timestamps?: boolean }` (default `false`) — see [Log timestamps](#log-timestamps). |
 | `apiPort`      | Pin the [control API](#drive-a-running-session-via-the-control-api) port (otherwise chosen automatically). |
 
 Each package entry has a flat set of fields (only `name` is required; omit the rest for a
@@ -197,6 +198,116 @@ build-only lib):
   package's project references. Defaults to `tsconfig.build.json`, then `tsconfig.json`. See
   [project references](#typescript-project-references--shared-libraries).
 - **`deps.build`** / **`deps.dev`** / **`deps.runtime`** — see below.
+- **`logs`** — per-package log options `{ timestamps?, formatter? }`. `timestamps` overrides the
+  top-level [`logs.timestamps`](#log-timestamps) for this package (inheriting it when omitted);
+  `formatter` (`(line: string) => string`) **overrides the default structured-log formatter** that
+  devtooie already applies to every package. See [Structured logs](#structured-logs).
+
+### Log timestamps
+
+By default log lines are shown without a timestamp. Set `logs.timestamps: true` to prefix
+every on-screen log line (both the interactive TUI and `--plain` output) with a
+`YYYY-MM-DD HH:MM:SS` local-time (24-hour) stamp:
+
+```ts
+export default defineConfig({
+  logs: { timestamps: true },
+  packages: [/* … */],
+});
+```
+
+```
+2026-07-13 13:53:32 [api]     backend ready, starting…
+2026-07-13 13:53:32 [web]     VITE ready in 431 ms
+```
+
+The on-disk session log file always records timestamps (in the same format) regardless of this
+setting; `logs.timestamps` only controls whether they're shown on screen.
+
+**Per-package override.** A package can set its own on-screen visibility with a package-level
+`logs.timestamps`. When set (`true` or `false`) it wins over the top-level default for that
+package; when omitted, the package inherits the top-level value:
+
+```ts
+export default defineConfig({
+  logs: { timestamps: false }, // top-level default
+  packages: [
+    { name: 'api' }, // inherits → no timestamps on screen
+    { name: 'worker', logs: { timestamps: true } }, // overrides → timestamps on screen
+  ],
+});
+```
+
+### Structured logs
+
+**Rarely something to configure:** most dev processes log plain text (passed through untouched),
+and for the apps that do emit structured **JSON** in dev the default formatter already handles the
+common cases — only reach for `logs.formatter` if a package's JSON logs aren't rendering right.
+
+Some services log **structured JSON in every environment** (Go's `log/slog`, Node's pino/winston)
+rather than branching the logger on `NODE_ENV`. **devtooie handles this out of the box** — it
+applies a default formatter to *every* package's output that passes **non-JSON** lines through
+untouched and pretty-prints a **JSON log** as a **`[LEVEL] message`** header (the `[LEVEL]` colored
+by severity), with the remaining properties listed, indented, on the lines below (each key in a
+muted color, its value in the normal foreground). So a slog line like:
+
+```
+{"time":"2026-07-13T13:53:32-06:00","level":"INFO","msg":"listening","port":3002}
+```
+
+is shown as:
+
+```
+[INFO] listening
+  time: 2026-07-13T13:53:32-06:00
+  port: 3002
+```
+
+You configure nothing for this. `logs.formatter` only **overrides** the default for a package.
+
+**Levels.** A **string** level is uppercased and matched to devtooie's canonical levels (`TRACE`,
+`DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`), folding aliases (`WARNING`→`WARN`, `ERR`→`ERROR`,
+`CRITICAL`/`EMERGENCY`→`FATAL`, `VERBOSE`→`TRACE`, `NOTICE`→`INFO`, …); the matched `[LEVEL]` is
+colored by severity. A **number** is **not** guessed (the numbers aren't standard — pino's `30` is
+INFO, Python's is WARNING) — it prints `[UNKNOWN LOGLVL: 30]` until mapped; an unmatched string
+prints `[UNKNOWN LOGLVL: FOOBAR]`.
+
+**The `logging` helpers** (exported from `devtooie`) override a package's formatter:
+
+```ts
+import { defineConfig, logging } from 'devtooie';
+
+export default defineConfig({
+  packages: [
+    { name: 'go-svc' }, // no config — slog's string levels just work via the default
+    { name: 'api', logs: { formatter: logging.nodejs.pino.formatter() } },      // pino numeric levels
+    { name: 'web', logs: { formatter: logging.nodejs.winston.formatter() } },   // winston message key + levels
+  ],
+});
+```
+
+- **`logging.formatter(config?)`** — the base factory, and the default applied to every package.
+- **`logging.nodejs.pino.formatter(config?)`** — maps pino/bunyan's numeric levels
+  (`logging.nodejs.pino.levels`).
+- **`logging.nodejs.winston.formatter(config?)`** — winston's `message` key + level names
+  (`logging.nodejs.winston.levels`).
+
+`config` is `{ fields?, levels? }`, all optional: `fields.level`/`fields.message` (source keys,
+default `level`/`msg`), `fields.custom` (rename/hide properties, keyed by display name —
+`{ timestamp: 'ts' }`, `{ timestamp: { source: 'ts' } }`, `{ time: { show: false } }`), and
+`levels` (a `{ rawValue: name }` map for numeric/non-standard levels; the ecosystem helpers set it).
+
+Or write your own: `logs.formatter` is just `(line: string) => string` — return the display
+string, or the line unchanged to pass it through. A formatter that throws or returns a non-string
+falls back to the raw line, so a bug can't take down the session. The returned string is what's
+buffered, shown, **and written to the log file** (ANSI color allowed, stripped for the file); a
+multi-line result is split into separate log lines. **devtooie owns the timestamp** (shown per
+`logs.timestamps`, always in the log file), so drop the log's own time field rather than printing
+it. `z` (zod) is re-exported by devtooie, so a hand-written formatter can validate shapes without a
+dependency.
+
+The [`example/`](https://github.com/rhyek/devtooie/tree/main/example) monorepo's Go `worker` (slog)
+relies on the default formatter, overriding it only to hide slog's `time`.
 
 ### Dependencies
 
