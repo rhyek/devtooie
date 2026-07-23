@@ -50,6 +50,9 @@ importers:
 
   packages/backend:
     dependencies:
+      '@example/db':
+        specifier: workspace:*
+        version: link:../db
       '@example/isomorphic':
         specifier: workspace:*
         version: link:../isomorphic
@@ -63,6 +66,12 @@ importers:
       '@types/express':
         specifier: ^5.0.6
         version: 5.0.6
+
+  packages/db:
+    dependencies:
+      '@example/isomorphic':
+        specifier: workspace:*
+        version: link:../isomorphic
 
   packages/frontend:
     dependencies:

@@ -62,7 +62,9 @@ export function resolveEnv(opts: ResolveEnvOptions): EnvResolution {
   // reads from it but writes to neither it nor the real process.env, so nothing is mutated.
   const ambient: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) ambient[key] = value;
+    if (value !== undefined) {
+      ambient[key] = value;
+    }
   }
 
   // Concatenate the existing files in ascending precedence (later overrides earlier, and a

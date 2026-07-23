@@ -179,17 +179,21 @@ enabling mouse reporting takes the mouse from the terminal, and `useDragSelectio
   do). It's only invalidated by a re-flow: resize, filter change, or `k` clear
   (all call `clearSelection`); eviction past `MAX_BUFFER_LINES` shifts flat rows,
   the one accepted edge case.
-- **Drag → select; `c` → copy.** `down` starts the selection; `move` (button
-  held) extends it; `up` finalizes it and captures the WYSIWYG, ANSI-stripped
-  text (`selectionText`: character-precise on the first/last row, full width in
-  between) — but does **not** copy. Copying is a separate, deliberate action: `c`
-  (a footer hint shown only while a selection exists) calls `copyToClipboard`,
-  flashes `copied N lines`, and then **clears the selection** (the flash confirms
-  it); `esc` (or a filter change / resize / `k`) also clears it. Scrolling does
-  **not** clear it — the content-anchored highlight just rides along. The live
-  selection lives in a ref (not state) so a burst of
-  `move`+`up` in one read see each other synchronously; a reducer bump forces the
-  repaint.
+- **Drag → select → copy-on-release.** `down` starts the selection; `move` (button
+  held) extends it; `up` finalizes it, captures the WYSIWYG, ANSI-stripped text
+  (`selectionText`: character-precise on the first/last row, full width in between),
+  and **copies it immediately** — `copyToClipboard` + a `copied N chars` flash, with
+  no key press. This is deliberate: in the VS Code integrated terminal Cmd+C is
+  swallowed by VS Code's keybinding layer before it reaches the process (its default
+  Cmd+C binding needs a *native* xterm selection, which our mouse reporting
+  suppresses), so a copy hotkey can't be made reliable there. Copying on release
+  sidesteps the key entirely. The highlight and the flash then **linger together for
+  `SELECTION_LINGER_MS` (5s)**, driven by one timer, and clear on their own — so you
+  briefly see what was copied. `esc` (or a filter change / resize / `k` / a fresh
+  drag) clears both sooner and cancels that timer. Scrolling does **not** clear it —
+  the content-anchored highlight just rides along. The live selection lives in a ref
+  (not state) so a burst of `move`+`up` in one read see each other synchronously; a
+  reducer bump forces the repaint.
 - **Clipboard (`clipboard.ts`), prompt-aware.** Locally it uses the **native
   command** (`pbcopy`/`clip`/`wl-copy`/…) only — reliable, and unlike OSC 52 it
   never trips a terminal's clipboard-access prompt (iTerm2's "Applications in
@@ -202,6 +206,15 @@ enabling mouse reporting takes the mouse from the terminal, and `useDragSelectio
   resets in log text cancelling the inversion).
 - **Escape hatch.** With reporting on, the terminal's own selection is disabled;
   most terminals still force native selection while **Option/Alt** is held.
+- **Click-to-copy in the footer (`⧉`).** The logfile line renders a `⧉` glyph
+  whose `<Box>` carries a ref; a mouse **press** on its cell copies the *absolute*
+  logfile path (`path.resolve`) and reuses the same footer flash via
+  `DragSelection.flashCopy(text, label)`. Hit-testing can't use `measureElement`
+  (it returns only width/height), so `elementScreenRect` (`NativeRunner`) recovers
+  the glyph's absolute cell by summing each ancestor's yoga `getComputedLeft/Top`
+  up the `parentNode` chain, mapped to 1-based SGR coords; `rectHit` adds a cell of
+  slack so the one-wide glyph stays easy to click. This is the general hook for any
+  future clickable footer affordance.
 
 ## Plain / non-TTY mode
 
@@ -230,6 +243,13 @@ machinery is gated on `!plain`. Don't regress this path.
 - **An explicit copy-mode** (freeze the frame, move a cursor, `y` to yank, like
   tmux copy-mode): more robust but modal and higher-friction. Rejected for
   seamless always-on drag-select.
+- **A copy hotkey (`c`) instead of copy-on-release:** the earlier shape. Made
+  copying a separate, deliberate key press to avoid clobbering the clipboard on a
+  stray drag. Replaced by copy-on-release because the reflexive gesture — drag, then
+  Cmd+C — can't work in the VS Code integrated terminal (Cmd+C never reaches the
+  process; see "Text selection"), and per-user `keybindings.json` isn't shippable for
+  a published package. Copying on release matches what Claude Code's own TUI does and
+  needs no key; the accepted cost is that any drag overwrites the clipboard.
 
 ## File / symbol map
 

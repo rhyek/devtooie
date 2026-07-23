@@ -97,6 +97,8 @@ export function reconcileTsconfig(opts: { cwd: string; configFile?: string }): R
   }
 
   const { text, outcome } = reconcileTsconfigText(current, configFile);
-  if (outcome !== 'unchanged') fs.writeFileSync(tsconfigPath, text);
+  if (outcome !== 'unchanged') {
+    fs.writeFileSync(tsconfigPath, text);
+  }
   return outcome;
 }

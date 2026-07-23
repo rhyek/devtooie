@@ -197,14 +197,6 @@ describe('ProcessManager', () => {
     expect(manager.getStatus('does-not-exist')).toBeNull();
   });
 
-  it('getPackages filters by status', () => {
-    manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
-    expect(manager.getPackages()).toEqual([
-      { name: 'fixture', shortName: undefined, status: 'stopped' },
-    ]);
-    expect(manager.getPackages('running')).toEqual([]);
-  });
-
   it('logControl writes a [dt:control] line to the logfile', () => {
     manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
     manager.logControl('restart fixture', 'fixture');
@@ -241,7 +233,9 @@ describe('ProcessManager filter replay batching', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const N = 25;
-      for (let i = 0; i < N; i++) manager.logSystem(`payload-${i}`);
+      for (let i = 0; i < N; i++) {
+        manager.logSystem(`payload-${i}`);
+      }
       logSpy.mockClear();
       errSpy.mockClear();
 
@@ -251,7 +245,9 @@ describe('ProcessManager filter replay batching', () => {
       expect(logSpy.mock.calls.length + errSpy.mock.calls.length).toBe(1);
       // ...carrying every line, in buffer order.
       const emitted = String(logSpy.mock.calls[0]?.[0] ?? '');
-      for (let i = 0; i < N; i++) expect(emitted).toContain(`payload-${i}`);
+      for (let i = 0; i < N; i++) {
+        expect(emitted).toContain(`payload-${i}`);
+      }
       expect(emitted.indexOf('payload-0')).toBeLessThan(emitted.indexOf(`payload-${N - 1}`));
     } finally {
       logSpy.mockRestore();
@@ -263,7 +259,9 @@ describe('ProcessManager filter replay batching', () => {
     manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
-      for (let i = 0; i < 10; i++) manager.logSystem(`item-${i}`);
+      for (let i = 0; i < 10; i++) {
+        manager.logSystem(`item-${i}`);
+      }
       logSpy.mockClear();
 
       manager.setFilter(['does-not-match-anything']);
@@ -279,7 +277,9 @@ describe('ProcessManager filter replay batching', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      for (let i = 0; i < 15; i++) manager.logSystem(`row-${i}`);
+      for (let i = 0; i < 15; i++) {
+        manager.logSystem(`row-${i}`);
+      }
       manager.setFilter(['row-1']); // narrow down first
       logSpy.mockClear();
       errSpy.mockClear();
@@ -434,6 +434,153 @@ describe('ProcessManager PORT injection', () => {
   }, 10_000);
 });
 
+// A spawned child must inherit the parent's NODE_ENV verbatim — devtooie never injects or
+// overrides it (packageEnv is `{ ...process.env, ...envLayer }`, and the env layer carries only
+// PORT + resolved `.env` vars). This matters because the Ink TUI forces React into its
+// production build by pinning NODE_ENV=production only while React loads, then restoring it
+// (see render-app-production.ts); this test guards the other half of that contract — that the
+// restored, shell-provided value is exactly what children are spawned with.
+describe('ProcessManager child NODE_ENV inheritance', () => {
+  let dir: string;
+  let log: string;
+  let mgr: ProcessManager | undefined;
+  const originalNodeEnv = process.env.NODE_ENV;
+
+  beforeAll(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-pm-nodeenv-'));
+    fs.writeFileSync(
+      path.join(dir, 'package.json'),
+      JSON.stringify({
+        name: 'nodeenvfix',
+        version: '1.0.0',
+        scripts: {
+          // Print the child's NODE_ENV bracketed so an unset value is visible as `[]`. The
+          // bracketed literal value (e.g. `[development]`) never appears in pnpm's echo of the
+          // script *source*, so `toContain` can't match the wrong line.
+          dev: "node -e \"console.log('NODE_ENV=['+(process.env.NODE_ENV||'')+']');setInterval(()=>{},1e9)\"",
+        },
+      }),
+    );
+    log = path.join(dir, 'devlog.txt');
+  });
+  afterEach(() => {
+    disposeManager(mgr);
+    mgr = undefined;
+  });
+  afterAll(() => {
+    if (originalNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = originalNodeEnv;
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function makeManager(): ProcessManager {
+    const a: AnyPackageConfig = { name: 'nodeenvfix', relativeDir: '.', path: dir };
+    return new ProcessManager(
+      {
+        sortedPackages: [a],
+        selectedSet: new Set([a.name]),
+        buildDepSet: new Set(),
+        rebuildableSet: new Set(),
+        waitForMap: {},
+        healthcheckUrls: {},
+        extraCommandsMap: {},
+        logFile: log,
+        cwd: dir,
+      },
+      { plain: true },
+    );
+  }
+
+  async function runAndReadLog(): Promise<string> {
+    fs.writeFileSync(log, '');
+    mgr = makeManager();
+    mgr.start('nodeenvfix');
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await mgr.stop('nodeenvfix');
+    return fs.readFileSync(log, 'utf8');
+  }
+
+  for (const value of ['development', 'test', 'production'] as const) {
+    it(`spawns the child with the parent's NODE_ENV=${value}`, async () => {
+      process.env.NODE_ENV = value;
+      expect(await runAndReadLog()).toContain(`NODE_ENV=[${value}]`);
+    }, 10_000);
+  }
+
+  it('spawns the child with NODE_ENV unset when the parent has none', async () => {
+    delete process.env.NODE_ENV;
+    expect(await runAndReadLog()).toContain('NODE_ENV=[]');
+  }, 10_000);
+});
+
+// The complement of the block above: a package's own `.env` file supplies NODE_ENV. Because the
+// env layer is applied over `process.env` (with dotenvx `overload: true`), a `.env.development`
+// that sets NODE_ENV wins — so the child sees it even when the shell had NODE_ENV unset. This is
+// what makes `devtooie` (Ink UI included) usable without exporting NODE_ENV in the shell.
+describe('ProcessManager NODE_ENV from a .env file', () => {
+  let dir: string;
+  let log: string;
+  let mgr: ProcessManager | undefined;
+  const originalNodeEnv = process.env.NODE_ENV;
+
+  beforeAll(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-pm-nodeenv-dotenv-'));
+    fs.writeFileSync(
+      path.join(dir, 'package.json'),
+      JSON.stringify({
+        name: 'nodeenvdotenv',
+        version: '1.0.0',
+        scripts: {
+          dev: "node -e \"console.log('NODE_ENV=['+(process.env.NODE_ENV||'')+']');setInterval(()=>{},1e9)\"",
+        },
+      }),
+    );
+    fs.writeFileSync(path.join(dir, '.env.development'), 'NODE_ENV=development\n');
+    log = path.join(dir, 'devlog.txt');
+  });
+  afterEach(() => {
+    disposeManager(mgr);
+    mgr = undefined;
+  });
+  afterAll(() => {
+    if (originalNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = originalNodeEnv;
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("uses the package's .env.development NODE_ENV even when the shell leaves it unset", async () => {
+    delete process.env.NODE_ENV; // shell has no NODE_ENV
+    const a: AnyPackageConfig = { name: 'nodeenvdotenv', relativeDir: '.', path: dir };
+    mgr = new ProcessManager(
+      {
+        sortedPackages: [a],
+        selectedSet: new Set([a.name]),
+        buildDepSet: new Set(),
+        rebuildableSet: new Set(),
+        waitForMap: {},
+        healthcheckUrls: {},
+        extraCommandsMap: {},
+        logFile: log,
+        envFiles: ['.env.development'],
+        cwd: dir,
+      },
+      { plain: true },
+    );
+
+    mgr.start('nodeenvdotenv');
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await mgr.stop('nodeenvdotenv');
+
+    expect(fs.readFileSync(log, 'utf8')).toContain('NODE_ENV=[development]');
+  }, 10_000);
+});
+
 describe('ProcessManager env-change restart', () => {
   let d: string;
   let log: string;
@@ -540,7 +687,9 @@ describe('ProcessManager logs.formatter', () => {
     const formatter = (line: string): string => {
       try {
         const o = JSON.parse(line) as { level?: unknown; msg?: unknown };
-        if (typeof o.level === 'string' && typeof o.msg === 'string') return `${o.level} ${o.msg}`;
+        if (typeof o.level === 'string' && typeof o.msg === 'string') {
+          return `${o.level} ${o.msg}`;
+        }
       } catch {
         /* not json — fall through */
       }
@@ -659,7 +808,9 @@ describe('ProcessManager rebuild (clean + build)', () => {
 
     expect(mgr.rebuild('rbfix')).toBe(true);
     for (let i = 0; i < 40; i++) {
-      if (fs.readFileSync(rbLog, 'utf8') === 'CB' && mgr.getStatus('rbfix') === 'running') break;
+      if (fs.readFileSync(rbLog, 'utf8') === 'CB' && mgr.getStatus('rbfix') === 'running') {
+        break;
+      }
       await wait(200);
     }
     expect(fs.readFileSync(rbLog, 'utf8')).toBe('CB'); // clean (C) before build (B)

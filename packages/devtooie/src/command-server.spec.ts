@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { startCommandServer } from './command-server.js';
+import { startCommandServer, type ControlManager } from './command-server.js';
 
 let server: Awaited<ReturnType<typeof startCommandServer>> | null = null;
 afterEach(async () => {
@@ -7,116 +7,114 @@ afterEach(async () => {
   server = null;
 });
 
+function fakeManager(overrides: Partial<ControlManager> = {}): ControlManager {
+  return {
+    getAllStatuses: () => ({}),
+    getConfig: () => null,
+    getLogFile: () => '/manager/current.log',
+    restart: () => true,
+    rebuild: () => true,
+    quit: () => {},
+    logControl: () => {},
+    ...overrides,
+  };
+}
+
 describe('command-server', () => {
-  it('serves pid always and 503 for status before attach', async () => {
-    let quit = false;
+  it('GET /query/status serves identity with null packages/config before attach', async () => {
     server = await startCommandServer({
-      onQuit: () => {
-        quit = true;
-      },
+      onQuit: () => {},
       port: 0,
-    });
-    const base = `http://127.0.0.1:${server.port}`;
-
-    const pid = await fetch(`${base}/query/pid`).then((r) => r.json() as Promise<{ pid: number }>);
-    expect(pid.pid).toBe(process.pid);
-
-    const status = await fetch(`${base}/query/status`);
-    expect(status.status).toBe(503);
-
-    await fetch(`${base}/command/quit`, { method: 'POST' });
-    expect(quit).toBe(true);
-  });
-
-  it('serves status after attach', async () => {
-    server = await startCommandServer({ onQuit: () => {}, port: 0 });
-    server.attach({
-      getAllStatuses: () => ({ web: 'running' }),
-      getStatus: () => 'running',
-      getPackages: () => [],
-      getConfig: () => null,
-      restart: () => true,
-      rebuild: () => true,
-      quit: () => {},
-      logControl: () => {},
+      configPath: '/ws/devtooie.config.ts',
+      logFile: '/ws/logs/1.log',
     });
     const res = await fetch(`http://127.0.0.1:${server.port}/query/status`);
     expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      pid: process.pid,
+      configPath: '/ws/devtooie.config.ts',
+      logFile: '/ws/logs/1.log',
+      packages: null,
+      config: null,
+    });
   });
 
-  it('POST /command/restart/<known-pkg> returns 202', async () => {
-    server = await startCommandServer({ onQuit: () => {}, port: 0 });
-    server.attach({
-      getAllStatuses: () => ({}),
-      getStatus: () => null,
-      getPackages: () => [],
-      getConfig: () => null,
-      restart: (name: string) => name === 'web',
-      rebuild: () => false,
-      quit: () => {},
-      logControl: () => {},
+  it('GET /query/status reflects the manager after attach (rotation-aware logFile)', async () => {
+    server = await startCommandServer({
+      onQuit: () => {},
+      port: 0,
+      configPath: '/ws/devtooie.config.ts',
+      logFile: '/ws/logs/1.log',
     });
-    const res = await fetch(`http://127.0.0.1:${server.port}/command/restart/web`, {
-      method: 'POST',
+    server.attach(
+      fakeManager({
+        getAllStatuses: () => ({ web: 'running' }),
+        getConfig: () => ({ packages: [] }),
+        getLogFile: () => '/ws/logs/2-rotated.log',
+      }),
+    );
+    const res = await fetch(`http://127.0.0.1:${server.port}/query/status`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      pid: process.pid,
+      configPath: '/ws/devtooie.config.ts',
+      logFile: '/ws/logs/2-rotated.log',
+      packages: { web: 'running' },
+      config: { packages: [] },
     });
-    expect(res.status).toBe(202);
-    const body = (await res.json()) as { ok: boolean };
-    expect(body.ok).toBe(true);
   });
 
-  it('POST /command/restart/<unknown-pkg> returns 404', async () => {
+  it('trailing slash on /query/status still resolves', async () => {
+    server = await startCommandServer({ onQuit: () => {}, port: 0, configPath: '/ws/c.ts' });
+    const res = await fetch(`http://127.0.0.1:${server.port}/query/status/`);
+    expect(res.status).toBe(200);
+  });
+
+  it('removed query subpaths return 404', async () => {
+    server = await startCommandServer({ onQuit: () => {}, port: 0, configPath: '/ws/c.ts' });
+    server.attach(fakeManager());
+    const base = `http://127.0.0.1:${server.port}`;
+    for (const p of ['/query/pid', '/query/config', '/query/packages', '/query/status/web']) {
+      expect((await fetch(`${base}${p}`)).status, p).toBe(404);
+    }
+  });
+
+  it('POST /command/restart/<known-pkg> returns 202, unknown returns 404', async () => {
     server = await startCommandServer({ onQuit: () => {}, port: 0 });
-    server.attach({
-      getAllStatuses: () => ({}),
-      getStatus: () => null,
-      getPackages: () => [],
-      getConfig: () => null,
-      restart: (name: string) => name === 'web',
-      rebuild: () => false,
-      quit: () => {},
-      logControl: () => {},
-    });
-    const res = await fetch(`http://127.0.0.1:${server.port}/command/restart/unknown`, {
-      method: 'POST',
-    });
-    expect(res.status).toBe(404);
-    const body = (await res.json()) as { ok: boolean };
-    expect(body.ok).toBe(false);
+    server.attach(fakeManager({ restart: (name) => name === 'web' }));
+    const base = `http://127.0.0.1:${server.port}`;
+    expect((await fetch(`${base}/command/restart/web`, { method: 'POST' })).status).toBe(202);
+    expect((await fetch(`${base}/command/restart/nope`, { method: 'POST' })).status).toBe(404);
   });
 
   it('POST /command/rebuild/<known-pkg> returns 202', async () => {
     server = await startCommandServer({ onQuit: () => {}, port: 0 });
-    server.attach({
-      getAllStatuses: () => ({}),
-      getStatus: () => null,
-      getPackages: () => [],
-      getConfig: () => null,
-      restart: () => false,
-      rebuild: (name: string) => name === 'web',
-      quit: () => {},
-      logControl: () => {},
-    });
+    server.attach(fakeManager({ rebuild: (name) => name === 'web' }));
     const res = await fetch(`http://127.0.0.1:${server.port}/command/rebuild/web`, {
       method: 'POST',
     });
     expect(res.status).toBe(202);
-    const body = (await res.json()) as { ok: boolean };
-    expect(body.ok).toBe(true);
   });
 
-  it('logs mutating commands via logControl (restart/rebuild scoped to pkg, quit unscoped)', async () => {
+  it('mutating commands 503 before the manager attaches', async () => {
+    server = await startCommandServer({ onQuit: () => {}, port: 0 });
+    const res = await fetch(`http://127.0.0.1:${server.port}/command/restart/web`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(503);
+  });
+
+  it('quit works before attach and is logged after', async () => {
+    let quit = false;
+    server = await startCommandServer({ onQuit: () => (quit = true), port: 0 });
+    await fetch(`http://127.0.0.1:${server.port}/command/quit`, { method: 'POST' });
+    expect(quit).toBe(true);
+  });
+
+  it('logs mutating commands via logControl (restart/rebuild scoped, quit unscoped)', async () => {
     const logged: { message: string; pkg?: string }[] = [];
     server = await startCommandServer({ onQuit: () => {}, port: 0 });
-    server.attach({
-      getAllStatuses: () => ({}),
-      getStatus: () => null,
-      getPackages: () => [],
-      getConfig: () => null,
-      restart: () => true,
-      rebuild: () => true,
-      quit: () => {},
-      logControl: (message: string, pkg?: string) => logged.push({ message, pkg }),
-    });
+    server.attach(fakeManager({ logControl: (message, pkg) => logged.push({ message, pkg }) }));
     const base = `http://127.0.0.1:${server.port}`;
     await fetch(`${base}/command/restart/web`, { method: 'POST' });
     await fetch(`${base}/command/rebuild/api`, { method: 'POST' });
@@ -131,48 +129,10 @@ describe('command-server', () => {
   it('setOnQuit swaps which handler /command/quit invokes', async () => {
     let firstCalled = false;
     let secondCalled = false;
-    server = await startCommandServer({
-      onQuit: () => {
-        firstCalled = true;
-      },
-      port: 0,
-    });
-    server.setOnQuit(() => {
-      secondCalled = true;
-    });
+    server = await startCommandServer({ onQuit: () => (firstCalled = true), port: 0 });
+    server.setOnQuit(() => (secondCalled = true));
     await fetch(`http://127.0.0.1:${server.port}/command/quit`, { method: 'POST' });
     expect(secondCalled).toBe(true);
     expect(firstCalled).toBe(false);
-  });
-
-  it('GET /query/config returns the resolved config from the manager', async () => {
-    const config = {
-      apiPort: undefined,
-      packages: [{ name: 'web', command: { name: 'dev', watches: true, builds: true } }],
-      envFiles: [],
-    };
-    server = await startCommandServer({ onQuit: () => {}, port: 0 });
-    server.attach({
-      getAllStatuses: () => ({}),
-      getStatus: () => null,
-      getPackages: () => [],
-      getConfig: () => config,
-      restart: () => true,
-      rebuild: () => true,
-      quit: () => {},
-      logControl: () => {},
-    });
-    const res = await fetch(`http://127.0.0.1:${server.port}/query/config`);
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body).toEqual(config);
-  });
-
-  it('GET /query/pid/ with trailing slash returns 200', async () => {
-    server = await startCommandServer({ onQuit: () => {}, port: 0 });
-    const res = await fetch(`http://127.0.0.1:${server.port}/query/pid/`);
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { pid: number };
-    expect(body.pid).toBe(process.pid);
   });
 });

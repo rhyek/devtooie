@@ -7,6 +7,7 @@
     "add-random-todo": "node src/cmd/add-random-todo.ts"
   },
   "dependencies": {
+    "@example/db": "workspace:*",
     "@example/isomorphic": "workspace:*",
     "express": "^5.2.1"
   },

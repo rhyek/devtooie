@@ -10,7 +10,9 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(pred: () => boolean, timeout = 2000, step = 20): Promise<void> {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    if (pred()) return;
+    if (pred()) {
+      return;
+    }
     await new Promise((r) => setTimeout(r, step));
   }
 }

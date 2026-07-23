@@ -20,7 +20,9 @@ export const CONFIG_NAMES = [
 export function findConfigPath(cwd: string = process.cwd()): string | null {
   for (const name of CONFIG_NAMES) {
     const p = path.join(cwd, name);
-    if (fs.existsSync(p)) return p;
+    if (fs.existsSync(p)) {
+      return p;
+    }
   }
   return null;
 }
@@ -34,9 +36,13 @@ export function findConfigPath(cwd: string = process.cwd()): string | null {
 export function findWorkspaceRoot(cwd: string = process.cwd()): string | null {
   let dir = path.resolve(cwd);
   for (;;) {
-    if (findConfigPath(dir)) return dir;
+    if (findConfigPath(dir)) {
+      return dir;
+    }
     const parent = path.dirname(dir);
-    if (parent === dir) return null;
+    if (parent === dir) {
+      return null;
+    }
     dir = parent;
   }
 }
@@ -49,8 +55,12 @@ export async function loadConfig(cwd: string = process.cwd()): Promise<AnyPackag
   const mod = (await import(pathToFileURL(configPath).href)) as { default?: Config<string> };
   // `defineConfig` registers packages as a side effect of being imported.
   const registered = getRegisteredPackages();
-  if (registered.length) return registered;
-  if (mod.default && Array.isArray(mod.default.packages)) return mod.default.packages;
+  if (registered.length) {
+    return registered;
+  }
+  if (mod.default && Array.isArray(mod.default.packages)) {
+    return mod.default.packages;
+  }
   throw new Error(
     `config module ${path.basename(configPath)} did not export a defineConfig default`,
   );

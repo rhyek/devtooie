@@ -136,7 +136,9 @@ function levelToken(
   rawLevel: unknown,
   levels: Record<string, string> | undefined,
 ): string | undefined {
-  if (rawLevel === undefined) return undefined;
+  if (rawLevel === undefined) {
+    return undefined;
+  }
   const value = (levels ? levels[String(rawLevel)] : undefined) ?? rawLevel;
   if (typeof value === 'string') {
     const canonical = LEVEL_ALIASES[value.toUpperCase()];
@@ -194,9 +196,13 @@ export function createFormatter(config: FormatterConfig = {}): (line: string) =>
       .join(' ');
     const out = [head];
     for (const [key, value] of Object.entries(obj)) {
-      if (key === levelKey || key === messageKey) continue;
+      if (key === levelKey || key === messageKey) {
+        continue;
+      }
       const custom = bySource.get(key);
-      if (custom && !custom.show) continue; // hidden
+      if (custom && !custom.show) {
+        continue;
+      } // hidden
       const name = custom ? custom.display : key;
       out.push(`  ${PROPERTY_KEY_COLOR(`${name}:`)} ${renderValue(value)}`);
     }

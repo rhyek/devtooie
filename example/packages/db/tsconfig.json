@@ -1,0 +1,12 @@
+{
+  // @example/db is consumed as TypeScript *source* — its package.json `exports` point straight at
+  // `src` (no emit), so the backend transpiles it on the fly via Node's native TS support. There's
+  // no `composite`/`references` here (that's the compiled-lib approach `isomorphic` uses); it just
+  // extends the shared node baseline so the lib type-checks identically standalone and when its
+  // source is re-checked inside the backend's program.
+  "extends": "../../tsconfig.common.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["src"]
+}

@@ -38,7 +38,9 @@ function isOlder(a: string, b: string): boolean {
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
     const na = pa[i] ?? 0;
     const nb = pb[i] ?? 0;
-    if (na !== nb) return na < nb;
+    if (na !== nb) {
+      return na < nb;
+    }
   }
   return false;
 }
@@ -102,7 +104,9 @@ export function installSkill(opts: { cwd?: string; version: string }): void {
   paths.push(claudePath);
 
   for (const dir of OPTIONAL_DIRS) {
-    if (!fs.existsSync(path.join(cwd, dir))) continue;
+    if (!fs.existsSync(path.join(cwd, dir))) {
+      continue;
+    }
     try {
       const p = path.join(cwd, dir, 'skills', 'devtooie', 'SKILL.md');
       writeSkillFile(p, content);
@@ -125,13 +129,19 @@ export function installSkill(opts: { cwd?: string; version: string }): void {
 export function refreshSkillIfStale(opts: { cwd?: string; version: string }): void {
   const cwd = opts.cwd ?? process.cwd();
   const state = readState(cwd);
-  if (!state || !isOlder(state.version, opts.version)) return;
+  if (!state || !isOlder(state.version, opts.version)) {
+    return;
+  }
 
   const canonical = state.paths[0];
-  if (!canonical || !fs.existsSync(canonical)) return;
+  if (!canonical || !fs.existsSync(canonical)) {
+    return;
+  }
 
   const onDisk = fs.readFileSync(canonical, 'utf8');
-  if (contentHash(onDisk) !== state.hash) return; // hand-edited; leave untouched
+  if (contentHash(onDisk) !== state.hash) {
+    return;
+  } // hand-edited; leave untouched
 
   installSkill(opts);
 }

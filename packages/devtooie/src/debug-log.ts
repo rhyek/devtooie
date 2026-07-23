@@ -3,7 +3,9 @@ import path from 'node:path';
 import { getStateDir } from './lib.js';
 
 export function debugLog(...args: unknown[]): void {
-  if (!process.env.DEBUG_DEVTOOIE) return;
+  if (!process.env.DEBUG_DEVTOOIE) {
+    return;
+  }
   try {
     const dir = getStateDir();
     fs.mkdirSync(dir, { recursive: true });

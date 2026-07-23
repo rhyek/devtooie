@@ -36,4 +36,5 @@ process (defaults to `dev`). The flags:
   _can_ clean-rebuild: `cleans: true` (rebuild just restarts it), or it has `clean` + `build`
   (or `build:clean`) scripts. Otherwise it's a no-op (e.g. a plain `node --watch` app).
 
-The resolved flags are served by [`GET /query/config`](./control-api.md) for tooling to read.
+The resolved flags are served in the `config` field of [`GET /query/status`](./control-api.md)
+for tooling to read.

@@ -346,9 +346,11 @@ devtooie --plain -p <package> [-p <other-package> ...]
   package(s) and their dependencies, then exit — no long-running processes.
 - **Force a clean rebuild**: add `--rebuild` — clears `dist/` for the whole build set first,
   then builds.
-- **Stop a session you started**: send `SIGINT`/`SIGTERM` to the process (graceful shutdown),
-  or use the control API's `POST /command/quit` (see below) if you no longer hold the process
-  directly.
+- **Stop a session** (yours or one already running): `POST /command/quit` to the control API
+  (see below) — it shuts every package down gracefully and frees the ports. **Always use the API
+  command; never `kill`/`pkill`/`lsof … | kill` a devtooie process or its port.** A raw OS kill (or
+  a stray signal) drops the process out from under devtooie and looks like the session died on its
+  own — use `POST /command/quit` to stop, `POST /command/restart/<name>` to restart one package.
 - **Environment**: each package's `.env` files are loaded and injected into its process
   automatically (see [Environment loading](#environment-env-loading)), so you don't set env
   vars yourself. A running session also restarts a package when its `.env` files change — so an
@@ -390,6 +392,9 @@ Subcommands:
 - **`devtooie cmd`** — run a **one-off command** with a package's environment (its dir +
   resolved `.env`); package inferred from the cwd or named with `-p`; see
   [Run a one-off command in a package's dir](#run-a-one-off-command-in-a-packages-dir-with-its-environment).
+- **`devtooie logs`** — print the current session's logfile (or `-f/--follow` to stream it);
+  read-only, never disturbs the session; see
+  [Read running-package logs for debugging](#read-running-package-logs-for-debugging).
 
 ## Environment (`.env`) loading
 
@@ -470,8 +475,8 @@ automatically) — it's for driving commands yourself.
 ## Package lifecycle when you change code
 
 devtooie does **not** watch source files. How a package should react to a code edit is declared
-by its `command`, which you read from `GET /query/config`. `command` is a script/target name or
-`[name, { watches, builds, cleans }]`:
+by its `command`, which you read from the `config` field of `GET /query/status`. `command` is a
+script/target name or `[name, { watches, builds, cleans }]`:
 
 - `command: 'dev'` — the default: `{ watches: true, builds: true, cleans: false }`.
 - `command: ['start', { watches: false }]` — `builds` defaults to `true`.
@@ -489,11 +494,11 @@ by its `command`, which you read from `GET /query/config`. `command` is a script
   without separate `clean`/`build` scripts — a rebuild just restarts it.
 
 **Fetch the config early, and re-fetch before acting.** On first involvement with a running
-session, read `node_modules/.devtooie/running.json` (for the port) and `GET /query/config` once.
-Then, each time you're about to restart/rebuild a package, **re-read `running.json`** (the port
-changes if the user restarted devtooie) and **re-`GET /query/config`** — the user may have edited
-the config and restarted the session, changing what a package needs. Don't trust a cached copy
-across a possible restart.
+session, read `node_modules/.devtooie/running.json` (for the port) and `GET /query/status` once
+(read its `config` field). Then, each time you're about to restart/rebuild a package, **re-read
+`running.json`** (the port changes if the user restarted devtooie) and **re-`GET /query/status`** —
+the user may have edited the config and restarted the session, changing what a package needs.
+Don't trust a cached copy across a possible restart.
 
 For the package you edited, look at its resolved `command` (`{ name, watches, builds, cleans }`):
 
@@ -515,26 +520,31 @@ it has `clean` + `build` (or `build:clean`) scripts. Otherwise it's a no-op; use
 A running devtooie session (whether started by you or a human) exposes a localhost-only HTTP
 control API on a port chosen at startup — mostly useful for coding agents, but open to any
 tooling. **Read the active port from `node_modules/.devtooie/running.json`** — devtooie writes the
-current `{ "port", "pid", "logDir" }` there (`logDir` is where this session's logs go). Always
-resolve the port from that file rather than assuming one; a project may pin a fixed port with
-`apiPort` in `devtooie.config.ts`, but `running.json` is always current.
+current `{ "port", "pid", "logDir", "logFile" }` there (`logDir` is where this session's logs go;
+`logFile` is the current logfile, kept up to date across in-session rotation). Always resolve the
+port from that file rather than assuming one; a project may pin a fixed port with `apiPort` in
+`devtooie.config.ts`, but `running.json` is always current.
 
 Endpoints (all plain HTTP, no auth — localhost-only):
 
-- `GET /query/pid` — the running session's PID **and the absolute path to the `devtooie.config.*`
-  it was started with** (`{ pid, configPath }`).
-- `GET /query/status[/<name>]` — status of every package, or of one package.
-- `GET /query/packages[?status=<status>]` — list package names, optionally filtered by status.
-- `GET /query/config` — the whole **resolved** config (defaults applied, `command` normalized to
-  `{ name, watches, builds, cleans }`), as loaded at startup (restart devtooie to pick up edits).
-  Use it to decide package lifecycle — see [Package lifecycle](#package-lifecycle-when-you-change-code).
-- `POST /command/restart/<name>` — restart one package in place.
+- `GET /query/status` — a single snapshot of the session, `{ pid, configPath, logFile, packages, config }`:
+  - `pid` / `configPath` — the session's PID and the absolute path to the `devtooie.config.*` it
+    was started with; available immediately, even while the session is still building.
+  - `logFile` — absolute path to the logfile currently being written (tracks in-session rotation).
+  - `packages` — per-package status map (e.g. `{ "web": "running" }`); `null` until the build finishes.
+  - `config` — the whole **resolved** config (defaults applied, `command` normalized to
+    `{ name, watches, builds, cleans }`), as loaded at startup (restart devtooie to pick up edits);
+    `null` until the build finishes. Use it to decide package lifecycle — see
+    [Package lifecycle](#package-lifecycle-when-you-change-code).
+- `POST /command/restart/<name>` — restart one package in place (`202` if accepted, `404` for an
+  unknown package).
 - `POST /command/rebuild/<name>` — stop, clean-build, then start. Prefer this over `restart`
   whenever the package's build output (not just its source) changed.
 - `POST /command/quit` — gracefully shut down the whole session (same as Ctrl+C).
 
-This is what lets a second `devtooie` invocation hand off from a running one, and what an external
-tool (or the agent skill) uses to drive a session headlessly.
+This is what lets a second `devtooie` invocation hand off from a running one, what `devtooie logs`
+finds the current logfile with, and what an external tool (or the agent skill) uses to drive a
+session headlessly.
 
 Do not hardcode package names. Discover them either from a running session (`GET /query/status`)
 or by asking devtooie directly:
@@ -548,19 +558,34 @@ which prints that package's build/dev/runtime dependency names as JSON.
 ## Read running-package logs for debugging
 
 A running devtooie session streams the combined stdout/stderr of every package it runs into a
-timestamped logfile. The directory it writes into is recorded in
-`node_modules/.devtooie/running.json` as **`logDir`**; it defaults to `node_modules/.devtooie/logs/`
-and only differs when the session was started with `--log-dir`.
+timestamped logfile. The simplest way to read the **current** session's log is the built-in
+subcommand:
 
+```sh
+devtooie logs        # print the whole current logfile
+devtooie logs -f     # ...then stream new lines live (Ctrl+C to stop — the session keeps running)
+devtooie logs --path # print just the resolved logfile path (for piping), then exit
+```
+
+`devtooie logs` is **strictly read-only** and never starts, hands off, or shuts down a session. It
+resolves the current logfile in order of precedence: (1) ask the running instance over the control
+API (`GET /query/status` → `logFile`); (2) the `logFile` recorded in `running.json` (kept current
+across in-session log rotation — the `t` hotkey — and more precise than scanning the dir, where a
+stray `devtooie cmd` log could be newer), if it still exists; (3) the newest logfile in the
+session's log directory. (`-f` uses the Unix `tail`/`cat`, so macOS/Linux only; `--path` is
+mutually exclusive with `-f`.)
+
+To locate the file yourself instead (e.g. to `grep` an earlier run), the directory devtooie writes
+into is recorded in `node_modules/.devtooie/running.json` as **`logDir`**; it defaults to
+`node_modules/.devtooie/logs/` and only differs when the session was started with `--log-dir`.
 Each session (and each in-session log rotation) writes a **fresh** file named `<timestamp>.log`;
 `devtooie cmd` writes one too. devtooie never truncates or overwrites an existing log, so logs
 from earlier sessions stay on disk.
-To debug the **current** session, resolve that directory and read the most recent file in it:
 
 ```sh
 # the session's log dir from running.json, falling back to the default
 dir=$(node -e "process.stdout.write(require('./node_modules/.devtooie/running.json').logDir)" 2>/dev/null || echo node_modules/.devtooie/logs)
-log=$(ls -t "$dir"/dev-*.log | head -1)   # newest = current session
+log=$(ls -t "$dir"/*.log | head -1)   # newest = current session
 tail -n 200 "$log"
 grep -i error "$log"
 ```

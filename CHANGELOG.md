@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0 (2026-07-23)
+
+- **New `devtooie logs` subcommand** — print the current session's logfile, `-f/--follow` to stream it live, or `--path` to print just its path; resolves the logfile from the running instance (falling back to the last recorded one), read-only so it never disturbs the session. See [docs/cli.md](docs/cli.md#devtooie-logs).
+- **Control API: one `GET /query/status` snapshot.** The separate `GET /query/pid`, `/query/packages`, and `/query/config` endpoints are replaced by a single `GET /query/status` that returns the pid, config path, per-package status, resolved config, and the current logfile together. `node_modules/.devtooie/running.json` now also records the active `logFile` (kept current across in-session log rotation). See [docs/control-api.md](docs/control-api.md). _(Breaking: the three old query endpoints are removed.)_
+- **Fixed a memory leak in long-running sessions.** The interactive session's memory grew with uptime and could eventually exhaust memory and crash after many hours (even while idle) — it now stays flat, so a session is safe to leave running indefinitely.
+
 ## 0.4.0
 
 - **Reworked terminal UI.** The interactive session now runs as a fullscreen app, for far more solid rendering: it reflows cleanly on terminal resize (no more gaps or a misplaced footer), has much less jitter during normal operation, and stays smooth however fast logs stream. History now scrolls **in-app** (mouse wheel or keyboard) instead of through the terminal's own scrollback, and log text is selectable and copyable.

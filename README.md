@@ -209,6 +209,10 @@ colored `[LEVEL] message` for local dev, with no `NODE_ENV` branching and nothin
 can add on-screen timestamps, and override or customize the formatter per package. See
 **[docs/logging.md](docs/logging.md)**.
 
+Every session is also teed to a timestamped logfile. Read the current one from another terminal
+with **`devtooie logs`** (or `devtooie logs -f` to follow it live) — see
+[`devtooie logs`](docs/cli.md#devtooie-logs).
+
 ## Package lifecycle when you edit code
 
 A package's `command` flags declare whether its dev process watches or just

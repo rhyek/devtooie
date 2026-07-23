@@ -4,8 +4,8 @@ import path from 'node:path';
 import chalk from 'chalk';
 import { Command } from 'commander';
 import { execa } from 'execa';
-import { renderApp } from './components/App.js';
 import { startCommandServer } from './command-server.js';
+import { connectControlClient } from './control-client.js';
 import {
   type AnyPackageConfig,
   findPackage,
@@ -28,15 +28,19 @@ import {
   findAncestorPackage,
   getDefaultLogFile,
   getExecArgs,
+  getLogDir,
   hasScript,
   loadSelection,
   logTimestamp,
   resetSelection,
   resolveDeps,
+  resolveLogFile,
   saveSelection,
   stripAnsi,
 } from './lib.js';
+import { readRunning } from './running.js';
 import { createPlainStatusReporter } from './plain-status.js';
+import { renderAppInProduction } from './render-app-production.js';
 import { runPlain } from './runners/plain.js';
 import { refreshSkillIfStale } from './skill.js';
 
@@ -65,8 +69,12 @@ const INVOCATION_CWD = process.cwd();
  */
 async function anchorAtConfigRoot(invocationCwd: string): Promise<void> {
   const root = findWorkspaceRoot(invocationCwd);
-  if (!root) return;
-  if (root !== process.cwd()) process.chdir(root);
+  if (!root) {
+    return;
+  }
+  if (root !== process.cwd()) {
+    process.chdir(root);
+  }
   try {
     await loadConfig(root);
     const files = getLoadedConfig()?.envFiles ?? DEFAULT_ENV_FILES;
@@ -125,7 +133,9 @@ function resolveSelectedNames(
   opts: { package: string[]; lastAnswers: boolean },
   usage: string,
 ): string[] {
-  if (opts.package.length > 0) return opts.package;
+  if (opts.package.length > 0) {
+    return opts.package;
+  }
   if (opts.lastAnswers) {
     const saved = loadSelection() ?? [];
     if (saved.length === 0) {
@@ -161,7 +171,9 @@ async function runCommand(
   // Tee one child stream: raw bytes to the terminal, then line-buffered timestamped+stripped
   // lines to the logfile. Returns a flush for any trailing line with no final newline.
   const tee = (src: NodeJS.ReadableStream | null, term: NodeJS.WriteStream): (() => void) => {
-    if (!src) return () => {};
+    if (!src) {
+      return () => {};
+    }
     let buf = '';
     src.on('data', (chunk: Buffer) => {
       term.write(chunk);
@@ -260,7 +272,9 @@ async function buildDeps(deps: ReturnType<typeof resolveDeps>): Promise<void> {
     );
     await buildOne(pkg, 'build');
   }
-  if (depPackages.length > 0) console.log(chalk.green('✔ dependencies built'));
+  if (depPackages.length > 0) {
+    console.log(chalk.green('✔ dependencies built'));
+  }
 }
 
 /** `--phase build` / `--build` / `--rebuild`: build deps then the selected packages, then exit. */
@@ -276,7 +290,9 @@ async function runBuildPhase(names: string[], rebuild: boolean): Promise<void> {
 
   if (rebuild) {
     console.log(chalk.blue('▶ clearing dist/'));
-    for (const pkg of [...depPackages, ...selectedPackages]) await clearDist(pkg);
+    for (const pkg of [...depPackages, ...selectedPackages]) {
+      await clearDist(pkg);
+    }
   }
 
   for (const [i, pkg] of depPackages.entries()) {
@@ -421,6 +437,54 @@ program
     process.exit(await runCommand(cmd, cmdArgs, { cwd: dir, env: envLayer, logFile }));
   });
 
+program
+  .command('logs')
+  .description(
+    "print the current dev session's logfile (queried from the running instance, else the newest under node_modules/.devtooie/logs/)",
+  )
+  .option(
+    '-f, --follow',
+    'stream new lines live (native `tail -f`) instead of printing the file and exiting',
+  )
+  .option('--path', 'print the resolved logfile path instead of its contents, then exit')
+  .action(async (opts: { follow?: boolean; path?: boolean }) => {
+    // Strictly READ-ONLY: `devtooie logs` must NEVER terminate a running session. It only reads
+    // running.json and issues a read-only GET /query/status, then cats/tails a file — it must
+    // never go through acquireDevSession/decideControlPort, which hand off (shut down) an instance.
+    if (opts.path && opts.follow) {
+      console.error('devtooie logs: --path cannot be combined with -f/--follow.');
+      process.exit(1);
+    }
+    const cwd = process.cwd();
+    const running = readRunning(cwd);
+    const client = await connectControlClient(cwd);
+    const logFile = await resolveLogFile({
+      liveLogFile: async () => {
+        const status = client ? await client.queryStatus() : null;
+        return typeof status?.logFile === 'string' ? status.logFile : null;
+      },
+      recordedLogFile: running?.logFile ?? null,
+      fallbackDir: running?.logDir ?? getLogDir(),
+    });
+    if (!logFile) {
+      console.error(
+        'devtooie logs: no logfile found (no running session, and no logs under node_modules/.devtooie/logs/).',
+      );
+      process.exit(1);
+    }
+    if (opts.path) {
+      console.log(logFile);
+      process.exit(0);
+    }
+    // Native os commands, stdio inherited. No SIGINT handler is installed, so Ctrl+C stops only
+    // this `cat`/`tail` — the (separate-process) devtooie session is untouched.
+    const [bin, binArgs] = opts.follow
+      ? (['tail', ['-n', '+1', '-f', logFile]] as const)
+      : (['cat', [logFile]] as const);
+    const result = await execa(bin, binArgs, { stdio: 'inherit', reject: false });
+    process.exit(result.exitCode ?? (result.signal ? 0 : 1));
+  });
+
 // ---------------------------------------------------------------------------
 // Main flow (§6.5) — the default action, run only when no subcommand matched.
 // ---------------------------------------------------------------------------
@@ -479,7 +543,12 @@ program.action(async () => {
         onStatus: (msg) => statusReporter.update(msg),
       });
       statusReporter.done();
-      const server = await startCommandServer({ onQuit: () => process.exit(0), port, configPath });
+      const server = await startCommandServer({
+        onQuit: () => process.exit(0),
+        port,
+        configPath,
+        logFile,
+      });
       const packages = names.map((n) => findPackage(n));
       const deps = resolveDeps(packages);
       await buildDeps(deps);
@@ -491,7 +560,10 @@ program.action(async () => {
   }
 
   // --ui (default): App owns the selector -> build -> run phases and the control server.
-  renderApp({ packages: opts.package, lastAnswers: opts.lastAnswers, logFile });
+  // Loaded via renderAppInProduction so React (and thus all of Ink) runs in its
+  // production build — its development build leaks User-Timing entries on every render
+  // (see render-app-production.ts). Child dev processes still inherit the shell's NODE_ENV.
+  await renderAppInProduction({ packages: opts.package, lastAnswers: opts.lastAnswers, logFile });
 });
 
 // Anchor at the config root (chdir + load its workspace-scope env) before dispatching any

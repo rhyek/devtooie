@@ -19,6 +19,7 @@ import {
   logTimestamp,
   stripAnsi,
 } from './lib.js';
+import { updateRunning } from './running.js';
 import type { RunnerArgs } from './runners/types.js';
 import { stripTitleSequences } from './terminal-title.js';
 
@@ -116,10 +117,16 @@ export function resolveColorSpec(spec: string): (s: string) => string {
     return chalk.hex(s.startsWith('#') ? s : `#${s}`);
   }
   const rgb = /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/i.exec(s);
-  if (rgb) return chalk.rgb(Number(rgb[1]), Number(rgb[2]), Number(rgb[3]));
+  if (rgb) {
+    return chalk.rgb(Number(rgb[1]), Number(rgb[2]), Number(rgb[3]));
+  }
   const ansi = /^ansi256\(\s*(\d{1,3})\s*\)$/i.exec(s);
-  if (ansi) return chalk.ansi256(Number(ansi[1]));
-  if (NAMED_COLORS.has(s)) return chalk[s as keyof typeof chalk] as (t: string) => string;
+  if (ansi) {
+    return chalk.ansi256(Number(ansi[1]));
+  }
+  if (NAMED_COLORS.has(s)) {
+    return chalk[s as keyof typeof chalk] as (t: string) => string;
+  }
   return (t: string) => t;
 }
 
@@ -419,7 +426,9 @@ export class ProcessManager implements ControlManager {
    * and restarts affected running packages when one changes or appears. Idempotent.
    */
   private startEnvWatchers(): void {
-    if (this.envWatchDispose) return;
+    if (this.envWatchDispose) {
+      return;
+    }
     const workspaceDir = path.resolve(this.cwd);
     const targets: WatchTarget[] = [
       // Workspace-scope files are shared: a change restarts every running package.
@@ -427,14 +436,18 @@ export class ProcessManager implements ControlManager {
         dir: workspaceDir,
         filenames: this.envFiles,
         onChange: () => {
-          for (const name of this.processes.keys()) this.restartForEnvChange(name);
+          for (const name of this.processes.keys()) {
+            this.restartForEnvChange(name);
+          }
         },
       },
     ];
     // Package-scope files restart only their own package.
     for (const [name, managed] of this.processes) {
       const pkgDir = path.resolve(this.cwd, managed.pkg.relativeDir);
-      if (pkgDir === workspaceDir) continue; // already covered by the workspace watcher
+      if (pkgDir === workspaceDir) {
+        continue;
+      } // already covered by the workspace watcher
       targets.push({
         dir: pkgDir,
         filenames: this.envFiles,
@@ -446,7 +459,9 @@ export class ProcessManager implements ControlManager {
 
   /** Restart a package in response to an `.env` change, but only if it's currently running. */
   private restartForEnvChange(name: string): void {
-    if (this.getStatus(name) !== 'running') return;
+    if (this.getStatus(name) !== 'running') {
+      return;
+    }
     const managed = this.processes.get(name);
     if (managed) {
       this.addLine(
@@ -881,22 +896,14 @@ export class ProcessManager implements ControlManager {
     return out;
   }
 
-  /** ControlManager entry point: the whole resolved config (defaults applied) served by `/query/config`. */
+  /** ControlManager entry point: the whole resolved config (defaults applied) served by `/query/status`. */
   getConfig(): unknown {
     return getLoadedConfig();
   }
 
-  /** ControlManager entry point: package list, optionally filtered by exact status. */
-  getPackages(filter?: string): { name: string; shortName?: string; status: string }[] {
-    const out: { name: string; shortName?: string; status: string }[] = [];
-    for (const [name, managed] of this.processes) {
-      const status = this.getStatus(name) ?? 'stopped';
-      if (filter && status !== filter) {
-        continue;
-      }
-      out.push({ name, shortName: managed.pkg.shortName, status });
-    }
-    return out.sort((a, b) => a.name.localeCompare(b.name));
+  /** ControlManager entry point: the logfile currently being written (updated by {@link rotateLogFile}). */
+  getLogFile(): string {
+    return this.logFilePath;
   }
 
   // ---------------------------------------------------------------------------
@@ -1059,6 +1066,9 @@ export class ProcessManager implements ControlManager {
     fs.closeSync(this.logFd);
     this.logFilePath = getDefaultLogFile(path.dirname(this.logFilePath));
     this.logFd = fs.openSync(this.logFilePath, 'w');
+    // Keep running.json's `logFile` pointing at the file we're now writing, so `devtooie logs`
+    // (and anything reading running.json) always resolves the latest logfile after a rotation.
+    updateRunning(process.cwd(), { logFile: this.logFilePath });
     return this.logFilePath;
   }
 
@@ -1076,7 +1086,9 @@ export class ProcessManager implements ControlManager {
     if (custom) {
       try {
         const out = custom(line);
-        if (typeof out === 'string') return out;
+        if (typeof out === 'string') {
+          return out;
+        }
       } catch {
         /* fall back to the default rendering below */
       }
@@ -1085,7 +1097,9 @@ export class ProcessManager implements ControlManager {
     let out = line;
     try {
       const formatted = defaultFormatter(line);
-      if (typeof formatted === 'string') out = formatted;
+      if (typeof formatted === 'string') {
+        out = formatted;
+      }
     } catch {
       /* keep the raw line */
     }
@@ -1103,7 +1117,9 @@ export class ProcessManager implements ControlManager {
   private addOutput(managed: ManagedProcess, rawLine: string, isError: boolean): void {
     const formatted = this.formatOutput(managed, rawLine, isError);
     for (const out of formatted.split('\n')) {
-      if (out) this.addLine(managed.prefix, out, managed.searchName, isError);
+      if (out) {
+        this.addLine(managed.prefix, out, managed.searchName, isError);
+      }
     }
   }
 
