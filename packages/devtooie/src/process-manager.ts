@@ -21,6 +21,7 @@ import {
 } from './lib.js';
 import { updateRunning } from './running.js';
 import type { RunnerArgs } from './runners/types.js';
+import { SHUTDOWN_GRACE_MS } from './shutdown-timing.js';
 import { stripTitleSequences } from './terminal-title.js';
 
 type ProcessState = 'running' | 'stopped' | 'waiting';
@@ -141,7 +142,6 @@ export function packagePrefixColor(pkg: AnyPackageConfig, index: number): (s: st
 const MAX_BUFFER_LINES = 50_000;
 /** Rendered width of a displayed timestamp gutter: `"YYYY-MM-DD HH:MM:SS "` (19 chars + a space). */
 const TIMESTAMP_GUTTER_WIDTH = 20;
-const SHUTDOWN_GRACE_MS = 3000;
 const WAIT_FOR_POLL_MS = 2000;
 
 /**
@@ -714,7 +714,7 @@ export class ProcessManager implements ControlManager {
     }
   }
 
-  /** Graceful shutdown: SIGTERM everything, wait up to 3s, then SIGKILL stragglers. */
+  /** Graceful shutdown: SIGTERM everything, wait up to 10s, then SIGKILL stragglers. */
   async shutdownAll(): Promise<void> {
     if (this.waitingPollTimer) {
       clearInterval(this.waitingPollTimer);

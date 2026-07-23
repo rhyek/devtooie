@@ -4,6 +4,7 @@ import { execa } from 'execa';
 import { getRegisteredPackages } from './config.js';
 import { createControlClient, probeInstance } from './control-client.js';
 import { decideControlPort, isPortListening } from './running.js';
+import { HANDOFF_FORCE_KILL_MS } from './shutdown-timing.js';
 
 export function parseLsofPids(out: string): number[] {
   return out
@@ -105,13 +106,22 @@ export async function killTrees(roots: number[]): Promise<void> {
 /**
  * Gracefully shuts down the devtooie instance at `port` (POST /command/quit), waits for
  * `pid` to exit, then force-kills its process tree if it's still alive (Unix best-effort).
+ *
+ * `quit()` **blocks** until the target reports its packages are torn down (ports freed), so by
+ * the time it resolves the old session's dev ports are already clear. The subsequent pid poll
+ * just waits out the target's own final exit (it still has to close its control server and quit
+ * after acking) and is the robust source of truth — it survives the target hard-exiting or its
+ * server closing mid-shutdown, cases where the HTTP ack never arrives. The whole wait is bounded
+ * by `HANDOFF_FORCE_KILL_MS` (measured from the start), which sits past the target's own
+ * worst-case graceful shutdown so a slow-but-graceful exit is never force-killed mid-cleanup;
+ * only a target that overruns that gets its tree killed.
  */
 export async function shutdownInstance(port: number, pid: number): Promise<void> {
   if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) {
     return;
   }
+  const deadline = Date.now() + HANDOFF_FORCE_KILL_MS;
   await createControlClient(port).quit();
-  const deadline = Date.now() + 11_000;
   while (Date.now() < deadline) {
     try {
       process.kill(pid, 0);

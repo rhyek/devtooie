@@ -73,13 +73,13 @@ describe('createControlClient', () => {
     expect(await client.restart('nope')).toBe(false);
   });
 
-  it('quit() POSTs /command/quit', async () => {
+  it('quit() POSTs /command/quit and returns the ok ack', async () => {
     let hit: { method?: string; url?: string } = {};
     const port = await startServer((req, res) => {
       hit = { method: req.method, url: req.url };
       res.end('{"ok":true}');
     });
-    await createControlClient(port).quit();
+    expect(await createControlClient(port).quit()).toBe(true);
     expect(hit).toEqual({ method: 'POST', url: '/command/quit' });
   });
 });
