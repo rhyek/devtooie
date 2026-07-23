@@ -1,16 +1,10 @@
 {
+  "extends": "../../tsconfig.common.json",
   "compilerOptions": {
-    "module": "nodenext",
-    "moduleResolution": "nodenext",
-    "target": "esnext",
-    "lib": ["esnext"],
-    "strict": true,
-    "verbatimModuleSyntax": true,
-    "erasableSyntaxOnly": true,
-    "skipLibCheck": true,
-
     // This lib is referenced by other packages, so it's a composite project that emits its
-    // compiled output + declarations to `dist` (what consumers import at runtime).
+    // compiled output + declarations to `dist` (what consumers import at runtime) — overriding the
+    // shared baseline's `noEmit`.
+    "noEmit": false,
     "composite": true,
     "declaration": true,
     "declarationMap": true,

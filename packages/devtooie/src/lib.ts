@@ -37,6 +37,69 @@ export function getDefaultLogFile(dir: string = getLogDir()): string {
   return path.join(dir, `${Date.now()}.log`);
 }
 
+/**
+ * The most recently modified `*.log` file in `dir` (absolute path), or null when `dir` is
+ * missing or holds no logfiles. Used by `devtooie logs` to locate the current session's log
+ * when a live instance can't be queried for it.
+ */
+export function pickNewestLog(dir: string): string | null {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return null;
+  }
+  let newest: { path: string; mtimeMs: number } | null = null;
+  for (const name of entries) {
+    if (!name.endsWith('.log')) {
+      continue;
+    }
+    const full = path.join(dir, name);
+    try {
+      const st = fs.statSync(full);
+      if (st.isFile() && (!newest || st.mtimeMs > newest.mtimeMs)) {
+        newest = { path: full, mtimeMs: st.mtimeMs };
+      }
+    } catch {
+      /* raced away between readdir and stat — skip */
+    }
+  }
+  return newest?.path ?? null;
+}
+
+/**
+ * Picks the logfile `devtooie logs` should show, in order of precedence:
+ *
+ * 1. the running instance's current (rotation-aware) logfile, when it can be queried;
+ * 2. the logfile recorded in `running.json` (`recordedLogFile`), when it still exists — more
+ *    precise than scanning the dir, since a stray `devtooie cmd` log could be newer;
+ * 3. the newest `*.log` in `fallbackDir`.
+ *
+ * Returns null when none yields one. Purely read-only — it never touches the running session.
+ */
+export async function resolveLogFile(opts: {
+  /** Asks the live instance for its current logfile; resolves null if there's no live answer. */
+  liveLogFile: () => Promise<string | null>;
+  /** The logfile recorded in `running.json`, used when there's no live answer and it still exists. */
+  recordedLogFile?: string | null;
+  /** Directory searched for the newest `*.log` as a last resort. */
+  fallbackDir: string;
+  /** Injectable for tests; defaults to {@link pickNewestLog}. */
+  newestLog?: (dir: string) => string | null;
+  /** Injectable for tests; defaults to `fs.existsSync`. */
+  exists?: (file: string) => boolean;
+}): Promise<string | null> {
+  const live = await opts.liveLogFile();
+  if (live) {
+    return live;
+  }
+  const exists = opts.exists ?? fs.existsSync;
+  if (opts.recordedLogFile && exists(opts.recordedLogFile)) {
+    return opts.recordedLogFile;
+  }
+  return (opts.newestLog ?? pickNewestLog)(opts.fallbackDir);
+}
+
 /** Strips ANSI SGR (color) escape sequences, so logfiles hold plain text. */
 export function stripAnsi(text: string): string {
   // eslint-disable-next-line no-control-regex -- matches ANSI SGR escape sequences
@@ -73,10 +136,16 @@ export function findAncestorPackage(
   let dir = path.resolve(startDir);
   for (;;) {
     const pkg = byPath.get(dir);
-    if (pkg) return pkg;
-    if (dir === stop) return null;
+    if (pkg) {
+      return pkg;
+    }
+    if (dir === stop) {
+      return null;
+    }
     const parent = path.dirname(dir);
-    if (parent === dir) return null;
+    if (parent === dir) {
+      return null;
+    }
     dir = parent;
   }
 }
@@ -90,8 +159,12 @@ function readPackageJson(pkg: AnyPackageConfig): { scripts?: Record<string, stri
 }
 
 export function getCommandRunner(pkg: AnyPackageConfig): 'pnpm' | 'make' {
-  if (fs.existsSync(path.join(pkg.path, 'package.json'))) return 'pnpm';
-  if (fs.existsSync(path.join(pkg.path, 'Makefile'))) return 'make';
+  if (fs.existsSync(path.join(pkg.path, 'package.json'))) {
+    return 'pnpm';
+  }
+  if (fs.existsSync(path.join(pkg.path, 'Makefile'))) {
+    return 'make';
+  }
   return 'pnpm';
 }
 
@@ -108,7 +181,9 @@ export function getExecArgs(
 }
 
 export function hasScript(pkg: AnyPackageConfig, script: string): boolean {
-  if (getCommandRunner(pkg) === 'make') return getMakeTargets(pkg).includes(script);
+  if (getCommandRunner(pkg) === 'make') {
+    return getMakeTargets(pkg).includes(script);
+  }
   return Boolean(readPackageJson(pkg)?.scripts?.[script]);
 }
 
@@ -120,7 +195,9 @@ export function hasScript(pkg: AnyPackageConfig, script: string): boolean {
  * `make` target name can't contain the `:` in `build:clean`.
  */
 export function canRebuild(pkg: AnyPackageConfig): boolean {
-  if (pkg.command?.cleans === true) return true;
+  if (pkg.command?.cleans === true) {
+    return true;
+  }
   return hasScript(pkg, 'build:clean') || (hasScript(pkg, 'clean') && hasScript(pkg, 'build'));
 }
 
@@ -131,7 +208,9 @@ export function canRebuild(pkg: AnyPackageConfig): boolean {
  * rebuild is just a restart (no pre-commands). See {@link canRebuild}.
  */
 export function getRebuildCommands(pkg: AnyPackageConfig): [string, string[]][] {
-  if (hasScript(pkg, 'build:clean')) return [getExecArgs(pkg, 'build:clean')];
+  if (hasScript(pkg, 'build:clean')) {
+    return [getExecArgs(pkg, 'build:clean')];
+  }
   if (hasScript(pkg, 'clean') && hasScript(pkg, 'build')) {
     return [getExecArgs(pkg, 'clean'), getExecArgs(pkg, 'build')];
   }
@@ -209,16 +288,22 @@ export function getTsconfigBuildPackages(pkg: AnyPackageConfig): AnyPackageConfi
   const result: AnyPackageConfig[] = [];
   const visit = (dir: string) => {
     const resolvedDir = path.resolve(dir);
-    if (seen.has(resolvedDir)) return;
+    if (seen.has(resolvedDir)) {
+      return;
+    }
     seen.add(resolvedDir);
     const cfgPath = resolveRefTsconfig(resolvedDir, byPath);
-    if (!cfgPath) return;
+    if (!cfgPath) {
+      return;
+    }
     const parsed = ts.readConfigFile(cfgPath, ts.sys.readFile);
     const refs = (parsed.config?.references ?? []) as { path: string }[];
     for (const ref of refs) {
       const refDir = path.resolve(resolvedDir, ref.path.replace(/tsconfig.*\.json$/, ''));
       const match = byPath.get(refDir);
-      if (match && !result.includes(match)) result.push(match);
+      if (match && !result.includes(match)) {
+        result.push(match);
+      }
       visit(refDir);
     }
   };
@@ -244,7 +329,9 @@ export function resolveDeps(
     reasons[pkg.name] = 'selected';
     if (depTypes.includes(DepType.RUNTIME)) {
       for (const dep of pkg.deps?.runtime ?? []) {
-        if (!runSet.has(dep)) reasons[dep] = `runtime dep of ${pkg.name}`;
+        if (!runSet.has(dep)) {
+          reasons[dep] = `runtime dep of ${pkg.name}`;
+        }
         runSet.add(dep);
       }
     }
@@ -255,7 +342,9 @@ export function resolveDeps(
   while (queue.length) {
     const name = queue.shift()!;
     const pkg = lookup(name);
-    if (!pkg) continue;
+    if (!pkg) {
+      continue;
+    }
     if (depTypes.includes(DepType.BUILD)) {
       const buildDeps = [
         ...getTsconfigBuildPackages(pkg).map((a) => a.name),
@@ -347,10 +436,14 @@ function closureSize(pkg: AnyPackageConfig, kind: DepKind): number {
   const queue = directDeps(pkg, kind);
   while (queue.length) {
     const name = queue.shift()!;
-    if (name === pkg.name || seen.has(name)) continue;
+    if (name === pkg.name || seen.has(name)) {
+      continue;
+    }
     seen.add(name);
     const dep = lookup(name);
-    if (dep) queue.push(...directDeps(dep, kind));
+    if (dep) {
+      queue.push(...directDeps(dep, kind));
+    }
   }
   return seen.size;
 }

@@ -1,18 +1,11 @@
 {
+  "extends": "../../tsconfig.common.json",
   "compilerOptions": {
-    "module": "nodenext",
-    "moduleResolution": "nodenext",
-    "target": "esnext",
-    "lib": ["esnext"],
-    "types": ["node"],
-    "strict": true,
-    "verbatimModuleSyntax": true,
-    "erasableSyntaxOnly": true,
-    "noEmit": true,
-    "skipLibCheck": true
+    "types": ["node"]
   },
   "include": ["src"],
   // devtooie reads these project references (no separate tsconfig.build.json) to build
-  // @example/isomorphic before this package runs.
+  // @example/isomorphic before this package runs. @example/db is NOT referenced here — it's a
+  // source-only lib wired by the pnpm `workspace:*` link, not a compiled project.
   "references": [{ "path": "../isomorphic" }]
 }

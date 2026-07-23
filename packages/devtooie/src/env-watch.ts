@@ -28,8 +28,12 @@ export function watchEnvFiles(opts: { targets: WatchTarget[]; debounceMs?: numbe
       const watcher = fs.watch(target.dir, { persistent: false }, (_event, filename) => {
         // `filename` can be null on some platforms; without it we can't tell which file
         // changed, so we don't fire (avoids restarting on unrelated activity in the dir).
-        if (!filename || !names.has(filename.toString())) return;
-        if (timer) clearTimeout(timer);
+        if (!filename || !names.has(filename.toString())) {
+          return;
+        }
+        if (timer) {
+          clearTimeout(timer);
+        }
         timer = setTimeout(() => {
           timer = null;
           target.onChange();
@@ -43,7 +47,11 @@ export function watchEnvFiles(opts: { targets: WatchTarget[]; debounceMs?: numbe
   }
 
   return () => {
-    for (const w of watchers) w.close();
-    for (const t of timers) clearTimeout(t);
+    for (const w of watchers) {
+      w.close();
+    }
+    for (const t of timers) {
+      clearTimeout(t);
+    }
   };
 }

@@ -62,7 +62,9 @@ function linkWidth(u: { label?: string; url: string }): number {
 
 /** Displayed width of one footer line: its links plus a single space between each. */
 function lineWidth(line: UrlLine): number {
-  if (line.length === 0) return 0;
+  if (line.length === 0) {
+    return 0;
+  }
   return line.reduce((sum, u) => sum + linkWidth(u), 0) + (line.length - 1);
 }
 
@@ -83,6 +85,50 @@ const SHUTDOWN_TIMEOUT_MS = 10_000;
 
 /** Rendered rows scrolled per mouse-wheel notch. */
 const WHEEL_STEP = 3;
+
+/**
+ * Absolute on-screen rect of an Ink element, in 1-based SGR mouse coordinates.
+ * Ink's `measureElement` exposes only width/height, so to hit-test a click we
+ * walk `parentNode` ourselves and sum each node's yoga offset to recover the
+ * position — robust to footer layout changes and terminal resizes.
+ */
+function elementScreenRect(
+  node: DOMElement | null | undefined,
+): { col: number; row: number; width: number; height: number } | null {
+  if (!node?.yogaNode) {
+    return null;
+  }
+  let left = 0;
+  let top = 0;
+  let cur: DOMElement | undefined = node;
+  while (cur?.yogaNode) {
+    left += cur.yogaNode.getComputedLeft();
+    top += cur.yogaNode.getComputedTop();
+    cur = cur.parentNode;
+  }
+  return {
+    // yoga offsets are 0-based from the root's top-left; SGR mouse coords are 1-based.
+    col: left + 1,
+    row: top + 1,
+    width: node.yogaNode.getComputedWidth(),
+    height: node.yogaNode.getComputedHeight(),
+  };
+}
+
+/** Whether an SGR mouse (`col`,`row`) — 1-based — lands on `rect`, with `colPad` cells of slack so a narrow glyph stays easy to click. */
+function rectHit(
+  rect: { col: number; row: number; width: number; height: number },
+  col: number,
+  row: number,
+  colPad = 1,
+): boolean {
+  return (
+    row >= rect.row &&
+    row <= rect.row + rect.height - 1 &&
+    col >= rect.col - colPad &&
+    col <= rect.col + rect.width - 1 + colPad
+  );
+}
 
 /** Wraps `text` in an OSC 8 terminal hyperlink; terminals without support just show the text. */
 function hyperlink(url: string, text: string): string {
@@ -456,6 +502,8 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
   // measurement also starts every package.
   const bottomRef = useRef<DOMElement>(null);
   const topRef = useRef<DOMElement>(null);
+  // The clickable ⧉ copy glyph next to the logfile path; hit-tested on mouse press.
+  const copyIconRef = useRef<DOMElement>(null);
   const startedRef = useRef(false);
   // Runs every render to re-measure the chrome (top indicator + footer) as its
   // content changes; the setState calls bail on unchanged values, so no loop.
@@ -499,11 +547,10 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
   });
   const {
     clear: clearSelection,
-    copy: copySelection,
     onMouse: onMouseSelect,
     highlights,
     copiedNotice,
-    hasSelection,
+    flashCopy,
   } = dragSelection;
 
   // Enable SGR mouse reporting so the wheel scrolls the viewport and click-drag
@@ -590,6 +637,14 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
           // A selection is content-anchored, so it survives wheel scrolling too.
           viewport.scrollLines(report.dir === 'up' ? WHEEL_STEP : -WHEEL_STEP);
         } else {
+          // A press on the footer's ⧉ glyph copies the absolute logfile path.
+          if (report.type === 'down' && logFilePath) {
+            const rect = elementScreenRect(copyIconRef.current);
+            if (rect && rectHit(rect, report.col, report.row)) {
+              flashCopy(path.resolve(logFilePath), 'copied logfile path');
+              continue;
+            }
+          }
           onMouseSelect(report);
         }
       }
@@ -713,12 +768,6 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
       return;
     }
 
-    // Copy the current drag-selection (no-op when nothing is selected).
-    if (input === 'c') {
-      copySelection();
-      return;
-    }
-
     if (key.escape) {
       // Escape clears an active selection first, then an active filter.
       if (clearSelection()) {
@@ -808,8 +857,6 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
     { header: 'logs' },
     { key: 'k', label: 'clear' },
     { key: 'f', label: 'filter' },
-    // `c: copy` only shows once a drag-selection exists (there's nothing to copy otherwise).
-    ...(hasSelection ? [{ key: 'c', label: 'copy' } as HotkeyHintItem] : []),
     { separator: true },
     { key: '^c', label: 'quit' },
   ];
@@ -913,7 +960,8 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
     <>
       <Box>
         <HotkeyHints hints={sessionHints} />
-        {copiedNotice && <Text color="green">{`    ✓ ${copiedNotice} to clipboard`}</Text>}
+        {/* Magenta: green/cyan/yellow/red/gray all carry package-status meaning (and green is the git branch), so the copy flash uses a hue none of them claim. */}
+        {copiedNotice && <Text color="magenta">{`    ✓ ${copiedNotice} to clipboard`}</Text>}
       </Box>
       {filterLine}
     </>
@@ -962,6 +1010,10 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
                   <Text dimColor>
                     logfile: {path.relative(process.cwd(), logFilePath) || logFilePath}
                   </Text>
+                  {/* Click to copy the absolute logfile path (hit-tested via copyIconRef). */}
+                  <Box ref={copyIconRef}>
+                    <Text color="magenta">⧉</Text>
+                  </Box>
                   {isNormal && <HotkeyHints hints={[{ key: 't', label: 'rotate' }]} />}
                 </Box>
               )}

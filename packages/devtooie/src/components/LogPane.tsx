@@ -139,28 +139,28 @@ type PointerReport = Extract<MouseReport, { type: 'down' | 'move' | 'up' }>;
 export type DragSelection = {
   /** Per-visible-row highlight spans, aligned to `viewport.rows` (null = no highlight). */
   highlights: (Span | null)[];
-  /** Transient "copied N lines" message to flash in the footer (null when idle). */
+  /** Transient footer flash message (e.g. "copied N chars"), null when idle. */
   copiedNotice: string | null;
-  /** Whether a non-empty selection is active (drives the conditional `c: copy` hint). */
-  hasSelection: boolean;
   /** Feed a pointer (press/drag/release) mouse report; maps it and updates the selection. */
   onMouse: (report: PointerReport) => void;
-  /** Copy the current selection to the clipboard (bound to `c`); no-op when nothing is selected. */
-  copy: () => void;
+  /** Copy `text` to the clipboard and flash `label` in the footer, on the same linger timer as a drag-copy. For footer click-to-copy affordances (e.g. the logfile path). */
+  flashCopy: (text: string, label: string) => void;
   /** Drop any current selection (`esc`, filter change, resize, `k` — not scrolling); returns whether one was cleared. */
   clear: () => boolean;
 };
 
-/** How long the "copied N lines" footer flash stays up. */
-const COPY_NOTICE_MS = 2000;
+/** How long the highlight and the "copied N chars" flash linger after a copy-on-select, before both clear. */
+const SELECTION_LINGER_MS = 5000;
 
 /**
  * App-managed drag-to-select over the log viewport. The selection is anchored to
  * flat-row/column content coordinates (see {@link selection.ts}), so it survives
  * scrolling and incoming logs — the two things native terminal selection can't
- * survive under our in-place repaints. Dragging only *selects*; the text is
- * captured on release and copied to the clipboard by {@link DragSelection.copy}
- * (bound to `c`), so selecting and copying stay separate actions.
+ * survive under our in-place repaints. Releasing a non-empty drag copies the
+ * selection to the clipboard immediately (copy-on-select — no key press, since the
+ * VS Code integrated terminal swallows Cmd+C before it reaches us); the highlight
+ * and the "copied" flash then linger together for {@link SELECTION_LINGER_MS}
+ * before clearing.
  *
  * The live selection lives in a ref (not state) so a burst of move+release events
  * arriving in a single read all see each other's updates synchronously; a reducer
@@ -176,43 +176,55 @@ export function useDragSelection(opts: {
 
   const selectionRef = useRef<Selection | null>(null);
   const draggingRef = useRef(false);
-  // The selected text, captured on release (while it's fully on screen) so `c`
-  // copies exactly that even after the highlight scrolls with incoming logs.
+  // The selected text, captured on release (while it's fully on screen) so the
+  // copy-on-select grabs exactly that even after the highlight scrolls with logs.
   const pendingTextRef = useRef<string | null>(null);
   const [, forceRender] = useReducer((n: number) => n + 1, 0);
   const [copiedNotice, setCopiedNotice] = useState<string | null>(null);
-  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A single timer drives the post-copy linger: SELECTION_LINGER_MS after a
+  // copy it drops the highlight and the flash together.
+  const lingerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cancelLinger = useCallback(() => {
+    if (lingerTimer.current) {
+      clearTimeout(lingerTimer.current);
+      lingerTimer.current = null;
+    }
+  }, []);
 
   const clear = useCallback((): boolean => {
+    cancelLinger();
     if (selectionRef.current !== null || draggingRef.current) {
       selectionRef.current = null;
       draggingRef.current = false;
       pendingTextRef.current = null;
+      setCopiedNotice(null);
       forceRender();
       return true;
     }
     return false;
-  }, []);
+  }, [cancelLinger]);
 
-  const copy = useCallback(() => {
-    const text = pendingTextRef.current;
-    if (!text) {
-      return;
-    }
-    copyToClipboard(text);
-    const lines = text.split('\n').length;
-    setCopiedNotice(`copied ${lines} line${lines === 1 ? '' : 's'}`);
-    if (noticeTimer.current) {
-      clearTimeout(noticeTimer.current);
-    }
-    noticeTimer.current = setTimeout(() => setCopiedNotice(null), COPY_NOTICE_MS);
-    // Deselect once copied — the flash confirms it happened, so the highlight
-    // (and the `c: copy` hint) clear instead of lingering.
-    selectionRef.current = null;
-    draggingRef.current = false;
-    pendingTextRef.current = null;
-    forceRender();
-  }, []);
+  // Copy `text` and flash `label` in the footer, keeping any current highlight up —
+  // the linger timer clears the flash (and any selection) after 5s. No deselect here
+  // (unlike an explicit `clear`): the highlight lingering briefly is the point, it
+  // shows you what was copied. Shared by drag-release copy and footer click-to-copy.
+  const flashCopy = useCallback(
+    (text: string, label: string) => {
+      copyToClipboard(text);
+      setCopiedNotice(label);
+      cancelLinger();
+      lingerTimer.current = setTimeout(() => {
+        lingerTimer.current = null;
+        selectionRef.current = null;
+        draggingRef.current = false;
+        pendingTextRef.current = null;
+        setCopiedNotice(null);
+        forceRender();
+      }, SELECTION_LINGER_MS);
+    },
+    [cancelLinger],
+  );
 
   const onMouse = (report: PointerReport) => {
     if (rows.length === 0) {
@@ -230,6 +242,10 @@ export function useDragSelection(opts: {
       if (!inPane) {
         return;
       }
+      // A fresh selection cancels any pending post-copy linger (so a stale 5s
+      // callback can't wipe the new selection) and drops the previous flash.
+      cancelLinger();
+      setCopiedNotice(null);
       selectionRef.current = { anchor: point, focus: point };
       draggingRef.current = true;
       pendingTextRef.current = null;
@@ -250,12 +266,16 @@ export function useDragSelection(opts: {
         selectionRef.current = null; // a plain click clears the selection
         pendingTextRef.current = null;
       } else {
-        // Capture the text now (fully on screen); `c` copies it later.
+        // Capture the text now (fully on screen), then copy it immediately.
         const text = selectionText(
           selection,
           (flatRow) => rows[flatRow - firstVisibleFlatRow] ?? '',
         );
         pendingTextRef.current = text.length > 0 ? text : null;
+        if (pendingTextRef.current) {
+          const chars = pendingTextRef.current.length;
+          flashCopy(pendingTextRef.current, `copied ${chars} char${chars === 1 ? '' : 's'}`);
+        }
       }
     }
     forceRender();
@@ -263,8 +283,8 @@ export function useDragSelection(opts: {
 
   useEffect(
     () => () => {
-      if (noticeTimer.current) {
-        clearTimeout(noticeTimer.current);
+      if (lingerTimer.current) {
+        clearTimeout(lingerTimer.current);
       }
     },
     [],
@@ -274,9 +294,7 @@ export function useDragSelection(opts: {
   const highlights = rows.map((row, i) =>
     selection ? rowSpan(selection, firstVisibleFlatRow + i, rowWidth(row)) : null,
   );
-  const hasSelection = selection !== null && !isEmptySelection(selection);
-
-  return { highlights, copiedNotice, hasSelection, onMouse, copy, clear };
+  return { highlights, copiedNotice, onMouse, flashCopy, clear };
 }
 
 /** One rendered row with a selection highlight: colored pre/post, inverted (plain) middle. */

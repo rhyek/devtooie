@@ -111,6 +111,7 @@ export function BuildProgress({
         const control = await startCommandServer({
           port: port ?? pickRandomPort(),
           configPath,
+          logFile,
           onQuit: () => {
             // No process manager yet, so there's nothing to shut down
             // gracefully — just exit. process.exit guarantees this process

@@ -1,0 +1,18 @@
+{
+  // Shared TypeScript baseline for the example's Node-side packages: the root config (which
+  // type-checks devtooie.config.ts), `backend`, `db`, and `isomorphic`. Each package extends this
+  // and adds only what's specific to it — its ambient `types`, project `references`, or (for
+  // `isomorphic`) the emit/`composite` options. The `frontend` has a distinct bundler/DOM config
+  // and intentionally does NOT extend this.
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "esnext",
+    "lib": ["esnext"],
+    "strict": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  }
+}

@@ -9,7 +9,9 @@ export function watchGitBranch(opts: {
   const start = read();
   let fired = false;
   const timer = setInterval(() => {
-    if (fired) return;
+    if (fired) {
+      return;
+    }
     const now = read();
     if (start && now && now !== start) {
       fired = true;
@@ -17,6 +19,8 @@ export function watchGitBranch(opts: {
       opts.onChange(start, now);
     }
   }, opts.intervalMs ?? 2000);
-  if (typeof timer === 'object' && 'unref' in timer) timer.unref();
+  if (typeof timer === 'object' && 'unref' in timer) {
+    timer.unref();
+  }
   return () => clearInterval(timer);
 }

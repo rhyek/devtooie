@@ -182,7 +182,9 @@ export function getLoadedConfig(): Config<string> | null {
 
 export function findPackage(name: string): AnyPackageConfig {
   const pkg = registeredPackages.find((p) => p.name === name);
-  if (!pkg) throw new Error(`package ${name} not found`);
+  if (!pkg) {
+    throw new Error(`package ${name} not found`);
+  }
   return pkg;
 }
 

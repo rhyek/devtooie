@@ -34,6 +34,8 @@ Subcommands:
   build/dev/runtime dependency sets for a single package as JSON.
 - **`devtooie cmd`** — run a **one-off command** with a package's environment (its dir +
   resolved `.env`); see [below](#devtooie-cmd).
+- **`devtooie logs`** — print (or `-f/--follow`) the current dev session's logfile; see
+  [below](#devtooie-logs).
 
 ## `devtooie cmd`
 
@@ -80,3 +82,31 @@ The command's exit code is propagated, and `devtooie cmd` exits as soon as the c
 Output is streamed to your terminal **and** teed to a fresh timestamped logfile under
 `node_modules/.devtooie/logs/` (or `--log-dir`), the same place a `--plain` session logs — the
 path is printed on start.
+
+## `devtooie logs`
+
+Print the **current dev session's logfile** — handy for reading a `--plain` or TUI session's
+output from another terminal, or for an agent tailing progress.
+
+```bash
+devtooie logs         # print the whole current logfile and exit
+devtooie logs -f      # print it, then stream new lines live (Ctrl+C to stop)
+devtooie logs --path  # print just the resolved logfile path, then exit
+```
+
+It finds the logfile without disturbing the session, in order of precedence:
+
+1. If a session is running, it asks the instance over the [control API](control-api.md)
+   (`GET /query/status` → `logFile`), so it always follows the **current** file even across
+   in-session log rotation (the `t` hotkey).
+2. Otherwise, the `logFile` recorded in `node_modules/.devtooie/running.json` — the last logfile
+   the session was writing (kept current across rotation) — if it still exists. This is more
+   precise than scanning the directory, where a stray `devtooie cmd` log could be newer.
+3. Failing that, the **newest** `*.log` in the session's log directory (`logDir` from
+   `running.json`, else `node_modules/.devtooie/logs/`).
+
+`devtooie logs` is **strictly read-only**: it never starts, hands off, or shuts down a session.
+Printing uses `cat`; `-f/--follow` uses `tail -n +1 -f` (native, so it prints the whole file
+first, then follows). **Ctrl+C** stops only that `cat`/`tail` — the running session keeps going.
+`--path` (mutually exclusive with `-f`) prints the resolved path instead of the contents — handy
+for piping into another tool. `-f` needs the Unix `tail`/`cat` commands (macOS/Linux).

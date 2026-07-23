@@ -2,7 +2,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execa } from 'execa';
 import { getRegisteredPackages } from './config.js';
-import { decideControlPort, isPortListening, probeInstance } from './running.js';
+import { createControlClient, probeInstance } from './control-client.js';
+import { decideControlPort, isPortListening } from './running.js';
 
 export function parseLsofPids(out: string): number[] {
   return out
@@ -20,16 +21,24 @@ export function parseSsPids(out: string): number[] {
 export function buildKillSet(procs: { pid: number; ppid: number }[], roots: number[]): number[] {
   const children = new Map<number, number[]>();
   for (const { pid, ppid } of procs) {
-    if (!children.has(ppid)) children.set(ppid, []);
+    if (!children.has(ppid)) {
+      children.set(ppid, []);
+    }
     children.get(ppid)!.push(pid);
   }
   const out = new Set<number>();
   const walk = (pid: number) => {
-    if (out.has(pid)) return;
+    if (out.has(pid)) {
+      return;
+    }
     out.add(pid);
-    for (const c of children.get(pid) ?? []) walk(c);
+    for (const c of children.get(pid) ?? []) {
+      walk(c);
+    }
   };
-  for (const r of roots) walk(r);
+  for (const r of roots) {
+    walk(r);
+  }
   return [...out];
 }
 
@@ -46,7 +55,9 @@ export function collectDevPorts(): number[] {
 }
 
 export async function findListenerPids(ports: number[]): Promise<number[]> {
-  if (!ports.length) return [];
+  if (!ports.length) {
+    return [];
+  }
   if (os.platform() === 'darwin') {
     // Only match LISTENERS on the port (mirrors Linux ss -tlnpH listening-only behavior)
     const { stdout } = await execa(
@@ -65,7 +76,9 @@ export async function findListenerPids(ports: number[]): Promise<number[]> {
 }
 
 export async function killTrees(roots: number[]): Promise<void> {
-  if (!roots.length) return;
+  if (!roots.length) {
+    return;
+  }
   const { stdout } = await execa('ps', ['-Ao', 'pid=,ppid='], { reject: false });
   const procs = stdout
     .trim()
@@ -94,8 +107,10 @@ export async function killTrees(roots: number[]): Promise<void> {
  * `pid` to exit, then force-kills its process tree if it's still alive (Unix best-effort).
  */
 export async function shutdownInstance(port: number, pid: number): Promise<void> {
-  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return;
-  await fetch(`http://127.0.0.1:${port}/command/quit`, { method: 'POST' }).catch(() => {});
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) {
+    return;
+  }
+  await createControlClient(port).quit();
   const deadline = Date.now() + 11_000;
   while (Date.now() < deadline) {
     try {
@@ -107,8 +122,11 @@ export async function shutdownInstance(port: number, pid: number): Promise<void>
   }
   try {
     process.kill(pid, 0);
-    if (os.platform() === 'win32') process.kill(pid, 'SIGKILL');
-    else await killTrees([pid]);
+    if (os.platform() === 'win32') {
+      process.kill(pid, 'SIGKILL');
+    } else {
+      await killTrees([pid]);
+    }
   } catch {
     /* already gone */
   }
@@ -135,6 +153,7 @@ export async function acquireDevSession(opts: {
     configPath: opts.configPath,
     apiPortOverride: opts.apiPortOverride,
     logDir: opts.logFile ? path.dirname(opts.logFile) : undefined,
+    logFile: opts.logFile,
     env: { isListening: isPortListening, probe: probeInstance, shutdown: shutdownInstance },
     onStatus,
   });

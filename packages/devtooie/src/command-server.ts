@@ -2,10 +2,10 @@ import http from 'node:http';
 
 export interface ControlManager {
   getAllStatuses(): unknown;
-  getStatus(pkg: string): unknown;
-  getPackages(filter?: string): unknown;
-  /** The whole resolved config (defaults applied), served verbatim by `/query/config`. */
+  /** The whole resolved config (defaults applied), included in `/query/status` once attached. */
   getConfig(): unknown;
+  /** Absolute path to the logfile currently being written (rotation-aware). */
+  getLogFile(): string;
   restart(pkg: string): boolean;
   rebuild(pkg: string): boolean;
   quit(): void;
@@ -20,8 +20,13 @@ export interface ControlManager {
 export async function startCommandServer(opts: {
   onQuit: () => void;
   port: number;
-  /** Absolute path to the config this session started with; surfaced on `/query/pid` for handoff. */
+  /** Absolute path to the config this session started with; surfaced on `/query/status` for handoff. */
   configPath?: string;
+  /**
+   * This session's initial logfile, surfaced on `/query/status` before the process manager
+   * attaches. Once attached, the manager's rotation-aware `getLogFile()` supersedes it.
+   */
+  logFile?: string;
 }): Promise<{
   attach(m: ControlManager): void;
   /**
@@ -47,27 +52,31 @@ export async function startCommandServer(opts: {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
     const parts = pathname.split('/').filter(Boolean);
-    if (pathname === '/query/pid')
-      return send(res, 200, { pid: process.pid, configPath: opts.configPath });
+    // The single consolidated query endpoint. `pid`/`configPath`/`logFile` are available even
+    // before the process manager attaches (from the server's own opts); `packages`/`config`
+    // — and the rotation-aware `logFile` — come from the manager once it does.
+    if (pathname === '/query/status') {
+      return send(res, 200, {
+        pid: process.pid,
+        configPath: opts.configPath ?? null,
+        logFile: manager ? manager.getLogFile() : (opts.logFile ?? null),
+        packages: manager ? manager.getAllStatuses() : null,
+        config: manager ? manager.getConfig() : null,
+      });
+    }
     if (pathname === '/command/quit') {
       manager?.logControl('quit');
       send(res, 200, { ok: true });
       return void onQuit();
     }
-    if (pathname === '/')
+    if (pathname === '/') {
       return send(res, 200, { ok: true, pid: process.pid, attached: Boolean(manager) });
+    }
 
-    if (!manager) return send(res, 503, { error: 'manager not attached' });
+    if (!manager) {
+      return send(res, 503, { error: 'manager not attached' });
+    }
 
-    if (parts[0] === 'query' && parts[1] === 'status') {
-      return send(res, 200, parts[2] ? manager.getStatus(parts[2]) : manager.getAllStatuses());
-    }
-    if (parts[0] === 'query' && parts[1] === 'packages') {
-      return send(res, 200, manager.getPackages(url.searchParams.get('status') ?? undefined));
-    }
-    if (parts[0] === 'query' && parts[1] === 'config') {
-      return send(res, 200, manager.getConfig());
-    }
     if (parts[0] === 'command' && (parts[1] === 'restart' || parts[1] === 'rebuild') && parts[2]) {
       manager.logControl(`${parts[1]} ${parts[2]}`, parts[2]);
       const ok = parts[1] === 'restart' ? manager.restart(parts[2]) : manager.rebuild(parts[2]);

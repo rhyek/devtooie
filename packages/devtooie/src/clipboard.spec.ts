@@ -32,8 +32,11 @@ describe('copyToClipboard', () => {
       copyToClipboard('hello', (data) => writes.push(data));
       expect(writes).toEqual([osc52('hello')]);
     } finally {
-      if (prev === undefined) delete process.env.SSH_TTY;
-      else process.env.SSH_TTY = prev;
+      if (prev === undefined) {
+        delete process.env.SSH_TTY;
+      } else {
+        process.env.SSH_TTY = prev;
+      }
     }
   });
 

@@ -7,6 +7,7 @@ import {
   CONTROL_PORT_COUNT,
   readRunning,
   writeRunning,
+  updateRunning,
   pickRandomPort,
   decideControlPort,
   type PortEnv,
@@ -40,12 +41,15 @@ function fakeEnv(opts: {
 
 describe('pickRandomPort', () => {
   it('returns a port within the configured range', () => {
-    for (let i = 0; i < 50; i++) expect(inRange(pickRandomPort())).toBe(true);
+    for (let i = 0; i < 50; i++) {
+      expect(inRange(pickRandomPort())).toBe(true);
+    }
   });
   it('never returns an excluded port', () => {
     const exclude = [];
-    for (let p = CONTROL_PORT_MIN; p < CONTROL_PORT_MIN + CONTROL_PORT_COUNT - 1; p++)
+    for (let p = CONTROL_PORT_MIN; p < CONTROL_PORT_MIN + CONTROL_PORT_COUNT - 1; p++) {
       exclude.push(p);
+    }
     // Only the last port is available.
     expect(pickRandomPort(exclude)).toBe(CONTROL_PORT_MIN + CONTROL_PORT_COUNT - 1);
   });
@@ -65,6 +69,30 @@ describe('readRunning / writeRunning', () => {
   });
 });
 
+describe('updateRunning', () => {
+  it('merges a patch into running.json when this process owns it', () => {
+    writeRunning(cwd, { port: 14050, pid: process.pid, logDir: '/logs' });
+    updateRunning(cwd, { logFile: '/logs/2.log' });
+    expect(readRunning(cwd)).toEqual({
+      port: 14050,
+      pid: process.pid,
+      logDir: '/logs',
+      logFile: '/logs/2.log',
+    });
+  });
+
+  it('is a no-op when this process does not own running.json (different pid)', () => {
+    writeRunning(cwd, { port: 14050, pid: process.pid + 1, logFile: '/logs/1.log' });
+    updateRunning(cwd, { logFile: '/logs/2.log' });
+    expect(readRunning(cwd)?.logFile).toBe('/logs/1.log');
+  });
+
+  it('is a no-op when there is no running.json', () => {
+    updateRunning(cwd, { logFile: '/logs/2.log' });
+    expect(readRunning(cwd)).toBeNull();
+  });
+});
+
 describe('decideControlPort — random mode', () => {
   const configPath = '/repo/devtooie.config.ts';
 
@@ -79,6 +107,23 @@ describe('decideControlPort — random mode', () => {
     const port = await decideControlPort({ cwd, configPath, pid: 4242, env: fakeEnv({}) });
     expect(port).toBe(14050);
     expect(readRunning(cwd)).toEqual({ port: 14050, pid: 4242 });
+  });
+
+  it('records the logFile (and logDir) in running.json when given', async () => {
+    const port = await decideControlPort({
+      cwd,
+      configPath,
+      pid: 4242,
+      logDir: '/logs',
+      logFile: '/logs/1.log',
+      env: fakeEnv({}),
+    });
+    expect(readRunning(cwd)).toEqual({
+      port,
+      pid: 4242,
+      logDir: '/logs',
+      logFile: '/logs/1.log',
+    });
   });
 
   it('hands off (shuts down) and reuses the port when the same workspace is listening', async () => {

@@ -2,6 +2,13 @@ import { defineConfig, logging } from 'devtooie';
 
 export default defineConfig({
   packages: [
+    // Note: @example/db (packages/db) is deliberately NOT a devtooie package. It's a
+    // source-consumption TS library — its package.json `exports` point straight at `src` (no build,
+    // no emit) and the backend type-strips it on the fly via Node's native TS support. With no dev
+    // process and nothing to build, there's nothing for devtooie to manage: the pnpm `workspace:*`
+    // link + package `exports` wire it entirely, and the backend's `node --watch` picks up edits to
+    // its source. Contrast `isomorphic` below, which IS a devtooie build-dep — compiled to `dist`
+    // and discovered via a tsconfig project reference.
     {
       name: 'isomorphic',
       relativeDir: 'packages/isomorphic',

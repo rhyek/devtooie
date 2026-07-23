@@ -11,7 +11,9 @@ export function createPlainStatusReporter(): { update(msg: string): void; done()
     update(msg: string) {
       current = msg;
       if (isTty) {
-        if (!timer) timer = setInterval(render, 300);
+        if (!timer) {
+          timer = setInterval(render, 300);
+        }
       } else {
         process.stdout.write(`${msg}\n`);
       }
@@ -21,7 +23,9 @@ export function createPlainStatusReporter(): { update(msg: string): void; done()
         clearInterval(timer);
         timer = null;
       }
-      if (isTty && current) process.stdout.write('\r' + ' '.repeat(current.length + 4) + '\r');
+      if (isTty && current) {
+        process.stdout.write('\r' + ' '.repeat(current.length + 4) + '\r');
+      }
     },
   };
 }
