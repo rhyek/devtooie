@@ -629,8 +629,21 @@ grep -i error "$log"
 `ls -t "$dir"` instead — prior logs are still there.
 
 Mutating commands received over the control API (restart, rebuild, quit) are echoed into the same
-log as `[dt:control]` lines (e.g. `[dt:control] restart backend`), so you can confirm a command you
-sent actually landed and see the package's own output that followed it.
+log as `[dt:control]` lines, so you can confirm a command you sent actually landed and see the
+package's own output that followed it. Each is a structured log: the command is the message, and
+the variables it carried are listed as indented properties beneath it.
+
+```
+2026-07-23 16:41:22 [dt:control     ] [INFO] restart
+2026-07-23 16:41:22 [dt:control     ]   package: backend
+```
+
+devtooie's own lifecycle notices (shutdown, git-branch change) are logged the same way under a
+`[devtooie]` label — both channels render in a distinct gold so they read apart from package output:
+
+```
+2026-07-23 16:41:22 [devtooie       ] [WARN] shutting down...
+```
 
 **You generally don't need `--log-dir`.** If you start the session yourself, leave it off and logs
 land in the default `node_modules/.devtooie/logs/`. The flag only changes which directory the

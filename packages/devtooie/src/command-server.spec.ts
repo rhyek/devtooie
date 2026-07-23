@@ -135,18 +135,18 @@ describe('command-server', () => {
     expect(await quitP).toEqual({ ok: true });
   });
 
-  it('logs mutating commands via logControl (restart/rebuild scoped, quit unscoped)', async () => {
-    const logged: { message: string; pkg?: string }[] = [];
+  it('logs each mutating command with its variables as attrs', async () => {
+    const logged: { command: string; attrs?: Record<string, unknown> }[] = [];
     server = await startCommandServer({ onQuit: () => server!.ackQuit(), port: 0 });
-    server.attach(fakeManager({ logControl: (message, pkg) => logged.push({ message, pkg }) }));
+    server.attach(fakeManager({ logControl: (command, attrs) => logged.push({ command, attrs }) }));
     const base = `http://127.0.0.1:${server.port}`;
     await fetch(`${base}/command/restart/web`, { method: 'POST' });
     await fetch(`${base}/command/rebuild/api`, { method: 'POST' });
     await fetch(`${base}/command/quit`, { method: 'POST' });
     expect(logged).toEqual([
-      { message: 'restart web', pkg: 'web' },
-      { message: 'rebuild api', pkg: 'api' },
-      { message: 'quit', pkg: undefined },
+      { command: 'restart', attrs: { package: 'web' } },
+      { command: 'rebuild', attrs: { package: 'api' } },
+      { command: 'quit', attrs: undefined },
     ]);
   });
 

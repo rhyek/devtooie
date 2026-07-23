@@ -144,20 +144,20 @@ describe('on-screen log timestamps', () => {
   it("a package's logs.timestamps: true overrides a top-level default of false", () => {
     const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', path: dir, logs: { timestamps: true } }; // prettier-ignore
     manager = new ProcessManager({ ...runnerArgs(p), logTimestamps: false });
-    manager.logControl('hi', 'fixture');
+    manager.logControl('hi', { package: 'fixture' });
     expect(lastRow(manager)).toMatch(TS);
   });
 
   it("a package's logs.timestamps: false overrides a top-level default of true", () => {
     const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', path: dir, logs: { timestamps: false } }; // prettier-ignore
     manager = new ProcessManager({ ...runnerArgs(p), logTimestamps: true });
-    manager.logControl('hi', 'fixture');
+    manager.logControl('hi', { package: 'fixture' });
     expect(lastRow(manager)).not.toMatch(TS);
   });
 
   it('a package without logs.timestamps inherits the top-level default', () => {
     manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: true });
-    manager.logControl('hi', 'fixture');
+    manager.logControl('hi', { package: 'fixture' });
     expect(lastRow(manager)).toMatch(TS);
   });
 });
@@ -197,13 +197,17 @@ describe('ProcessManager', () => {
     expect(manager.getStatus('does-not-exist')).toBeNull();
   });
 
-  it('logControl writes a [dt:control] line to the logfile', () => {
+  it('logControl writes the command as a [dt:control] line with its variables beneath', () => {
     manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
-    manager.logControl('restart fixture', 'fixture');
+    manager.logControl('restart', { package: 'fixture' });
     manager.logControl('quit');
     const contents = fs.readFileSync(logFile, 'utf8');
-    expect(contents).toContain('[dt:control] restart fixture');
-    expect(contents).toContain('[dt:control] quit');
+    expect(contents).toContain('[dt:control] [INFO] restart');
+    // the command's variables render as indented properties on their own prefixed line
+    expect(contents).toContain('[dt:control]   package: fixture');
+    expect(contents).toContain('[dt:control] [INFO] quit');
+    // the routing field never leaks into the output
+    expect(contents).not.toContain('component');
   });
 
   it('logControl pads the [dt:control] label to align with the widest service name', () => {
@@ -213,10 +217,33 @@ describe('ProcessManager', () => {
       path: dir,
     };
     manager = new ProcessManager(runnerArgs(wide), { plain: true });
-    manager.logControl('restart whatsapp-bridge', 'whatsapp-bridge');
+    manager.logControl('restart', { package: 'whatsapp-bridge' });
     const contents = fs.readFileSync(logFile, 'utf8');
     // "dt:control" (10) padded to "whatsapp-bridge" width (15) → 5 trailing spaces.
-    expect(contents).toContain('[dt:control     ] restart whatsapp-bridge');
+    expect(contents).toContain('[dt:control     ] [INFO] restart');
+  });
+
+  it('renders system lines under a labelled [devtooie] prefix with a level tag', () => {
+    manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
+    manager.systemLog.warn('shutting down...');
+    manager.logSystem('just so');
+    const contents = fs.readFileSync(logFile, 'utf8');
+    expect(contents).toContain('[devtooie] [WARN] shutting down...');
+    expect(contents).toContain('[devtooie] [INFO] just so');
+  });
+
+  it('colors the system prefix gold instead of leaving the slot empty', () => {
+    const prev = chalk.level;
+    chalk.level = 3; // force truecolor so the hex actually lands in the prefix
+    try {
+      manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
+      manager.logSystem('x');
+      const line = manager.getVisibleLines().at(-1)!;
+      expect(stripAnsi(line.prefix)).toBe('[devtooie] ');
+      expect(line.prefix).toBe(chalk.hex('#d7af5f')('[devtooie]') + ' ');
+    } finally {
+      chalk.level = prev;
+    }
   });
 });
 

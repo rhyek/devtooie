@@ -1,4 +1,3 @@
-import chalk from 'chalk';
 import type { startCommandServer } from '../command-server.js';
 import { watchGitBranch } from '../git-watch.js';
 import { ProcessManager } from '../process-manager.js';
@@ -51,7 +50,7 @@ export async function runPlain(
 
   const stopBranchWatch = watchGitBranch({
     onChange: (from, to) => {
-      manager.logSystem(chalk.yellow(`git branch changed (${from} → ${to}), shutting down`));
+      manager.systemLog.warn(`git branch changed (${from} → ${to}), shutting down`);
       void shutdown();
     },
   });

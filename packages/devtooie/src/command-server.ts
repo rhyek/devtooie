@@ -10,11 +10,12 @@ export interface ControlManager {
   rebuild(pkg: string): boolean;
   quit(): void;
   /**
-   * Emit a `[dt:control]` log line noting a mutating command arrived over the
-   * control API (as opposed to the same action triggered by a UI hotkey).
-   * `pkg`, when given, scopes the line to that package for output filtering.
+   * Emit a `[dt:control]` log line noting a mutating command arrived over the control API (as
+   * opposed to the same action triggered by a UI hotkey). `attrs` carries the variables the
+   * command was called with (e.g. `{ package: 'web' }`), rendered as indented properties; an
+   * `attrs.package` naming a known package also scopes the line to it for output filtering.
    */
-  logControl(message: string, pkg?: string): void;
+  logControl(command: string, attrs?: Record<string, unknown>): void;
 }
 
 export async function startCommandServer(opts: {
@@ -107,7 +108,7 @@ export async function startCommandServer(opts: {
     }
 
     if (parts[0] === 'command' && (parts[1] === 'restart' || parts[1] === 'rebuild') && parts[2]) {
-      manager.logControl(`${parts[1]} ${parts[2]}`, parts[2]);
+      manager.logControl(parts[1], { package: parts[2] });
       const ok = parts[1] === 'restart' ? manager.restart(parts[2]) : manager.rebuild(parts[2]);
       return send(res, ok ? 202 : 404, { ok });
     }

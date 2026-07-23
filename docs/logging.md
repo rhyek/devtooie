@@ -138,3 +138,23 @@ by devtooie, so a hand-written formatter can validate shapes without a dependenc
 
 The [`example/`](https://github.com/rhyek/devtooie/tree/main/example) monorepo's Go `worker` (slog)
 relies on the default formatter, tweaked only to hide slog's `time`.
+
+## devtooie's own log lines
+
+Alongside your packages' output, devtooie logs its own events into the same stream — structured the
+same way, so they format, filter and land in the log file identically. They use two labelled
+channels, both rendered in a distinct gold so they read apart from package output:
+
+- **`[devtooie]`** — session lifecycle notices (shutting down, git-branch change).
+- **`[dt:control]`** — mutating commands received over the [control API](control-api.md)
+  (restart, rebuild, quit). The command is the message; the variables it carried are listed as
+  indented properties beneath it.
+
+```
+2026-07-23 16:41:22 [devtooie       ] [WARN] shutting down...
+2026-07-23 16:41:22 [dt:control     ] [INFO] restart
+2026-07-23 16:41:22 [dt:control     ]   package: backend
+```
+
+A control line naming a package is tagged with that package, so it shows and hides with the
+package's own output under an active filter.

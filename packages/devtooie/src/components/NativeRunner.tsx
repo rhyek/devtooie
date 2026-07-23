@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import path from 'node:path';
-import chalk from 'chalk';
 import {
   Box,
   type DOMElement,
@@ -603,7 +602,7 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
   useEffect(() => {
     const stopWatching = watchGitBranch({
       onChange: (from, to) => {
-        manager.logSystem(chalk.yellow(`git branch changed (${from} -> ${to}), shutting down`));
+        manager.systemLog.warn(`git branch changed (${from} -> ${to}), shutting down`);
         void shutdown();
       },
     });
