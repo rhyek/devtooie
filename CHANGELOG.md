@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.1 (2026-07-23)
+
+- **`POST /command/quit` now blocks until shutdown is safe, and the shutdown grace is longer.** Each package gets up to 10s (was 3s) to exit on `SIGTERM` before it's `SIGKILL`ed, and a quit request holds its response until every package is down and its ports are freed — so a newer `devtooie` invocation handing off from a running one only starts once the old session's ports are actually clear. See [docs/control-api.md](docs/control-api.md#graceful-shutdown).
+- **Session footer shows the working directory and git branch** — `cwd: <dir>` and, in a git repo, `git: <branch>` on one line above the logfile.
+- **Multi-line values in a structured log stay aligned and grouped.** A property whose value spans several lines (a message body, a stack trace) no longer drops its continuation lines flush against the left edge — they line up under where the value starts. Relatedly, a formatted entry is now held together explicitly rather than by inferring it from indentation, so a multi-line result from any `logs.formatter` filters and replays as one entry even if it isn't indented.
+- **`fields.custom` accepts a callback**, so a formatter can decide which properties to rename or hide from the log entry itself — e.g. hiding a field only on one kind of event: `custom: (log) => (log.context === 'message-ingest' ? { at: { show: false } } : {})`. See [docs/logging.md](docs/logging.md#the-logging-helpers).
+- **devtooie's own log lines are labelled and structured.** Its system notices no longer sit in an empty prefix slot — they're tagged `[devtooie]` (and control-API commands `[dt:control]`), both in a distinct gold. Both channels are now structured logs, so a control command records the variables it was called with as indented properties (e.g. `[INFO] restart` above `package: backend`). See [docs/logging.md](docs/logging.md#devtooies-own-log-lines).
+- **Fixed a blank gap above the package selector and build screens** — these pre-run phases now fill the viewport like the running session, so they anchor to the top instead of appearing below a large empty space.
+
 ## 0.5.0 (2026-07-23)
 
 - **New `devtooie logs` subcommand** — print the current session's logfile, `-f/--follow` to stream it live, or `--path` to print just its path; resolves the logfile from the running instance (falling back to the last recorded one), read-only so it never disturbs the session. See [docs/cli.md](docs/cli.md#devtooie-logs).

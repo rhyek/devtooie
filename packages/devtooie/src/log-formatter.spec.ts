@@ -108,6 +108,93 @@ describe('createFormatter', () => {
     it('hides a property with { show: false }', () => {
       expect(fmt({ fields: { custom: { time: { show: false } } } })('{"level":"INFO","msg":"hi","time":"T","port":1}')).toBe('[INFO] hi\n  port: 1'); // prettier-ignore
     });
+
+    it('accepts a callback that decides the mapping from the log itself', () => {
+      // `at` is only noise on message-ingest events; keep it everywhere else.
+      const f = fmt({
+        fields: {
+          custom: (log) => ({
+            time: { show: false },
+            ...(log.context === 'message-ingest' ? { at: { show: false } } : {}),
+          }),
+        },
+      });
+      expect(f('{"level":"INFO","msg":"message stored","context":"message-ingest","at":"T","from":"Mama"}')).toBe('[INFO] message stored\n  context: message-ingest\n  from: Mama'); // prettier-ignore
+      expect(f('{"level":"INFO","msg":"started","context":"bridge","at":"T"}')).toBe('[INFO] started\n  context: bridge\n  at: T'); // prettier-ignore
+      // the statically-hidden field stays hidden in both branches
+      expect(f('{"level":"INFO","msg":"hi","time":"T"}')).toBe('[INFO] hi');
+    });
+
+    it('re-resolves the callback per line, and supports renaming from it', () => {
+      const seen: unknown[] = [];
+      const f = fmt({
+        fields: {
+          custom: (log) => {
+            seen.push(log.context);
+            return log.context === 'ingest' ? { when: 'at' } : {};
+          },
+        },
+      });
+      expect(f('{"level":"INFO","msg":"a","context":"ingest","at":"T"}')).toBe('[INFO] a\n  context: ingest\n  when: T'); // prettier-ignore
+      expect(f('{"level":"INFO","msg":"b","context":"other","at":"T"}')).toBe('[INFO] b\n  context: other\n  at: T'); // prettier-ignore
+      expect(seen).toEqual(['ingest', 'other']);
+    });
+
+    it('does not invoke the callback for lines that pass through unformatted', () => {
+      let calls = 0;
+      const f = fmt({
+        fields: {
+          custom: () => {
+            calls++;
+            return {};
+          },
+        },
+      });
+      f('not json at all');
+      f('{"foo":1}'); // JSON, but no level/message
+      expect(calls).toBe(0);
+    });
+  });
+
+  describe('multi-line values', () => {
+    const f = fmt();
+
+    it("aligns a multi-line property value's continuation lines under the value", () => {
+      const line = JSON.stringify({
+        level: 'INFO',
+        msg: 'message stored',
+        from: '[Ros Bumble]',
+        text: 'Mira, Uruguay \nQue tal será para ir d viaje?',
+      });
+      expect(f(line)).toBe(
+        '[INFO] message stored\n' +
+          '  from: [Ros Bumble]\n' +
+          '  text: Mira, Uruguay \n' +
+          '        Que tal será para ir d viaje?', // aligned under the value, past "  text: "
+      );
+    });
+
+    it('sizes the alignment to the property name', () => {
+      const line = JSON.stringify({ level: 'INFO', msg: 'm', context: 'a\nb' });
+      // "  context: " is 11 wide, so the continuation gets 11 spaces.
+      expect(f(line)).toBe('[INFO] m\n  context: a\n           b');
+    });
+
+    it('indents a multi-line message so it stays part of the entry', () => {
+      const line = JSON.stringify({ level: 'ERROR', msg: 'boom\n  at foo()\n  at bar()' });
+      expect(f(line)).toBe('[ERROR] boom\n    at foo()\n    at bar()');
+    });
+
+    it('leaves blank lines blank rather than padding them out', () => {
+      const line = JSON.stringify({ level: 'INFO', msg: 'm', text: 'a\n\nb' });
+      expect(f(line)).toBe('[INFO] m\n  text: a\n\n        b');
+    });
+
+    it('every continuation line starts with whitespace, so devtooie groups them', () => {
+      const line = JSON.stringify({ level: 'INFO', msg: 'm', text: 'a\nb\nc' });
+      const [, ...rest] = f(line).split('\n');
+      expect(rest.every((l) => /^\s/.test(l))).toBe(true);
+    });
   });
 
   describe('logging.nodejs.pino.formatter', () => {

@@ -16,6 +16,15 @@ export interface CustomField {
   show?: boolean;
 }
 
+/**
+ * The `custom` mapping: keyed by the **display** name, each entry is either the source field name
+ * (string shorthand) or a long-form {@link CustomField}.
+ */
+export type CustomFields = Record<string, string | CustomField>;
+
+/** One resolved custom entry: the name to print it under, and whether to print it at all. */
+type CustomEntry = { display: string; show: boolean };
+
 /** The source JSON field mapping — `config.fields` of {@link FormatterConfig}. */
 export interface FormatterFields {
   /**
@@ -33,8 +42,20 @@ export interface FormatterFields {
    * - `{ timestamp: 'ts' }` — show the source field `ts` under the name `timestamp`.
    * - `{ timestamp: { source: 'ts' } }` — long form of the above.
    * - `{ time: { show: false } }` — hide the `time` field (source defaults to the key).
+   *
+   * May instead be a **callback** receiving the parsed log, so the mapping can depend on the entry
+   * itself — e.g. hide a field only on one kind of event:
+   *
+   * ```ts
+   * custom: (log) => ({
+   *   time: { show: false },                                   // always hidden
+   *   ...(log.context === 'message-ingest' ? { at: { show: false } } : {}),
+   * })
+   * ```
+   *
+   * It runs once per rendered line, and never for lines that pass through unformatted.
    */
-  custom?: Record<string, string | CustomField>;
+  custom?: CustomFields | ((log: Record<string, unknown>) => CustomFields);
 }
 
 /** Config for {@link createFormatter} / `logging.formatter`. */
@@ -92,6 +113,9 @@ const LEVEL_COLOR: Record<string, (s: string) => string> = {
 // data) stands out in the normal foreground.
 const PROPERTY_KEY_COLOR = chalk.gray;
 
+/** Leading indent of every rendered property line, beneath the `[LEVEL] message` header. */
+const PROPERTY_INDENT = '  ';
+
 /**
  * pino/bunyan's numeric levels mapped to their names (`10=TRACE … 60=FATAL`) — pino/bunyan log the
  * level as a *number*, which devtooie won't guess. Exposed as `logging.nodejs.pino.levels`.
@@ -123,6 +147,24 @@ export const winstonLevels: Record<string, string> = {
 /** Render a JSON value for display: strings as-is, everything else via `JSON.stringify`. */
 function renderValue(value: unknown): string {
   return typeof value === 'string' ? value : JSON.stringify(value);
+}
+
+/**
+ * Indent the continuation lines of a multi-line rendered value by `width`, so they line up under
+ * where the value starts instead of falling flush-left. This is also what keeps a multi-line entry
+ * together: devtooie treats a line as a continuation of the previous one only when it begins with
+ * whitespace, so an unindented second line would start its own log entry. Blank lines are left
+ * blank rather than padded into lines of trailing spaces.
+ */
+function indentContinuationLines(text: string, width: number): string {
+  if (!text.includes('\n')) {
+    return text;
+  }
+  const pad = ' '.repeat(width);
+  return text
+    .split('\n')
+    .map((l, i) => (i === 0 || l === '' ? l : pad + l))
+    .join('\n');
 }
 
 /**
@@ -164,13 +206,23 @@ export function createFormatter(config: FormatterConfig = {}): (line: string) =>
   const levels = config.levels;
 
   // Resolve the custom entries into a source-field -> { display, show } lookup, so a property can
-  // be matched by the name it actually has in the log.
-  const bySource = new Map<string, { display: string; show: boolean }>();
-  for (const [display, cfg] of Object.entries(config.fields?.custom ?? {})) {
-    const source = typeof cfg === 'string' ? cfg : (cfg.source ?? display);
-    const show = typeof cfg === 'string' ? true : (cfg.show ?? true);
-    bySource.set(source, { display, show });
-  }
+  // be matched by the name it actually has in the log. A static mapping is resolved once, here; a
+  // callback is re-resolved per line against that line's own log (see below).
+  const resolveCustom = (fields: CustomFields): Map<string, CustomEntry> => {
+    const bySource = new Map<string, CustomEntry>();
+    for (const [display, cfg] of Object.entries(fields)) {
+      const source = typeof cfg === 'string' ? cfg : (cfg.source ?? display);
+      const show = typeof cfg === 'string' ? true : (cfg.show ?? true);
+      bySource.set(source, { display, show });
+    }
+    return bySource;
+  };
+  const customConfig = config.fields?.custom;
+  const customFn = typeof customConfig === 'function' ? customConfig : null;
+  const staticBySource =
+    typeof customConfig === 'function'
+      ? new Map<string, CustomEntry>()
+      : resolveCustom(customConfig ?? {});
 
   return (line: string): string => {
     let parsed: unknown;
@@ -190,10 +242,17 @@ export function createFormatter(config: FormatterConfig = {}): (line: string) =>
       return line; // no recognizable level/message under the configured keys
     }
 
+    // Past the pass-through guards: this line is being rendered, so a `custom` callback gets to
+    // decide the mapping from this log's own fields.
+    const bySource = customFn ? resolveCustom(customFn(obj)) : staticBySource;
+
     const token = levelToken(rawLevel, levels);
-    const head = [token, message === undefined ? undefined : renderValue(message)]
-      .filter((v) => v !== undefined)
-      .join(' ');
+    // A multi-line message keeps the property indent, so it reads as part of this entry.
+    const renderedMessage =
+      message === undefined
+        ? undefined
+        : indentContinuationLines(renderValue(message), PROPERTY_INDENT.length);
+    const head = [token, renderedMessage].filter((v) => v !== undefined).join(' ');
     const out = [head];
     for (const [key, value] of Object.entries(obj)) {
       if (key === levelKey || key === messageKey) {
@@ -204,7 +263,11 @@ export function createFormatter(config: FormatterConfig = {}): (line: string) =>
         continue;
       } // hidden
       const name = custom ? custom.display : key;
-      out.push(`  ${PROPERTY_KEY_COLOR(`${name}:`)} ${renderValue(value)}`);
+      // Continuation lines line up under the value, past the `  name: ` gutter — measured on the
+      // plain name, since the printed one carries color codes.
+      const gutter = PROPERTY_INDENT.length + `${name}: `.length;
+      const rendered = indentContinuationLines(renderValue(value), gutter);
+      out.push(`${PROPERTY_INDENT}${PROPERTY_KEY_COLOR(`${name}:`)} ${rendered}`);
     }
     return out.join('\n');
   };

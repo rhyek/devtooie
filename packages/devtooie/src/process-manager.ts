@@ -21,7 +21,19 @@ import {
 } from './lib.js';
 import { updateRunning } from './running.js';
 import type { RunnerArgs } from './runners/types.js';
+import { SHUTDOWN_GRACE_MS } from './shutdown-timing.js';
 import { stripTitleSequences } from './terminal-title.js';
+import { createInternalLogger, formatInternalRecord } from './internal-logger.js';
+import type { Logger } from 'pino';
+
+/**
+ * The label color shared by devtooie's own log channels (`[devtooie]`, `[dt:control]`) — a warm
+ * gold that reads as the tool's own voice, distinct from the per-package prefix colors. Applied
+ * through a function rather than a hoisted `chalk.hex(...)` because chalk bakes the active color
+ * level into a style when it's built, and that level isn't settled at module load.
+ */
+const DEVTOOIE_LABEL_HEX = '#d7af5f';
+const devtooieLabel = (text: string) => chalk.hex(DEVTOOIE_LABEL_HEX)(text);
 
 type ProcessState = 'running' | 'stopped' | 'waiting';
 type Status = ProcessState | 'rebuilding' | 'restarting';
@@ -141,7 +153,6 @@ export function packagePrefixColor(pkg: AnyPackageConfig, index: number): (s: st
 const MAX_BUFFER_LINES = 50_000;
 /** Rendered width of a displayed timestamp gutter: `"YYYY-MM-DD HH:MM:SS "` (19 chars + a space). */
 const TIMESTAMP_GUTTER_WIDTH = 20;
-const SHUTDOWN_GRACE_MS = 3000;
 const WAIT_FOR_POLL_MS = 2000;
 
 /**
@@ -177,6 +188,10 @@ export class ProcessManager implements ControlManager {
   private footerHeight = 3;
   /** Skip terminal clearing/scrollback tricks when there's no interactive UI on top. */
   private plain: boolean;
+  /** devtooie's own lifecycle events; rendered under the gold `[devtooie]` prefix. */
+  readonly systemLog: Logger;
+  /** Control-API command notices; rendered under the gold `[dt:control]` prefix. */
+  readonly controlLog: Logger;
   private systemPrefix: string;
   /** Colored `"[dt:control] "` prefix for control-API command notices. */
   private controlPrefix: string;
@@ -248,10 +263,11 @@ export class ProcessManager implements ControlManager {
       });
     }
 
-    this.systemPrefix = chalk.dim(`[${' '.repeat(maxNameLen)}]`) + ' ';
-    // Pad the label to the widest service name so the closing bracket lines up
-    // with every package prefix (e.g. `[dt:control     ]` beside `[whatsapp-bridge]`).
-    this.controlPrefix = chalk.dim(`[${'dt:control'.padEnd(maxNameLen)}]`) + ' ';
+    // devtooie's own two channels carry a label (never an empty slot) in the shared gold. Both are
+    // padded to the widest service name so the closing bracket lines up with every package prefix
+    // (e.g. `[dt:control     ]` beside `[whatsapp-bridge]`).
+    this.systemPrefix = devtooieLabel(`[${'devtooie'.padEnd(maxNameLen)}]`) + ' ';
+    this.controlPrefix = devtooieLabel(`[${'dt:control'.padEnd(maxNameLen)}]`) + ' ';
 
     ProcessManager.instances.add(this);
     this.exitHandler = () => {
@@ -261,6 +277,40 @@ export class ProcessManager implements ControlManager {
 
     this.logFilePath = logFile ?? getDefaultLogFile();
     this.logFd = fs.openSync(this.logFilePath, 'w');
+
+    // Built last: its destination writes through `addLine`, which needs the prefixes and the
+    // open logfile above already in place.
+    const internal = createInternalLogger((chunk) => this.ingestInternalLog(chunk));
+    this.systemLog = internal.system;
+    this.controlLog = internal.control;
+  }
+
+  /**
+   * Sink for {@link createInternalLogger}: render each NDJSON record and buffer it through the
+   * same path package output takes, so devtooie's own logs format, group, filter and land in the
+   * logfile identically. A control record is scoped to the package it targeted (when it names
+   * one) so it groups with that package's output. Malformed lines are dropped rather than
+   * throwing back into the logger.
+   */
+  private ingestInternalLog(chunk: string): void {
+    for (const jsonLine of chunk.split('\n')) {
+      if (!jsonLine) {
+        continue;
+      }
+      let record;
+      try {
+        record = formatInternalRecord(jsonLine);
+      } catch {
+        continue;
+      }
+      const isControl = record.component === 'control';
+      const prefix = isControl ? this.controlPrefix : this.systemPrefix;
+      const searchName = isControl
+        ? ((record.packageName && this.processes.get(record.packageName)?.searchName) ??
+          'dt:control')
+        : 'system';
+      this.addEntryLines(prefix, record.text, searchName, record.isError);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -714,7 +764,7 @@ export class ProcessManager implements ControlManager {
     }
   }
 
-  /** Graceful shutdown: SIGTERM everything, wait up to 3s, then SIGKILL stragglers. */
+  /** Graceful shutdown: SIGTERM everything, wait up to 10s, then SIGKILL stragglers. */
   async shutdownAll(): Promise<void> {
     if (this.waitingPollTimer) {
       clearInterval(this.waitingPollTimer);
@@ -741,7 +791,7 @@ export class ProcessManager implements ControlManager {
       return;
     }
 
-    this.addLine(this.systemPrefix, chalk.yellow('shutting down...'), 'system', false);
+    this.systemLog.warn('shutting down...');
 
     for (const { proc } of living) {
       this.killTree(proc);
@@ -1031,20 +1081,24 @@ export class ProcessManager implements ControlManager {
     this.notify();
   }
 
-  /** Emit a system-level line (e.g. shutdown notices), interleaved like any package's output. */
+  /**
+   * Emit an informational system line (interleaved like any package's output). Use
+   * {@link systemLog} directly for another level or to attach structured attrs.
+   */
   logSystem(message: string): void {
-    this.addLine(this.systemPrefix, message, 'system', false);
+    this.systemLog.info(message);
   }
 
   /**
-   * Emit a `[dt:control]` line noting a mutating command received over the
-   * control API. When `pkg` names a known package, the line is tagged with that
-   * package's search name so it shows/hides with the package under an active
-   * filter; otherwise it's tagged `dt:control`.
+   * Emit a `[dt:control]` line noting a mutating command received over the control API, with the
+   * variables that command carried as structured attrs — e.g.
+   * `logControl('restart', { package: 'web' })` renders `[INFO] restart` above an indented
+   * `package: web`. When `attrs.package` names a known package the line is tagged with that
+   * package's search name, so it shows/hides with the package under an active filter; otherwise
+   * it's tagged `dt:control`.
    */
-  logControl(message: string, pkg?: string): void {
-    const searchName = (pkg && this.processes.get(pkg)?.searchName) ?? 'dt:control';
-    this.addLine(this.controlPrefix, message, searchName, false);
+  logControl(command: string, attrs?: Record<string, unknown>): void {
+    this.controlLog.info(attrs ?? {}, command);
   }
 
   /**
@@ -1116,20 +1170,48 @@ export class ProcessManager implements ControlManager {
    */
   private addOutput(managed: ManagedProcess, rawLine: string, isError: boolean): void {
     const formatted = this.formatOutput(managed, rawLine, isError);
-    for (const out of formatted.split('\n')) {
-      if (out) {
-        this.addLine(managed.prefix, out, managed.searchName, isError);
+    this.addEntryLines(managed.prefix, formatted, managed.searchName, isError);
+  }
+
+  /**
+   * Buffer the lines of one rendered entry. A formatter that expanded a single raw line into
+   * several produced one entry, so the extra lines are marked as continuations outright rather
+   * than relying on the formatter having indented them. A single-line result carries no such
+   * structure, so its grouping is left to {@link addLine}'s fallback.
+   */
+  private addEntryLines(prefix: string, rendered: string, searchName: string, isError: boolean) {
+    const parts = rendered.split('\n');
+    const expanded = parts.length > 1;
+    let isFirst = true;
+    for (const text of parts) {
+      if (!text) {
+        continue;
       }
+      this.addLine(prefix, text, searchName, isError, expanded ? !isFirst : undefined);
+      isFirst = false;
     }
   }
 
-  private addLine(prefix: string, text: string, searchName: string, isError: boolean): void {
+  /**
+   * Buffer one rendered line. `isContinuation` states outright whether the line continues the
+   * previous entry — callers that split a *known* single entry (a formatter's multi-line result)
+   * pass it, so grouping never depends on how that entry happens to be indented. Omit it for
+   * standalone raw output, where there's no structure to consult and the leading-whitespace
+   * convention is the only available signal.
+   */
+  private addLine(
+    prefix: string,
+    text: string,
+    searchName: string,
+    isError: boolean,
+    isContinuation?: boolean,
+  ): void {
     // Consecutive lines from the same package are grouped: a continuation
     // line shares the group of the entry it belongs to, so filtering and
     // replay keep multi-line log entries intact.
     let groupId: number;
     const prevGroup = this.lastGroupId.get(searchName);
-    if (isContinuationLine(text) && prevGroup !== undefined) {
+    if ((isContinuation ?? isContinuationLine(text)) && prevGroup !== undefined) {
       groupId = prevGroup;
     } else {
       groupId = this.nextGroupId++;

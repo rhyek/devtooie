@@ -41,6 +41,17 @@ package-select  ->  building  ->  running
 Everything below is the **running** phase (`NativeRunner`). `renderApp` mounts the
 whole tree with `exitOnCtrlC: false` (each phase owns Ctrl+C) and `maxFps: 120`.
 
+**Every phase fills the viewport.** Each phase component's root is sized to
+`useWindowSize()` (`width={columns} height={rows}`) — `NativeRunner`, but also the
+short pre-run phases (`PackageSelector`, `BuildProgress`). This is load-bearing,
+not cosmetic: Ink only anchors a frame at the top when it detects it as
+*fullscreen* (`outputHeight >= viewportRows`). Entering the alternate screen
+(`ESC[?1049h`) does **not** home the cursor, so a short, non-fullscreen frame is
+drawn wherever the cursor was left on the primary screen — near the bottom, after
+the shell prompt + the `▶ devtooie started` line — leaving a large blank gap
+above it. Giving these phases a full-height root makes them fullscreen and
+top-aligned. Any new phase must do the same.
+
 ## Layout
 
 `NativeRunner` renders a full-height flex column (`components/NativeRunner.tsx`):

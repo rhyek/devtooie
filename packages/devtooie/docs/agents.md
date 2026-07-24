@@ -249,7 +249,9 @@ rather than branching the logger on `NODE_ENV`. **devtooie handles this out of t
 applies a default formatter to *every* package's output that passes **non-JSON** lines through
 untouched and pretty-prints a **JSON log** as a **`[LEVEL] message`** header (the `[LEVEL]` colored
 by severity), with the remaining properties listed, indented, on the lines below (each key in a
-muted color, its value in the normal foreground). So a slog line like:
+muted color, its value in the normal foreground). A property whose value spans several lines keeps
+its shape — the extra lines are aligned under where the value starts, so the entry still reads as
+one block. So a slog line like:
 
 ```
 {"time":"2026-07-13T13:53:32-06:00","level":"INFO","msg":"listening","port":3002}
@@ -297,11 +299,29 @@ default `level`/`msg`), `fields.custom` (rename/hide properties, keyed by displa
 `{ timestamp: 'ts' }`, `{ timestamp: { source: 'ts' } }`, `{ time: { show: false } }`), and
 `levels` (a `{ rawValue: name }` map for numeric/non-standard levels; the ecosystem helpers set it).
 
+`fields.custom` may instead be a **callback** receiving the parsed log, so the mapping can depend on
+the entry itself — e.g. hiding a field only on certain events. It runs once per rendered line, and
+never for lines that pass through unformatted:
+
+```ts
+logging.formatter({
+  fields: {
+    custom: (log) => ({
+      time: { show: false }, // always hidden
+      ...(log.context === 'message-ingest' ? { at: { show: false } } : {}),
+    }),
+  },
+});
+```
+
 Or write your own: `logs.formatter` is just `(line: string) => string` — return the display
 string, or the line unchanged to pass it through. A formatter that throws or returns a non-string
 falls back to the raw line, so a bug can't take down the session. The returned string is what's
 buffered, shown, **and written to the log file** (ANSI color allowed, stripped for the file); a
-multi-line result is split into separate log lines. **devtooie owns the timestamp** (shown per
+multi-line result is split into separate log lines, which devtooie keeps grouped as **one entry** —
+so a filter matching any of them shows the whole block. That grouping comes from the split itself,
+not from how the lines look, so you don't have to indent them to hold an entry together.
+**devtooie owns the timestamp** (shown per
 `logs.timestamps`, always in the log file), so drop the log's own time field rather than printing
 it. `z` (zod) is re-exported by devtooie, so a hand-written formatter can validate shapes without a
 dependency.
@@ -540,7 +560,12 @@ Endpoints (all plain HTTP, no auth — localhost-only):
   unknown package).
 - `POST /command/rebuild/<name>` — stop, clean-build, then start. Prefer this over `restart`
   whenever the package's build output (not just its source) changed.
-- `POST /command/quit` — gracefully shut down the whole session (same as Ctrl+C).
+- `POST /command/quit` — gracefully shut down the whole session (same as Ctrl+C). **Blocks**
+  until the session's packages are torn down and their ports freed, then returns `200` (see
+  [Graceful shutdown](#graceful-shutdown) below) — so once the request returns, the ports are
+  clear. The request can take up to ~15s if a package is slow to exit, so allow for that when you
+  call it. The session then closes its control server and exits a moment later; if you need to
+  confirm the process itself is gone, poll `GET /` afterwards (connection refused = gone).
 
 This is what lets a second `devtooie` invocation hand off from a running one, what `devtooie logs`
 finds the current logfile with, and what an external tool (or the agent skill) uses to drive a
@@ -554,6 +579,35 @@ devtooie resolvedeps <package>
 ```
 
 which prints that package's build/dev/runtime dependency names as JSON.
+
+### Graceful shutdown
+
+Ctrl+C and `POST /command/quit` funnel through the **same** graceful shutdown, so the teardown is
+identical however it's triggered. Each package is given a chance to exit cleanly before it's forced,
+in three phases:
+
+1. **`SIGTERM`.** Every package's **process group** is signalled — the package and anything it
+   spawned (a package manager, a nested dev server) all receive `SIGTERM` together. This is the
+   cue for a package to run its own cleanup and exit.
+2. **Grace period.** devtooie waits up to **10 seconds** for each package to exit on its own.
+3. **`SIGKILL`.** Any package still alive when the grace period elapses has its process group
+   `SIGKILL`ed.
+
+The whole sequence is bounded by a safety net (~15s) so a wedged child can't hang the exit forever.
+Once every package is down (ports freed), the control server closes and the process exits. A
+**second** Ctrl+C (or a repeat `POST /command/quit`) while a shutdown is already in progress skips
+the grace entirely and `SIGKILL`s everything immediately — use it if you don't want to wait out the
+grace.
+
+A **blocking `POST /command/quit`** is acknowledged at the end of phase 3 — packages down and ports
+freed, just before the control server closes — so a caller that awaits the response knows the ports
+are clear the moment it returns. This is how a newer `devtooie` invocation hands off from a running
+one: it calls `POST /command/quit`, waits for that ack, and only then binds the ports itself (falling
+back to force-killing the old process if it overruns its graceful window). You get the same guarantee
+for free — await the response and the session's ports are yours.
+
+If a package needs to flush or persist state on shutdown, do it on `SIGTERM`, and keep it under the
+10-second grace or it will be `SIGKILL`ed mid-cleanup.
 
 ## Read running-package logs for debugging
 
@@ -595,8 +649,21 @@ grep -i error "$log"
 `ls -t "$dir"` instead — prior logs are still there.
 
 Mutating commands received over the control API (restart, rebuild, quit) are echoed into the same
-log as `[dt:control]` lines (e.g. `[dt:control] restart backend`), so you can confirm a command you
-sent actually landed and see the package's own output that followed it.
+log as `[dt:control]` lines, so you can confirm a command you sent actually landed and see the
+package's own output that followed it. Each is a structured log: the command is the message, and
+the variables it carried are listed as indented properties beneath it.
+
+```
+2026-07-23 16:41:22 [dt:control     ] [INFO] restart
+2026-07-23 16:41:22 [dt:control     ]   package: backend
+```
+
+devtooie's own lifecycle notices (shutdown, git-branch change) are logged the same way under a
+`[devtooie]` label — both channels render in a distinct gold so they read apart from package output:
+
+```
+2026-07-23 16:41:22 [devtooie       ] [WARN] shutting down...
+```
 
 **You generally don't need `--log-dir`.** If you start the session yourself, leave it off and logs
 land in the default `node_modules/.devtooie/logs/`. The flag only changes which directory the

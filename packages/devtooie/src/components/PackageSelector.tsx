@@ -1,4 +1,4 @@
-import { Box, Text, useApp, useInput } from 'ink';
+import { Box, Text, useApp, useInput, useWindowSize } from 'ink';
 import React, { useMemo, useState } from 'react';
 import type { AnyPackageConfig } from '../config.js';
 import { HotkeyHints } from './HotkeyHints.js';
@@ -25,6 +25,11 @@ export function PackageSelector({
   onSubmit,
 }: PackageSelectorProps) {
   const { exit } = useApp();
+  // Fill the whole alternate-screen viewport so Ink treats this frame as
+  // fullscreen and anchors it at the top; without an explicit height the small
+  // frame is drawn wherever the cursor was left on entry (near the bottom, after
+  // the shell prompt + "started" line), leaving a large blank gap above it.
+  const { columns, rows } = useWindowSize();
 
   const itemNames = useMemo(() => new Set(items.map((a) => a.name)), [items]);
 
@@ -81,7 +86,7 @@ export function PackageSelector({
   });
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width={columns} height={rows}>
       <Box>
         <Text backgroundColor="cyan" color="black" bold>
           {' devtooie '}
