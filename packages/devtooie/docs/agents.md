@@ -297,6 +297,21 @@ default `level`/`msg`), `fields.custom` (rename/hide properties, keyed by displa
 `{ timestamp: 'ts' }`, `{ timestamp: { source: 'ts' } }`, `{ time: { show: false } }`), and
 `levels` (a `{ rawValue: name }` map for numeric/non-standard levels; the ecosystem helpers set it).
 
+`fields.custom` may instead be a **callback** receiving the parsed log, so the mapping can depend on
+the entry itself — e.g. hiding a field only on certain events. It runs once per rendered line, and
+never for lines that pass through unformatted:
+
+```ts
+logging.formatter({
+  fields: {
+    custom: (log) => ({
+      time: { show: false }, // always hidden
+      ...(log.context === 'message-ingest' ? { at: { show: false } } : {}),
+    }),
+  },
+});
+```
+
 Or write your own: `logs.formatter` is just `(line: string) => string` — return the display
 string, or the line unchanged to pass it through. A formatter that throws or returns a non-string
 falls back to the raw line, so a bug can't take down the session. The returned string is what's

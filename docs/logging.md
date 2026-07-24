@@ -116,6 +116,25 @@ export default defineConfig({
   - `{ timestamp: 'ts' }` — show source `ts` as `timestamp`.
   - `{ timestamp: { source: 'ts' } }` — long form.
   - `{ time: { show: false } }` — hide `time` (source defaults to the key).
+
+  It can also be a **callback** receiving the parsed log, so the mapping can depend on the entry
+  itself — handy when a field is only noise on certain events:
+
+  ```ts
+  logging.formatter({
+    fields: {
+      custom: (log) => ({
+        time: { show: false }, // always hidden
+        // `at` is redundant on ingest events, but useful elsewhere
+        ...(log.context === 'message-ingest' ? { at: { show: false } } : {}),
+      }),
+    },
+  });
+  ```
+
+  The callback runs once per rendered line, and never for lines that pass through unformatted
+  (non-JSON, or JSON with no recognizable level/message).
+
 - **`levels`** — a `{ rawValue: name }` map for numeric or non-standard levels (the ecosystem
   helpers set this for you). The mapped name is matched like any string.
 

@@ -16,6 +16,15 @@ export interface CustomField {
   show?: boolean;
 }
 
+/**
+ * The `custom` mapping: keyed by the **display** name, each entry is either the source field name
+ * (string shorthand) or a long-form {@link CustomField}.
+ */
+export type CustomFields = Record<string, string | CustomField>;
+
+/** One resolved custom entry: the name to print it under, and whether to print it at all. */
+type CustomEntry = { display: string; show: boolean };
+
 /** The source JSON field mapping — `config.fields` of {@link FormatterConfig}. */
 export interface FormatterFields {
   /**
@@ -33,8 +42,20 @@ export interface FormatterFields {
    * - `{ timestamp: 'ts' }` — show the source field `ts` under the name `timestamp`.
    * - `{ timestamp: { source: 'ts' } }` — long form of the above.
    * - `{ time: { show: false } }` — hide the `time` field (source defaults to the key).
+   *
+   * May instead be a **callback** receiving the parsed log, so the mapping can depend on the entry
+   * itself — e.g. hide a field only on one kind of event:
+   *
+   * ```ts
+   * custom: (log) => ({
+   *   time: { show: false },                                   // always hidden
+   *   ...(log.context === 'message-ingest' ? { at: { show: false } } : {}),
+   * })
+   * ```
+   *
+   * It runs once per rendered line, and never for lines that pass through unformatted.
    */
-  custom?: Record<string, string | CustomField>;
+  custom?: CustomFields | ((log: Record<string, unknown>) => CustomFields);
 }
 
 /** Config for {@link createFormatter} / `logging.formatter`. */
@@ -164,13 +185,23 @@ export function createFormatter(config: FormatterConfig = {}): (line: string) =>
   const levels = config.levels;
 
   // Resolve the custom entries into a source-field -> { display, show } lookup, so a property can
-  // be matched by the name it actually has in the log.
-  const bySource = new Map<string, { display: string; show: boolean }>();
-  for (const [display, cfg] of Object.entries(config.fields?.custom ?? {})) {
-    const source = typeof cfg === 'string' ? cfg : (cfg.source ?? display);
-    const show = typeof cfg === 'string' ? true : (cfg.show ?? true);
-    bySource.set(source, { display, show });
-  }
+  // be matched by the name it actually has in the log. A static mapping is resolved once, here; a
+  // callback is re-resolved per line against that line's own log (see below).
+  const resolveCustom = (fields: CustomFields): Map<string, CustomEntry> => {
+    const bySource = new Map<string, CustomEntry>();
+    for (const [display, cfg] of Object.entries(fields)) {
+      const source = typeof cfg === 'string' ? cfg : (cfg.source ?? display);
+      const show = typeof cfg === 'string' ? true : (cfg.show ?? true);
+      bySource.set(source, { display, show });
+    }
+    return bySource;
+  };
+  const customConfig = config.fields?.custom;
+  const customFn = typeof customConfig === 'function' ? customConfig : null;
+  const staticBySource =
+    typeof customConfig === 'function'
+      ? new Map<string, CustomEntry>()
+      : resolveCustom(customConfig ?? {});
 
   return (line: string): string => {
     let parsed: unknown;
@@ -189,6 +220,10 @@ export function createFormatter(config: FormatterConfig = {}): (line: string) =>
     if (rawLevel === undefined && message === undefined) {
       return line; // no recognizable level/message under the configured keys
     }
+
+    // Past the pass-through guards: this line is being rendered, so a `custom` callback gets to
+    // decide the mapping from this log's own fields.
+    const bySource = customFn ? resolveCustom(customFn(obj)) : staticBySource;
 
     const token = levelToken(rawLevel, levels);
     const head = [token, message === undefined ? undefined : renderValue(message)]

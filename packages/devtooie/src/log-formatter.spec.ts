@@ -108,6 +108,52 @@ describe('createFormatter', () => {
     it('hides a property with { show: false }', () => {
       expect(fmt({ fields: { custom: { time: { show: false } } } })('{"level":"INFO","msg":"hi","time":"T","port":1}')).toBe('[INFO] hi\n  port: 1'); // prettier-ignore
     });
+
+    it('accepts a callback that decides the mapping from the log itself', () => {
+      // `at` is only noise on message-ingest events; keep it everywhere else.
+      const f = fmt({
+        fields: {
+          custom: (log) => ({
+            time: { show: false },
+            ...(log.context === 'message-ingest' ? { at: { show: false } } : {}),
+          }),
+        },
+      });
+      expect(f('{"level":"INFO","msg":"message stored","context":"message-ingest","at":"T","from":"Mama"}')).toBe('[INFO] message stored\n  context: message-ingest\n  from: Mama'); // prettier-ignore
+      expect(f('{"level":"INFO","msg":"started","context":"bridge","at":"T"}')).toBe('[INFO] started\n  context: bridge\n  at: T'); // prettier-ignore
+      // the statically-hidden field stays hidden in both branches
+      expect(f('{"level":"INFO","msg":"hi","time":"T"}')).toBe('[INFO] hi');
+    });
+
+    it('re-resolves the callback per line, and supports renaming from it', () => {
+      const seen: unknown[] = [];
+      const f = fmt({
+        fields: {
+          custom: (log) => {
+            seen.push(log.context);
+            return log.context === 'ingest' ? { when: 'at' } : {};
+          },
+        },
+      });
+      expect(f('{"level":"INFO","msg":"a","context":"ingest","at":"T"}')).toBe('[INFO] a\n  context: ingest\n  when: T'); // prettier-ignore
+      expect(f('{"level":"INFO","msg":"b","context":"other","at":"T"}')).toBe('[INFO] b\n  context: other\n  at: T'); // prettier-ignore
+      expect(seen).toEqual(['ingest', 'other']);
+    });
+
+    it('does not invoke the callback for lines that pass through unformatted', () => {
+      let calls = 0;
+      const f = fmt({
+        fields: {
+          custom: () => {
+            calls++;
+            return {};
+          },
+        },
+      });
+      f('not json at all');
+      f('{"foo":1}'); // JSON, but no level/message
+      expect(calls).toBe(0);
+    });
   });
 
   describe('logging.nodejs.pino.formatter', () => {
