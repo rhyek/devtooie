@@ -309,11 +309,7 @@ export class ProcessManager implements ControlManager {
         ? ((record.packageName && this.processes.get(record.packageName)?.searchName) ??
           'dt:control')
         : 'system';
-      for (const text of record.text.split('\n')) {
-        if (text) {
-          this.addLine(prefix, text, searchName, record.isError);
-        }
-      }
+      this.addEntryLines(prefix, record.text, searchName, record.isError);
     }
   }
 
@@ -1174,20 +1170,48 @@ export class ProcessManager implements ControlManager {
    */
   private addOutput(managed: ManagedProcess, rawLine: string, isError: boolean): void {
     const formatted = this.formatOutput(managed, rawLine, isError);
-    for (const out of formatted.split('\n')) {
-      if (out) {
-        this.addLine(managed.prefix, out, managed.searchName, isError);
+    this.addEntryLines(managed.prefix, formatted, managed.searchName, isError);
+  }
+
+  /**
+   * Buffer the lines of one rendered entry. A formatter that expanded a single raw line into
+   * several produced one entry, so the extra lines are marked as continuations outright rather
+   * than relying on the formatter having indented them. A single-line result carries no such
+   * structure, so its grouping is left to {@link addLine}'s fallback.
+   */
+  private addEntryLines(prefix: string, rendered: string, searchName: string, isError: boolean) {
+    const parts = rendered.split('\n');
+    const expanded = parts.length > 1;
+    let isFirst = true;
+    for (const text of parts) {
+      if (!text) {
+        continue;
       }
+      this.addLine(prefix, text, searchName, isError, expanded ? !isFirst : undefined);
+      isFirst = false;
     }
   }
 
-  private addLine(prefix: string, text: string, searchName: string, isError: boolean): void {
+  /**
+   * Buffer one rendered line. `isContinuation` states outright whether the line continues the
+   * previous entry — callers that split a *known* single entry (a formatter's multi-line result)
+   * pass it, so grouping never depends on how that entry happens to be indented. Omit it for
+   * standalone raw output, where there's no structure to consult and the leading-whitespace
+   * convention is the only available signal.
+   */
+  private addLine(
+    prefix: string,
+    text: string,
+    searchName: string,
+    isError: boolean,
+    isContinuation?: boolean,
+  ): void {
     // Consecutive lines from the same package are grouped: a continuation
     // line shares the group of the entry it belongs to, so filtering and
     // replay keep multi-line log entries intact.
     let groupId: number;
     const prevGroup = this.lastGroupId.get(searchName);
-    if (isContinuationLine(text) && prevGroup !== undefined) {
+    if ((isContinuation ?? isContinuationLine(text)) && prevGroup !== undefined) {
       groupId = prevGroup;
     } else {
       groupId = this.nextGroupId++;

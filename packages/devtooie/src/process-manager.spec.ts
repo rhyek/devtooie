@@ -764,6 +764,37 @@ describe('ProcessManager logs.formatter', () => {
     mgr = undefined;
   }, 10_000);
 
+  // Grouping for a formatted entry is known at the split, not inferred from how it looks: a
+  // formatter is free to return multi-line output without indenting it, and those lines must
+  // still filter and replay as one entry.
+  it('groups every line of one formatted entry, even when the formatter does not indent', async () => {
+    const formatter = (line: string): string => {
+      try {
+        const o = JSON.parse(line) as { msg?: unknown };
+        return `HEAD ${String(o.msg)}\nsecond line\nthird line`; // deliberately flush-left
+      } catch {
+        return line;
+      }
+    };
+    mgr = new ProcessManager(argsWith(formatter), { plain: true });
+    mgr.start('fmtfix');
+    await wait(1500);
+    await mgr.stop('fmtfix');
+
+    const lines = mgr.getVisibleLines();
+    const head = lines.find((l) => l.text.includes('HEAD hello world'));
+    const second = lines.find((l) => l.text === 'second line');
+    const third = lines.find((l) => l.text === 'third line');
+    expect(head && second && third).toBeTruthy();
+    expect(second!.groupId).toBe(head!.groupId);
+    expect(third!.groupId).toBe(head!.groupId);
+    // ...and an unrelated later line is NOT swept into that group.
+    const plain = lines.find((l) => l.text.includes('plain non-json line'));
+    expect(plain!.groupId).not.toBe(head!.groupId);
+    disposeManager(mgr);
+    mgr = undefined;
+  }, 10_000);
+
   it('falls back to the raw line when the formatter throws', async () => {
     mgr = new ProcessManager(
       argsWith(() => {
