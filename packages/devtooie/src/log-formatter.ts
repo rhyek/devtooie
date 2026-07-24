@@ -113,6 +113,9 @@ const LEVEL_COLOR: Record<string, (s: string) => string> = {
 // data) stands out in the normal foreground.
 const PROPERTY_KEY_COLOR = chalk.gray;
 
+/** Leading indent of every rendered property line, beneath the `[LEVEL] message` header. */
+const PROPERTY_INDENT = '  ';
+
 /**
  * pino/bunyan's numeric levels mapped to their names (`10=TRACE … 60=FATAL`) — pino/bunyan log the
  * level as a *number*, which devtooie won't guess. Exposed as `logging.nodejs.pino.levels`.
@@ -144,6 +147,24 @@ export const winstonLevels: Record<string, string> = {
 /** Render a JSON value for display: strings as-is, everything else via `JSON.stringify`. */
 function renderValue(value: unknown): string {
   return typeof value === 'string' ? value : JSON.stringify(value);
+}
+
+/**
+ * Indent the continuation lines of a multi-line rendered value by `width`, so they line up under
+ * where the value starts instead of falling flush-left. This is also what keeps a multi-line entry
+ * together: devtooie treats a line as a continuation of the previous one only when it begins with
+ * whitespace, so an unindented second line would start its own log entry. Blank lines are left
+ * blank rather than padded into lines of trailing spaces.
+ */
+function indentContinuationLines(text: string, width: number): string {
+  if (!text.includes('\n')) {
+    return text;
+  }
+  const pad = ' '.repeat(width);
+  return text
+    .split('\n')
+    .map((l, i) => (i === 0 || l === '' ? l : pad + l))
+    .join('\n');
 }
 
 /**
@@ -226,9 +247,12 @@ export function createFormatter(config: FormatterConfig = {}): (line: string) =>
     const bySource = customFn ? resolveCustom(customFn(obj)) : staticBySource;
 
     const token = levelToken(rawLevel, levels);
-    const head = [token, message === undefined ? undefined : renderValue(message)]
-      .filter((v) => v !== undefined)
-      .join(' ');
+    // A multi-line message keeps the property indent, so it reads as part of this entry.
+    const renderedMessage =
+      message === undefined
+        ? undefined
+        : indentContinuationLines(renderValue(message), PROPERTY_INDENT.length);
+    const head = [token, renderedMessage].filter((v) => v !== undefined).join(' ');
     const out = [head];
     for (const [key, value] of Object.entries(obj)) {
       if (key === levelKey || key === messageKey) {
@@ -239,7 +263,11 @@ export function createFormatter(config: FormatterConfig = {}): (line: string) =>
         continue;
       } // hidden
       const name = custom ? custom.display : key;
-      out.push(`  ${PROPERTY_KEY_COLOR(`${name}:`)} ${renderValue(value)}`);
+      // Continuation lines line up under the value, past the `  name: ` gutter — measured on the
+      // plain name, since the printed one carries color codes.
+      const gutter = PROPERTY_INDENT.length + `${name}: `.length;
+      const rendered = indentContinuationLines(renderValue(value), gutter);
+      out.push(`${PROPERTY_INDENT}${PROPERTY_KEY_COLOR(`${name}:`)} ${rendered}`);
     }
     return out.join('\n');
   };

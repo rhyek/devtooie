@@ -59,6 +59,16 @@ applies a default formatter to _every_ package's output that
 - pretty-prints a **JSON log** as a **`[LEVEL] message`** header (the `[LEVEL]` colored by severity),
   with the remaining properties listed, indented, on the lines below.
 
+A property whose value spans several lines keeps its shape: the extra lines are aligned under where
+the value starts, so the entry still reads as one block.
+
+```
+[INFO] message stored
+  from: [Ros Bumble]
+  text: Mira, Uruguay
+        Que tal será para ir d viaje?
+```
+
 So a slog line like:
 
 ```

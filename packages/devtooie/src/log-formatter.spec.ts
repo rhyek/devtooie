@@ -156,6 +156,47 @@ describe('createFormatter', () => {
     });
   });
 
+  describe('multi-line values', () => {
+    const f = fmt();
+
+    it("aligns a multi-line property value's continuation lines under the value", () => {
+      const line = JSON.stringify({
+        level: 'INFO',
+        msg: 'message stored',
+        from: '[Ros Bumble]',
+        text: 'Mira, Uruguay \nQue tal será para ir d viaje?',
+      });
+      expect(f(line)).toBe(
+        '[INFO] message stored\n' +
+          '  from: [Ros Bumble]\n' +
+          '  text: Mira, Uruguay \n' +
+          '        Que tal será para ir d viaje?', // aligned under the value, past "  text: "
+      );
+    });
+
+    it('sizes the alignment to the property name', () => {
+      const line = JSON.stringify({ level: 'INFO', msg: 'm', context: 'a\nb' });
+      // "  context: " is 11 wide, so the continuation gets 11 spaces.
+      expect(f(line)).toBe('[INFO] m\n  context: a\n           b');
+    });
+
+    it('indents a multi-line message so it stays part of the entry', () => {
+      const line = JSON.stringify({ level: 'ERROR', msg: 'boom\n  at foo()\n  at bar()' });
+      expect(f(line)).toBe('[ERROR] boom\n    at foo()\n    at bar()');
+    });
+
+    it('leaves blank lines blank rather than padding them out', () => {
+      const line = JSON.stringify({ level: 'INFO', msg: 'm', text: 'a\n\nb' });
+      expect(f(line)).toBe('[INFO] m\n  text: a\n\n        b');
+    });
+
+    it('every continuation line starts with whitespace, so devtooie groups them', () => {
+      const line = JSON.stringify({ level: 'INFO', msg: 'm', text: 'a\nb\nc' });
+      const [, ...rest] = f(line).split('\n');
+      expect(rest.every((l) => /^\s/.test(l))).toBe(true);
+    });
+  });
+
   describe('logging.nodejs.pino.formatter', () => {
     it('maps pino numeric levels to canonical levels', () => {
       const f2 = (line: string) => stripAnsi(logging.nodejs.pino.formatter()(line));

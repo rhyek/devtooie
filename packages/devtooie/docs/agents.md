@@ -249,7 +249,9 @@ rather than branching the logger on `NODE_ENV`. **devtooie handles this out of t
 applies a default formatter to *every* package's output that passes **non-JSON** lines through
 untouched and pretty-prints a **JSON log** as a **`[LEVEL] message`** header (the `[LEVEL]` colored
 by severity), with the remaining properties listed, indented, on the lines below (each key in a
-muted color, its value in the normal foreground). So a slog line like:
+muted color, its value in the normal foreground). A property whose value spans several lines keeps
+its shape — the extra lines are aligned under where the value starts, so the entry still reads as
+one block. So a slog line like:
 
 ```
 {"time":"2026-07-13T13:53:32-06:00","level":"INFO","msg":"listening","port":3002}
