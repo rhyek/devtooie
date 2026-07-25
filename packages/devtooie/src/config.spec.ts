@@ -1,4 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   defineConfig,
@@ -365,5 +367,120 @@ describe('registry + findPackage', () => {
   it('throws for an unknown package', () => {
     defineConfig({ packages: [{ name: 'alpha' }] });
     expect(() => findPackage('nope')).toThrow(/nope/);
+  });
+});
+
+describe('port callback', () => {
+  let ws: string;
+
+  beforeEach(() => {
+    ws = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-port-'));
+    fs.mkdirSync(path.join(ws, 'packages/api'), { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(ws, { recursive: true, force: true });
+    delete process.env.DEVTOOIE_TEST_PORT;
+  });
+
+  it('resolves the port from a workspace-scope env file', () => {
+    fs.writeFileSync(path.join(ws, '.env.development'), 'BACKEND_PORT=4321\n');
+    const { packages } = defineConfig({
+      workspaceDir: ws,
+      packages: [{ name: 'api', port: ({ env }) => Number(env.BACKEND_PORT) }],
+    });
+    expect(packages[0]!.port).toBe(4321);
+  });
+
+  it('resolves the port from process.env when no file defines it', () => {
+    process.env.DEVTOOIE_TEST_PORT = '5555';
+    const { packages } = defineConfig({
+      workspaceDir: ws,
+      packages: [{ name: 'api', port: ({ env }) => Number(env.DEVTOOIE_TEST_PORT) }],
+    });
+    expect(packages[0]!.port).toBe(5555);
+  });
+
+  it('lets an env file override an ambient var of the same name', () => {
+    process.env.DEVTOOIE_TEST_PORT = '5555';
+    fs.writeFileSync(path.join(ws, '.env.development'), 'DEVTOOIE_TEST_PORT=6666\n');
+    const { packages } = defineConfig({
+      workspaceDir: ws,
+      packages: [{ name: 'api', port: ({ env }) => Number(env.DEVTOOIE_TEST_PORT) }],
+    });
+    expect(packages[0]!.port).toBe(6666);
+  });
+
+  it('lets a package-scope env file override the workspace-scope one', () => {
+    fs.writeFileSync(path.join(ws, '.env.development'), 'BACKEND_PORT=4321\n');
+    fs.writeFileSync(path.join(ws, 'packages/api/.env.development'), 'BACKEND_PORT=7777\n');
+    const { packages } = defineConfig({
+      workspaceDir: ws,
+      packages: [{ name: 'api', port: ({ env }) => Number(env.BACKEND_PORT) }],
+    });
+    expect(packages[0]!.port).toBe(7777);
+  });
+
+  it('honors a custom env.files list', () => {
+    fs.writeFileSync(path.join(ws, '.env.ports'), 'BACKEND_PORT=8888\n');
+    const { packages } = defineConfig({
+      workspaceDir: ws,
+      env: { files: ['.env.ports'] },
+      packages: [{ name: 'api', port: ({ env }) => Number(env.BACKEND_PORT) }],
+    });
+    expect(packages[0]!.port).toBe(8888);
+  });
+
+  it('feeds the resolved port into $port substitution', () => {
+    fs.writeFileSync(path.join(ws, '.env.development'), 'BACKEND_PORT=4321\n');
+    const { packages } = defineConfig({
+      workspaceDir: ws,
+      packages: [
+        {
+          name: 'api',
+          port: ({ env }) => Number(env.BACKEND_PORT),
+          healthcheck: 'http://localhost:$port/health',
+          urls: ['http://localhost:$port/todos'],
+        },
+      ],
+    });
+    expect(packages[0]!.healthcheck).toBe('http://localhost:4321/health');
+    expect(packages[0]!.urls).toEqual(['http://localhost:4321/todos']);
+  });
+
+  it('treats an undefined return as no port', () => {
+    const { packages } = defineConfig({
+      workspaceDir: ws,
+      packages: [{ name: 'api', port: () => undefined }],
+    });
+    expect(packages[0]!.port).toBeUndefined();
+  });
+
+  it('throws when a callback returns NaN, naming the package and the env files', () => {
+    fs.writeFileSync(path.join(ws, '.env.development'), 'OTHER=1\n');
+    expect(() =>
+      defineConfig({
+        workspaceDir: ws,
+        packages: [{ name: 'api', port: ({ env }) => Number(env.BACKEND_PORT) }],
+      }),
+    ).toThrow(/api: port callback returned NaN[\s\S]*\.env\.development/);
+  });
+
+  it('says so when no env file was found at all', () => {
+    expect(() =>
+      defineConfig({
+        workspaceDir: ws,
+        packages: [{ name: 'api', port: ({ env }) => Number(env.BACKEND_PORT) }],
+      }),
+    ).toThrow(/no env files were found/);
+  });
+
+  it('still accepts a literal numeric port', () => {
+    const { packages } = defineConfig({
+      workspaceDir: ws,
+      packages: [{ name: 'api', port: 3001, healthcheck: 'http://localhost:$port/health' }],
+    });
+    expect(packages[0]!.port).toBe(3001);
+    expect(packages[0]!.healthcheck).toBe('http://localhost:3001/health');
   });
 });
