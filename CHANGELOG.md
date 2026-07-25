@@ -7,6 +7,7 @@
 - **Long log values wrap readably** — a value too wide for the terminal now keeps its key aligned, repeats the timestamp and `[package]` prefix on every row, and lines its overflow up under the value. See [docs/logging.md](docs/logging.md).
 - **Drag-select a structured log's attribute value to copy just its text** — no timestamps, prefixes or wrap indentation. Works on the message too.
 - **`logging.formatter` accepts a callback**, so the formatter config can depend on the entry being rendered. See [docs/logging.md](docs/logging.md#the-logging-helpers).
+- **A package's `port` accepts a callback**, so the port can come from an env file devtooie itself loads: `port: ({ env }) => Number(env.BACKEND_PORT)`. The callback receives that package's resolved `.env` files merged over `process.env` — the same environment the dev process gets — and the number it returns feeds `$port`, `PORT`, and port-conflict detection as before. See [docs/configuration.md](docs/configuration.md).
 - **devtooie's own lines are labelled and structured** — `[devtooie]`, and `[dt:control]` for control-API commands.
 - **Fixed a blank gap above the package selector and build screens.**
 
