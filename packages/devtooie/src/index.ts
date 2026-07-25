@@ -25,5 +25,5 @@ export type {
   Command,
 } from './config.js';
 export type { Register, PackageConfig, PackageName } from './register.js';
-export { resolveEnv, envCandidatePaths, DEFAULT_ENV_FILES } from './env.js';
+export { resolveEnv, envCandidatePaths, ambientEnv, DEFAULT_ENV_FILES } from './env.js';
 export type { EnvResolution } from './env.js';

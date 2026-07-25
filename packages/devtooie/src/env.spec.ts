@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DEFAULT_ENV_FILES, envCandidatePaths, resolveEnv, packageEnvLayer } from './env.js';
+import {
+  DEFAULT_ENV_FILES,
+  ambientEnv,
+  envCandidatePaths,
+  resolveEnv,
+  packageEnvLayer,
+} from './env.js';
 import type { AnyPackageConfig } from './config.js';
 
 let cwd: string;
@@ -155,5 +161,22 @@ describe('packageEnvLayer', () => {
     write('packages/api/.env', 'PORT=9999\n');
     expect(packageEnvLayer(mkPkg({}), { cwd }).PORT).toBe('9999');
     expect(packageEnvLayer(mkPkg({ port: 3001 }), { cwd }).PORT).toBe('9999');
+  });
+});
+
+describe('ambientEnv', () => {
+  it('snapshots process.env and drops undefined values', () => {
+    process.env.DEVTOOIE_TEST_AMBIENT = 'yes';
+    delete process.env.DEVTOOIE_TEST_MISSING;
+    try {
+      const env = ambientEnv();
+      expect(env.DEVTOOIE_TEST_AMBIENT).toBe('yes');
+      expect('DEVTOOIE_TEST_MISSING' in env).toBe(false);
+      // A snapshot, not a live view.
+      process.env.DEVTOOIE_TEST_AMBIENT = 'changed';
+      expect(env.DEVTOOIE_TEST_AMBIENT).toBe('yes');
+    } finally {
+      delete process.env.DEVTOOIE_TEST_AMBIENT;
+    }
   });
 });
