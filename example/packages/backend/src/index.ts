@@ -2,7 +2,8 @@ import express from 'express';
 import { validateNewTodo } from '@example/isomorphic';
 import { listTodos, insertTodo, updateTodo, deleteTodo } from '@example/db';
 
-const PORT = 3001;
+// Injected by devtooie from this package's configured `port`.
+const PORT = Number(process.env.PORT);
 
 const app = express();
 app.use(express.json());

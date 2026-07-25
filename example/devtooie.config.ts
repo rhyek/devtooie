@@ -22,7 +22,12 @@ export default defineConfig({
       name: 'backend',
       relativeDir: 'packages/backend',
       shortName: 'api',
-      port: 3001,
+      // `port` can be a literal (see `worker`/`frontend` below) or a callback over the
+      // package's environment. devtooie resolves this package's `.env` files first — merged
+      // over `process.env`, package scope winning — and hands them here, so the port lives in
+      // `.env.development` (`BACKEND_PORT=3001`) instead of being hardcoded twice. The number
+      // it returns is what `$port` substitutes below and what the process receives as `PORT`.
+      port: ({ env }) => Number(env.BACKEND_PORT),
       healthcheck: 'http://localhost:$port/health',
       urls: ['http://localhost:$port/todos'],
     },
