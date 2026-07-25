@@ -20,6 +20,8 @@ export type {
   AnyPackageConfig,
   Config,
   PackageTypeValue,
+  PortContext,
+  PortResolver,
   UrlLink,
   UrlEntry,
   Command,
