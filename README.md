@@ -252,7 +252,14 @@ and the current environment; file values win over the ambient environment (so
 `NODE_OPTIONS=$NODE_OPTIONS --flag` extends the inherited value).
 
 A package's `port` is also injected as `PORT` (an explicit `.env` `PORT`
-still overrides it).
+still overrides it). The reverse direction works too — `port` may be a callback
+that reads these same resolved files to decide the port:
+
+```ts
+{ name: 'backend', port: ({ env }) => Number(env.BACKEND_PORT) }
+```
+
+See [Configuration](docs/configuration.md) for the details.
 
 Customize the list via `env.files` (each name is still resolved at both scopes):
 

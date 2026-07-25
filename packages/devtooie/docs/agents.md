@@ -188,7 +188,17 @@ build-only lib):
 - **`autostart`** (default `true`) — whether to auto-start this package in the run phase. Set
   **`false`** to leave it stopped; start it with the **`s`** hotkey or a control-API `restart`
   (`POST /command/restart/<name>` starts a stopped package). Ignored when `command` is `null`.
-- **`port`** — the package's dev port; feeds `$port` substitution, injected as `PORT`, and swept on session handoff.
+- **`port`** — the package's dev port; feeds `$port` substitution, injected as `PORT`, and swept on session handoff. May be a **callback** that derives it from the package's [environment](#environment-env-loading) — it receives that package's `.env` files already resolved and merged over `process.env` (the same environment the dev process gets) and returns the number:
+
+  ```ts
+  {
+    name: 'backend',
+    port: ({ env }) => Number(env.BACKEND_PORT),
+    healthcheck: 'http://localhost:$port/health',
+  }
+  ```
+
+  It runs once while the config is being defined and must be synchronous. Return `undefined` for "no port" (same as omitting the field); returning `NaN` — the usual sign of a missing variable — is an error naming the package and the env files that were loaded.
 - **`urls`** — links shown in the running footer, one entry per line. Each entry is a string, a
   `{ label, url }`, or an **array** of those (rendered on the same line, space-separated).
 - **`healthcheck`** — a URL polled for readiness; also required by anything that lists this
@@ -463,7 +473,7 @@ one. `${VAR}` references expand against already-loaded files and the current env
 values win over the ambient environment (so `NODE_OPTIONS=$NODE_OPTIONS --flag` extends the
 inherited value).
 
-A package's `port` is also injected as `PORT` (an explicit `.env` `PORT` still overrides it).
+A package's `port` is also injected as `PORT` (an explicit `.env` `PORT` still overrides it). The reverse direction works too: `port` may be a callback (`port: ({ env }) => Number(env.BACKEND_PORT)`) that reads these same resolved files to decide the port.
 
 Customize the list via `env.files` (each name is still resolved at both scopes):
 

@@ -34,7 +34,22 @@ build-only lib):
   control-API `restart`). Ignored when `command` is `null`. (If a package `waitFor`s an
   `autostart: false` one, it waits until you start it.)
 - **`port`** — the package's dev port; feeds `$port` substitution, injected as `PORT`, and
-  swept on session handoff.
+  swept on session handoff. Pass a **callback** to derive it from the package's
+  [environment](../README.md#environment-env-loading) instead of hardcoding it — it receives
+  that package's `.env` files already resolved and merged over `process.env` (the same
+  environment the dev process gets), and returns the number:
+
+  ```ts
+  {
+    name: 'backend',
+    port: ({ env }) => Number(env.BACKEND_PORT),
+    healthcheck: 'http://localhost:$port/health',
+  }
+  ```
+
+  The callback runs once while the config is being defined and must be synchronous. Return
+  `undefined` for "no port" (the same as omitting the field); returning `NaN` — the usual sign
+  of a missing variable — is an error naming the package and the env files that were loaded.
 - **`urls`** — links shown in the running footer, one entry per line. Each entry is a
   string, a `{ label, url }`, or an **array** of those (rendered on the same line,
   space-separated).
