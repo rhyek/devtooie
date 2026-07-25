@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0 (2026-07-24)
+
+- **Quitting waits for a clean shutdown** — `POST /command/quit` holds its response until every package is down and its ports are free, and the `SIGTERM` grace is now 10s (was 3s). See [docs/control-api.md](docs/control-api.md#graceful-shutdown).
+- **Footer shows the working directory and git branch.**
+- **Long log values wrap readably** — a value too wide for the terminal now keeps its key aligned, repeats the timestamp and `[package]` prefix on every row, and lines its overflow up under the value. See [docs/logging.md](docs/logging.md).
+- **Drag-select a structured log's attribute value to copy just its text** — no timestamps, prefixes or wrap indentation. Works on the message too.
+- **`logging.formatter` accepts a callback**, so the formatter config can depend on the entry being rendered. See [docs/logging.md](docs/logging.md#the-logging-helpers).
+- **devtooie's own lines are labelled and structured** — `[devtooie]`, and `[dt:control]` for control-API commands.
+- **Fixed a blank gap above the package selector and build screens.**
+
 ## 0.5.0 (2026-07-23)
 
 - **New `devtooie logs` subcommand** — print the current session's logfile, `-f/--follow` to stream it live, or `--path` to print just its path; resolves the logfile from the running instance (falling back to the last recorded one), read-only so it never disturbs the session. See [docs/cli.md](docs/cli.md#devtooie-logs).

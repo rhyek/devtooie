@@ -4,6 +4,7 @@ import chalk from 'chalk';
 import { execa, type ResultPromise } from 'execa';
 import stringWidth from 'string-width';
 import wrapAnsi from 'wrap-ansi';
+import sliceAnsi from 'slice-ansi';
 import type { AnyPackageConfig } from './config.js';
 import { getDevScript, getLoadedConfig } from './config.js';
 import { defaultFormatter } from './log-formatter.js';
@@ -21,7 +22,19 @@ import {
 } from './lib.js';
 import { updateRunning } from './running.js';
 import type { RunnerArgs } from './runners/types.js';
+import { SHUTDOWN_GRACE_MS } from './shutdown-timing.js';
 import { stripTitleSequences } from './terminal-title.js';
+import { createInternalLogger, formatInternalRecord } from './internal-logger.js';
+import type { Logger } from 'pino';
+
+/**
+ * The label color shared by devtooie's own log channels (`[devtooie]`, `[dt:control]`) — a warm
+ * gold that reads as the tool's own voice, distinct from the per-package prefix colors. Applied
+ * through a function rather than a hoisted `chalk.hex(...)` because chalk bakes the active color
+ * level into a style when it's built, and that level isn't settled at module load.
+ */
+const DEVTOOIE_LABEL_HEX = '#d7af5f';
+const devtooieLabel = (text: string) => chalk.hex(DEVTOOIE_LABEL_HEX)(text);
 
 type ProcessState = 'running' | 'stopped' | 'waiting';
 type Status = ProcessState | 'rebuilding' | 'restarting';
@@ -40,7 +53,7 @@ interface ManagedProcess {
   extraProcs: Set<ResultPromise>;
 }
 
-interface BufferedLine {
+export interface BufferedLine {
   prefix: string;
   text: string;
   /** `YYYY-MM-DD HH:MM:SS` stamp captured when the line was logged (shown when timestamps are on). */
@@ -72,7 +85,7 @@ function isContinuationLine(text: string): boolean {
 /**
  * Normalize text for filter matching: lowercase and strip diacritics (NFD decomposition
  * drops combining accent marks). Applied to both the log haystack and the typed terms, so
- * matching is case- and accent-insensitive — a typed `gonzalez` finds a logged `González`.
+ * matching is case- and accent-insensitive — a typed `malaga` finds a logged `Málaga`.
  */
 function normalizeForFilter(s: string): string {
   return s
@@ -141,8 +154,66 @@ export function packagePrefixColor(pkg: AnyPackageConfig, index: number): (s: st
 const MAX_BUFFER_LINES = 50_000;
 /** Rendered width of a displayed timestamp gutter: `"YYYY-MM-DD HH:MM:SS "` (19 chars + a space). */
 const TIMESTAMP_GUTTER_WIDTH = 20;
-const SHUTDOWN_GRACE_MS = 3000;
 const WAIT_FOR_POLL_MS = 2000;
+/** Below this many columns of content there's no room to wrap meaningfully — emit one long row. */
+const MIN_CONTENT_WIDTH = 20;
+
+/**
+ * Columns to indent a wrapped continuation row by, so it lines up under the **value** of a
+ * `  key: value` property line — the same alignment the formatter gives a value that contains
+ * newlines. Falls back to the line's own leading whitespace (which is what a continuation row of a
+ * multi-line value already carries), and to 0 for an unindented line such as a `[LEVEL] message`
+ * header or raw process output, which wraps flush against the gutter.
+ */
+function hangingIndent(text: string): number {
+  const plain = stripAnsi(text);
+  const lead = /^[ \t]*/.exec(plain)![0].length;
+  if (lead === 0) {
+    return 0;
+  }
+  const key = /^[ \t]*[^\s:]+:[ ]/.exec(plain);
+  return key ? key[0].length : lead;
+}
+
+/**
+ * Wrap `text` into rows: the first `width` columns wide, every row after it `indent` columns
+ * narrower to leave room for the hanging indent (which the caller applies). Rows are returned
+ * without that indent.
+ *
+ * `wrap-ansi` only wraps to a single fixed width, so this walks the text one row at a time,
+ * slicing off exactly what the previous row consumed. `trim: false` is essential — the default
+ * strips a row's leading whitespace, which would eat the formatter's property indent and leave a
+ * wrapped `  key:` sitting two columns left of every key short enough not to wrap.
+ */
+function wrapRows(text: string, width: number, indent: number): string[] {
+  const rows: string[] = [];
+  const nextRowWidth = width - indent;
+  let rest = text;
+  let rowWidth = width;
+  while (stringWidth(rest) > rowWidth) {
+    let row = wrapAnsi(rest, rowWidth, { hard: true, trim: false }).split('\n')[0]!;
+    // `wrap-ansi` pushes an over-long token to the next row when it judges that costs no extra
+    // rows — but it reasons with a single uniform width, and our continuation rows are `indent`
+    // columns narrower, so here it can cost a row *and* leave `  key:` sitting alone beside a
+    // blank. When the token is too long for a continuation row it gets split there anyway, so
+    // moving it buys nothing: fill this row instead.
+    if (stringWidth(row) < rowWidth) {
+      const remainder = stripAnsi(sliceAnsi(rest, stringWidth(row))).replace(/^[ \t]+/, '');
+      if (stringWidth(/^\S*/.exec(remainder)![0]) > nextRowWidth) {
+        row = sliceAnsi(rest, 0, rowWidth);
+      }
+    }
+    const consumed = stringWidth(row);
+    if (consumed === 0) {
+      break; // no progress possible (e.g. a wide glyph that can't fit) — emit the remainder as-is
+    }
+    rows.push(row);
+    rest = sliceAnsi(rest, consumed);
+    rowWidth = nextRowWidth;
+  }
+  rows.push(rest);
+  return rows;
+}
 
 /**
  * Owns the lifecycle of every package's dev process: spawning, streaming and
@@ -177,6 +248,10 @@ export class ProcessManager implements ControlManager {
   private footerHeight = 3;
   /** Skip terminal clearing/scrollback tricks when there's no interactive UI on top. */
   private plain: boolean;
+  /** devtooie's own lifecycle events; rendered under the gold `[devtooie]` prefix. */
+  readonly systemLog: Logger;
+  /** Control-API command notices; rendered under the gold `[dt:control]` prefix. */
+  readonly controlLog: Logger;
   private systemPrefix: string;
   /** Colored `"[dt:control] "` prefix for control-API command notices. */
   private controlPrefix: string;
@@ -248,10 +323,11 @@ export class ProcessManager implements ControlManager {
       });
     }
 
-    this.systemPrefix = chalk.dim(`[${' '.repeat(maxNameLen)}]`) + ' ';
-    // Pad the label to the widest service name so the closing bracket lines up
-    // with every package prefix (e.g. `[dt:control     ]` beside `[whatsapp-bridge]`).
-    this.controlPrefix = chalk.dim(`[${'dt:control'.padEnd(maxNameLen)}]`) + ' ';
+    // devtooie's own two channels carry a label (never an empty slot) in the shared gold. Both are
+    // padded to the widest service name so the closing bracket lines up with every package prefix
+    // (e.g. `[dt:control     ]` beside `[payments-worker]`).
+    this.systemPrefix = devtooieLabel(`[${'devtooie'.padEnd(maxNameLen)}]`) + ' ';
+    this.controlPrefix = devtooieLabel(`[${'dt:control'.padEnd(maxNameLen)}]`) + ' ';
 
     ProcessManager.instances.add(this);
     this.exitHandler = () => {
@@ -261,6 +337,40 @@ export class ProcessManager implements ControlManager {
 
     this.logFilePath = logFile ?? getDefaultLogFile();
     this.logFd = fs.openSync(this.logFilePath, 'w');
+
+    // Built last: its destination writes through `addLine`, which needs the prefixes and the
+    // open logfile above already in place.
+    const internal = createInternalLogger((chunk) => this.ingestInternalLog(chunk));
+    this.systemLog = internal.system;
+    this.controlLog = internal.control;
+  }
+
+  /**
+   * Sink for {@link createInternalLogger}: render each NDJSON record and buffer it through the
+   * same path package output takes, so devtooie's own logs format, group, filter and land in the
+   * logfile identically. A control record is scoped to the package it targeted (when it names
+   * one) so it groups with that package's output. Malformed lines are dropped rather than
+   * throwing back into the logger.
+   */
+  private ingestInternalLog(chunk: string): void {
+    for (const jsonLine of chunk.split('\n')) {
+      if (!jsonLine) {
+        continue;
+      }
+      let record;
+      try {
+        record = formatInternalRecord(jsonLine);
+      } catch {
+        continue;
+      }
+      const isControl = record.component === 'control';
+      const prefix = isControl ? this.controlPrefix : this.systemPrefix;
+      const searchName = isControl
+        ? ((record.packageName && this.processes.get(record.packageName)?.searchName) ??
+          'dt:control')
+        : 'system';
+      this.addEntryLines(prefix, record.text, searchName, record.isError);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -714,7 +824,7 @@ export class ProcessManager implements ControlManager {
     }
   }
 
-  /** Graceful shutdown: SIGTERM everything, wait up to 3s, then SIGKILL stragglers. */
+  /** Graceful shutdown: SIGTERM everything, wait up to 10s, then SIGKILL stragglers. */
   async shutdownAll(): Promise<void> {
     if (this.waitingPollTimer) {
       clearInterval(this.waitingPollTimer);
@@ -741,7 +851,7 @@ export class ProcessManager implements ControlManager {
       return;
     }
 
-    this.addLine(this.systemPrefix, chalk.yellow('shutting down...'), 'system', false);
+    this.systemLog.warn('shutting down...');
 
     for (const { proc } of living) {
       this.killTree(proc);
@@ -995,22 +1105,49 @@ export class ProcessManager implements ControlManager {
     return line.showTs ? `${chalk.dim(line.ts)} ` : '';
   }
 
-  /** Left-gutter width for a line: the `[name]` prefix, plus the timestamp column when shown. */
+  /**
+   * Left-gutter width for a line: its `[name]` prefix, plus the timestamp column when shown.
+   * Measured from the prefix itself rather than assuming {@link prefixWidth} — devtooie's own
+   * labels are `padEnd`ed to the widest *package* name, and `padEnd` never truncates, so
+   * `[dt:control] ` stays wider than `prefixWidth` in a workspace of short names. Assuming the
+   * nominal width there under-counts the gutter, and the wrapped rows overflow the terminal (and
+   * are then truncated, losing text).
+   */
   private gutterWidth(line: BufferedLine): number {
-    return this.prefixWidth + (line.showTs ? TIMESTAMP_GUTTER_WIDTH : 0);
+    return stringWidth(line.prefix) + (line.showTs ? TIMESTAMP_GUTTER_WIDTH : 0);
   }
 
-  /** Rendered rows (timestamp + prefix + wrapped, continuation-padded text) of a line at `cols` width. */
+  /**
+   * Rendered rows of a line at `cols` width. **Every** row carries the timestamp (when shown) and
+   * the `[name]` prefix, so a line that wraps keeps an unbroken left gutter instead of leaving
+   * blank space beside its continuations. Wrapped rows are additionally indented to line up under
+   * the value of a `key: value` property (see {@link hangingIndent}), matching how the formatter
+   * aligns a value that contains newlines.
+   */
   wrapLine(line: BufferedLine, cols: number): string[] {
-    const ts = this.tsPrefix(line);
-    const contentWidth = cols - this.gutterWidth(line);
-    if (contentWidth <= 20 || stringWidth(line.text) <= contentWidth) {
-      return [`${ts}${line.prefix}${line.text}`];
+    return this.wrapLineRows(line, cols).map((row) => row.text);
+  }
+
+  /**
+   * As {@link wrapLine}, but each row also carries the display column where its **own content**
+   * begins — past the gutter, and past the hanging indent on a wrapped row. That's the boundary
+   * between presentation and text, which value-scoped selection needs to know to keep the gutter
+   * off the clipboard.
+   */
+  wrapLineRows(line: BufferedLine, cols: number): { text: string; contentStart: number }[] {
+    const gutter = this.gutterWidth(line);
+    const head = `${this.tsPrefix(line)}${line.prefix}`;
+    const contentWidth = cols - gutter;
+    if (contentWidth <= MIN_CONTENT_WIDTH || stringWidth(line.text) <= contentWidth) {
+      return [{ text: `${head}${line.text}`, contentStart: gutter }];
     }
-    const pad = ' '.repeat(this.gutterWidth(line));
-    return wrapAnsi(line.text, contentWidth, { hard: true })
-      .split('\n')
-      .map((row, i) => (i === 0 ? `${ts}${line.prefix}${row}` : `${pad}${row}`));
+    // Cap the indent so continuation rows always keep a usable amount of room.
+    const indent = Math.min(hangingIndent(line.text), contentWidth - MIN_CONTENT_WIDTH);
+    const pad = ' '.repeat(indent);
+    return wrapRows(line.text, contentWidth, indent).map((row, i) => ({
+      text: `${head}${i === 0 ? '' : pad}${row}`,
+      contentStart: gutter + (i === 0 ? 0 : indent),
+    }));
   }
 
   /** Re-clear the screen and replay the buffer through the active filter. */
@@ -1031,20 +1168,24 @@ export class ProcessManager implements ControlManager {
     this.notify();
   }
 
-  /** Emit a system-level line (e.g. shutdown notices), interleaved like any package's output. */
+  /**
+   * Emit an informational system line (interleaved like any package's output). Use
+   * {@link systemLog} directly for another level or to attach structured attrs.
+   */
   logSystem(message: string): void {
-    this.addLine(this.systemPrefix, message, 'system', false);
+    this.systemLog.info(message);
   }
 
   /**
-   * Emit a `[dt:control]` line noting a mutating command received over the
-   * control API. When `pkg` names a known package, the line is tagged with that
-   * package's search name so it shows/hides with the package under an active
-   * filter; otherwise it's tagged `dt:control`.
+   * Emit a `[dt:control]` line noting a mutating command received over the control API, with the
+   * variables that command carried as structured attrs — e.g.
+   * `logControl('restart', { package: 'web' })` renders `[INFO] restart` above an indented
+   * `package: web`. When `attrs.package` names a known package the line is tagged with that
+   * package's search name, so it shows/hides with the package under an active filter; otherwise
+   * it's tagged `dt:control`.
    */
-  logControl(message: string, pkg?: string): void {
-    const searchName = (pkg && this.processes.get(pkg)?.searchName) ?? 'dt:control';
-    this.addLine(this.controlPrefix, message, searchName, false);
+  logControl(command: string, attrs?: Record<string, unknown>): void {
+    this.controlLog.info(attrs ?? {}, command);
   }
 
   /**
@@ -1116,20 +1257,48 @@ export class ProcessManager implements ControlManager {
    */
   private addOutput(managed: ManagedProcess, rawLine: string, isError: boolean): void {
     const formatted = this.formatOutput(managed, rawLine, isError);
-    for (const out of formatted.split('\n')) {
-      if (out) {
-        this.addLine(managed.prefix, out, managed.searchName, isError);
+    this.addEntryLines(managed.prefix, formatted, managed.searchName, isError);
+  }
+
+  /**
+   * Buffer the lines of one rendered entry. A formatter that expanded a single raw line into
+   * several produced one entry, so the extra lines are marked as continuations outright rather
+   * than relying on the formatter having indented them. A single-line result carries no such
+   * structure, so its grouping is left to {@link addLine}'s fallback.
+   */
+  private addEntryLines(prefix: string, rendered: string, searchName: string, isError: boolean) {
+    const parts = rendered.split('\n');
+    const expanded = parts.length > 1;
+    let isFirst = true;
+    for (const text of parts) {
+      if (!text) {
+        continue;
       }
+      this.addLine(prefix, text, searchName, isError, expanded ? !isFirst : undefined);
+      isFirst = false;
     }
   }
 
-  private addLine(prefix: string, text: string, searchName: string, isError: boolean): void {
+  /**
+   * Buffer one rendered line. `isContinuation` states outright whether the line continues the
+   * previous entry — callers that split a *known* single entry (a formatter's multi-line result)
+   * pass it, so grouping never depends on how that entry happens to be indented. Omit it for
+   * standalone raw output, where there's no structure to consult and the leading-whitespace
+   * convention is the only available signal.
+   */
+  private addLine(
+    prefix: string,
+    text: string,
+    searchName: string,
+    isError: boolean,
+    isContinuation?: boolean,
+  ): void {
     // Consecutive lines from the same package are grouped: a continuation
     // line shares the group of the entry it belongs to, so filtering and
     // replay keep multi-line log entries intact.
     let groupId: number;
     const prevGroup = this.lastGroupId.get(searchName);
-    if (isContinuationLine(text) && prevGroup !== undefined) {
+    if ((isContinuation ?? isContinuationLine(text)) && prevGroup !== undefined) {
       groupId = prevGroup;
     } else {
       groupId = this.nextGroupId++;
@@ -1317,29 +1486,15 @@ export class ProcessManager implements ControlManager {
   }
 
   /**
-   * Render one line to its terminal string — the timestamp (when enabled) and
-   * prefix followed by the text, hard-wrapped to the content width with wrapped
-   * rows aligned under the prefix. Returns the string (no trailing newline) and
-   * the number of terminal rows it occupies. Pure (writes nothing), so the live
-   * single-line path and the batched replay path produce byte-identical layout.
+   * Render one line to its terminal string for **plain mode**, joining the rows
+   * {@link wrapLine} produces — so plain output and the interactive viewport lay
+   * lines out identically by construction. Returns the string (no trailing
+   * newline) and the number of terminal rows it occupies. Pure (writes nothing),
+   * so the live single-line path and the batched replay path agree.
    */
   private formatLine(line: BufferedLine): { rendered: string; rows: number } {
-    const { prefix, text } = line;
-    const ts = this.tsPrefix(line);
-    const cols = process.stdout.columns || 120;
-    const contentWidth = cols - this.gutterWidth(line);
-
-    if (contentWidth <= 20 || stringWidth(text) <= contentWidth) {
-      return { rendered: `${ts}${prefix}${text}`, rows: 1 };
-    }
-
-    const pad = ' '.repeat(this.gutterWidth(line));
-    const wrapped = wrapAnsi(text, contentWidth, { hard: true });
-    const lines = wrapped.split('\n');
-    const rendered = lines
-      .map((row, i) => (i === 0 ? `${ts}${prefix}${row}` : `${pad}${row}`))
-      .join('\n');
-    return { rendered, rows: lines.length };
+    const rows = this.wrapLine(line, process.stdout.columns || 120);
+    return { rendered: rows.join('\n'), rows: rows.length };
   }
 
   /** Print one line, wrapping to the terminal width. Returns the number of rows it consumed. */

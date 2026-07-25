@@ -88,10 +88,15 @@ export type PackageConfigInput<N extends string> = Omit<
       timestamps?: boolean;
       /**
        * Transform each raw output line from this package's dev process before it's shown and
-       * logged. Receives one line of the process's stdout/stderr (no devtooie prefix or
-       * timestamp) and returns the string to display. Ideal for pretty-printing a "production"
-       * **structured (JSON) logger** — parse the line, and on a match return a compact
-       * human-readable form; otherwise return it unchanged:
+       * logged. Receives one line of the process's stdout/stderr (no devtooie prefix or timestamp)
+       * and returns the string to display. **This is the general hook** — it sees the whole line as
+       * a plain string and assumes nothing about its format, so it's what you use to reshape
+       * *any* output, structured or not.
+       *
+       * If the process logs **structured JSON**, don't write this by hand — `logging.formatter`
+       * (and its ecosystem presets) already builds one, and devtooie applies the default to every
+       * package automatically. Reach for a hand-written formatter when the output isn't JSON, or
+       * when you want a rendering the built-in one can't express:
        *
        * ```ts
        * import { defineConfig, z } from 'devtooie';
@@ -109,6 +114,9 @@ export type PackageConfigInput<N extends string> = Omit<
        *   },
        * },
        * ```
+       *
+       * Return the line unchanged to pass it through — a formatter that reshapes only some lines
+       * is normal, and is how the built-in one behaves.
        *
        * devtooie owns the timestamp (its own, shown per `logs.timestamps` and always in the log
        * file), so drop the log's own time field rather than printing it. The returned string

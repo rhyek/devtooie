@@ -59,6 +59,16 @@ applies a default formatter to _every_ package's output that
 - pretty-prints a **JSON log** as a **`[LEVEL] message`** header (the `[LEVEL]` colored by severity),
   with the remaining properties listed, indented, on the lines below.
 
+A property whose value spans several lines keeps its shape: the extra lines are aligned under where
+the value starts, so the entry still reads as one block.
+
+```
+[INFO] query executed
+  table: users
+  sql: SELECT id, email
+       FROM users
+```
+
 So a slog line like:
 
 ```
@@ -86,6 +96,13 @@ A **string** level is uppercased and matched to devtooie's canonical levels —
 (see the helpers below); an unmatched string shows as `[UNKNOWN LOGLVL: FOOBAR]`.
 
 ### The `logging` helpers
+
+> **These are for structured (JSON) logs only.** Every `logging.*` helper builds a formatter that
+> parses each line as JSON and configures how a *recognized log object* is displayed. Anything it
+> doesn't recognize is passed through untouched — so pointing one at a process that logs plain
+> prose does nothing at all. To reshape arbitrary text output, write
+> [`logs.formatter`](#writing-your-own) yourself: it's a plain `(line: string) => string` over the
+> raw line, with no JSON assumption.
 
 Override a package's formatter with one of the `logging` helpers (exported from `devtooie`):
 
@@ -126,15 +143,72 @@ logging.formatter({
 });
 ```
 
+#### Config that depends on the entry
+
+Pass a **callback** instead of the object and it returns the config for the entry being rendered.
+It receives the **parsed log** — devtooie does the parsing, so there's nothing to `JSON.parse` and
+no non-JSON line to guard against. Handy when a field is only noise on certain events:
+
+```ts
+logging.formatter((log) => ({
+  fields: {
+    custom: {
+      time: { show: false }, // hidden on every entry
+      // `at` is redundant on healthcheck events, but useful elsewhere
+      ...(log.context === 'healthcheck' ? { at: { show: false } } : {}),
+    },
+  },
+}));
+```
+
+The whole config is per-entry, not just `fields.custom` — `levels` and the level/message keys can
+vary too, which is what you want when one stream carries logs from more than one source.
+
+The ecosystem helpers take the callback form as well and keep their defaults, so
+`logging.nodejs.pino.formatter((log) => …)` still maps pino's numeric levels without you
+restating them.
+
+The callback runs once per **JSON-object** line. Lines that aren't a JSON object never reach it. A
+JSON object with no recognizable level/message *does* reach it — it chooses those keys, so it has to
+run before that check — and then passes through unformatted like any other unrecognized line.
+
 ### Writing your own
 
 `logs.formatter` is just `(line: string) => string` — return the display string, or the line
-unchanged to pass it through. A formatter that throws or returns a non-string falls back to the raw
+unchanged to pass it through. **This is the general hook**: unlike the `logging.*` helpers above, it
+sees the whole raw line and assumes nothing about its format, so it's what you use when the output
+**isn't** JSON — or when it is, but you want a rendering the built-in formatter can't express.
+
+A formatter that throws or returns a non-string falls back to the raw
 line, so a bug can't take down the session. The returned string is what's buffered, shown, **and
 written to the log file** (ANSI color allowed, stripped for the file); a multi-line result is split
-into separate log lines. **devtooie owns the timestamp** (shown per `logs.timestamps`, always in
+into separate log lines, which devtooie keeps grouped as **one entry** — so a filter matching any of
+them shows the whole block. That grouping comes from the split itself, not from how the lines look,
+so you don't have to indent them to hold an entry together. **devtooie owns the timestamp** (shown per `logs.timestamps`, always in
 the log file), so drop the log's own time field rather than printing it. `z` (zod) is re-exported
 by devtooie, so a hand-written formatter can validate shapes without a dependency.
 
 The [`example/`](https://github.com/rhyek/devtooie/tree/main/example) monorepo's Go `worker` (slog)
-relies on the default formatter, tweaked only to hide slog's `time`.
+shows both config shapes: the plain object that only hides slog's `time`, and the callback it
+actually runs, which additionally drops the `port` its base logger stamps on every line — useful on
+the startup lines, noise on the heartbeat that repeats every 5s.
+
+## devtooie's own log lines
+
+Alongside your packages' output, devtooie logs its own events into the same stream — structured the
+same way, so they format, filter and land in the log file identically. They use two labelled
+channels, both rendered in a distinct gold so they read apart from package output:
+
+- **`[devtooie]`** — session lifecycle notices (shutting down, git-branch change).
+- **`[dt:control]`** — mutating commands received over the [control API](control-api.md)
+  (restart, rebuild, quit). The command is the message; the variables it carried are listed as
+  indented properties beneath it.
+
+```
+2026-07-23 16:41:22 [devtooie       ] [WARN] shutting down...
+2026-07-23 16:41:22 [dt:control     ] [INFO] restart
+2026-07-23 16:41:22 [dt:control     ]   package: backend
+```
+
+A control line naming a package is tagged with that package, so it shows and hides with the
+package's own output under an active filter.

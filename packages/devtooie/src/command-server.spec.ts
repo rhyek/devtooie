@@ -104,25 +104,49 @@ describe('command-server', () => {
     expect(res.status).toBe(503);
   });
 
-  it('quit works before attach and is logged after', async () => {
+  it('quit works before attach and acks once shutdown releases it', async () => {
     let quit = false;
-    server = await startCommandServer({ onQuit: () => (quit = true), port: 0 });
-    await fetch(`http://127.0.0.1:${server.port}/command/quit`, { method: 'POST' });
+    // The real shutdown path acks after tearing packages down; a test stub acks inline.
+    server = await startCommandServer({
+      onQuit: () => {
+        quit = true;
+        server!.ackQuit();
+      },
+      port: 0,
+    });
+    const res = await fetch(`http://127.0.0.1:${server.port}/command/quit`, { method: 'POST' });
     expect(quit).toBe(true);
+    expect(await res.json()).toEqual({ ok: true });
   });
 
-  it('logs mutating commands via logControl (restart/rebuild scoped, quit unscoped)', async () => {
-    const logged: { message: string; pkg?: string }[] = [];
+  it('holds the /command/quit response open until ackQuit (blocking shutdown)', async () => {
+    // onQuit does NOT ack, so the request must stay pending until we ack explicitly.
     server = await startCommandServer({ onQuit: () => {}, port: 0 });
-    server.attach(fakeManager({ logControl: (message, pkg) => logged.push({ message, pkg }) }));
+    const s = server;
+    const quitP = fetch(`http://127.0.0.1:${s.port}/command/quit`, { method: 'POST' }).then((r) =>
+      r.json(),
+    );
+    const settledEarly = await Promise.race([
+      quitP.then(() => true),
+      new Promise<boolean>((r) => setTimeout(() => r(false), 150)),
+    ]);
+    expect(settledEarly).toBe(false); // still blocked on the ack
+    s.ackQuit();
+    expect(await quitP).toEqual({ ok: true });
+  });
+
+  it('logs each mutating command with its variables as attrs', async () => {
+    const logged: { command: string; attrs?: Record<string, unknown> }[] = [];
+    server = await startCommandServer({ onQuit: () => server!.ackQuit(), port: 0 });
+    server.attach(fakeManager({ logControl: (command, attrs) => logged.push({ command, attrs }) }));
     const base = `http://127.0.0.1:${server.port}`;
     await fetch(`${base}/command/restart/web`, { method: 'POST' });
     await fetch(`${base}/command/rebuild/api`, { method: 'POST' });
     await fetch(`${base}/command/quit`, { method: 'POST' });
     expect(logged).toEqual([
-      { message: 'restart web', pkg: 'web' },
-      { message: 'rebuild api', pkg: 'api' },
-      { message: 'quit', pkg: undefined },
+      { command: 'restart', attrs: { package: 'web' } },
+      { command: 'rebuild', attrs: { package: 'api' } },
+      { command: 'quit', attrs: undefined },
     ]);
   });
 
@@ -130,7 +154,10 @@ describe('command-server', () => {
     let firstCalled = false;
     let secondCalled = false;
     server = await startCommandServer({ onQuit: () => (firstCalled = true), port: 0 });
-    server.setOnQuit(() => (secondCalled = true));
+    server.setOnQuit(() => {
+      secondCalled = true;
+      server!.ackQuit();
+    });
     await fetch(`http://127.0.0.1:${server.port}/command/quit`, { method: 'POST' });
     expect(secondCalled).toBe(true);
     expect(firstCalled).toBe(false);

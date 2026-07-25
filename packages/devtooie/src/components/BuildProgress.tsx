@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import path from 'node:path';
 import { execa } from 'execa';
-import { Box, Text, useApp } from 'ink';
+import { Box, Text, useApp, useWindowSize } from 'ink';
 import Spinner from 'ink-spinner';
 import { findPackage, getRegisteredPackages, getLoadedConfig } from '../config.js';
 import { startCommandServer } from '../command-server.js';
@@ -46,6 +46,10 @@ export function BuildProgress({
   onComplete,
 }: BuildProgressProps) {
   const { exit } = useApp();
+  // Fill the whole alternate-screen viewport so Ink treats this frame as
+  // fullscreen and anchors it at the top, matching NativeRunner (see
+  // PackageSelector for the gap-at-top rationale).
+  const { columns, rows } = useWindowSize();
   const [state, setState] = useState<BuildState>({ phase: 'resolving' });
 
   // The run phase takes ownership of the control server once handed off via
@@ -198,7 +202,7 @@ export function BuildProgress({
 
   if (state.phase === 'error') {
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" width={columns} height={rows}>
         <Text color="red" bold>
           Build failed
         </Text>
@@ -208,7 +212,7 @@ export function BuildProgress({
   }
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width={columns} height={rows}>
       <Box>
         <Text backgroundColor="cyan" color="black" bold>
           {' devtooie '}

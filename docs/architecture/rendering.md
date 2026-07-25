@@ -41,6 +41,17 @@ package-select  ->  building  ->  running
 Everything below is the **running** phase (`NativeRunner`). `renderApp` mounts the
 whole tree with `exitOnCtrlC: false` (each phase owns Ctrl+C) and `maxFps: 120`.
 
+**Every phase fills the viewport.** Each phase component's root is sized to
+`useWindowSize()` (`width={columns} height={rows}`) — `NativeRunner`, but also the
+short pre-run phases (`PackageSelector`, `BuildProgress`). This is load-bearing,
+not cosmetic: Ink only anchors a frame at the top when it detects it as
+*fullscreen* (`outputHeight >= viewportRows`). Entering the alternate screen
+(`ESC[?1049h`) does **not** home the cursor, so a short, non-fullscreen frame is
+drawn wherever the cursor was left on the primary screen — near the bottom, after
+the shell prompt + the `▶ devtooie started` line — leaving a large blank gap
+above it. Giving these phases a full-height root makes them fullscreen and
+top-aligned. Any new phase must do the same.
+
 ## Layout
 
 `NativeRunner` renders a full-height flex column (`components/NativeRunner.tsx`):
@@ -120,6 +131,23 @@ line buffer (capped at `MAX_BUFFER_LINES`). What changed:
 - **Buffer queries**: `getVisibleLines()` (group-aware filter result, memoized per
   version), `countRows(line, width)` (memoized per line), and
   `wrapLine(line, width)` (rendered rows for one line).
+- **Wrapping** (`wrapLine`, and plain mode's `formatLine`, which just joins its rows so both
+  paths lay out identically). Three things it has to get right, each of which was once wrong:
+  - **Every** row carries the timestamp + `[name]` prefix, not just the first, so a wrapped line
+    keeps an unbroken left gutter.
+  - Continuation rows are indented by `hangingIndent(text)` — the width of a leading
+    `  key: ` — so they line up under the *value*, matching how `log-formatter.ts` aligns a value
+    containing newlines. Falls back to the line's own leading whitespace, then to 0.
+  - `wrapAnsi` is called with **`trim: false`**. Its default strips a row's leading whitespace,
+    which eats the formatter's two-space property indent and leaves a wrapped `  key:` sitting two
+    columns left of every key short enough not to wrap. Because `wrap-ansi` only wraps to one fixed
+    width, `wrapRows` walks row by row, slicing off what the previous row consumed, so row 0 can be
+    full width while the rest are narrower by the indent.
+
+  `gutterWidth` measures the line's **actual** prefix rather than the nominal `prefixWidth`:
+  devtooie's own labels are `padEnd`ed to the widest *package* name and `padEnd` never truncates,
+  so `[dt:control] ` stays wider than `prefixWidth` in a workspace of short names — and assuming
+  the nominal width there overflows the terminal, where `truncate-end` silently eats the tail.
 - **Log formatting** (`log-formatter.ts`): every **raw child-process** line runs through a
   formatter in the `start`/`spawnExtra` stdout/stderr handlers, via `addOutput` → `formatOutput`,
   *before* it reaches `addLine` — so the buffer, screen, and logfile all hold the formatted text.
@@ -179,9 +207,28 @@ enabling mouse reporting takes the mouse from the terminal, and `useDragSelectio
   do). It's only invalidated by a re-flow: resize, filter change, or `k` clear
   (all call `clearSelection`); eviction past `MAX_BUFFER_LINES` shifts flat rows,
   the one accepted edge case.
+- **Value-scoped copy.** A rendered row's gutter (timestamp + `[name]`) and hanging
+  indent are presentation, not text, so a copy that began *inside a value* drops them.
+  `classifyLine` locates where a line's value starts (`  key: ` → after the key;
+  `[LEVEL] ` → after the token; indented-with-no-key → after the indent; anything else
+  → column 0). `down` compares the press column against that: at or past it selects in
+  `mode: 'value'` and records the `valueRun` (the line's wrapped rows plus any following
+  indented continuations); left of it — the gutter or the key — keeps the old WYSIWYG
+  mode, which is the escape hatch for copying a line as shown. `selectionCopyText`
+  then floors every row at its `valueStart` and rejoins: rows of the **same** buffered
+  line with no separator (the terminal introduced that break), distinct lines with a
+  newline (the value contained one). Dragging either end outside the run reverts the
+  whole copy to WYSIWYG. `rowSpan` takes the same floor so the highlight shows exactly
+  what will be copied.
+  `classifyLine` is deliberately **not** `hangingIndent` (`process-manager.ts`): that
+  returns 0 for a `[LEVEL] …` header so a wrapped message stays flush with the gutter,
+  while this returns the token width so selecting a message starts after `[INFO] `.
+  Keep them separate. Row metadata (`RowMeta`: text, `contentStart`, `valueStart`,
+  `lineIndex`, `kind`) is produced by `wrapLineRows` + `classifyLine` and carried
+  through `windowRows`, which is generic over the row type.
 - **Drag → select → copy-on-release.** `down` starts the selection; `move` (button
-  held) extends it; `up` finalizes it, captures the WYSIWYG, ANSI-stripped text
-  (`selectionText`: character-precise on the first/last row, full width in between),
+  held) extends it; `up` finalizes it, captures the ANSI-stripped text
+  (`selectionCopyText`: character-precise on the first/last row, full width in between),
   and **copies it immediately** — `copyToClipboard` + a `copied N chars` flash, with
   no key press. This is deliberate: in the VS Code integrated terminal Cmd+C is
   swallowed by VS Code's keybinding layer before it reaches the process (its default

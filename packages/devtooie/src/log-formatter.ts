@@ -16,6 +16,15 @@ export interface CustomField {
   show?: boolean;
 }
 
+/**
+ * The `custom` mapping: keyed by the **display** name, each entry is either the source field name
+ * (string shorthand) or a long-form {@link CustomField}.
+ */
+export type CustomFields = Record<string, string | CustomField>;
+
+/** One resolved custom entry: the name to print it under, and whether to print it at all. */
+type CustomEntry = { display: string; show: boolean };
+
 /** The source JSON field mapping — `config.fields` of {@link FormatterConfig}. */
 export interface FormatterFields {
   /**
@@ -34,10 +43,14 @@ export interface FormatterFields {
    * - `{ timestamp: { source: 'ts' } }` — long form of the above.
    * - `{ time: { show: false } }` — hide the `time` field (source defaults to the key).
    */
-  custom?: Record<string, string | CustomField>;
+  custom?: CustomFields;
 }
 
-/** Config for {@link createFormatter} / `logging.formatter`. */
+/**
+ * Config for {@link createFormatter} / `logging.formatter` — how to read and display **one JSON
+ * log object per line**. Everything here describes the *source JSON*: which keys hold the level and
+ * message, how to translate level values, and which properties to rename or hide.
+ */
 export interface FormatterConfig {
   /** Source JSON field mapping (level/message keys, property rename/hide). */
   fields?: FormatterFields;
@@ -49,6 +62,30 @@ export interface FormatterConfig {
    */
   levels?: Record<string, string>;
 }
+
+/**
+ * What {@link createFormatter} / `logging.formatter` accepts: a {@link FormatterConfig}, or a
+ * **callback** returning one for the entry being rendered. The callback receives the **parsed log**
+ * — devtooie does the parsing, so there is nothing to `JSON.parse` and no non-JSON line to guard
+ * against — and lets the whole config depend on the entry itself:
+ *
+ * ```ts
+ * logging.formatter((log) => ({
+ *   fields: {
+ *     custom: {
+ *       time: { show: false },                              // hidden on every entry
+ *       ...(log.context === 'healthcheck' ? { at: { show: false } } : {}),
+ *     },
+ *   },
+ * }))
+ * ```
+ *
+ * It runs once per JSON-object line. Lines that aren't a JSON object never reach it; a JSON object
+ * that turns out to have no level/message *does* (it picks those keys, so it has to run before that
+ * check) and then passes through unformatted like any other unrecognized line.
+ */
+export type FormatterConfigInput =
+  FormatterConfig | ((log: Record<string, unknown>) => FormatterConfig);
 
 // devtooie's canonical log levels (a complete, ordered ladder), and the aliases — matched
 // case-insensitively — that fold onto them, so `WARN`/`WARNING` both become `WARN`, `ERR` becomes
@@ -92,6 +129,9 @@ const LEVEL_COLOR: Record<string, (s: string) => string> = {
 // data) stands out in the normal foreground.
 const PROPERTY_KEY_COLOR = chalk.gray;
 
+/** Leading indent of every rendered property line, beneath the `[LEVEL] message` header. */
+const PROPERTY_INDENT = '  ';
+
 /**
  * pino/bunyan's numeric levels mapped to their names (`10=TRACE … 60=FATAL`) — pino/bunyan log the
  * level as a *number*, which devtooie won't guess. Exposed as `logging.nodejs.pino.levels`.
@@ -126,6 +166,24 @@ function renderValue(value: unknown): string {
 }
 
 /**
+ * Indent the continuation lines of a multi-line rendered value by `width`, so they line up under
+ * where the value starts instead of falling flush-left. This is also what keeps a multi-line entry
+ * together: devtooie treats a line as a continuation of the previous one only when it begins with
+ * whitespace, so an unindented second line would start its own log entry. Blank lines are left
+ * blank rather than padded into lines of trailing spaces.
+ */
+function indentContinuationLines(text: string, width: number): string {
+  if (!text.includes('\n')) {
+    return text;
+  }
+  const pad = ' '.repeat(width);
+  return text
+    .split('\n')
+    .map((l, i) => (i === 0 || l === '' ? l : pad + l))
+    .join('\n');
+}
+
+/**
  * Resolve a raw level value to a bracketed display token, or `undefined` when there's no level.
  * A `levels` map (e.g. pino's numbers) is applied first; the resulting name — or a raw string — is
  * uppercased and matched to a canonical devtooie level, whose `[LEVEL]` token is colored by
@@ -152,25 +210,48 @@ function levelToken(
 }
 
 /**
- * Build a structured-log formatter (`(line: string) => string`). Parses each line as JSON and
- * renders a recognized log as a `[LEVEL] message` header followed by its other properties, each
- * indented on its own line. Non-JSON lines, and JSON that isn't an object with a recognizable
- * level/message, pass through unchanged. See {@link FormatterConfig}. Prefer the `logging` helpers
- * (`logging.formatter`, `logging.nodejs.pino.formatter`, …), which are thin wrappers over this.
+ * Resolve one {@link FormatterConfig} into the lookups the render loop needs. The custom entries
+ * become a source-field -> { display, show } map, so a property can be matched by the name it
+ * actually has in the log. A static config is resolved once, when the formatter is built; a
+ * callback config is resolved per line, against that line's own log.
  */
-export function createFormatter(config: FormatterConfig = {}): (line: string) => string {
-  const levelKey = config.fields?.level ?? 'level';
-  const messageKey = config.fields?.message ?? 'msg';
-  const levels = config.levels;
-
-  // Resolve the custom entries into a source-field -> { display, show } lookup, so a property can
-  // be matched by the name it actually has in the log.
-  const bySource = new Map<string, { display: string; show: boolean }>();
+function resolveConfig(config: FormatterConfig): {
+  levelKey: string;
+  messageKey: string;
+  levels: Record<string, string> | undefined;
+  bySource: Map<string, CustomEntry>;
+} {
+  const bySource = new Map<string, CustomEntry>();
   for (const [display, cfg] of Object.entries(config.fields?.custom ?? {})) {
     const source = typeof cfg === 'string' ? cfg : (cfg.source ?? display);
     const show = typeof cfg === 'string' ? true : (cfg.show ?? true);
     bySource.set(source, { display, show });
   }
+  return {
+    levelKey: config.fields?.level ?? 'level',
+    messageKey: config.fields?.message ?? 'msg',
+    levels: config.levels,
+    bySource,
+  };
+}
+
+/**
+ * **For structured (JSON) logs only.** Builds a formatter for a process that logs one JSON object
+ * per line — Go `log/slog`, pino, bunyan, winston, and anything else emitting JSON — and configures
+ * *how that JSON is displayed*. It cannot reshape plain-text output: every line it doesn't
+ * recognize as a JSON log is returned untouched, so configuring it for a process that logs prose
+ * does nothing at all. To transform arbitrary text output, write `logs.formatter` by hand — it's a
+ * plain `(line: string) => string` over the raw line and has no JSON assumption.
+ *
+ * A recognized log renders as a `[LEVEL] message` header followed by its other properties, each
+ * indented on its own line. Passed through unchanged: non-JSON lines, JSON that isn't an object,
+ * and objects with no recognizable level/message under the configured keys.
+ *
+ * See {@link FormatterConfigInput} for the config — an object, or a callback given the parsed log.
+ */
+export function createFormatter(config: FormatterConfigInput = {}): (line: string) => string {
+  const configFn = typeof config === 'function' ? config : null;
+  const staticResolved = typeof config === 'function' ? null : resolveConfig(config);
 
   return (line: string): string => {
     let parsed: unknown;
@@ -184,6 +265,11 @@ export function createFormatter(config: FormatterConfig = {}): (line: string) =>
     }
 
     const obj = parsed as Record<string, unknown>;
+    // A callback config decides *which* keys hold the level and message, so it has to run before
+    // the check below can be applied — it therefore sees every JSON-object line, including ones
+    // that then pass through as unrecognized.
+    const { levelKey, messageKey, levels, bySource } = staticResolved ?? resolveConfig(configFn!(obj)); // prettier-ignore
+
     const rawLevel = obj[levelKey];
     const message = obj[messageKey];
     if (rawLevel === undefined && message === undefined) {
@@ -191,9 +277,12 @@ export function createFormatter(config: FormatterConfig = {}): (line: string) =>
     }
 
     const token = levelToken(rawLevel, levels);
-    const head = [token, message === undefined ? undefined : renderValue(message)]
-      .filter((v) => v !== undefined)
-      .join(' ');
+    // A multi-line message keeps the property indent, so it reads as part of this entry.
+    const renderedMessage =
+      message === undefined
+        ? undefined
+        : indentContinuationLines(renderValue(message), PROPERTY_INDENT.length);
+    const head = [token, renderedMessage].filter((v) => v !== undefined).join(' ');
     const out = [head];
     for (const [key, value] of Object.entries(obj)) {
       if (key === levelKey || key === messageKey) {
@@ -204,7 +293,11 @@ export function createFormatter(config: FormatterConfig = {}): (line: string) =>
         continue;
       } // hidden
       const name = custom ? custom.display : key;
-      out.push(`  ${PROPERTY_KEY_COLOR(`${name}:`)} ${renderValue(value)}`);
+      // Continuation lines line up under the value, past the `  name: ` gutter — measured on the
+      // plain name, since the printed one carries color codes.
+      const gutter = PROPERTY_INDENT.length + `${name}: `.length;
+      const rendered = indentContinuationLines(renderValue(value), gutter);
+      out.push(`${PROPERTY_INDENT}${PROPERTY_KEY_COLOR(`${name}:`)} ${rendered}`);
     }
     return out.join('\n');
   };
@@ -218,31 +311,66 @@ export function createFormatter(config: FormatterConfig = {}): (line: string) =>
 export const defaultFormatter = createFormatter();
 
 /**
- * The `logging` helper namespace. `logging.formatter(config)` is the base factory (and the default
- * applied to every package); the ecosystem helpers are the same formatter with their defaults
- * changed — `logging.nodejs.pino.formatter()` maps pino's numeric levels, and
- * `logging.nodejs.winston.formatter()` uses winston's `message` key and level names. Each level map
- * is exposed too (`logging.nodejs.pino.levels`, `logging.nodejs.winston.levels`).
+ * Apply an ecosystem helper's defaults to whichever config form the caller passed — folding them
+ * into the callback's *result* when it's a callback, so `logging.nodejs.pino.formatter((log) => …)`
+ * keeps pino's level map without the caller restating it.
+ */
+const withDefaults = (
+  config: FormatterConfigInput,
+  defaults: (config: FormatterConfig) => FormatterConfig,
+): FormatterConfigInput =>
+  typeof config === 'function' ? (log) => defaults(config(log)) : defaults(config);
+
+/**
+ * Helpers for displaying **structured (JSON) logs** — a process that writes one JSON object per
+ * line. Every helper here builds the same formatter with different defaults for a given ecosystem,
+ * and all of them share the same limitation: they configure how *recognized JSON logs* are
+ * rendered, and pass every other line through untouched. None of them can reshape plain-text
+ * output — for that, write `logs.formatter` yourself as a plain `(line: string) => string`.
  *
  * A plain object, not a TypeScript `namespace`: namespaces are legacy for module code and, when
  * they hold runtime values, emit non-erasable syntax that Node's `.ts` type-stripping rejects.
  */
 export const logging = {
+  /**
+   * **For structured (JSON) logs only.** The base factory, and the exact formatter devtooie already
+   * applies to every package — so you only need it to *change* something (hide a field, rename one,
+   * map non-standard levels). Suits any JSON logger whose level/message keys are `level`/`msg`
+   * (Go `log/slog`, pino); see {@link logging.nodejs} for ecosystem presets.
+   *
+   * Configuring this for a process that logs plain text does nothing — unrecognized lines pass
+   * through unchanged. Use `logs.formatter` directly to transform arbitrary text output.
+   */
   formatter: createFormatter,
+  /** Presets for Node logging libraries — same structured-log formatter, ecosystem defaults. */
   nodejs: {
     pino: {
+      /** pino/bunyan's numeric levels mapped to names (`10=TRACE … 60=FATAL`). */
       levels: pinoLevels,
-      formatter: (config: FormatterConfig = {}) =>
-        createFormatter({ ...config, levels: config.levels ?? pinoLevels }),
+      /**
+       * **For structured (JSON) logs only.** {@link logging.formatter} preset for pino/bunyan: maps
+       * their **numeric** levels, which devtooie won't guess on its own. Takes the same config
+       * (object or callback) and keeps this default unless you override `levels`.
+       */
+      formatter: (config: FormatterConfigInput = {}) =>
+        createFormatter(withDefaults(config, (c) => ({ ...c, levels: c.levels ?? pinoLevels }))),
     },
     winston: {
+      /** winston's npm level names mapped to devtooie's canonical levels. */
       levels: winstonLevels,
-      formatter: (config: FormatterConfig = {}) =>
-        createFormatter({
-          ...config,
-          fields: { message: 'message', ...config.fields },
-          levels: config.levels ?? winstonLevels,
-        }),
+      /**
+       * **For structured (JSON) logs only.** {@link logging.formatter} preset for winston: reads the
+       * message from `message` (not `msg`) and maps winston's level names. Takes the same config
+       * (object or callback) and keeps these defaults unless you override them.
+       */
+      formatter: (config: FormatterConfigInput = {}) =>
+        createFormatter(
+          withDefaults(config, (c) => ({
+            ...c,
+            fields: { message: 'message', ...c.fields },
+            levels: c.levels ?? winstonLevels,
+          })),
+        ),
     },
   },
 };

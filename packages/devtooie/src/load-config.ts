@@ -17,6 +17,34 @@ export const CONFIG_NAMES = [
   'devtooie.config.mjs',
 ];
 
+/**
+ * First Node release that can `import()` a TypeScript file without a flag — type-stripping was
+ * unflagged in 22.18.0 (and, on the 23.x line, in 23.6.0). Below this a `devtooie.config.ts`
+ * can't be loaded at all, which is why it's also the `engines.node` floor in package.json.
+ */
+export const MIN_TS_CONFIG_NODE = '22.18.0';
+
+/**
+ * Renders a config file that exists but wouldn't load. Deliberately distinct from "no config
+ * found": the file is right there, so what's worth printing is *why* — a syntax error, a config
+ * that throws, or a Node too old to import TypeScript at all. That last case only surfaces as a
+ * bare `ERR_UNKNOWN_FILE_EXTENSION` that never mentions Node's version, so name the requirement.
+ */
+export function formatConfigLoadFailure(
+  configPath: string,
+  err: unknown,
+  nodeVersion: string = process.version,
+): string {
+  const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
+  const lines = [`Failed to load ${configPath}:`, detail];
+  if ((err as { code?: unknown } | null | undefined)?.code === 'ERR_UNKNOWN_FILE_EXTENSION') {
+    lines.push(
+      `\nNode ${nodeVersion} can't import TypeScript — devtooie needs Node >=${MIN_TS_CONFIG_NODE}.`,
+    );
+  }
+  return lines.join('\n');
+}
+
 export function findConfigPath(cwd: string = process.cwd()): string | null {
   for (const name of CONFIG_NAMES) {
     const p = path.join(cwd, name);

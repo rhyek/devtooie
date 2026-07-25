@@ -19,24 +19,29 @@ import (
 // `logs.formatter` (see devtooie.config.ts) reshapes these JSON lines into a readable
 // form for the TUI; in deployment the same JSON is what your log pipeline ingests.
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	})))
-
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "3002"
 	}
 
-	slog.Info("worker started", "port", port)
+	// A base logger whose attributes ride along on every line — the idiomatic Go way to attach
+	// common context. `port` is genuinely useful on the startup lines, but it repeats on every
+	// heartbeat below; devtooie.config.ts hides it there with a per-entry formatter callback.
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	}))
+	slog.SetDefault(logger.With("port", port))
+
+	slog.Info("worker started")
 
 	go func() {
 		ticks := 0
 		// devtooie stamps each line with its own timestamp, so the worker doesn't emit one —
-		// it just logs a structured event with a couple of attributes.
+		// it just logs a structured event with a couple of attributes. `context` tags the event
+		// kind, which is what the formatter callback branches on.
 		for range time.Tick(5 * time.Second) {
 			ticks++
-			slog.Info("tick", "count", ticks)
+			slog.Info("tick", "context", "heartbeat", "count", ticks)
 		}
 	}()
 

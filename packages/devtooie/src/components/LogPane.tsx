@@ -13,12 +13,15 @@ import { computeWindow, windowRows } from '../log-window.js';
 import type { MouseReport } from '../mouse.js';
 import type { ProcessManager } from '../process-manager.js';
 import {
+  classifyLine,
   highlightParts,
   isEmptySelection,
   rowSpan,
   rowWidth,
-  selectionText,
+  selectionCopyText,
+  valueRun,
   viewportRowIndex,
+  type RowMeta,
   type Selection,
   type Span,
 } from '../selection.js';
@@ -33,8 +36,11 @@ import {
 } from '../scroll.js';
 
 export type LogViewport = {
-  /** Exactly the rendered rows that fit the pane — never more than `height`. */
-  rows: string[];
+  /**
+   * Exactly the rendered rows that fit the pane — never more than `height`. Each carries the
+   * columns where its content and its value begin, so selection can scope a copy to one value.
+   */
+  rows: RowMeta[];
   /** Flat-row index of the first rendered row (row 0 = oldest row of the whole buffer). */
   firstVisibleFlatRow: number;
   /** Whether the view is pinned to the newest output. */
@@ -76,7 +82,18 @@ export function useLogViewport(
     const lines = manager.getVisibleLines();
     const rowCounts = lines.map((line) => manager.countRows(line, width));
     const win = computeWindow(rowCounts, height, scroll.offset);
-    const rendered = windowRows(lines, win, (line) => manager.wrapLine(line, width));
+    const rendered = windowRows<(typeof lines)[number], RowMeta>(lines, win, (line, lineIndex) => {
+      // Where the value starts is a property of the *line*; where content starts is a property of
+      // each rendered row (a wrapped row begins past the hanging indent).
+      const { kind, valueStart } = classifyLine(line.text);
+      return manager.wrapLineRows(line, width).map((row, r) => ({
+        text: row.text,
+        contentStart: row.contentStart,
+        valueStart: r === 0 ? row.contentStart + valueStart : row.contentStart,
+        lineIndex,
+        kind,
+      }));
+    });
     // First on-screen flat row = bottom edge (totalRows - clamped offset) minus
     // however many rows we actually rendered. Stable under appends, which is what
     // lets a content-anchored selection ride along as new output arrives.
@@ -167,7 +184,7 @@ const SELECTION_LINGER_MS = 5000;
  * bump forces the re-render that repaints the highlight.
  */
 export function useDragSelection(opts: {
-  rows: readonly string[];
+  rows: readonly RowMeta[];
   firstVisibleFlatRow: number;
   topHeight: number;
   paneHeight: number;
@@ -232,8 +249,9 @@ export function useDragSelection(opts: {
     }
     const rawIndex = viewportRowIndex(report.row, topHeight, paneHeight, rows.length);
     const index = Math.max(0, Math.min(rawIndex, rows.length - 1));
-    const col = Math.max(0, Math.min(report.col - 1, rowWidth(rows[index]!)));
+    const col = Math.max(0, Math.min(report.col - 1, rowWidth(rows[index]!.text)));
     const point = { flatRow: firstVisibleFlatRow + index, col };
+    const metaAt = (flatRow: number): RowMeta | null => rows[flatRow - firstVisibleFlatRow] ?? null;
 
     if (report.type === 'down') {
       // Only clicks inside the pane start a selection — a press on the top
@@ -246,7 +264,20 @@ export function useDragSelection(opts: {
       // callback can't wipe the new selection) and drops the previous flash.
       cancelLinger();
       setCopiedNotice(null);
-      selectionRef.current = { anchor: point, focus: point };
+      // Pressing at or past the value scopes the copy to that value; pressing on the gutter or
+      // the key is the escape hatch back to copying the rows exactly as shown.
+      const scoped = col >= rows[index]!.valueStart;
+      selectionRef.current = {
+        anchor: point,
+        focus: point,
+        mode: scoped ? 'value' : 'wysiwyg',
+        run: scoped
+          ? (() => {
+              const run = valueRun(index, (r) => rows[r] ?? null, rows.length);
+              return { start: firstVisibleFlatRow + run.start, end: firstVisibleFlatRow + run.end };
+            })()
+          : null,
+      };
       draggingRef.current = true;
       pendingTextRef.current = null;
       forceRender();
@@ -257,7 +288,7 @@ export function useDragSelection(opts: {
       return;
     }
 
-    selectionRef.current = { anchor: selectionRef.current.anchor, focus: point };
+    selectionRef.current = { ...selectionRef.current, focus: point };
 
     if (report.type === 'up') {
       draggingRef.current = false;
@@ -267,10 +298,7 @@ export function useDragSelection(opts: {
         pendingTextRef.current = null;
       } else {
         // Capture the text now (fully on screen), then copy it immediately.
-        const text = selectionText(
-          selection,
-          (flatRow) => rows[flatRow - firstVisibleFlatRow] ?? '',
-        );
+        const text = selectionCopyText(selection, metaAt);
         pendingTextRef.current = text.length > 0 ? text : null;
         if (pendingTextRef.current) {
           const chars = pendingTextRef.current.length;
@@ -292,7 +320,9 @@ export function useDragSelection(opts: {
 
   const selection = selectionRef.current;
   const highlights = rows.map((row, i) =>
-    selection ? rowSpan(selection, firstVisibleFlatRow + i, rowWidth(row)) : null,
+    selection
+      ? rowSpan(selection, firstVisibleFlatRow + i, rowWidth(row.text), row.valueStart)
+      : null,
   );
   return { highlights, copiedNotice, onMouse, flashCopy, clear };
 }
@@ -319,7 +349,7 @@ export function LogPane({
   rows,
   highlights,
 }: {
-  rows: readonly string[];
+  rows: readonly RowMeta[];
   highlights?: readonly (Span | null)[];
 }) {
   return (
@@ -328,10 +358,10 @@ export function LogPane({
         const span = highlights?.[i] ?? null;
         // The whole window re-renders together, so positional keys are fine here.
         return span ? (
-          <HighlightedRow key={i} row={row} span={span} />
+          <HighlightedRow key={i} row={row.text} span={span} />
         ) : (
           <Text key={i} wrap="truncate-end">
-            {row}
+            {row.text}
           </Text>
         );
       })}

@@ -10,11 +10,12 @@ export interface ControlManager {
   rebuild(pkg: string): boolean;
   quit(): void;
   /**
-   * Emit a `[dt:control]` log line noting a mutating command arrived over the
-   * control API (as opposed to the same action triggered by a UI hotkey).
-   * `pkg`, when given, scopes the line to that package for output filtering.
+   * Emit a `[dt:control]` log line noting a mutating command arrived over the control API (as
+   * opposed to the same action triggered by a UI hotkey). `attrs` carries the variables the
+   * command was called with (e.g. `{ package: 'web' }`), rendered as indented properties; an
+   * `attrs.package` naming a known package also scopes the line to it for output filtering.
    */
-  logControl(message: string, pkg?: string): void;
+  logControl(command: string, attrs?: Record<string, unknown>): void;
 }
 
 export async function startCommandServer(opts: {
@@ -37,6 +38,13 @@ export async function startCommandServer(opts: {
    * original (e.g. hard-exit) handler it was constructed with.
    */
   setOnQuit(fn: () => void): void;
+  /**
+   * Send `200 { ok: true }` to any `POST /command/quit` request currently being
+   * held open (see the handler), releasing a blocked caller. The graceful
+   * shutdown path calls this once packages are torn down; a no-op when nothing
+   * is waiting (e.g. a Ctrl+C quit, which never went through the HTTP handler).
+   */
+  ackQuit(): void;
   close(): Promise<void>;
   port: number;
 }> {
@@ -45,6 +53,20 @@ export async function startCommandServer(opts: {
   const send = (res: http.ServerResponse, code: number, body: unknown) => {
     res.writeHead(code, { 'content-type': 'application/json' });
     res.end(JSON.stringify(body));
+  };
+  // `POST /command/quit` responses held open until the graceful shutdown path
+  // acks them (see the handler and ackQuit). Usually 0 or 1 entry.
+  let pendingQuits: http.ServerResponse[] = [];
+  const flushQuits = () => {
+    const held = pendingQuits;
+    pendingQuits = [];
+    for (const res of held) {
+      try {
+        send(res, 200, { ok: true });
+      } catch {
+        /* socket already gone */
+      }
+    }
   };
 
   const server = http.createServer((req, res) => {
@@ -66,7 +88,15 @@ export async function startCommandServer(opts: {
     }
     if (pathname === '/command/quit') {
       manager?.logControl('quit');
-      send(res, 200, { ok: true });
+      // Blocking quit: hold the response open and let the graceful shutdown path
+      // ack it (via ackQuit) once packages are torn down and their ports freed —
+      // so a caller (notably a newer session handing off) knows the ports are
+      // clear before it starts. `Connection: close` lets close() reclaim the
+      // socket the moment we finally respond. A shutdown that hard-exits before
+      // acking (e.g. no manager attached yet) just drops the held request; the
+      // caller falls back to polling this pid.
+      res.setHeader('Connection', 'close');
+      pendingQuits.push(res);
       return void onQuit();
     }
     if (pathname === '/') {
@@ -78,7 +108,7 @@ export async function startCommandServer(opts: {
     }
 
     if (parts[0] === 'command' && (parts[1] === 'restart' || parts[1] === 'rebuild') && parts[2]) {
-      manager.logControl(`${parts[1]} ${parts[2]}`, parts[2]);
+      manager.logControl(parts[1], { package: parts[2] });
       const ok = parts[1] === 'restart' ? manager.restart(parts[2]) : manager.rebuild(parts[2]);
       return send(res, ok ? 202 : 404, { ok });
     }
@@ -98,7 +128,13 @@ export async function startCommandServer(opts: {
     setOnQuit: (fn) => {
       onQuit = fn;
     },
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    ackQuit: flushQuits,
+    close: () => {
+      // Answer any still-held quit request before closing, so server.close()
+      // never blocks waiting on an un-responded socket.
+      flushQuits();
+      return new Promise<void>((resolve) => server.close(() => resolve()));
+    },
     port: actualPort,
   };
 }

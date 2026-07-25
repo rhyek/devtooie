@@ -39,11 +39,28 @@ export default defineConfig({
       healthcheck: 'http://localhost:$port/health',
       // devtooie applies a default structured-log formatter to every package (non-JSON passes
       // through, JSON is pretty-printed as `[LEVEL] message`), so the worker's `log/slog` output is
-      // already formatted with no config. Here we override only to hide slog's own `time` field,
-      // since devtooie stamps its own timestamp — `logging.formatter` is that same default, with a
-      // `custom` tweak. (Node services would use `logging.nodejs.pino.formatter()` etc.)
+      // already formatted with no config. `logging.formatter` is that same default, configured.
+      // (Node services would use `logging.nodejs.pino.formatter()` etc.)
+      //
+      // It takes either shape. A plain object is enough when the rules are the same for every
+      // line — e.g. just hiding slog's own `time`, since devtooie stamps its own timestamp:
+      //
+      //   formatter: logging.formatter({ fields: { custom: { time: { show: false } } } }),
+      //
+      // Pass a callback instead and it returns the config for the entry being rendered. It
+      // receives the *parsed* log — devtooie does the parsing, so there's nothing to JSON.parse
+      // and no non-JSON line to guard against. Here the worker attaches `port` to every line via
+      // its base logger (see main.go), which is worth seeing on the startup lines but is pure
+      // noise on the heartbeat that repeats every 5s:
       logs: {
-        formatter: logging.formatter({ fields: { custom: { time: { show: false } } } }),
+        formatter: logging.formatter((log) => ({
+          fields: {
+            custom: {
+              time: { show: false }, // hidden on every entry
+              ...(log.context === 'heartbeat' ? { port: { show: false } } : {}),
+            },
+          },
+        })),
       },
     },
     {

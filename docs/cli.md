@@ -80,8 +80,9 @@ There are two ways to say **what** to run:
 
 The command's exit code is propagated, and `devtooie cmd` exits as soon as the command does.
 Output is streamed to your terminal **and** teed to a fresh timestamped logfile under
-`node_modules/.devtooie/logs/` (or `--log-dir`), the same place a `--plain` session logs — the
-path is printed on start.
+`node_modules/.devtooie/logs/` (or `--log-dir`), the same place a `--plain` session logs.
+Nothing else is printed — the terminal shows only the command's own output, so `devtooie cmd`
+composes in a pipeline.
 
 ## `devtooie logs`
 

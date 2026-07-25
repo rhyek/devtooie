@@ -52,8 +52,8 @@ loading, healthchecks, and `waitFor` readiness ordering.
 
 ## Requirements
 
-- **Node 20+.** A `.ts` config additionally needs **Node ≥23.6** (native
-  type-stripping); on older Node, use a compiled `devtooie.config.js`/`.mjs`.
+- **Node ≥22.18.** `devtooie.config.ts` is imported directly, so it needs Node's native
+  TypeScript type-stripping — unflagged in 22.18 (and, on the 23.x line, 23.6).
 - **Unix only** (macOS/Linux). Windows is not supported.
 - **pnpm.** Node packages are run with `pnpm run <script>`, and packages that depend
   on each other are resolved through pnpm workspace links (`workspace:*`). (Makefile
@@ -206,8 +206,9 @@ TypeScript project references, and typed package names — lives in
 
 devtooie **auto-formats structured (JSON) logs** — from Go `slog`, pino, winston, … — into a
 colored `[LEVEL] message` for local dev, with no `NODE_ENV` branching and nothing to configure. You
-can add on-screen timestamps, and override or customize the formatter per package. See
-**[docs/logging.md](docs/logging.md)**.
+can add on-screen timestamps, and customize that JSON rendering per package with the `logging`
+helpers — or, for output that **isn't** JSON, write a `logs.formatter` over the raw line yourself.
+See **[docs/logging.md](docs/logging.md)**.
 
 Every session is also teed to a timestamped logfile. Read the current one from another terminal
 with **`devtooie logs`** (or `devtooie logs -f` to follow it live) — see

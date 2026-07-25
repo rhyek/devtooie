@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import path from 'node:path';
-import chalk from 'chalk';
 import {
   Box,
   type DOMElement,
@@ -17,6 +16,7 @@ import { watchGitBranch } from '../git-watch.js';
 import { getGitBranch } from '../lib.js';
 import { MOUSE_DISABLE, MOUSE_ENABLE, isMouseSequence, parseMouseEvents } from '../mouse.js';
 import { ProcessManager } from '../process-manager.js';
+import { SHUTDOWN_TIMEOUT_MS } from '../shutdown-timing.js';
 import type { RunnerArgs } from '../runners/types.js';
 import { HotkeyHints, type HotkeyHintItem } from './HotkeyHints.js';
 import { LogPane, useDragSelection, useLogViewport } from './LogPane.js';
@@ -76,15 +76,11 @@ const STATUS_COLORS: Record<PackageStatus, string> = {
   waiting: 'cyan',
 };
 
-/**
- * Upper bound on how long a graceful shutdown may take before this session
- * exits anyway, so a second Ctrl+C (or an impatient caller waiting on
- * `/command/quit`) never has to wait indefinitely for a stuck child process.
- */
-const SHUTDOWN_TIMEOUT_MS = 10_000;
-
 /** Rendered rows scrolled per mouse-wheel notch. */
 const WHEEL_STEP = 3;
+
+/** Accent color shared by the footer's URL links and the clickable ⧉ copy glyph. */
+const LINK_COLOR = '#58a6ff';
 
 /**
  * Absolute on-screen rect of an Ink element, in 1-based SGR mouse coordinates.
@@ -176,7 +172,7 @@ export function LinksColumn({
     <Box flexDirection="column" alignItems="flex-end" flexShrink={0}>
       {topLevelUrls.map((line, i) => (
         // A brighter blue than Ink's default, which is too dark to read on this background.
-        <Text key={`top-${i}`} wrap="truncate" color="#58a6ff">
+        <Text key={`top-${i}`} wrap="truncate" color={LINK_COLOR}>
           {renderLineText(line)}
         </Text>
       ))}
@@ -185,7 +181,7 @@ export function LinksColumn({
         <React.Fragment key={group.name}>
           <Text bold={group.selected}>{group.name}</Text>
           {group.urls.map((line, i) => (
-            <Text key={i} wrap="truncate" color="#58a6ff">
+            <Text key={i} wrap="truncate" color={LINK_COLOR}>
               {renderLineText(line)}
             </Text>
           ))}
@@ -485,6 +481,9 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
       manager.shutdownAll(),
       new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_TIMEOUT_MS)),
     ]);
+    // Packages are down and their ports freed — ack any blocking `/command/quit`
+    // now (e.g. a newer session handing off), before we close the server below.
+    server.ackQuit();
     await server.close();
     manager.dispose();
     // Ink's teardown drives the exit from here: `exit()` unmounts, restores the
@@ -603,7 +602,7 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
   useEffect(() => {
     const stopWatching = watchGitBranch({
       onChange: (from, to) => {
-        manager.logSystem(chalk.yellow(`git branch changed (${from} -> ${to}), shutting down`));
+        manager.systemLog.warn(`git branch changed (${from} -> ${to}), shutting down`);
         void shutdown();
       },
     });
@@ -998,13 +997,18 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
             <Box marginTop={1}>{packageStatusDots}</Box>
             {isNormal && <HotkeyHints hints={packageHints} />}
             <Box flexDirection="column" marginTop={1}>
-              {gitBranch && (
+              <Box columnGap={2}>
                 <Text>
-                  <Text color="cyan">git:(</Text>
-                  <Text color="green">{gitBranch}</Text>
-                  <Text color="cyan">)</Text>
+                  <Text color="cyan">cwd: </Text>
+                  <Text color="green">{path.basename(process.cwd())}</Text>
                 </Text>
-              )}
+                {gitBranch && (
+                  <Text>
+                    <Text color="cyan">git: </Text>
+                    <Text color="green">{gitBranch}</Text>
+                  </Text>
+                )}
+              </Box>
               {logFilePath && (
                 <Box columnGap={2}>
                   <Text dimColor>
@@ -1012,7 +1016,7 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
                   </Text>
                   {/* Click to copy the absolute logfile path (hit-tested via copyIconRef). */}
                   <Box ref={copyIconRef}>
-                    <Text color="magenta">⧉</Text>
+                    <Text color={LINK_COLOR}>⧉</Text>
                   </Box>
                   {isNormal && <HotkeyHints hints={[{ key: 't', label: 'rotate' }]} />}
                 </Box>
