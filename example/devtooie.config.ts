@@ -9,6 +9,13 @@ export default defineConfig({
     // link + package `exports` wire it entirely, and the backend's `node --watch` picks up edits to
     // its source. Contrast `isomorphic` below, which IS a devtooie build-dep — compiled to `dist`
     // and discovered via a tsconfig project reference.
+    //
+    // Note the backend's dev script pairs `--watch` with explicit `--watch-path` entries (its own
+    // `src`, plus `../db/src` and `../isomorphic/dist`). A bare `node --watch` registers a
+    // *recursive* watch on the directory of every file the process loads — `node_modules`
+    // included, with no filter — so a service with a real dependency tree ends up holding
+    // thousands of watch roots it never wanted. Naming the paths keeps every restart that matters
+    // and drops the dependency-tree churn.
     {
       name: 'isomorphic',
       relativeDir: 'packages/isomorphic',

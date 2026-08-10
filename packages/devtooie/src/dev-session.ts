@@ -1,9 +1,10 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execa } from 'execa';
 import { getRegisteredPackages } from './config.js';
 import { createControlClient, probeInstance } from './control-client.js';
-import { decideControlPort, isPortListening } from './running.js';
+import { decideControlPort, isPortListening, readRunning, type RunningState } from './running.js';
 import { HANDOFF_FORCE_KILL_MS } from './shutdown-timing.js';
 
 export function parseLsofPids(out: string): number[] {
@@ -74,6 +75,134 @@ export async function findListenerPids(ports: number[]): Promise<number[]> {
     pids.push(...parseSsPids(stdout));
   }
   return [...new Set(pids)];
+}
+
+/** The path out of `lsof -d cwd -Fn` output (the `n`-prefixed field), or null. */
+export function parseLsofCwd(out: string): string | null {
+  const line = out.split('\n').find((l) => l.startsWith('n'));
+  return line ? line.slice(1) : null;
+}
+
+/** `true` when `target` is `root` itself or sits underneath it. */
+export function isInsideWorkspace(root: string, target: string): boolean {
+  const rel = path.relative(root, target);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+/** Working directory of a live process, or null if it's gone / can't be inspected. */
+export async function processCwd(pid: number): Promise<string | null> {
+  if (os.platform() === 'linux') {
+    try {
+      return await fs.promises.readlink(`/proc/${String(pid)}/cwd`);
+    } catch {
+      return null;
+    }
+  }
+  const { stdout, exitCode } = await execa('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], {
+    reject: false,
+  });
+  return exitCode === 0 ? parseLsofCwd(stdout) : null;
+}
+
+/** Splits pids into those running inside `root` and those belonging to something else. */
+export async function partitionByWorkspace(
+  pids: number[],
+  root: string,
+): Promise<{ ours: number[]; foreign: number[] }> {
+  const ours: number[] = [];
+  const foreign: number[] = [];
+  for (const pid of pids) {
+    const cwd = await processCwd(pid);
+    // Unknown cwd (permission denied, exited mid-check) counts as foreign: killing something we
+    // can't identify is exactly the mistake this guard exists to prevent.
+    if (cwd && isInsideWorkspace(root, cwd)) {
+      ours.push(pid);
+    } else {
+      foreign.push(pid);
+    }
+  }
+  return { ours, foreign };
+}
+
+/** Parses `ps -Ao pid=,pgid=` into `{ pid, pgid }` pairs. */
+export function parsePsGroups(out: string): { pid: number; pgid: number }[] {
+  return out
+    .trim()
+    .split('\n')
+    .map((l) => l.trim().split(/\s+/).map(Number))
+    .filter(([pid, pgid]) => Number.isInteger(pid) && Number.isInteger(pgid))
+    .map(([pid, pgid]) => ({ pid: pid!, pgid: pgid! }));
+}
+
+/** Live members of each process group, from `ps` output. */
+export function groupMembers(procs: { pid: number; pgid: number }[]): Map<number, number[]> {
+  const byGroup = new Map<number, number[]>();
+  for (const { pid, pgid } of procs) {
+    const members = byGroup.get(pgid);
+    if (members) {
+      members.push(pid);
+    } else {
+      byGroup.set(pgid, [pid]);
+    }
+  }
+  return byGroup;
+}
+
+/**
+ * Kills package processes a previous session recorded in `running.json` but never cleaned up —
+ * the SIGKILL case, where no shutdown path ran at all.
+ *
+ * Records are matched as **process groups**, not as single pids, and that distinction is the whole
+ * point. Packages are spawned `detached: true`, so each recorded pid is also its group id, and the
+ * group outlives its leader: a dev command that wraps the real worker (`env-cmd -- tsx watch …`, a
+ * package manager, any `foo -- bar` shim) exits as soon as it has spawned, leaving the worker
+ * running in that same group, reparented to PID 1. Checking whether the recorded pid is still alive
+ * would skip exactly those — the ones that bind no port and so can't be found by a port sweep
+ * either, which is how a `tsc --watch` / codegen generation survives every subsequent session.
+ *
+ * Before signalling, at least one live member of the group must still be running in the directory
+ * the record was written with. A group id can only be created by a process whose pid equals it, so
+ * combined with that check a recycled number can't take an unrelated process down with it. Groups
+ * containing this process are never touched.
+ */
+export async function sweepRecordedOrphans(
+  previous: RunningState | null,
+  onStatus: (msg: string) => void = () => {},
+): Promise<number[]> {
+  const records = previous?.children ?? [];
+  if (!records.length) {
+    return [];
+  }
+  const { stdout } = await execa('ps', ['-Ao', 'pid=,pgid='], { reject: false });
+  const byGroup = groupMembers(parsePsGroups(stdout));
+
+  const victims: number[] = [];
+  for (const { pid, cwd } of records) {
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) {
+      continue;
+    }
+    const members = byGroup.get(pid) ?? [];
+    // Never signal a group we're part of, whatever the record says.
+    if (!members.length || members.includes(process.pid)) {
+      continue;
+    }
+    let confirmed = false;
+    for (const member of members) {
+      if ((await processCwd(member)) === cwd) {
+        confirmed = true;
+        break;
+      }
+    }
+    if (confirmed) {
+      victims.push(...members);
+    }
+  }
+
+  if (victims.length) {
+    onStatus(`cleaning up ${String(victims.length)} orphaned process(es) from a previous session`);
+    await killTrees(victims);
+  }
+  return victims;
 }
 
 export async function killTrees(roots: number[]): Promise<void> {
@@ -158,6 +287,9 @@ export async function acquireDevSession(opts: {
   onStatus?: (msg: string) => void;
 }): Promise<number> {
   const onStatus = opts.onStatus ?? (() => {});
+  // Read before `decideControlPort` — it rewrites `running.json` with this session's pid, which
+  // would drop the previous session's child records before we've had a chance to sweep them.
+  const previous = readRunning(process.cwd());
   const port = await decideControlPort({
     cwd: process.cwd(),
     configPath: opts.configPath,
@@ -167,11 +299,24 @@ export async function acquireDevSession(opts: {
     env: { isListening: isPortListening, probe: probeInstance, shutdown: shutdownInstance },
     onStatus,
   });
-  // Sweep orphans off this workspace's package dev ports (Unix-only; needs lsof/ss/ps).
+  // Sweep this workspace's orphans (Unix-only; needs lsof/ss/ps).
   if (os.platform() !== 'win32') {
+    // First the processes a previous session recorded — this is the only sweep that reaches
+    // packages which never bind a port.
+    await sweepRecordedOrphans(previous, onStatus);
+
     onStatus('freeing dev ports');
     const holders = await findListenerPids(collectDevPorts());
-    await killTrees(holders);
+    // Only ever kill a port holder that belongs to *this* workspace. A configured dev port is a
+    // claim on a number, not ownership of it: an unrelated project (or any other program) may
+    // legitimately be listening there, and killing it because we happen to want the port is a
+    // side effect well outside what starting a dev session should do. Say so and let the
+    // package's own startup fail loudly on the bound port instead.
+    const { ours, foreign } = await partitionByWorkspace(holders, path.dirname(opts.configPath));
+    await killTrees(ours);
+    for (const pid of foreign) {
+      onStatus(`dev port held by another program (pid ${String(pid)}) — leaving it alone`);
+    }
   }
   return port;
 }

@@ -34,6 +34,9 @@ import {
   scrollToTop,
   type Scroll,
 } from '../scroll.js';
+import { DEFAULT_TOAST_MS } from '../toasts.js';
+import { trackClick, wordSelectionAt, wordSpanAt, type ClickState } from '../word-select.js';
+import type { Toasts } from './ToastStack.js';
 
 export type LogViewport = {
   /**
@@ -156,18 +159,21 @@ type PointerReport = Extract<MouseReport, { type: 'down' | 'move' | 'up' }>;
 export type DragSelection = {
   /** Per-visible-row highlight spans, aligned to `viewport.rows` (null = no highlight). */
   highlights: (Span | null)[];
-  /** Transient footer flash message (e.g. "copied N chars"), null when idle. */
-  copiedNotice: string | null;
   /** Feed a pointer (press/drag/release) mouse report; maps it and updates the selection. */
   onMouse: (report: PointerReport) => void;
-  /** Copy `text` to the clipboard and flash `label` in the footer, on the same linger timer as a drag-copy. For footer click-to-copy affordances (e.g. the logfile path). */
+  /** Copy `text` to the clipboard and toast `label`, lingering the highlight as a drag-copy does. For footer click-to-copy affordances (e.g. the logfile path). */
   flashCopy: (text: string, label: string) => void;
   /** Drop any current selection (`esc`, filter change, resize, `k` — not scrolling); returns whether one was cleared. */
   clear: () => boolean;
 };
 
-/** How long the highlight and the "copied N chars" flash linger after a copy-on-select, before both clear. */
-const SELECTION_LINGER_MS = 5000;
+/**
+ * How long the highlight lingers after a copy-on-select, before it clears. Kept in
+ * step with {@link DEFAULT_TOAST_MS} so the highlight and the `copied N chars`
+ * toast that explains it still go away together — but they are now two timers, and
+ * dismissing the toast on its own deliberately leaves the highlight up.
+ */
+const SELECTION_LINGER_MS = DEFAULT_TOAST_MS;
 
 /**
  * App-managed drag-to-select over the log viewport. The selection is anchored to
@@ -188,18 +194,31 @@ export function useDragSelection(opts: {
   firstVisibleFlatRow: number;
   topHeight: number;
   paneHeight: number;
+  /**
+   * Where the `copied N chars` message goes; the toast stack owns its lifetime.
+   * Taken as the two callbacks rather than the whole {@link Toasts} object on
+   * purpose — that object is rebuilt every render, and `clear` is a dependency of
+   * an effect in `NativeRunner`, so closing over it would re-run that effect on
+   * every render and drop the selection the moment it was made.
+   */
+  notify: Toasts['notify'];
+  dismiss: Toasts['dismiss'];
 }): DragSelection {
-  const { rows, firstVisibleFlatRow, topHeight, paneHeight } = opts;
+  const { rows, firstVisibleFlatRow, topHeight, paneHeight, notify, dismiss } = opts;
 
   const selectionRef = useRef<Selection | null>(null);
   const draggingRef = useRef(false);
+  // The in-progress click streak, for detecting double- and triple-clicks.
+  const clickRef = useRef<ClickState>(null);
   // The selected text, captured on release (while it's fully on screen) so the
   // copy-on-select grabs exactly that even after the highlight scrolls with logs.
   const pendingTextRef = useRef<string | null>(null);
   const [, forceRender] = useReducer((n: number) => n + 1, 0);
-  const [copiedNotice, setCopiedNotice] = useState<string | null>(null);
-  // A single timer drives the post-copy linger: SELECTION_LINGER_MS after a
-  // copy it drops the highlight and the flash together.
+  // The copy toast this hook currently owns, so a second copy replaces its notice
+  // rather than stacking another one.
+  const copyToastRef = useRef<number | null>(null);
+  // Drives the post-copy highlight linger: SELECTION_LINGER_MS after a copy it
+  // drops the highlight, showing you what was taken in the meantime.
   const lingerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const cancelLinger = useCallback(() => {
@@ -209,38 +228,51 @@ export function useDragSelection(opts: {
     }
   }, []);
 
+  // Retire this hook's copy toast, if it still has one up.
+  const retireCopyToast = useCallback(() => {
+    if (copyToastRef.current !== null) {
+      dismiss(copyToastRef.current);
+      copyToastRef.current = null;
+    }
+  }, [dismiss]);
+
   const clear = useCallback((): boolean => {
     cancelLinger();
     if (selectionRef.current !== null || draggingRef.current) {
       selectionRef.current = null;
       draggingRef.current = false;
       pendingTextRef.current = null;
-      setCopiedNotice(null);
+      retireCopyToast();
       forceRender();
       return true;
     }
     return false;
-  }, [cancelLinger]);
+  }, [cancelLinger, retireCopyToast]);
 
-  // Copy `text` and flash `label` in the footer, keeping any current highlight up —
-  // the linger timer clears the flash (and any selection) after 5s. No deselect here
-  // (unlike an explicit `clear`): the highlight lingering briefly is the point, it
-  // shows you what was copied. Shared by drag-release copy and footer click-to-copy.
+  // Copy `text` and toast `label`, keeping any current highlight up — the linger
+  // timer drops it after 5s. No deselect here (unlike an explicit `clear`): the
+  // highlight lingering briefly is the point, it shows you what was copied. Shared
+  // by drag-release copy and footer click-to-copy.
   const flashCopy = useCallback(
     (text: string, label: string) => {
       copyToClipboard(text);
-      setCopiedNotice(label);
+      // Copies replace rather than stack: three drags in a row are one running
+      // answer to "what's on my clipboard?", not three things to read.
+      retireCopyToast();
+      copyToastRef.current = notify({ message: `✓ ${label} to clipboard` });
       cancelLinger();
       lingerTimer.current = setTimeout(() => {
         lingerTimer.current = null;
         selectionRef.current = null;
         draggingRef.current = false;
         pendingTextRef.current = null;
-        setCopiedNotice(null);
+        // The toast expires on its own clock; only forget the handle, so a later
+        // `clear` can't dismiss a toast some other caller has since raised.
+        copyToastRef.current = null;
         forceRender();
       }, SELECTION_LINGER_MS);
     },
-    [cancelLinger],
+    [cancelLinger, retireCopyToast, notify],
   );
 
   const onMouse = (report: PointerReport) => {
@@ -253,6 +285,11 @@ export function useDragSelection(opts: {
     const point = { flatRow: firstVisibleFlatRow + index, col };
     const metaAt = (flatRow: number): RowMeta | null => rows[flatRow - firstVisibleFlatRow] ?? null;
 
+    // A drag between two presses is not a double-click.
+    if (report.type === 'move') {
+      clickRef.current = null;
+    }
+
     if (report.type === 'down') {
       // Only clicks inside the pane start a selection — a press on the top
       // indicator or the footer (e.g. reaching for a footer link) must not.
@@ -261,22 +298,104 @@ export function useDragSelection(opts: {
         return;
       }
       // A fresh selection cancels any pending post-copy linger (so a stale 5s
-      // callback can't wipe the new selection) and drops the previous flash.
+      // callback can't wipe the new selection) and drops the previous toast.
       cancelLinger();
-      setCopiedNotice(null);
+      retireCopyToast();
+      const meta = rows[index]!;
       // Pressing at or past the value scopes the copy to that value; pressing on the gutter or
       // the key is the escape hatch back to copying the rows exactly as shown.
-      const scoped = col >= rows[index]!.valueStart;
+      const scoped = col >= meta.valueStart;
+      const flatRun = scoped
+        ? (() => {
+            const run = valueRun(index, (r) => rows[r] ?? null, rows.length);
+            return { start: firstVisibleFlatRow + run.start, end: firstVisibleFlatRow + run.end };
+          })()
+        : null;
+
+      // Multi-click is timed here rather than read off the report: the SGR protocol
+      // carries no click count. The cell is tracked in *content* coordinates, so a
+      // wheel scroll between two presses lands on a different row and breaks the
+      // streak, exactly as it should.
+      const { state, count } = trackClick(
+        clickRef.current,
+        { col, row: point.flatRow },
+        Date.now(),
+      );
+      clickRef.current = state;
+
+      if (count >= 2) {
+        const ends: Pick<Selection, 'anchor' | 'focus'> | null =
+          count === 2
+            ? (() => {
+                // Look the word up across every row this logical line wrapped onto, so
+                // a URI or path the terminal broke in half still selects whole.
+                let from = index;
+                while (from > 0 && rows[from - 1]!.lineIndex === meta.lineIndex) {
+                  from--;
+                }
+                let to = index;
+                while (to + 1 < rows.length && rows[to + 1]!.lineIndex === meta.lineIndex) {
+                  to++;
+                }
+                const wrapped = wordSelectionAt(
+                  rows.slice(from, to + 1).map((row, i) => ({
+                    flatRow: firstVisibleFlatRow + from + i,
+                    contentStart: row.contentStart,
+                    text: row.text,
+                  })),
+                  point,
+                );
+                if (wrapped) {
+                  return wrapped;
+                }
+                // Pressed in the gutter (or the hanging indent) — still worth a word,
+                // it's how the `[package]` name and the timestamp select.
+                const span = wordSpanAt(meta.text, col);
+                return (
+                  span && {
+                    anchor: { flatRow: point.flatRow, col: span.start },
+                    focus: { flatRow: point.flatRow, col: span.end },
+                  }
+                );
+              })()
+            : (() => {
+                // Triple-click (and any faster repeat, which just re-runs it): the
+                // whole line — the value it belongs to when the press was inside the
+                // value, else the row exactly as rendered.
+                const lastRow = flatRun ? flatRun.end : point.flatRow;
+                return {
+                  anchor: { flatRow: flatRun ? flatRun.start : point.flatRow, col: 0 },
+                  focus: { flatRow: lastRow, col: rowWidth((metaAt(lastRow) ?? meta).text) },
+                };
+              })();
+        if (ends) {
+          const selection: Selection = {
+            ...ends,
+            mode: scoped ? 'value' : 'wysiwyg',
+            run: flatRun,
+          };
+          // Nothing to wait for — there's no drag to release, so copy right away and
+          // leave `dragging` false, which no-ops the trailing `up`.
+          selectionRef.current = selection;
+          draggingRef.current = false;
+          const text = selectionCopyText(selection, metaAt);
+          pendingTextRef.current = text.length > 0 ? text : null;
+          if (pendingTextRef.current) {
+            const chars = pendingTextRef.current.length;
+            flashCopy(pendingTextRef.current, `copied ${chars} char${chars === 1 ? '' : 's'}`);
+          }
+          forceRender();
+          return;
+        }
+        // Double-clicked whitespace or a bracket — no word to take, so fall through
+        // and behave like a plain press.
+      }
+
       selectionRef.current = {
         anchor: point,
         focus: point,
         mode: scoped ? 'value' : 'wysiwyg',
-        run: scoped
-          ? (() => {
-              const run = valueRun(index, (r) => rows[r] ?? null, rows.length);
-              return { start: firstVisibleFlatRow + run.start, end: firstVisibleFlatRow + run.end };
-            })()
-          : null,
+        run: flatRun,
       };
       draggingRef.current = true;
       pendingTextRef.current = null;
@@ -324,7 +443,7 @@ export function useDragSelection(opts: {
       ? rowSpan(selection, firstVisibleFlatRow + i, rowWidth(row.text), row.valueStart)
       : null,
   );
-  return { highlights, copiedNotice, onMouse, flashCopy, clear };
+  return { highlights, onMouse, flashCopy, clear };
 }
 
 /** One rendered row with a selection highlight: colored pre/post, inverted (plain) middle. */

@@ -963,6 +963,84 @@ describe('ProcessManager logs.formatter', () => {
   }, 10_000);
 });
 
+// A formatter owns the presentation of lines it actually rewrites — not of the ones it
+// hands back untouched. A non-structured stderr line is devtooie's to render, so it must
+// stay red whether the package configures a formatter or falls back to the default. These
+// pin the two paths to the same result: configuring `logs.formatter` must not silently
+// wash the red out of stderr.
+describe('ProcessManager stderr color through a formatter', () => {
+  let errDir: string;
+  let errLog: string;
+  let mgr: ProcessManager | undefined;
+  const originalLevel = chalk.level;
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  beforeAll(() => {
+    chalk.level = 3; // force truecolor so the red is actually emitted
+    errDir = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-pm-err-'));
+    fs.writeFileSync(
+      path.join(errDir, 'package.json'),
+      JSON.stringify({
+        name: 'errfix',
+        version: '1.0.0',
+        scripts: {
+          dev: `node -e "console.error('plain stderr line');setInterval(()=>{},1e9)"`,
+        },
+      }),
+    );
+    errLog = path.join(errDir, 'devlog.txt');
+  });
+  afterAll(() => {
+    chalk.level = originalLevel;
+    disposeManager(mgr);
+    fs.rmSync(errDir, { recursive: true, force: true });
+  });
+
+  function argsFor(formatter?: (line: string) => string): RunnerArgs {
+    const a: AnyPackageConfig = {
+      name: 'errfix',
+      relativeDir: '.',
+      path: errDir,
+      ...(formatter ? { logs: { formatter } } : {}),
+    };
+    return {
+      sortedPackages: [a],
+      selectedSet: new Set([a.name]),
+      buildDepSet: new Set(),
+      rebuildableSet: new Set(),
+      waitForMap: {},
+      healthcheckUrls: {},
+      extraCommandsMap: {},
+      logFile: errLog,
+      cwd: errDir,
+    };
+  }
+
+  /** Run the fixture once and return the buffered (ANSI-carrying) stderr line. */
+  async function bufferedStderrLine(formatter?: (line: string) => string) {
+    mgr = new ProcessManager(argsFor(formatter), { plain: true });
+    mgr.start('errfix');
+    await wait(1500);
+    await mgr.stop('errfix');
+    const line = mgr.getVisibleLines().find((l) => stripAnsi(l.text) === 'plain stderr line');
+    disposeManager(mgr);
+    mgr = undefined;
+    return line;
+  }
+
+  it('reddens a passed-through stderr line under the default formatter', async () => {
+    const line = await bufferedStderrLine();
+    expect(line?.text).toBe(chalk.red('plain stderr line'));
+  }, 10_000);
+
+  it('reddens a passed-through stderr line under an explicitly configured formatter', async () => {
+    // `createFormatter()` is what `logging.formatter(...)` builds — it passes non-JSON
+    // through unchanged, so this line is untouched and must be reddened exactly as above.
+    const line = await bufferedStderrLine(createFormatter());
+    expect(line?.text).toBe(chalk.red('plain stderr line'));
+  }, 10_000);
+});
+
 describe('ProcessManager rebuild (clean + build)', () => {
   let rbDir: string;
   let rbLog: string;

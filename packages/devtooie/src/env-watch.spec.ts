@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -77,5 +78,36 @@ describe('watchEnvFiles', () => {
         debounceMs: 40,
       });
     }).not.toThrow();
+  });
+
+  it('reports a watcher that fails after creation instead of crashing the process', () => {
+    // The OS can fail a watcher asynchronously, long after `fs.watch()` returned — EMFILE on
+    // macOS being the common one, since the FSEvents budget is machine-wide and an unrelated
+    // watch-heavy dev stack can exhaust it. An FSWatcher with no 'error' listener turns that into
+    // an unhandled 'error' event, which kills the whole devtooie process and every package with
+    // it. Stand in a fake watcher so the failure is deterministic.
+    const fake = new EventEmitter() as EventEmitter & { close: () => void };
+    let closed = false;
+    fake.close = () => {
+      closed = true;
+    };
+    const spy = vi.spyOn(fs, 'watch').mockReturnValue(fake as unknown as fs.FSWatcher);
+
+    const errors: { dir: string; message: string }[] = [];
+    try {
+      dispose = watchEnvFiles({
+        targets: [{ dir, filenames: ['.env'], onChange: () => {} }],
+        onError: (d, e) => errors.push({ dir: d, message: e.message }),
+      });
+      // Would throw "Unhandled 'error' event" with no listener attached.
+      expect(() =>
+        fake.emit('error', new Error('EMFILE: too many open files, watch')),
+      ).not.toThrow();
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(errors).toEqual([{ dir, message: 'EMFILE: too many open files, watch' }]);
+    expect(closed).toBe(true);
   });
 });

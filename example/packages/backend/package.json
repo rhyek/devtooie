@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch src/index.ts",
+    "dev": "node --watch $DEVTOOIE_WATCH_PATHS src/index.ts",
     "add-random-todo": "node src/cmd/add-random-todo.ts"
   },
   "dependencies": {

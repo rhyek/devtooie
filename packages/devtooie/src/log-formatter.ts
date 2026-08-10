@@ -7,6 +7,7 @@
 // result into separate log lines and groups the indented ones with the header as continuations.
 
 import chalk from 'chalk';
+import { LOG_LEVEL_COLORS, LOG_PROPERTY_KEY_COLOR } from './colors.js';
 
 /** Long-form config for a custom (renamed and/or hidden) property in {@link FormatterFields.custom}. */
 export interface CustomField {
@@ -117,17 +118,18 @@ const LEVEL_ALIASES: Record<string, string> = {
 // Color applied to the bracketed token of a matched (known) level. Unknown levels are left
 // uncolored. ANSI is kept for the on-screen view and stripped for the log file, like log prefixes.
 const LEVEL_COLOR: Record<string, (s: string) => string> = {
-  TRACE: chalk.gray,
-  DEBUG: chalk.cyan,
-  INFO: chalk.green,
-  WARN: chalk.yellow,
-  ERROR: chalk.red,
-  FATAL: chalk.bold.red,
+  TRACE: chalk[LOG_LEVEL_COLORS.TRACE],
+  DEBUG: chalk[LOG_LEVEL_COLORS.DEBUG],
+  INFO: chalk[LOG_LEVEL_COLORS.INFO],
+  WARN: chalk[LOG_LEVEL_COLORS.WARN],
+  ERROR: chalk[LOG_LEVEL_COLORS.ERROR],
+  // Shares ERROR's red; bold is what tells them apart.
+  FATAL: chalk.bold[LOG_LEVEL_COLORS.FATAL],
 };
 
 // A property line is `  key: value`. The key is muted so it reads as a label and the value (the
 // data) stands out in the normal foreground.
-const PROPERTY_KEY_COLOR = chalk.gray;
+const PROPERTY_KEY_COLOR = chalk[LOG_PROPERTY_KEY_COLOR];
 
 /** Leading indent of every rendered property line, beneath the `[LEVEL] message` header. */
 const PROPERTY_INDENT = '  ';

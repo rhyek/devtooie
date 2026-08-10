@@ -1,5 +1,6 @@
 import { Box, Text } from 'ink';
 import React from 'react';
+import { HOTKEY_KEY_COLOR, HOTKEY_LABEL_COLOR } from '../colors.js';
 
 /**
  * One entry in a hotkey-hints row: a labelled key, a dim group `header` (e.g. `logs:`)
@@ -44,10 +45,10 @@ export function HotkeyHints({ hints, gap = 2 }: HotkeyHintsProps) {
         }
         return (
           <Box key={hint.key} flexShrink={0}>
-            <Text color="white" bold>
+            <Text color={HOTKEY_KEY_COLOR} bold>
               {hint.key}
             </Text>
-            <Text color="#bbbbbb">: {hint.label}</Text>
+            <Text color={HOTKEY_LABEL_COLOR}>: {hint.label}</Text>
           </Box>
         );
       })}

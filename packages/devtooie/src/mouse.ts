@@ -20,6 +20,34 @@ export const MOUSE_ENABLE = `${ESC}[?1002h${ESC}[?1006h`;
 /** Disable SGR mouse reporting. Write on unmount / before exit. */
 export const MOUSE_DISABLE = `${ESC}[?1006l${ESC}[?1002l`;
 
+/**
+ * The three coordinate bytes (button, column, row — each offset by 32) that follow
+ * the `ESC[M` header of a legacy X10 report. They arrive as a separate input event,
+ * since the header is a complete CSI sequence on its own.
+ */
+export const LEGACY_MOUSE_PAYLOAD_LENGTH = 3;
+
+/**
+ * True if `data` is the header of a **legacy X10** mouse report (`ESC[M`, followed
+ * by `LEGACY_MOUSE_PAYLOAD_LENGTH` coordinate bytes).
+ *
+ * We never ask for this encoding — `MOUSE_ENABLE` requests SGR (`?1006h`) — so one
+ * showing up means the terminal dropped our encoding mode behind our back and fell
+ * back to the default. The VS Code integrated terminal does exactly that on "Reload
+ * Window": a reattached terminal is restored from a serialized snapshot that
+ * re-emits the mouse *tracking* mode (`?1002h`) but not the *encoding* mode, so
+ * reports resume in X10 and stop decoding — the wheel and drag-select go dead while
+ * the keyboard keeps working.
+ *
+ * Treat a match as a signal to re-assert `MOUSE_ENABLE`, not as an event to handle:
+ * X10 caps coordinates at column 223 and encodes them as raw bytes that the input
+ * layer's UTF-8 decoding mangles past column 95, so the report itself isn't worth
+ * decoding when re-asserting brings SGR straight back.
+ */
+export function isLegacyMouseSequence(data: string): boolean {
+  return data === `${ESC}[M` || data === '[M';
+}
+
 /** A decoded SGR mouse report. Coordinates are 1-based terminal cells. */
 export type MouseReport =
   | { type: 'down' | 'up' | 'move'; button: number; col: number; row: number }

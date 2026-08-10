@@ -2,6 +2,7 @@ import type { startCommandServer } from '../command-server.js';
 import { watchGitBranch } from '../git-watch.js';
 import { ProcessManager } from '../process-manager.js';
 import { SHUTDOWN_TIMEOUT_MS } from '../shutdown-timing.js';
+import { installShutdownSignals } from '../signals.js';
 import type { RunnerArgs } from './types.js';
 
 /**
@@ -55,8 +56,9 @@ export async function runPlain(
     },
   });
 
-  process.on('SIGINT', () => void shutdown());
-  process.on('SIGTERM', () => void shutdown());
+  // SIGHUP included: a closed terminal must tear the packages down like a Ctrl+C, not leave
+  // them orphaned to PID 1 (see `signals.ts`).
+  installShutdownSignals(() => void shutdown());
 
   // This promise only settles by way of shutdown() calling process.exit()
   // itself, so it simply keeps the runner's returned promise pending for the

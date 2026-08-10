@@ -16,25 +16,30 @@ import {
   getDefaultLogFile,
   getExecArgs,
   getRebuildCommands,
+  getScriptText,
   hasDevScript,
   logTimestamp,
   stripAnsi,
 } from './lib.js';
+import {
+  WATCH_PATHS_ENV,
+  deriveWatchPaths,
+  formatWatchPathFlags,
+  usesUnscopedNodeWatch,
+} from './watch-paths.js';
 import { updateRunning } from './running.js';
 import type { RunnerArgs } from './runners/types.js';
 import { SHUTDOWN_GRACE_MS } from './shutdown-timing.js';
 import { stripTitleSequences } from './terminal-title.js';
+import { DEVTOOIE_LABEL_COLOR, PACKAGE_PALETTE } from './colors.js';
 import { createInternalLogger, formatInternalRecord } from './internal-logger.js';
 import type { Logger } from 'pino';
 
 /**
- * The label color shared by devtooie's own log channels (`[devtooie]`, `[dt:control]`) — a warm
- * gold that reads as the tool's own voice, distinct from the per-package prefix colors. Applied
- * through a function rather than a hoisted `chalk.hex(...)` because chalk bakes the active color
- * level into a style when it's built, and that level isn't settled at module load.
+ * Applied through a function rather than a hoisted `chalk.hex(...)` because chalk bakes the
+ * active color level into a style when it's built, and that level isn't settled at module load.
  */
-const DEVTOOIE_LABEL_HEX = '#d7af5f';
-const devtooieLabel = (text: string) => chalk.hex(DEVTOOIE_LABEL_HEX)(text);
+const devtooieLabel = (text: string) => chalk.hex(DEVTOOIE_LABEL_COLOR)(text);
 
 type ProcessState = 'running' | 'stopped' | 'waiting';
 type Status = ProcessState | 'rebuilding' | 'restarting';
@@ -94,22 +99,7 @@ function normalizeForFilter(s: string): string {
     .toLowerCase();
 }
 
-// Package-identity colors for log prefixes: a vivid, full-spectrum palette ordered so adjacent
-// packages land far apart on the color wheel. These are bright truecolor shades — distinct from
-// the dull basic-ANSI colors the status text/dots use (green/cyan/yellow/red) — and skip
-// pink/pastels.
-const PALETTE = [
-  chalk.hex('#4C9AFF'), // blue
-  chalk.hex('#FF9636'), // orange
-  chalk.hex('#3FCF7F'), // emerald
-  chalk.hex('#A56EFF'), // purple
-  chalk.hex('#FFC53D'), // gold
-  chalk.hex('#22C3C3'), // teal
-  chalk.hex('#FF6B57'), // coral
-  chalk.hex('#6C79FF'), // indigo
-  chalk.hex('#A8D93C'), // lime
-  chalk.hex('#C77DFF'), // violet
-];
+const PALETTE = PACKAGE_PALETTE.map((hex) => chalk.hex(hex));
 
 // The chalk foreground color names accepted by `run.color` (a subset guard, so a stray
 // `run.color: 'bold'`/`'constructor'` can't reach into non-color chalk members).
@@ -152,6 +142,12 @@ export function packagePrefixColor(pkg: AnyPackageConfig, index: number): (s: st
 }
 
 const MAX_BUFFER_LINES = 50_000;
+/**
+ * Cap on the spawned-child records mirrored into `running.json`. Records outlive the processes
+ * themselves (see `trackChild`), so a long session with many restarts would otherwise accumulate
+ * one entry per spawn forever.
+ */
+const MAX_CHILD_RECORDS = 200;
 /** Rendered width of a displayed timestamp gutter: `"YYYY-MM-DD HH:MM:SS "` (19 chars + a space). */
 const TIMESTAMP_GUTTER_WIDTH = 20;
 const WAIT_FOR_POLL_MS = 2000;
@@ -268,6 +264,12 @@ export class ProcessManager implements ControlManager {
   /** Bound `process.on('exit')` handler, kept so `dispose()` can remove it. */
   private exitHandler: () => void;
   private disposed = false;
+  /**
+   * Every child this session has spawned, `pid → the directory it was spawned in`, mirrored into
+   * `running.json` so the next session can sweep them if this one is SIGKILLed (see
+   * {@link ChildRecord}). Retained past exit — see {@link ProcessManager.trackChild}.
+   */
+  private childRecords = new Map<number, string>();
   /** Fullscreen (Ink) subscribers, notified when the buffer changes. */
   private listeners = new Set<() => void>();
   /** Monotonic buffer version, used as the useSyncExternalStore snapshot. */
@@ -379,6 +381,7 @@ export class ProcessManager implements ControlManager {
 
   startAll(): void {
     debugLog(`startAll: starting ${this.processes.size} processes`);
+    this.warnUnscopedNodeWatch();
     for (const [name, managed] of this.processes) {
       if (managed.pkg.autostart === false) {
         // Opted out of auto-start: leave it stopped (not waiting) for a manual start via the
@@ -403,6 +406,35 @@ export class ProcessManager implements ControlManager {
     }
     this.startEnvWatchers();
     debugLog(`startAll: done, buffer.length=${this.buffer.length}`);
+  }
+
+  /**
+   * Warns once per session about packages whose dev script runs a bare `node --watch`, which
+   * recursively watches the directory of every loaded file — `node_modules` included — and can
+   * exhaust the OS watch budget (`EMFILE`) on a large dependency tree. Names the exact flags to
+   * add, derived from the package's own project graph. Advisory only: nothing is rewritten, and a
+   * package that scopes its watcher (or doesn't use Node's watcher) is never mentioned.
+   */
+  private warnUnscopedNodeWatch(): void {
+    for (const [, managed] of this.processes) {
+      if (!managed.canDev) {
+        continue;
+      }
+      const script = getScriptText(managed.pkg, getDevScript(managed.pkg));
+      if (!script || !usesUnscopedNodeWatch(script)) {
+        continue;
+      }
+      const { paths } = deriveWatchPaths(managed.pkg);
+      const flags = formatWatchPathFlags(paths);
+      this.systemLog.warn(
+        `${managed.pkg.name}: \`node --watch\` is unscoped — it recursively watches every directory it loads from, including node_modules.`,
+      );
+      this.systemLog.warn(
+        flags
+          ? `${managed.pkg.name}: scope it with \`${flags}\` (or splice in \`$${WATCH_PATHS_ENV}\`, which devtooie sets to exactly that).`
+          : `${managed.pkg.name}: scope it with \`--watch-path\` flags naming the directories it should restart for.`,
+      );
+    }
   }
 
   private startWaitingPoll(): void {
@@ -481,6 +513,7 @@ export class ProcessManager implements ControlManager {
 
     managed.proc = proc;
     managed.status = 'running';
+    this.trackChild(proc, managed.pkg.path);
 
     const { searchName } = managed;
 
@@ -527,6 +560,10 @@ export class ProcessManager implements ControlManager {
     return Object.assign(
       {},
       process.env,
+      // Ready-made `--watch-path=` flags for this package's project graph, so a dev script can
+      // scope `node --watch` without hand-maintaining the path list (see `watch-paths.ts`).
+      // Placed before the `.env` layer so a package can still override it outright.
+      { [WATCH_PATHS_ENV]: formatWatchPathFlags(deriveWatchPaths(pkg).paths) },
       packageEnvLayer(pkg, { cwd: this.cwd, files: this.envFiles }),
     );
   }
@@ -564,7 +601,14 @@ export class ProcessManager implements ControlManager {
         onChange: () => this.restartForEnvChange(name),
       });
     }
-    this.envWatchDispose = watchEnvFiles({ targets });
+    this.envWatchDispose = watchEnvFiles({
+      targets,
+      onError: (dir, error) => {
+        this.systemLog.warn(
+          `stopped watching ${dir} for .env changes (${error.message}); edits there won't auto-restart packages`,
+        );
+      },
+    });
   }
 
   /** Restart a package in response to an `.env` change, but only if it's currently running. */
@@ -677,6 +721,7 @@ export class ProcessManager implements ControlManager {
         // shutdownAll / forceKillAll can reach (and kill the group of) this
         // child even though it isn't the package's own long-running `proc`.
         managed.extraProcs.add(buildProc);
+        this.trackChild(buildProc, managed.pkg.path);
         let result;
         try {
           result = await buildProc;
@@ -764,6 +809,7 @@ export class ProcessManager implements ControlManager {
     });
 
     managed.extraProcs.add(proc);
+    this.trackChild(proc, managed.pkg.path);
 
     if (proc.stdout) {
       proc.stdout.on('data', (data: Buffer) => {
@@ -933,6 +979,51 @@ export class ProcessManager implements ControlManager {
       fs.closeSync(this.logFd);
     } catch {
       /* already closed */
+    }
+  }
+
+  /**
+   * Records a freshly spawned child in `running.json`, for the *next* session's orphan sweep —
+   * nothing in this session reads it back.
+   *
+   * A record is deliberately **not** removed when the child exits. Dev commands are commonly a
+   * wrapper around the process that does the work (a package manager, an env shim, `foo -- bar`),
+   * and the wrapper can exit while what it spawned keeps running in the same detached process
+   * group. Dropping the record then would discard the only handle a later session has on that
+   * group — the exact orphan that binds no port and so can't be found by a port sweep either.
+   * Keeping it costs nothing: {@link sweepRecordedOrphans} verifies the pid is alive *and* still
+   * running in its recorded directory before signalling anything, so a record for a long-dead
+   * process is inert.
+   *
+   * Best-effort throughout: `updateRunning` is a no-op unless this process owns the workspace's
+   * `running.json`, so a session that never wrote one (tests, `devtooie run`) simply records
+   * nothing. Never let a bookkeeping failure interfere with actually running the package.
+   */
+  private trackChild(proc: ResultPromise, cwd: string): void {
+    const { pid } = proc;
+    if (!pid) {
+      return;
+    }
+    this.childRecords.set(pid, cwd);
+    // Bound the list so a long session with many restarts can't grow it without limit; Map
+    // iteration is insertion-ordered, so this drops the oldest records first.
+    while (this.childRecords.size > MAX_CHILD_RECORDS) {
+      const oldest = this.childRecords.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      this.childRecords.delete(oldest);
+    }
+    this.persistChildren();
+  }
+
+  private persistChildren(): void {
+    try {
+      updateRunning(this.cwd, {
+        children: [...this.childRecords].map(([pid, cwd]) => ({ pid, cwd })),
+      });
+    } catch {
+      /* bookkeeping only — never block a spawn */
     }
   }
 
@@ -1215,37 +1306,28 @@ export class ProcessManager implements ControlManager {
 
   /**
    * Render one raw output line from a package's child process for display/logging. A package's own
-   * `logs.formatter` (when set) fully owns presentation — its string result is used verbatim, and
-   * if it throws or returns a non-string we fall back to the default rendering (red stderr / plain
-   * stdout). With no custom formatter, devtooie's {@link defaultFormatter} runs: lines it leaves
-   * unchanged (non-structured output) keep the default rendering, and structured logs it formats
-   * are used verbatim. Only real process output goes through here; devtooie's own status lines
-   * (`started`, `stopping…`, …) never do.
+   * `logs.formatter` runs in place of devtooie's {@link defaultFormatter}; either way the formatter
+   * owns presentation of the lines it **rewrites**, and its string result is used verbatim.
+   *
+   * A line the formatter hands back **unchanged** is still ours to render, so it keeps the default
+   * rendering: red for stderr, plain for stdout. That case is not an edge — both formatters pass
+   * non-structured output straight through, so it covers every plain (non-JSON) line a package
+   * emits. Treating a configured formatter differently here used to wash the red out of stderr the
+   * moment `logs.formatter` was set. A formatter that throws or returns a non-string falls back the
+   * same way. Only real process output goes through here; devtooie's own status lines (`started`,
+   * `stopping…`, …) never do.
    */
   private formatOutput(managed: ManagedProcess, line: string, isError: boolean): string {
-    const custom = managed.pkg.logs?.formatter;
-    if (custom) {
-      try {
-        const out = custom(line);
-        if (typeof out === 'string') {
-          return out;
-        }
-      } catch {
-        /* fall back to the default rendering below */
-      }
-      return isError ? chalk.red(line) : line;
-    }
+    const format = managed.pkg.logs?.formatter ?? defaultFormatter;
     let out = line;
     try {
-      const formatted = defaultFormatter(line);
+      const formatted = format(line);
       if (typeof formatted === 'string') {
         out = formatted;
       }
     } catch {
       /* keep the raw line */
     }
-    // The default formatter passes non-structured output through unchanged; keep the plain/red
-    // rendering for those, and use the formatted string for logs it recognized.
     return out === line ? (isError ? chalk.red(line) : line) : out;
   }
 
