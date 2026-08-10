@@ -5,13 +5,13 @@
 # produce the committed GIF:
 #   ./scripts/demo/record.sh
 #
-# Requires vhs + its runtime deps:  brew install vhs ttyd ffmpeg
-# The recording drives the real example (Go worker + Vite frontend), so those must
-# be runnable here first (a plain `pnpm devtooie` should boot cleanly).
+# record.sh documents what has to be installed and what the recording touches; this file is
+# just the choreography. See CLAUDE.md for how the demo's double-click works.
 
 Output demo.raw.gif
 
 Require pnpm
+Require expect
 
 Set Shell "bash"
 Set FontFamily "Menlo"
@@ -33,6 +33,12 @@ Set Theme { "name": "devtooie", "background": "#24292E", "foreground": "#CFD3D7"
 
 # --- hidden setup: clean prompt + fresh selection so the selector shows ---
 Hide
+# Run everything under click.exp — a transparent expect wrapper that forwards this shell
+# both ways and, mid-recording, writes one real SGR mouse report into devtooie's stdin.
+# That's the demo's double-click-to-copy: VHS has no mouse command, so the click has to
+# come from inside the pty. See click.exp.
+Type "exec expect -f click.exp" Enter
+Sleep 500ms
 Type "export PS1='$ '" Enter
 Sleep 300ms
 # Force the footer's git branch to read `main` no matter which branch we record from.
@@ -87,14 +93,18 @@ Sleep 1800ms
 Right
 Sleep 2500ms
 
-# run api's custom command (add-random-todo)
+# run api's custom command (add-random-todo). Once it finishes, click.exp waits a beat and
+# then double-clicks the word `Added` — the highlight and the `✓ copied 5 chars to clipboard`
+# notice are devtooie's double-click-to-copy. This sleep has to cover the command, that beat,
+# and long enough after the click to read the notice.
 Enter
-Sleep 3500ms
+Sleep 5000ms
 
-# filter the combined log down to the added todos (case- and accent-insensitive)
+# filter the combined log down to the added todos (case- and accent-insensitive) — by
+# pasting the word we just copied, since it's genuinely on the system clipboard now.
 Type "f"
 Sleep 1000ms
-Type@150ms "added"
+Paste
 Sleep 800ms
 Enter
 Sleep 2500ms
