@@ -7,12 +7,21 @@ automatically.
 
 ## Cutting a release (the recurring flow)
 
-1. Add an entry to the **top** of `CHANGELOG.md`:
+1. Add an entry to the **top** of `CHANGELOG.md`, grouped under `### Features` /
+   `### Fixes` once there's more than a handful. Keep each bullet to one plain
+   sentence stating the user-visible change, with a link to the docs rather than an
+   explanation — the headings do the scanning, so entries don't need bold:
 
    ```md
    ## 0.2.0
 
-   - what changed
+   ### Features
+
+   - What changed. See [docs/cli.md](docs/cli.md).
+
+   ### Fixes
+
+   - What no longer breaks. _(Breaking: …, when it is.)_
    ```
 
 2. Get that onto `main` (merge a PR, or push).

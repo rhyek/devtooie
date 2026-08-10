@@ -179,6 +179,10 @@ unchanged to pass it through. **This is the general hook**: unlike the `logging.
 sees the whole raw line and assumes nothing about its format, so it's what you use when the output
 **isn't** JSON — or when it is, but you want a rendering the built-in formatter can't express.
 
+A formatter owns the presentation of the lines it actually **rewrites**. One you return unchanged is
+rendered exactly as it would be with no formatter configured — plain for stdout, **red for stderr** —
+so passing a line through never costs it its color.
+
 A formatter that throws or returns a non-string falls back to the raw
 line, so a bug can't take down the session. The returned string is what's buffered, shown, **and
 written to the log file** (ANSI color allowed, stripped for the file); a multi-line result is split

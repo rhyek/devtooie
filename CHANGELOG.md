@@ -2,14 +2,21 @@
 
 ## 0.6.0 (2026-07-24)
 
-- **Quitting waits for a clean shutdown** — `POST /command/quit` holds its response until every package is down and its ports are free, and the `SIGTERM` grace is now 10s (was 3s). See [docs/control-api.md](docs/control-api.md#graceful-shutdown).
-- **Footer shows the working directory and git branch.**
-- **Long log values wrap readably** — a value too wide for the terminal now keeps its key aligned, repeats the timestamp and `[package]` prefix on every row, and lines its overflow up under the value. See [docs/logging.md](docs/logging.md).
-- **Drag-select a structured log's attribute value to copy just its text** — no timestamps, prefixes or wrap indentation. Works on the message too.
-- **`logging.formatter` accepts a callback**, so the formatter config can depend on the entry being rendered. See [docs/logging.md](docs/logging.md#the-logging-helpers).
-- **A package's `port` accepts a callback**, so the port can come from an env file devtooie itself loads: `port: ({ env }) => Number(env.BACKEND_PORT)`. The callback receives that package's resolved `.env` files merged over `process.env` — the same environment the dev process gets — and the number it returns feeds `$port`, `PORT`, and port-conflict detection as before. See [docs/configuration.md](docs/configuration.md).
+### Features
+
+- **Select and copy log text with the mouse** — double-click a word, triple-click a line, or drag to take a structured log's value on its own.
+- **New `DEVTOOIE_WATCH_PATHS` scopes a `node --watch` dev script** to what it actually loads. See [docs/package-lifecycle.md](docs/package-lifecycle.md#scoping-a-node---watch-dev-script).
+- **A package's `port` accepts a callback**, so it can come from an env file devtooie itself loads. See [docs/configuration.md](docs/configuration.md).
+- **`logging.formatter` accepts a callback**, so the config can depend on the entry being rendered. See [docs/logging.md](docs/logging.md#the-logging-helpers).
 - **devtooie's own lines are labelled and structured** — `[devtooie]`, and `[dt:control]` for control-API commands.
-- **Fixed a blank gap above the package selector and build screens.**
+- **Notices now appear as toasts floating over the logs.**
+
+### Fixes
+
+- **devtooie no longer kills another project's process to free a dev port.** _(Breaking: a port held from outside the workspace is no longer cleared for you.)_
+- **Closing the terminal or quitting shuts packages down cleanly** instead of orphaning them, and packages a killed session left behind are cleaned up on the next start. See [docs/control-api.md](docs/control-api.md#graceful-shutdown).
+- **Mouse scrolling survives reloading the VS Code window.**
+- **A failing `.env` watcher no longer takes the whole session down with it.**
 
 ## 0.5.0 (2026-07-23)
 

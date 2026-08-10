@@ -79,7 +79,7 @@ const instance = render(<App logFileRef={logFileRef}/>, { alternateScreen: true,
 void instance.waitUntilExit().finally(() => {
   const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
   let message = `■ devtooie exited after ${seconds}s\n`;
-  if (logFileRef.current) message += `  logfile: ${path.resolve(logFileRef.current)}\n`;
+  if (logFileRef.current) message += `  logfile: ${displayLogFile(logFileRef.current)}\n`;
   process.stdout.write(message, () => process.exit(0));
 });
 ```
@@ -92,8 +92,10 @@ void instance.waitUntilExit().finally(() => {
   **`■ devtooie exited after Ns`** line lands on the clean, restored screen.
 - Exiting from the write **callback** ensures that line is flushed before the
   process dies (rather than racing `process.exit`).
-- The **`logfile:`** line beneath it prints the absolute path of the last logfile
-  written to. `renderApp` seeds `logFileRef.current` with the session's initial
+- The **`logfile:`** line beneath it prints the last logfile written to, through
+  the shared `displayLogFile` helper (`lib.ts`) — relative to devtooie's cwd, the
+  same string the footer showed during the run, so the path doesn't change shape
+  on the way out. `renderApp` seeds `logFileRef.current` with the session's initial
   logfile and `NativeRunner` updates it whenever the log is rotated (`t`), so the
   path reflects the *current* file rather than the one the session opened with.
 
@@ -103,7 +105,7 @@ Result on the primary screen after a session:
 > pnpm dev
 ▶ devtooie started
 ■ devtooie exited after 42.3s
-  logfile: /repo/node_modules/.devtooie/logs/1783966456337.log
+  logfile: node_modules/.devtooie/logs/1783966456337.log
 >
 ```
 

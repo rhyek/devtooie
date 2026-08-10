@@ -5,9 +5,9 @@ build-time, dev-time, and runtime dependencies between packages, builds whatever
 building (in the right order), and runs the packages you pick — driven by a small typed
 config file (`devtooie.config.ts`).
 
-**This single file is the complete guide for a coding agent:** how to drive devtooie
-headlessly, control a running session over its HTTP API, onboard a package, read logs for
-debugging, plus the full configuration/CLI/API reference. It consolidates everything a human
+**This single file is the complete guide for a coding agent:** how to tell whether an app is
+already running, drive devtooie headlessly, control a running session over its HTTP API, onboard a
+package, read logs for debugging, plus the full configuration/CLI/API reference. It consolidates everything a human
 reads across the README and the topic docs, so you only need this one file.
 
 A complete, runnable example monorepo — a shared TypeScript library, a Node API, a Go worker
@@ -127,8 +127,8 @@ A shared library (Node) — `dev` + `build`:
   "name": "shared",
   "scripts": {
     "dev": "tsc --watch", // re-emits dist on change
-    "build": "tsc"
-  }
+    "build": "tsc",
+  },
 }
 ```
 
@@ -139,8 +139,8 @@ An application needs only a `dev` process — a Node backend:
 {
   "name": "backend",
   "scripts": {
-    "dev": "node --watch src/index.ts"
-  }
+    "dev": "node --watch $DEVTOOIE_WATCH_PATHS src/index.ts",
+  },
 }
 ```
 
@@ -161,11 +161,11 @@ scratch to clear stale build output — those enable the rebuild command (the `b
 
 `defineConfig` accepts:
 
-| Field          | Meaning                                                                            |
-| -------------- | ---------------------------------------------------------------------------------- |
-| `packages`     | Your package definitions (see below).                                              |
-| `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.   |
-| `env`          | `.env` files loaded per package — see [Environment loading](#environment-env-loading). |
+| Field          | Meaning                                                                                                    |
+| -------------- | ---------------------------------------------------------------------------------------------------------- |
+| `packages`     | Your package definitions (see below).                                                                      |
+| `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.                           |
+| `env`          | `.env` files loaded per package — see [Environment loading](#environment-env-loading).                     |
 | `logs`         | Log display options: `{ timestamps?: boolean }` (default `false`) — see [Log timestamps](#log-timestamps). |
 | `apiPort`      | Pin the [control API](#drive-a-running-session-via-the-control-api) port (otherwise chosen automatically). |
 
@@ -199,6 +199,7 @@ build-only lib):
   ```
 
   It runs once while the config is being defined and must be synchronous. Return `undefined` for "no port" (same as omitting the field); returning `NaN` — the usual sign of a missing variable — is an error naming the package and the env files that were loaded.
+
 - **`urls`** — links shown in the running footer, one entry per line. Each entry is a string, a
   `{ label, url }`, or an **array** of those (rendered on the same line, space-separated).
 - **`healthcheck`** — a URL polled for readiness; also required by anything that lists this
@@ -257,7 +258,7 @@ common cases — only reach for `logs.formatter` if a package's JSON logs aren't
 
 Some services log **structured JSON in every environment** (Go's `log/slog`, Node's pino/winston)
 rather than branching the logger on `NODE_ENV`. **devtooie handles this out of the box** — it
-applies a default formatter to *every* package's output that passes **non-JSON** lines through
+applies a default formatter to _every_ package's output that passes **non-JSON** lines through
 untouched and pretty-prints a **JSON log** as a **`[LEVEL] message`** header (the `[LEVEL]` colored
 by severity), with the remaining properties listed, indented, on the lines below (each key in a
 muted color, its value in the normal foreground). A property whose value spans several lines keeps
@@ -287,7 +288,7 @@ prints `[UNKNOWN LOGLVL: FOOBAR]`.
 
 **The `logging` helpers** (exported from `devtooie`) override a package's formatter. **They are for
 structured (JSON) logs only** — each builds a formatter that parses every line as JSON and
-configures how a *recognized log object* is displayed, passing anything else through untouched. On a
+configures how a _recognized log object_ is displayed, passing anything else through untouched. On a
 process that logs plain prose they do nothing. To reshape arbitrary text output, write
 `logs.formatter` by hand (below): a plain `(line: string) => string` over the raw line, with no JSON
 assumption.
@@ -298,8 +299,8 @@ import { defineConfig, logging } from 'devtooie';
 export default defineConfig({
   packages: [
     { name: 'go-svc' }, // no config — slog's string levels just work via the default
-    { name: 'api', logs: { formatter: logging.nodejs.pino.formatter() } },      // pino numeric levels
-    { name: 'web', logs: { formatter: logging.nodejs.winston.formatter() } },   // winston message key + levels
+    { name: 'api', logs: { formatter: logging.nodejs.pino.formatter() } }, // pino numeric levels
+    { name: 'web', logs: { formatter: logging.nodejs.winston.formatter() } }, // winston message key + levels
   ],
 });
 ```
@@ -337,10 +338,13 @@ pino's numeric levels. The callback runs once per **JSON-object** line: lines th
 object never reach it, while a JSON object with no recognizable level/message does (it chooses those
 keys, so it runs before that check) and then passes through unformatted.
 
-Or write your own — **the general hook**, and the right one when the output *isn't* JSON (or is, but
+Or write your own — **the general hook**, and the right one when the output _isn't_ JSON (or is, but
 needs a rendering the built-in formatter can't express): `logs.formatter` is just
 `(line: string) => string` — return the display
-string, or the line unchanged to pass it through. A formatter that throws or returns a non-string
+string, or the line unchanged to pass it through. A formatter owns the presentation of the lines it
+actually **rewrites**; one returned unchanged is rendered exactly as it would be with no formatter
+configured — plain for stdout, **red for stderr** — so passing a line through never costs it its
+color. A formatter that throws or returns a non-string
 falls back to the raw line, so a bug can't take down the session. The returned string is what's
 buffered, shown, **and written to the log file** (ANSI color allowed, stripped for the file); a
 multi-line result is split into separate log lines, which devtooie keeps grouped as **one entry** —
@@ -379,7 +383,97 @@ building those deps first. Give a shared lib a watching `dev` (e.g. `tsc --watch
 `dev`/`build` building only itself — the lib owns its watcher. See the
 [`example/`](https://github.com/rhyek/devtooie/tree/main/example) monorepo.
 
+## Is the app already running?
+
+Start here whenever you need to know whether some app in the repo is up — a dev server, an API,
+a worker — **including when you don't yet know whether devtooie manages it, or whether this repo
+uses devtooie at all**. Work through these four steps; each is cheap, and any one of them can end
+with a complete answer.
+
+Check before you start anything: launching a session while one is already up **hands off** — the
+new invocation shuts the running one down and takes its place (see
+[Graceful shutdown](#graceful-shutdown)). Starting devtooie "just to see" restarts everything the
+human already had running.
+
+**1. Is this repo devtooie-managed?** Walk up from the app's directory for a config file —
+`devtooie.config.ts` (also `.mts`, `.js`, `.mjs`):
+
+```sh
+# prints the nearest config's path, or nothing at all
+d=$PWD; while [ "$d" != / ]; do
+  for f in "$d"/devtooie.config.{ts,mts,js,mjs}; do [ -f "$f" ] && { echo "$f"; break 2; }; done
+  d=$(dirname "$d")
+done
+```
+
+Nothing anywhere up the tree → devtooie doesn't manage anything here; skip to
+[Apps devtooie doesn't manage](#apps-devtooie-doesnt-manage).
+
+**2. Is this app one of its packages?** Read the `packages` array in that config. Each entry's
+`name` is what devtooie knows the package by, and it's what you pass to `-p` and to the control
+API — it need not match the directory name or the `package.json` name, and a repo may well hold
+apps devtooie was never taught about. If the app isn't in that array, it is **not devtooie-managed**;
+that's a legitimate answer to report, then check it directly with the fallback below.
+
+**3. Is a session live right now?** `node_modules/.devtooie/running.json` (under the config's
+directory) records the control-API `port`. **devtooie never deletes that file, so its existence
+proves nothing** — an exited or killed session leaves it behind. Only a reply from the API proves a
+session is up:
+
+```sh
+port=$(node -e "process.stdout.write(String(require('./node_modules/.devtooie/running.json').port))" 2>/dev/null)
+curl -s --max-time 2 "http://127.0.0.1:$port/query/status"
+```
+
+- No `running.json`, connection refused, or no valid JSON → **no session is running** for this
+  workspace. Nothing devtooie starts is up (though the app may still be running on its own — see
+  the fallback below).
+- It answers, but `configPath` is not this workspace's config → that port now belongs to a
+  **different workspace's** session (sessions relocate ports), so there's no session here.
+
+**4. Read the package's state** from the `packages` map in that answer (e.g. `{ "backend": "running" }`):
+
+| Value                       | What it means                                                                       |
+| --------------------------- | ----------------------------------------------------------------------------------- |
+| `running`                   | up — its process is live and past its `healthcheck`, if it has one.                 |
+| `waiting`                   | not up yet; held back by `waitFor` / a dependency's healthcheck.                    |
+| `stopped`                   | not running — it exited, crashed, or was never started.                             |
+| `restarting` / `rebuilding` | mid-cycle after a control command or a code/`.env` change; it's on its way back up. |
+
+Two special cases: `packages` (and `config`) being `null` means the session is up but still
+**building** — nothing runs yet, so poll again in a few seconds. And a package name that isn't a key
+at all is configured but wasn't selected for this session — it is not running. The same answer
+carries the whole resolved `config`, so you can settle step 2 from here instead of reading the file.
+
+To start a package that isn't running, see [Invoke headlessly](#invoke-headlessly); to restart one
+that is, `POST /command/restart/<name>` (see
+[Drive a running session](#drive-a-running-session-via-the-control-api)).
+
+### Apps devtooie doesn't manage
+
+If the repo has no devtooie config, or the app isn't in `packages`, **say so** — "that app isn't
+managed by devtooie" is a complete answer — and then check it the ordinary way. Find the port it
+binds (its `.env` files or its own config), and:
+
+```sh
+lsof -nP -iTCP:$PORT -sTCP:LISTEN     # is anything listening, and what
+curl -sS -o /dev/null -w '%{http_code}\n' --max-time 2 "http://localhost:$PORT/"
+pgrep -lf 'vite|next dev|nodemon'     # last resort: match the dev command itself
+```
+
+A devtooie-managed package can also be running **outside** devtooie — someone ran `pnpm dev` by
+hand. `/query/status` can't see that; the port check can. A package reported `stopped` whose port is
+nonetheless taken is exactly that case (or another project on the same port).
+
+**Never kill what you find.** Not `kill`, not `pkill`, not `lsof … | kill`. Stop a devtooie session
+with `POST /command/quit` and restart a single package with `POST /command/restart/<name>`; for a
+process devtooie doesn't own, report it and let the human decide.
+
 ## Invoke headlessly
+
+First confirm nothing is already running — see
+[Is the app already running?](#is-the-app-already-running) — since a new session shuts the running
+one down and takes over.
 
 Never launch devtooie's interactive TUI from an agent — there is no TTY to drive it. Always
 pass `--plain` together with an explicit `-p <package>` (repeatable) so no interactive selector
@@ -420,14 +514,14 @@ uses your original directory to decide which package you're inside.)
 
 Common options:
 
-| Option                 | Description                                                                                   |
-| ---------------------- | --------------------------------------------------------------------------------------------- |
-| `-p, --package <name>` | Repeatable. Package(s) to run, bypassing the interactive selector.                            |
-| `--ui`                 | Interactive terminal UI (default). Mutually exclusive with `--plain`.                         |
-| `--plain`              | No TUI — stream logs to stdout with colored name prefixes. Requires `-p` or `--last-answers`. |
-| `--last-answers`       | Skip selection; reuse the last saved selection.                                               |
-| `--build`              | Build the selected packages and their build-time deps, then exit (no run phase).              |
-| `--rebuild`            | Like `--build`, but first clears `dist/` for every build target.                              |
+| Option                 | Description                                                                                                                                                                                                |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-p, --package <name>` | Repeatable. Package(s) to run, bypassing the interactive selector.                                                                                                                                         |
+| `--ui`                 | Interactive terminal UI (default). Mutually exclusive with `--plain`.                                                                                                                                      |
+| `--plain`              | No TUI — stream logs to stdout with colored name prefixes. Requires `-p` or `--last-answers`.                                                                                                              |
+| `--last-answers`       | Skip selection; reuse the last saved selection.                                                                                                                                                            |
+| `--build`              | Build the selected packages and their build-time deps, then exit (no run phase).                                                                                                                           |
+| `--rebuild`            | Like `--build`, but first clears `dist/` for every build target.                                                                                                                                           |
 | `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/`. Each run gets a fresh `<timestamp>.log`; previous sessions' logs are kept. Also used by `devtooie cmd`. |
 
 Subcommands:
@@ -537,7 +631,7 @@ script/target name or `[name, { watches, builds, cleans }]`:
 - **`watches`** — the script watches files and reloads itself (default `true`).
 - **`builds`** — it (re)builds on start (default `true`). `watches: true` with `builds: false`
   is rejected — a watching script must also build.
-- **`cleans`** — its start is a *clean* rebuild, with no stale output to clear (default `false`;
+- **`cleans`** — its start is a _clean_ rebuild, with no stale output to clear (default `false`;
   requires `builds: true`). A `go run .`, for instance. This makes the package **rebuildable**
   without separate `clean`/`build` scripts — a rebuild just restarts it.
 
@@ -563,6 +657,36 @@ Rule: `watches` → nothing; else `builds` → restart; else rebuild.
 it has `clean` + `build` (or `build:clean`) scripts. Otherwise it's a no-op; use restart.
 `POST /command/restart/<name>` works for any running package.
 
+### Scoping a `node --watch` dev script
+
+`node --watch` registers a **recursive** watch on the directory of every file the process loads,
+with no ignore list — so `node_modules` is watched wholesale. A service with a real dependency tree
+ends up holding thousands of watch roots, which wastes restarts on files nobody edits and, on macOS,
+can exhaust the machine-wide FSEvents budget and fail the watcher with `EMFILE`.
+
+Scope it with `--watch-path`. devtooie derives the right directories per package and exposes them to
+every package process as **`DEVTOOIE_WATCH_PATHS`** — a space-separated list of `--watch-path=<dir>`
+flags, ready to splice in:
+
+```jsonc
+{
+  "scripts": {
+    "dev": "node --watch $DEVTOOIE_WATCH_PATHS src/index.ts",
+  },
+}
+```
+
+It covers the package itself (its `outDir` when it transpiles, its sources when Node runs the
+TypeScript directly), each workspace dependency at the directory its `exports` actually resolves to
+(`./src/index.ts` → that `src`; `./dist/index.js` → that `dist`), and transitive TypeScript project
+references. Third-party packages are excluded. With TypeScript absent the variable is empty, leaving
+the command unchanged.
+
+devtooie never rewrites the script — it only **warns** at startup when a package runs a bare
+`node --watch`, naming the flags to add. If you see that warning while onboarding or debugging a
+package, fix the script rather than ignoring it. Scripts already passing `--watch-path`, or using a
+different watcher (`tsx watch`, `nodemon`, `tsc --watch`), are left alone.
+
 ## Drive a running session via the control API
 
 A running devtooie session (whether started by you or a human) exposes a localhost-only HTTP
@@ -571,7 +695,9 @@ tooling. **Read the active port from `node_modules/.devtooie/running.json`** —
 current `{ "port", "pid", "logDir", "logFile" }` there (`logDir` is where this session's logs go;
 `logFile` is the current logfile, kept up to date across in-session rotation). Always resolve the
 port from that file rather than assuming one; a project may pin a fixed port with `apiPort` in
-`devtooie.config.ts`, but `running.json` is always current.
+`devtooie.config.ts`, but `running.json` is always current for the last session started. It is not
+removed when a session ends, so it says where a session _would_ answer, not that one is live — see
+[Is the app already running?](#is-the-app-already-running) to check that.
 
 Endpoints (all plain HTTP, no auth — localhost-only):
 
@@ -579,7 +705,9 @@ Endpoints (all plain HTTP, no auth — localhost-only):
   - `pid` / `configPath` — the session's PID and the absolute path to the `devtooie.config.*` it
     was started with; available immediately, even while the session is still building.
   - `logFile` — absolute path to the logfile currently being written (tracks in-session rotation).
-  - `packages` — per-package status map (e.g. `{ "web": "running" }`); `null` until the build finishes.
+  - `packages` — per-package status map (e.g. `{ "web": "running" }`), one of `running`,
+    `stopped`, `waiting`, `restarting`, `rebuilding`; `null` until the build finishes. See
+    [Is the app already running?](#is-the-app-already-running) for what each value tells you.
   - `config` — the whole **resolved** config (defaults applied, `command` normalized to
     `{ name, watches, builds, cleans }`), as loaded at startup (restart devtooie to pick up edits);
     `null` until the build finishes. Use it to decide package lifecycle — see
@@ -610,9 +738,12 @@ which prints that package's build/dev/runtime dependency names as JSON.
 
 ### Graceful shutdown
 
-Ctrl+C and `POST /command/quit` funnel through the **same** graceful shutdown, so the teardown is
-identical however it's triggered. Each package is given a chance to exit cleanly before it's forced,
-in three phases:
+Ctrl+C, `POST /command/quit`, and the termination signals **`SIGHUP`**, `SIGINT` and `SIGTERM` all
+funnel through the **same** graceful shutdown, so the teardown is identical however it's triggered.
+`SIGHUP` matters most in practice: it's what a closing terminal window, a killed tmux pane, or a
+dropped SSH connection delivers, and it must tear packages down rather than leave them running
+without a parent. Each package is given a chance to exit cleanly before it's forced, in three
+phases:
 
 1. **`SIGTERM`.** Every package's **process group** is signalled — the package and anything it
    spawned (a package manager, a nested dev server) all receive `SIGTERM` together. This is the
@@ -636,6 +767,31 @@ for free — await the response and the session's ports are yours.
 
 If a package needs to flush or persist state on shutdown, do it on `SIGTERM`, and keep it under the
 10-second grace or it will be `SIGKILL`ed mid-cleanup.
+
+### Orphan cleanup at startup
+
+`SIGKILL` can't be trapped, so a devtooie killed outright (or lost to a crashed terminal) leaves its
+packages running, reparented to PID 1. To keep those from accumulating one generation per lost
+session, devtooie records the processes it spawns in `node_modules/.devtooie/running.json` and, on
+the next start, reaps whatever is still running.
+
+Records are matched as **process groups**, not single pids. Packages are spawned detached, so each
+recorded pid is also its group id — and the group outlives its leader. A dev command that wraps the
+real worker (`env-cmd -- tsx watch …`, a package manager, any `foo -- bar` shim) exits as soon as it
+has spawned, leaving the worker running in that group with no parent. Checking whether the recorded
+pid is still alive would skip exactly those. Before anything is signalled, at least one live member
+of the group must still be running in the directory the record was written with, so a recycled
+number can't take an unrelated process with it, and a group containing devtooie itself is never
+touched.
+
+This sweep reaches packages that never bind a port, which the port check below cannot.
+
+devtooie also frees its configured dev ports at startup, but only from processes belonging to **this
+workspace**. A configured port is a claim on a number, not ownership of it: if another project (or
+any other program) is listening there, devtooie reports it and leaves it running, and the package
+that wanted the port fails to bind as it normally would. If you're diagnosing "my package won't
+start, the port is taken", that message is the signal — find the other program rather than expecting
+devtooie to clear it.
 
 ## Read running-package logs for debugging
 
@@ -832,9 +988,9 @@ the end state below, then apply the per-package specifics from
 
 If you opt in during `devtooie init`, devtooie installs an agent-facing skill file at
 `.claude/skills/devtooie/SKILL.md` (and, best-effort, under `.agents/` / `.cursor/` if those
-directories already exist). It teaches a coding agent how to run devtooie headlessly
-(`--plain -p <package>`), drive a running session through the control API, read the logfile for
-debugging, and onboard a new package. The installed file is **managed** — treat it as generated,
+directories already exist). It teaches a coding agent how to check whether an app in the repo is
+already running, run devtooie headlessly (`--plain -p <package>`), drive a running session through
+the control API, read the logfile for debugging, and onboard a new package. The installed file is **managed** — treat it as generated,
 not something to hand-edit. `devtooie init` and every `devtooie` run refresh it to the installed
 version. The skill points at this guide.
 

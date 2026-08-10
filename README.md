@@ -9,7 +9,7 @@ resolves build-time, dev-time, and runtime dependencies between them, builds
 whatever needs building (in the right order), and then runs the packages you
 picked.
 
-![devtooie's terminal UI driving the example monorepo](https://raw.githubusercontent.com/rhyek/devtooie/main/packages/devtooie/assets/demo.gif)
+![devtooie's terminal UI driving the example monorepo](https://raw.githubusercontent.com/rhyek/devtooie/main/packages/devtooie/assets/demo-1786328802.gif)
 
 ## Features
 
@@ -160,10 +160,14 @@ An application needs only a `dev` process — a Node backend:
 {
   "name": "backend",
   "scripts": {
-    "dev": "node --watch src/index.ts",
+    "dev": "node --watch $DEVTOOIE_WATCH_PATHS src/index.ts",
   },
 }
 ```
+
+`$DEVTOOIE_WATCH_PATHS` scopes Node's watcher to what the package actually loads — a bare
+`node --watch` recursively watches `node_modules` too. See
+[docs/package-lifecycle.md](docs/package-lifecycle.md#scoping-a-node---watch-dev-script).
 
 …or a Go program, via a `Makefile`:
 
@@ -289,9 +293,9 @@ environment on demand — is documented in **[docs/cli.md](docs/cli.md)**.
 If you opt in during `devtooie init`, devtooie installs an agent-facing skill
 file at `.claude/skills/devtooie/SKILL.md` (and, best-effort, under `.agents/` /
 `.cursor/` if those directories already exist). It teaches a coding agent how
-to run devtooie headlessly (`--plain -p <package>`), drive a running session
-through the control API, read the logfile for debugging, and onboard a new
-package. The installed file is **managed** — treat it as generated, not something
+to check whether an app in the repo is already running, run devtooie headlessly
+(`--plain -p <package>`), drive a running session through the control API, read
+the logfile for debugging, and onboard a new package. The installed file is **managed** — treat it as generated, not something
 to hand-edit. `devtooie init` and every `devtooie` run refresh it to the
 installed version.
 
