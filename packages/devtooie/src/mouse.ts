@@ -21,15 +21,9 @@ export const MOUSE_ENABLE = `${ESC}[?1002h${ESC}[?1006h`;
 export const MOUSE_DISABLE = `${ESC}[?1006l${ESC}[?1002l`;
 
 /**
- * The three coordinate bytes (button, column, row — each offset by 32) that follow
- * the `ESC[M` header of a legacy X10 report. They arrive as a separate input event,
- * since the header is a complete CSI sequence on its own.
- */
-export const LEGACY_MOUSE_PAYLOAD_LENGTH = 3;
-
-/**
- * True if `data` is the header of a **legacy X10** mouse report (`ESC[M`, followed
- * by `LEGACY_MOUSE_PAYLOAD_LENGTH` coordinate bytes).
+ * True if `data` is the header of a **legacy X10** mouse report — `ESC[M`, followed by three
+ * coordinate bytes (button, column, row, each offset by 32) that arrive as their own input
+ * event, since the header is a complete CSI sequence on its own.
  *
  * We never ask for this encoding — `MOUSE_ENABLE` requests SGR (`?1006h`) — so one
  * showing up means the terminal dropped our encoding mode behind our back and fell

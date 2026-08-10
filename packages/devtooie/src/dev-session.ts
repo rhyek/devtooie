@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execa } from 'execa';
-import { getRegisteredPackages } from './config.js';
+import { getRegisteredPackages, getWorkspaceDir } from './config.js';
 import { createControlClient, probeInstance } from './control-client.js';
 import { decideControlPort, isPortListening, readRunning, type RunningState } from './running.js';
 import { HANDOFF_FORCE_KILL_MS } from './shutdown-timing.js';
@@ -89,6 +89,34 @@ export function isInsideWorkspace(root: string, target: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
+/**
+ * `realpath`, falling back to the path as given when it can't be resolved (already gone, or not
+ * ours to read). Every cwd comparison below goes through this: the kernel reports a process's cwd
+ * fully resolved (`/proc/<pid>/cwd`, `lsof -d cwd`), while the paths devtooie derives from its own
+ * config keep whatever symlinks the user typed — so `~/dev` and `/Volumes/Data/dev` are the same
+ * directory that never compares equal.
+ */
+export function resolveRealPath(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/** `true` while `pid` still exists. `EPERM` means it's alive but not ours to signal. */
+export function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 /** Working directory of a live process, or null if it's gone / can't be inspected. */
 export async function processCwd(pid: number): Promise<string | null> {
   if (os.platform() === 'linux') {
@@ -111,11 +139,12 @@ export async function partitionByWorkspace(
 ): Promise<{ ours: number[]; foreign: number[] }> {
   const ours: number[] = [];
   const foreign: number[] = [];
+  const realRoot = resolveRealPath(root);
   for (const pid of pids) {
     const cwd = await processCwd(pid);
     // Unknown cwd (permission denied, exited mid-check) counts as foreign: killing something we
     // can't identify is exactly the mistake this guard exists to prevent.
-    if (cwd && isInsideWorkspace(root, cwd)) {
+    if (cwd && isInsideWorkspace(realRoot, resolveRealPath(cwd))) {
       ours.push(pid);
     } else {
       foreign.push(pid);
@@ -164,6 +193,12 @@ export function groupMembers(procs: { pid: number; pgid: number }[]): Map<number
  * the record was written with. A group id can only be created by a process whose pid equals it, so
  * combined with that check a recycled number can't take an unrelated process down with it. Groups
  * containing this process are never touched.
+ *
+ * Nor is anything touched while the session that wrote the record is **still running**. Reaching
+ * this point doesn't mean that session ended: `decideControlPort` relocates instead of handing off
+ * whenever it can't identify the instance holding the port (a wedged control API, or a second
+ * session started against a different `-c` config), and in that case the recorded children are a
+ * live session's packages, not orphans.
  */
 export async function sweepRecordedOrphans(
   previous: RunningState | null,
@@ -173,11 +208,16 @@ export async function sweepRecordedOrphans(
   if (!records.length) {
     return [];
   }
+  if (previous && isProcessAlive(previous.pid)) {
+    return [];
+  }
   const { stdout } = await execa('ps', ['-Ao', 'pid=,pgid='], { reject: false });
   const byGroup = groupMembers(parsePsGroups(stdout));
 
   const victims: number[] = [];
-  for (const { pid, cwd } of records) {
+  for (const record of records) {
+    const { pid } = record;
+    const cwd = resolveRealPath(record.cwd);
     if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) {
       continue;
     }
@@ -188,7 +228,8 @@ export async function sweepRecordedOrphans(
     }
     let confirmed = false;
     for (const member of members) {
-      if ((await processCwd(member)) === cwd) {
+      const memberCwd = await processCwd(member);
+      if (memberCwd && resolveRealPath(memberCwd) === cwd) {
         confirmed = true;
         break;
       }
@@ -312,7 +353,7 @@ export async function acquireDevSession(opts: {
     // legitimately be listening there, and killing it because we happen to want the port is a
     // side effect well outside what starting a dev session should do. Say so and let the
     // package's own startup fail loudly on the bound port instead.
-    const { ours, foreign } = await partitionByWorkspace(holders, path.dirname(opts.configPath));
+    const { ours, foreign } = await partitionByWorkspace(holders, getWorkspaceDir());
     await killTrees(ours);
     for (const pid of foreign) {
       onStatus(`dev port held by another program (pid ${String(pid)}) — leaving it alone`);

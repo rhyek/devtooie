@@ -224,6 +224,11 @@ export interface Config<N extends string> {
 
 let registeredPackages: AnyPackageConfig[] = [];
 let loadedConfig: Config<string> | null = null;
+/**
+ * Absolute directory package paths resolve against. Set when a config loads; until then the
+ * process cwd, which is what `defineConfig` itself defaults to.
+ */
+let workspaceRoot: string = process.cwd();
 
 export function getRegisteredPackages(): AnyPackageConfig[] {
   return registeredPackages;
@@ -232,6 +237,16 @@ export function getRegisteredPackages(): AnyPackageConfig[] {
 /** The most recently defined config (meta + packages), or null before any `defineConfig` runs. */
 export function getLoadedConfig(): Config<string> | null {
   return loadedConfig;
+}
+
+/**
+ * The workspace root every package path was resolved against — the config's `workspaceDir`, or
+ * the cwd when it doesn't set one. Not the config file's own directory: a config in a subdirectory
+ * can point `workspaceDir` elsewhere, and anything reasoning about "is this process ours?" has to
+ * ask about the same tree the packages actually live in.
+ */
+export function getWorkspaceDir(): string {
+  return workspaceRoot;
 }
 
 export function findPackage(name: string): AnyPackageConfig {
@@ -372,6 +387,7 @@ export function defineConfig<const N extends string>(opts: DefineConfigOptions<N
   const parsed = result.data;
 
   const workspaceDir = parsed.workspaceDir ?? process.cwd();
+  workspaceRoot = path.resolve(workspaceDir);
 
   // Validate waitFor targets: each must exist and define a healthcheck.
   const healthcheckPackages = new Set(parsed.packages.filter((c) => c.healthcheck).map((c) => c.name)); // prettier-ignore

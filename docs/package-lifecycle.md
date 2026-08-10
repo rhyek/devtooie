@@ -17,7 +17,7 @@ process (defaults to `dev`). The flags:
 - **`watches`** — the script watches files and reloads itself (default `true`).
 - **`builds`** — it (re)builds on start (default `true`). `watches: true` with `builds: false`
   is rejected — a watching script must also build.
-- **`cleans`** — its start is a *clean* rebuild, with no stale output to clear (default
+- **`cleans`** — its start is a _clean_ rebuild, with no stale output to clear (default
   `false`; requires `builds: true`). A `go run .`, for instance. This makes the package
   **rebuildable** without separate `clean`/`build` scripts — a rebuild just restarts it.
 
@@ -68,7 +68,9 @@ The variable holds a space-separated list of `--watch-path=<dir>` flags covering
 - **transitive TypeScript project references**, for build-only deps nothing imports at runtime.
 
 Third-party packages are excluded — they're what the flag exists to leave out. If TypeScript isn't
-installed the variable is empty, which simply leaves `node --watch` as it was.
+installed the variable is empty, which simply leaves `node --watch` as it was. Same if any of the
+derived paths contains a space: the script splices the variable in unquoted, so the shell would
+split such a path in half — an unscoped watcher is the better outcome than a broken command.
 
 Nothing is rewritten for you: devtooie only **warns** at startup when a package's dev script runs a
 bare `node --watch`, naming the flags to add. Scripts that already pass `--watch-path`, or that use

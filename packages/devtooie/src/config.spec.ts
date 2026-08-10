@@ -7,6 +7,7 @@ import {
   findPackage,
   getRegisteredPackages,
   getLoadedConfig,
+  getWorkspaceDir,
   getDevScript,
 } from './config.js';
 
@@ -482,5 +483,25 @@ describe('port callback', () => {
     });
     expect(packages[0]!.port).toBe(3001);
     expect(packages[0]!.healthcheck).toBe('http://localhost:3001/health');
+  });
+});
+
+describe('getWorkspaceDir', () => {
+  it('reports the root package paths resolved against, not the config file directory', () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-ws-')));
+    defineConfig({ workspaceDir: dir, packages: [{ name: 'svc' }] });
+    try {
+      // What decides whether a port holder belongs to this workspace — a config living in a
+      // subdirectory can point `workspaceDir` somewhere else entirely.
+      expect(getWorkspaceDir()).toBe(path.resolve(dir));
+      expect(getRegisteredPackages()[0]!.path).toBe(path.join(dir, 'packages/svc'));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('defaults to the process cwd', () => {
+    defineConfig({ packages: [{ name: 'svc' }] });
+    expect(getWorkspaceDir()).toBe(path.resolve(process.cwd()));
   });
 });

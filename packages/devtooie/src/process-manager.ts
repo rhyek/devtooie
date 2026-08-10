@@ -228,6 +228,8 @@ export class ProcessManager implements ControlManager {
   /** Per-package resolved on-screen timestamp visibility, keyed by the line's `searchName`. */
   private showTsBySearchName = new Map<string, boolean>();
   private filterTerms: string[] = [];
+  /** Memoized `--watch-path=` flags per package name (see {@link ProcessManager.watchPathFlags}). */
+  private readonly watchPathFlagsCache = new Map<string, string>();
   private buffer: BufferedLine[] = [];
   private rebuildableSet: Set<string>;
   /** App name -> names of packages whose healthchecks must pass before it starts. */
@@ -424,8 +426,7 @@ export class ProcessManager implements ControlManager {
       if (!script || !usesUnscopedNodeWatch(script)) {
         continue;
       }
-      const { paths } = deriveWatchPaths(managed.pkg);
-      const flags = formatWatchPathFlags(paths);
+      const flags = this.watchPathFlags(managed.pkg);
       this.systemLog.warn(
         `${managed.pkg.name}: \`node --watch\` is unscoped — it recursively watches every directory it loads from, including node_modules.`,
       );
@@ -550,6 +551,25 @@ export class ProcessManager implements ControlManager {
   }
 
   /**
+   * This package's ready-made `--watch-path=` flags, derived once per session.
+   *
+   * Deriving them loads TypeScript and parses the package's tsconfig and every transitive project
+   * reference — cheap once, but `packageEnv` runs on every spawn, so an unmemoized derivation
+   * repeats all of that on each restart (and a `.env` edit can restart several packages at once),
+   * blocking the render loop to recompute an identical answer. The project graph is read from disk
+   * at startup like the rest of the config; a change to it takes a devtooie restart either way.
+   */
+  private watchPathFlags(pkg: AnyPackageConfig): string {
+    const cached = this.watchPathFlagsCache.get(pkg.name);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const flags = formatWatchPathFlags(deriveWatchPaths(pkg).paths);
+    this.watchPathFlagsCache.set(pkg.name, flags);
+    return flags;
+  }
+
+  /**
    * Environment for a package's child processes: the current `process.env`, then the
    * package's configured `run.port` as `PORT`, then its resolved `.env` files (later files /
    * package scope win). So `PORT` defaults to the config port but an explicit `.env` `PORT`
@@ -563,7 +583,7 @@ export class ProcessManager implements ControlManager {
       // Ready-made `--watch-path=` flags for this package's project graph, so a dev script can
       // scope `node --watch` without hand-maintaining the path list (see `watch-paths.ts`).
       // Placed before the `.env` layer so a package can still override it outright.
-      { [WATCH_PATHS_ENV]: formatWatchPathFlags(deriveWatchPaths(pkg).paths) },
+      { [WATCH_PATHS_ENV]: this.watchPathFlags(pkg) },
       packageEnvLayer(pkg, { cwd: this.cwd, files: this.envFiles }),
     );
   }

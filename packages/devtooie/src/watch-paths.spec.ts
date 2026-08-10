@@ -41,4 +41,11 @@ describe('formatWatchPathFlags', () => {
   it('is empty when nothing was derived, so splicing it in is a no-op', () => {
     expect(formatWatchPathFlags([])).toBe('');
   });
+
+  it('renders nothing when a path contains whitespace', () => {
+    // The dev script splices the value in unquoted, so the shell would split such a path in
+    // half and hand node a broken command line. An unscoped watcher is the better failure.
+    expect(formatWatchPathFlags(['/Users/me/My Projects/app/src'])).toBe('');
+    expect(formatWatchPathFlags(['/a/src', '/Users/me/My Projects/app/src'])).toBe('');
+  });
 });

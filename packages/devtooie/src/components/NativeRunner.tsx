@@ -24,7 +24,6 @@ import {
 import { watchGitBranch } from '../git-watch.js';
 import { displayLogFile, getGitBranch } from '../lib.js';
 import {
-  LEGACY_MOUSE_PAYLOAD_LENGTH,
   MOUSE_DISABLE,
   MOUSE_ENABLE,
   isLegacyMouseSequence,
@@ -538,10 +537,10 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
   // press. Only mounted while scrolled up, so a null rect is the natural gate.
   const jumpToLatestRef = useRef<DOMElement>(null);
   const startedRef = useRef(false);
-  // Characters of a legacy X10 mouse report's coordinates still to be swallowed
-  // (see the input handler). Non-zero only in the brief window after a terminal
-  // reattach drops our SGR encoding mode.
-  const legacyMousePayloadRef = useRef(0);
+  // Whether the next input event is a legacy X10 mouse report's coordinate bytes,
+  // which are swallowed whole (see the input handler). True only in the brief
+  // window after a terminal reattach drops our SGR encoding mode.
+  const swallowLegacyPayloadRef = useRef(false);
   // Runs every render to re-measure the chrome (top indicator + footer) as its
   // content changes; the setState calls bail on unchanged values, so no loop.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -694,15 +693,17 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
     // our back (see mouse.ts) — re-assert reporting so the *next* event decodes
     // again. This is the backstop for a reattach that somehow didn't resize us;
     // the resize effect above normally heals it before any mouse event lands.
-    // The report's coordinate bytes follow as their own input event, so swallow
-    // that many characters rather than letting them type themselves into the
-    // filter or a custom command.
-    if (legacyMousePayloadRef.current > 0) {
-      legacyMousePayloadRef.current = Math.max(0, legacyMousePayloadRef.current - input.length);
+    // The report's coordinate bytes arrive as their own input event, so drop
+    // exactly one event rather than letting them type themselves into the filter
+    // or a custom command — counting characters instead would desync, since X10
+    // encodes each coordinate as `value + 32` and anything past column ~95 is a
+    // byte the UTF-8 decode turns into one or two U+FFFD.
+    if (swallowLegacyPayloadRef.current) {
+      swallowLegacyPayloadRef.current = false;
       return;
     }
     if (isLegacyMouseSequence(input)) {
-      legacyMousePayloadRef.current = LEGACY_MOUSE_PAYLOAD_LENGTH;
+      swallowLegacyPayloadRef.current = true;
       stdout.write(MOUSE_ENABLE);
       return;
     }

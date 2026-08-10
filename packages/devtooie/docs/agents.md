@@ -679,8 +679,9 @@ flags, ready to splice in:
 It covers the package itself (its `outDir` when it transpiles, its sources when Node runs the
 TypeScript directly), each workspace dependency at the directory its `exports` actually resolves to
 (`./src/index.ts` → that `src`; `./dist/index.js` → that `dist`), and transitive TypeScript project
-references. Third-party packages are excluded. With TypeScript absent the variable is empty, leaving
-the command unchanged.
+references. Third-party packages are excluded. The variable is empty — leaving the command
+unchanged — when TypeScript is absent, or when a derived path contains a space (the script splices
+it in unquoted, so the shell would split that path in half).
 
 devtooie never rewrites the script — it only **warns** at startup when a package runs a bare
 `node --watch`, naming the flags to add. If you see that warning while onboarding or debugging a

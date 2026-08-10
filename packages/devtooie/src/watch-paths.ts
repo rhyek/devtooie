@@ -50,8 +50,20 @@ export function usesUnscopedNodeWatch(script: string): boolean {
 /** Env var devtooie injects into every child, holding ready-made `--watch-path=` flags. */
 export const WATCH_PATHS_ENV = 'DEVTOOIE_WATCH_PATHS';
 
-/** Renders derived directories as the flag string a dev script can splice straight into `node`. */
+/**
+ * Renders derived directories as the flag string a dev script can splice straight into `node`.
+ *
+ * The documented integration is an **unquoted** `node --watch $DEVTOOIE_WATCH_PATHS src/index.ts`,
+ * which relies on the shell splitting the variable into one argument per flag. A path containing
+ * whitespace can't survive that — no amount of quoting inside the value helps, since the shell
+ * expands the variable and only then splits — and a half-split path is a broken command line, not
+ * a narrower watch. So a workspace whose paths contain whitespace produces no flags at all: the
+ * watcher stays unscoped, which is exactly what it was before this feature existed.
+ */
 export function formatWatchPathFlags(paths: string[]): string {
+  if (paths.some((p) => /\s/.test(p))) {
+    return '';
+  }
   return paths.map((p) => `--watch-path=${p}`).join(' ');
 }
 
