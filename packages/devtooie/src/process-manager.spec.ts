@@ -5,6 +5,14 @@ import path from 'node:path';
 import chalk from 'chalk';
 import { ProcessManager, resolveColorSpec, packagePrefixColor } from './process-manager.js';
 import { createFormatter } from './log-formatter.js';
+import {
+  classifyLine,
+  rowWidth,
+  selectionCopyText,
+  valueRun,
+  type RowMeta,
+  type Selection,
+} from './selection.js';
 import { stripAnsi } from './lib.js';
 import type { AnyPackageConfig } from './config.js';
 import type { RunnerArgs } from './runners/types.js';
@@ -144,21 +152,162 @@ describe('on-screen log timestamps', () => {
   it("a package's logs.timestamps: true overrides a top-level default of false", () => {
     const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', path: dir, logs: { timestamps: true } }; // prettier-ignore
     manager = new ProcessManager({ ...runnerArgs(p), logTimestamps: false });
-    manager.logControl('hi', 'fixture');
+    manager.logControl('hi', { package: 'fixture' });
     expect(lastRow(manager)).toMatch(TS);
   });
 
   it("a package's logs.timestamps: false overrides a top-level default of true", () => {
     const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', path: dir, logs: { timestamps: false } }; // prettier-ignore
     manager = new ProcessManager({ ...runnerArgs(p), logTimestamps: true });
-    manager.logControl('hi', 'fixture');
+    manager.logControl('hi', { package: 'fixture' });
     expect(lastRow(manager)).not.toMatch(TS);
   });
 
   it('a package without logs.timestamps inherits the top-level default', () => {
     manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: true });
-    manager.logControl('hi', 'fixture');
+    manager.logControl('hi', { package: 'fixture' });
     expect(lastRow(manager)).toMatch(TS);
+  });
+});
+
+describe('wrapping a line too wide for the terminal', () => {
+  const COLS = 80;
+  // A single-line value long enough to wrap several times, with no spaces — the shape that
+  // exposed this: one very long token, not a value containing newlines.
+  const LONG = 'https://cdn.example.com/assets/' + 'ABCDEFGHIJ'.repeat(12) + '?v=9-4&sig=6A8B4178';
+
+  /** Rendered rows of the last buffered line, ANSI stripped. */
+  function rows(mgr: ProcessManager): string[] {
+    const lines = mgr.getVisibleLines();
+    const line = lines[lines.length - 1]!;
+    return mgr.wrapLine(line, COLS).map(stripAnsi);
+  }
+
+  function longAttrRows(opts?: { timestamps?: boolean }): string[] {
+    manager = new ProcessManager({
+      ...runnerArgs(pkg()),
+      logTimestamps: opts?.timestamps ?? false,
+    });
+    manager.logControl('asset-fetch', { content_url: LONG });
+    return rows(manager);
+  }
+
+  it('keeps the property key aligned with unwrapped keys (the indent survives wrapping)', () => {
+    const wrapped = longAttrRows();
+    expect(wrapped.length).toBeGreaterThan(1);
+    // The formatter indents every property by two spaces; wrapping must not eat them, or this
+    // key renders two columns left of every key short enough to avoid the wrap.
+    expect(wrapped[0]).toContain('  content_url: ');
+  });
+
+  it('repeats the prefix on every wrapped row', () => {
+    for (const row of longAttrRows()) {
+      expect(row).toMatch(/^\[dt:control\] /);
+    }
+  });
+
+  it('repeats the timestamp on every wrapped row when timestamps are on', () => {
+    for (const row of longAttrRows({ timestamps: true })) {
+      expect(row).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[dt:control\] /);
+    }
+  });
+
+  it('aligns continuation rows under the value, like a multi-line value', () => {
+    const wrapped = longAttrRows();
+    const gutter = wrapped[0]!.indexOf('  content_url: ');
+    // `  content_url: ` is 15 columns; continuations start under the value, not under the key.
+    const valueCol = gutter + '  content_url: '.length;
+    for (const row of wrapped.slice(1)) {
+      expect(row.slice(gutter, valueCol)).toBe(' '.repeat(valueCol - gutter));
+      expect(row[valueCol]).not.toBe(' ');
+    }
+  });
+
+  it('loses no text and never exceeds the terminal width', () => {
+    const wrapped = longAttrRows();
+    for (const row of wrapped) {
+      expect(row.length).toBeLessThanOrEqual(COLS);
+    }
+    // Strip the gutter (and, on continuations, the hanging indent) back off and the original
+    // value must reassemble exactly — wrapping may not drop or duplicate a character.
+    const gutter = wrapped[0]!.indexOf('  content_url: ');
+    const indent = '  content_url: '.length;
+    const joined = wrapped
+      .map((row, i) => (i === 0 ? row.slice(gutter) : row.slice(gutter + indent)))
+      .join('');
+    expect(joined).toBe(`  content_url: ${LONG}`);
+  });
+
+  // End-to-end over the real wrapping: build the row metadata exactly as `useLogViewport` does,
+  // then simulate pressing at the value and dragging to the end of its last row.
+  it('value-scoped selection reassembles the original value, gutters and indent stripped', () => {
+    manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: true });
+    manager.logControl('asset-fetch', { content_url: LONG });
+    const lines = manager.getVisibleLines();
+    const meta: RowMeta[] = lines.flatMap((line, lineIndex) => {
+      const { kind, valueStart } = classifyLine(line.text);
+      return manager!.wrapLineRows(line, COLS).map((row, r) => ({
+        text: row.text,
+        contentStart: row.contentStart,
+        valueStart: r === 0 ? row.contentStart + valueStart : row.contentStart,
+        lineIndex,
+        kind,
+      }));
+    });
+
+    const press = meta.findIndex((m) => m.kind === 'keyed' && m.text.includes('content_url'));
+    expect(press).toBeGreaterThanOrEqual(0);
+    const run = valueRun(press, (r) => meta[r] ?? null, meta.length);
+    expect(run.end).toBeGreaterThan(run.start); // it really did wrap
+
+    const selection: Selection = {
+      anchor: { flatRow: press, col: meta[press]!.valueStart },
+      focus: { flatRow: run.end, col: rowWidth(meta[run.end]!.text) },
+      mode: 'value',
+      run,
+    };
+    expect(selectionCopyText(selection, (r) => meta[r] ?? null)).toBe(LONG);
+  });
+
+  // Whether word-wrap pushes the value to its own row depends on arithmetic between the width,
+  // the key length and the token length, so one fixture proves nothing — sweep the widths.
+  it('never strands the key on a blank row, at any terminal width', () => {
+    manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: true });
+    manager.logControl('asset-fetch', { content_url: LONG });
+    const lines = manager.getVisibleLines();
+    const line = lines[lines.length - 1]!;
+    for (let cols = 60; cols <= 140; cols++) {
+      const wrapped = manager.wrapLine(line, cols).map(stripAnsi);
+      if (wrapped.length < 2) {
+        continue; // didn't wrap at this width
+      }
+      expect(wrapped[0], `cols=${cols}`).toContain(LONG.slice(0, 5));
+    }
+  });
+
+  it('still breaks a prose value on word boundaries', () => {
+    manager = new ProcessManager(runnerArgs(pkg()));
+    const words = 'lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor';
+    manager.logControl('note', { text: `${words} ${words}` });
+    const wrapped = rows(manager);
+    expect(wrapped.length).toBeGreaterThan(1);
+    // no row ends mid-word: each row boundary falls on a space in the original text
+    for (const row of wrapped.slice(0, -1)) {
+      expect(row.trimEnd().endsWith('-')).toBe(false);
+      const lastWord = row.trimEnd().split(' ').pop()!;
+      expect(`${words} ${words}`.split(' ')).toContain(lastWord);
+    }
+  });
+
+  it('still wraps a plain line with no property key, aligned at the gutter', () => {
+    manager = new ProcessManager(runnerArgs(pkg()));
+    manager.logSystem('x'.repeat(300));
+    const wrapped = rows(manager);
+    expect(wrapped.length).toBeGreaterThan(1);
+    for (const row of wrapped) {
+      expect(row).toMatch(/^\[devtooie\s*\] /);
+      expect(row.length).toBeLessThanOrEqual(COLS);
+    }
   });
 });
 
@@ -197,26 +346,53 @@ describe('ProcessManager', () => {
     expect(manager.getStatus('does-not-exist')).toBeNull();
   });
 
-  it('logControl writes a [dt:control] line to the logfile', () => {
+  it('logControl writes the command as a [dt:control] line with its variables beneath', () => {
     manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
-    manager.logControl('restart fixture', 'fixture');
+    manager.logControl('restart', { package: 'fixture' });
     manager.logControl('quit');
     const contents = fs.readFileSync(logFile, 'utf8');
-    expect(contents).toContain('[dt:control] restart fixture');
-    expect(contents).toContain('[dt:control] quit');
+    expect(contents).toContain('[dt:control] [INFO] restart');
+    // the command's variables render as indented properties on their own prefixed line
+    expect(contents).toContain('[dt:control]   package: fixture');
+    expect(contents).toContain('[dt:control] [INFO] quit');
+    // the routing field never leaks into the output
+    expect(contents).not.toContain('component');
   });
 
   it('logControl pads the [dt:control] label to align with the widest service name', () => {
     const wide: AnyPackageConfig = {
-      name: 'whatsapp-bridge',
+      name: 'payments-worker',
       relativeDir: '.',
       path: dir,
     };
     manager = new ProcessManager(runnerArgs(wide), { plain: true });
-    manager.logControl('restart whatsapp-bridge', 'whatsapp-bridge');
+    manager.logControl('restart', { package: 'payments-worker' });
     const contents = fs.readFileSync(logFile, 'utf8');
-    // "dt:control" (10) padded to "whatsapp-bridge" width (15) → 5 trailing spaces.
-    expect(contents).toContain('[dt:control     ] restart whatsapp-bridge');
+    // "dt:control" (10) padded to "payments-worker" width (15) → 5 trailing spaces.
+    expect(contents).toContain('[dt:control     ] [INFO] restart');
+  });
+
+  it('renders system lines under a labelled [devtooie] prefix with a level tag', () => {
+    manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
+    manager.systemLog.warn('shutting down...');
+    manager.logSystem('just so');
+    const contents = fs.readFileSync(logFile, 'utf8');
+    expect(contents).toContain('[devtooie] [WARN] shutting down...');
+    expect(contents).toContain('[devtooie] [INFO] just so');
+  });
+
+  it('colors the system prefix gold instead of leaving the slot empty', () => {
+    const prev = chalk.level;
+    chalk.level = 3; // force truecolor so the hex actually lands in the prefix
+    try {
+      manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
+      manager.logSystem('x');
+      const line = manager.getVisibleLines().at(-1)!;
+      expect(stripAnsi(line.prefix)).toBe('[devtooie] ');
+      expect(line.prefix).toBe(chalk.hex('#d7af5f')('[devtooie]') + ' ');
+    } finally {
+      chalk.level = prev;
+    }
   });
 });
 
@@ -299,7 +475,7 @@ describe('ProcessManager filter replay batching', () => {
 
 describe('ProcessManager filter: case- and accent-insensitive', () => {
   // Matching normalizes both the log text and the typed terms (lowercase + diacritic
-  // strip), so accents never hide a match: a typed `gonzalez` finds a logged `González`,
+  // strip), so accents never hide a match: a typed `malaga` finds a logged `Málaga`,
   // and vice-versa.
   function seedAndFilter(line: string, terms: string[]): string {
     manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
@@ -315,12 +491,12 @@ describe('ProcessManager filter: case- and accent-insensitive', () => {
   }
 
   it('matches an accented log line from an unaccented term', () => {
-    expect(seedAndFilter('Añadido González', ['anadido'])).toContain('Añadido González');
-    expect(seedAndFilter('Añadido González', ['gonzalez'])).toContain('González');
+    expect(seedAndFilter('Café Málaga', ['cafe'])).toContain('Café Málaga');
+    expect(seedAndFilter('Café Málaga', ['malaga'])).toContain('Málaga');
   });
 
   it('matches an unaccented log line from an accented term', () => {
-    expect(seedAndFilter('Added Gonzalez', ['gonzález'])).toContain('Added Gonzalez');
+    expect(seedAndFilter('Added Malaga', ['málaga'])).toContain('Added Malaga');
   });
 
   it('is case-insensitive', () => {
@@ -737,6 +913,37 @@ describe('ProcessManager logs.formatter', () => {
     mgr = undefined;
   }, 10_000);
 
+  // Grouping for a formatted entry is known at the split, not inferred from how it looks: a
+  // formatter is free to return multi-line output without indenting it, and those lines must
+  // still filter and replay as one entry.
+  it('groups every line of one formatted entry, even when the formatter does not indent', async () => {
+    const formatter = (line: string): string => {
+      try {
+        const o = JSON.parse(line) as { msg?: unknown };
+        return `HEAD ${String(o.msg)}\nsecond line\nthird line`; // deliberately flush-left
+      } catch {
+        return line;
+      }
+    };
+    mgr = new ProcessManager(argsWith(formatter), { plain: true });
+    mgr.start('fmtfix');
+    await wait(1500);
+    await mgr.stop('fmtfix');
+
+    const lines = mgr.getVisibleLines();
+    const head = lines.find((l) => l.text.includes('HEAD hello world'));
+    const second = lines.find((l) => l.text === 'second line');
+    const third = lines.find((l) => l.text === 'third line');
+    expect(head && second && third).toBeTruthy();
+    expect(second!.groupId).toBe(head!.groupId);
+    expect(third!.groupId).toBe(head!.groupId);
+    // ...and an unrelated later line is NOT swept into that group.
+    const plain = lines.find((l) => l.text.includes('plain non-json line'));
+    expect(plain!.groupId).not.toBe(head!.groupId);
+    disposeManager(mgr);
+    mgr = undefined;
+  }, 10_000);
+
   it('falls back to the raw line when the formatter throws', async () => {
     mgr = new ProcessManager(
       argsWith(() => {
@@ -753,6 +960,84 @@ describe('ProcessManager logs.formatter', () => {
     expect(contents).toContain('hello world');
     disposeManager(mgr);
     mgr = undefined;
+  }, 10_000);
+});
+
+// A formatter owns the presentation of lines it actually rewrites — not of the ones it
+// hands back untouched. A non-structured stderr line is devtooie's to render, so it must
+// stay red whether the package configures a formatter or falls back to the default. These
+// pin the two paths to the same result: configuring `logs.formatter` must not silently
+// wash the red out of stderr.
+describe('ProcessManager stderr color through a formatter', () => {
+  let errDir: string;
+  let errLog: string;
+  let mgr: ProcessManager | undefined;
+  const originalLevel = chalk.level;
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  beforeAll(() => {
+    chalk.level = 3; // force truecolor so the red is actually emitted
+    errDir = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-pm-err-'));
+    fs.writeFileSync(
+      path.join(errDir, 'package.json'),
+      JSON.stringify({
+        name: 'errfix',
+        version: '1.0.0',
+        scripts: {
+          dev: `node -e "console.error('plain stderr line');setInterval(()=>{},1e9)"`,
+        },
+      }),
+    );
+    errLog = path.join(errDir, 'devlog.txt');
+  });
+  afterAll(() => {
+    chalk.level = originalLevel;
+    disposeManager(mgr);
+    fs.rmSync(errDir, { recursive: true, force: true });
+  });
+
+  function argsFor(formatter?: (line: string) => string): RunnerArgs {
+    const a: AnyPackageConfig = {
+      name: 'errfix',
+      relativeDir: '.',
+      path: errDir,
+      ...(formatter ? { logs: { formatter } } : {}),
+    };
+    return {
+      sortedPackages: [a],
+      selectedSet: new Set([a.name]),
+      buildDepSet: new Set(),
+      rebuildableSet: new Set(),
+      waitForMap: {},
+      healthcheckUrls: {},
+      extraCommandsMap: {},
+      logFile: errLog,
+      cwd: errDir,
+    };
+  }
+
+  /** Run the fixture once and return the buffered (ANSI-carrying) stderr line. */
+  async function bufferedStderrLine(formatter?: (line: string) => string) {
+    mgr = new ProcessManager(argsFor(formatter), { plain: true });
+    mgr.start('errfix');
+    await wait(1500);
+    await mgr.stop('errfix');
+    const line = mgr.getVisibleLines().find((l) => stripAnsi(l.text) === 'plain stderr line');
+    disposeManager(mgr);
+    mgr = undefined;
+    return line;
+  }
+
+  it('reddens a passed-through stderr line under the default formatter', async () => {
+    const line = await bufferedStderrLine();
+    expect(line?.text).toBe(chalk.red('plain stderr line'));
+  }, 10_000);
+
+  it('reddens a passed-through stderr line under an explicitly configured formatter', async () => {
+    // `createFormatter()` is what `logging.formatter(...)` builds — it passes non-JSON
+    // through unchanged, so this line is untouched and must be reddened exactly as above.
+    const line = await bufferedStderrLine(createFormatter());
+    expect(line?.text).toBe(chalk.red('plain stderr line'));
   }, 10_000);
 });
 

@@ -6,6 +6,8 @@ import {
   loadConfig,
   findConfigPath,
   findWorkspaceRoot,
+  formatConfigLoadFailure,
+  MIN_TS_CONFIG_NODE,
   NoProjectConfigError,
 } from './load-config.js';
 
@@ -30,6 +32,45 @@ describe('loadConfig', () => {
     );
     const packages = await loadConfig(dir);
     expect(packages.map((p: (typeof packages)[0]) => p.name)).toContain('svc');
+  });
+});
+
+describe('loadConfig failure modes', () => {
+  it('rejects with the underlying error — not NoProjectConfigError — when the config throws', async () => {
+    fs.writeFileSync(path.join(dir, 'devtooie.config.mjs'), `throw new Error('boom in config');\n`);
+    const err = await loadConfig(dir).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(NoProjectConfigError);
+    expect((err as Error).message).toContain('boom in config');
+  });
+});
+
+describe('formatConfigLoadFailure', () => {
+  it('names the config file and includes the underlying error', () => {
+    const msg = formatConfigLoadFailure('/w/devtooie.config.ts', new Error('Unexpected token'));
+    expect(msg).toContain('Failed to load /w/devtooie.config.ts');
+    expect(msg).toContain('Unexpected token');
+  });
+
+  it('adds the Node-version hint when Node cannot import TypeScript', () => {
+    const err = Object.assign(new TypeError('Unknown file extension ".ts"'), {
+      code: 'ERR_UNKNOWN_FILE_EXTENSION',
+    });
+    const msg = formatConfigLoadFailure('/w/devtooie.config.ts', err, 'v22.17.1');
+    expect(msg).toContain('Unknown file extension ".ts"');
+    expect(msg).toContain('v22.17.1');
+    expect(msg).toContain(`>=${MIN_TS_CONFIG_NODE}`);
+  });
+
+  it('omits the Node hint for unrelated failures', () => {
+    const msg = formatConfigLoadFailure('/w/devtooie.config.ts', new Error('boom'), 'v22.17.1');
+    expect(msg).not.toContain(MIN_TS_CONFIG_NODE);
+  });
+
+  it('stringifies a non-Error throw', () => {
+    expect(formatConfigLoadFailure('/w/devtooie.config.ts', 'just a string')).toContain(
+      'just a string',
+    );
   });
 });
 

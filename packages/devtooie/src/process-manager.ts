@@ -4,6 +4,7 @@ import chalk from 'chalk';
 import { execa, type ResultPromise } from 'execa';
 import stringWidth from 'string-width';
 import wrapAnsi from 'wrap-ansi';
+import sliceAnsi from 'slice-ansi';
 import type { AnyPackageConfig } from './config.js';
 import { getDevScript, getLoadedConfig } from './config.js';
 import { defaultFormatter } from './log-formatter.js';
@@ -15,13 +16,30 @@ import {
   getDefaultLogFile,
   getExecArgs,
   getRebuildCommands,
+  getScriptText,
   hasDevScript,
   logTimestamp,
   stripAnsi,
 } from './lib.js';
+import {
+  WATCH_PATHS_ENV,
+  deriveWatchPaths,
+  formatWatchPathFlags,
+  usesUnscopedNodeWatch,
+} from './watch-paths.js';
 import { updateRunning } from './running.js';
 import type { RunnerArgs } from './runners/types.js';
+import { SHUTDOWN_GRACE_MS } from './shutdown-timing.js';
 import { stripTitleSequences } from './terminal-title.js';
+import { DEVTOOIE_LABEL_COLOR, PACKAGE_PALETTE } from './colors.js';
+import { createInternalLogger, formatInternalRecord } from './internal-logger.js';
+import type { Logger } from 'pino';
+
+/**
+ * Applied through a function rather than a hoisted `chalk.hex(...)` because chalk bakes the
+ * active color level into a style when it's built, and that level isn't settled at module load.
+ */
+const devtooieLabel = (text: string) => chalk.hex(DEVTOOIE_LABEL_COLOR)(text);
 
 type ProcessState = 'running' | 'stopped' | 'waiting';
 type Status = ProcessState | 'rebuilding' | 'restarting';
@@ -40,7 +58,7 @@ interface ManagedProcess {
   extraProcs: Set<ResultPromise>;
 }
 
-interface BufferedLine {
+export interface BufferedLine {
   prefix: string;
   text: string;
   /** `YYYY-MM-DD HH:MM:SS` stamp captured when the line was logged (shown when timestamps are on). */
@@ -72,7 +90,7 @@ function isContinuationLine(text: string): boolean {
 /**
  * Normalize text for filter matching: lowercase and strip diacritics (NFD decomposition
  * drops combining accent marks). Applied to both the log haystack and the typed terms, so
- * matching is case- and accent-insensitive — a typed `gonzalez` finds a logged `González`.
+ * matching is case- and accent-insensitive — a typed `malaga` finds a logged `Málaga`.
  */
 function normalizeForFilter(s: string): string {
   return s
@@ -81,22 +99,7 @@ function normalizeForFilter(s: string): string {
     .toLowerCase();
 }
 
-// Package-identity colors for log prefixes: a vivid, full-spectrum palette ordered so adjacent
-// packages land far apart on the color wheel. These are bright truecolor shades — distinct from
-// the dull basic-ANSI colors the status text/dots use (green/cyan/yellow/red) — and skip
-// pink/pastels.
-const PALETTE = [
-  chalk.hex('#4C9AFF'), // blue
-  chalk.hex('#FF9636'), // orange
-  chalk.hex('#3FCF7F'), // emerald
-  chalk.hex('#A56EFF'), // purple
-  chalk.hex('#FFC53D'), // gold
-  chalk.hex('#22C3C3'), // teal
-  chalk.hex('#FF6B57'), // coral
-  chalk.hex('#6C79FF'), // indigo
-  chalk.hex('#A8D93C'), // lime
-  chalk.hex('#C77DFF'), // violet
-];
+const PALETTE = PACKAGE_PALETTE.map((hex) => chalk.hex(hex));
 
 // The chalk foreground color names accepted by `run.color` (a subset guard, so a stray
 // `run.color: 'bold'`/`'constructor'` can't reach into non-color chalk members).
@@ -139,10 +142,74 @@ export function packagePrefixColor(pkg: AnyPackageConfig, index: number): (s: st
 }
 
 const MAX_BUFFER_LINES = 50_000;
+/**
+ * Cap on the spawned-child records mirrored into `running.json`. Records outlive the processes
+ * themselves (see `trackChild`), so a long session with many restarts would otherwise accumulate
+ * one entry per spawn forever.
+ */
+const MAX_CHILD_RECORDS = 200;
 /** Rendered width of a displayed timestamp gutter: `"YYYY-MM-DD HH:MM:SS "` (19 chars + a space). */
 const TIMESTAMP_GUTTER_WIDTH = 20;
-const SHUTDOWN_GRACE_MS = 3000;
 const WAIT_FOR_POLL_MS = 2000;
+/** Below this many columns of content there's no room to wrap meaningfully — emit one long row. */
+const MIN_CONTENT_WIDTH = 20;
+
+/**
+ * Columns to indent a wrapped continuation row by, so it lines up under the **value** of a
+ * `  key: value` property line — the same alignment the formatter gives a value that contains
+ * newlines. Falls back to the line's own leading whitespace (which is what a continuation row of a
+ * multi-line value already carries), and to 0 for an unindented line such as a `[LEVEL] message`
+ * header or raw process output, which wraps flush against the gutter.
+ */
+function hangingIndent(text: string): number {
+  const plain = stripAnsi(text);
+  const lead = /^[ \t]*/.exec(plain)![0].length;
+  if (lead === 0) {
+    return 0;
+  }
+  const key = /^[ \t]*[^\s:]+:[ ]/.exec(plain);
+  return key ? key[0].length : lead;
+}
+
+/**
+ * Wrap `text` into rows: the first `width` columns wide, every row after it `indent` columns
+ * narrower to leave room for the hanging indent (which the caller applies). Rows are returned
+ * without that indent.
+ *
+ * `wrap-ansi` only wraps to a single fixed width, so this walks the text one row at a time,
+ * slicing off exactly what the previous row consumed. `trim: false` is essential — the default
+ * strips a row's leading whitespace, which would eat the formatter's property indent and leave a
+ * wrapped `  key:` sitting two columns left of every key short enough not to wrap.
+ */
+function wrapRows(text: string, width: number, indent: number): string[] {
+  const rows: string[] = [];
+  const nextRowWidth = width - indent;
+  let rest = text;
+  let rowWidth = width;
+  while (stringWidth(rest) > rowWidth) {
+    let row = wrapAnsi(rest, rowWidth, { hard: true, trim: false }).split('\n')[0]!;
+    // `wrap-ansi` pushes an over-long token to the next row when it judges that costs no extra
+    // rows — but it reasons with a single uniform width, and our continuation rows are `indent`
+    // columns narrower, so here it can cost a row *and* leave `  key:` sitting alone beside a
+    // blank. When the token is too long for a continuation row it gets split there anyway, so
+    // moving it buys nothing: fill this row instead.
+    if (stringWidth(row) < rowWidth) {
+      const remainder = stripAnsi(sliceAnsi(rest, stringWidth(row))).replace(/^[ \t]+/, '');
+      if (stringWidth(/^\S*/.exec(remainder)![0]) > nextRowWidth) {
+        row = sliceAnsi(rest, 0, rowWidth);
+      }
+    }
+    const consumed = stringWidth(row);
+    if (consumed === 0) {
+      break; // no progress possible (e.g. a wide glyph that can't fit) — emit the remainder as-is
+    }
+    rows.push(row);
+    rest = sliceAnsi(rest, consumed);
+    rowWidth = nextRowWidth;
+  }
+  rows.push(rest);
+  return rows;
+}
 
 /**
  * Owns the lifecycle of every package's dev process: spawning, streaming and
@@ -161,6 +228,8 @@ export class ProcessManager implements ControlManager {
   /** Per-package resolved on-screen timestamp visibility, keyed by the line's `searchName`. */
   private showTsBySearchName = new Map<string, boolean>();
   private filterTerms: string[] = [];
+  /** Memoized `--watch-path=` flags per package name (see {@link ProcessManager.watchPathFlags}). */
+  private readonly watchPathFlagsCache = new Map<string, string>();
   private buffer: BufferedLine[] = [];
   private rebuildableSet: Set<string>;
   /** App name -> names of packages whose healthchecks must pass before it starts. */
@@ -177,6 +246,10 @@ export class ProcessManager implements ControlManager {
   private footerHeight = 3;
   /** Skip terminal clearing/scrollback tricks when there's no interactive UI on top. */
   private plain: boolean;
+  /** devtooie's own lifecycle events; rendered under the gold `[devtooie]` prefix. */
+  readonly systemLog: Logger;
+  /** Control-API command notices; rendered under the gold `[dt:control]` prefix. */
+  readonly controlLog: Logger;
   private systemPrefix: string;
   /** Colored `"[dt:control] "` prefix for control-API command notices. */
   private controlPrefix: string;
@@ -193,6 +266,12 @@ export class ProcessManager implements ControlManager {
   /** Bound `process.on('exit')` handler, kept so `dispose()` can remove it. */
   private exitHandler: () => void;
   private disposed = false;
+  /**
+   * Every child this session has spawned, `pid → the directory it was spawned in`, mirrored into
+   * `running.json` so the next session can sweep them if this one is SIGKILLed (see
+   * {@link ChildRecord}). Retained past exit — see {@link ProcessManager.trackChild}.
+   */
+  private childRecords = new Map<number, string>();
   /** Fullscreen (Ink) subscribers, notified when the buffer changes. */
   private listeners = new Set<() => void>();
   /** Monotonic buffer version, used as the useSyncExternalStore snapshot. */
@@ -248,10 +327,11 @@ export class ProcessManager implements ControlManager {
       });
     }
 
-    this.systemPrefix = chalk.dim(`[${' '.repeat(maxNameLen)}]`) + ' ';
-    // Pad the label to the widest service name so the closing bracket lines up
-    // with every package prefix (e.g. `[dt:control     ]` beside `[whatsapp-bridge]`).
-    this.controlPrefix = chalk.dim(`[${'dt:control'.padEnd(maxNameLen)}]`) + ' ';
+    // devtooie's own two channels carry a label (never an empty slot) in the shared gold. Both are
+    // padded to the widest service name so the closing bracket lines up with every package prefix
+    // (e.g. `[dt:control     ]` beside `[payments-worker]`).
+    this.systemPrefix = devtooieLabel(`[${'devtooie'.padEnd(maxNameLen)}]`) + ' ';
+    this.controlPrefix = devtooieLabel(`[${'dt:control'.padEnd(maxNameLen)}]`) + ' ';
 
     ProcessManager.instances.add(this);
     this.exitHandler = () => {
@@ -261,6 +341,40 @@ export class ProcessManager implements ControlManager {
 
     this.logFilePath = logFile ?? getDefaultLogFile();
     this.logFd = fs.openSync(this.logFilePath, 'w');
+
+    // Built last: its destination writes through `addLine`, which needs the prefixes and the
+    // open logfile above already in place.
+    const internal = createInternalLogger((chunk) => this.ingestInternalLog(chunk));
+    this.systemLog = internal.system;
+    this.controlLog = internal.control;
+  }
+
+  /**
+   * Sink for {@link createInternalLogger}: render each NDJSON record and buffer it through the
+   * same path package output takes, so devtooie's own logs format, group, filter and land in the
+   * logfile identically. A control record is scoped to the package it targeted (when it names
+   * one) so it groups with that package's output. Malformed lines are dropped rather than
+   * throwing back into the logger.
+   */
+  private ingestInternalLog(chunk: string): void {
+    for (const jsonLine of chunk.split('\n')) {
+      if (!jsonLine) {
+        continue;
+      }
+      let record;
+      try {
+        record = formatInternalRecord(jsonLine);
+      } catch {
+        continue;
+      }
+      const isControl = record.component === 'control';
+      const prefix = isControl ? this.controlPrefix : this.systemPrefix;
+      const searchName = isControl
+        ? ((record.packageName && this.processes.get(record.packageName)?.searchName) ??
+          'dt:control')
+        : 'system';
+      this.addEntryLines(prefix, record.text, searchName, record.isError);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -269,6 +383,7 @@ export class ProcessManager implements ControlManager {
 
   startAll(): void {
     debugLog(`startAll: starting ${this.processes.size} processes`);
+    this.warnUnscopedNodeWatch();
     for (const [name, managed] of this.processes) {
       if (managed.pkg.autostart === false) {
         // Opted out of auto-start: leave it stopped (not waiting) for a manual start via the
@@ -293,6 +408,34 @@ export class ProcessManager implements ControlManager {
     }
     this.startEnvWatchers();
     debugLog(`startAll: done, buffer.length=${this.buffer.length}`);
+  }
+
+  /**
+   * Warns once per session about packages whose dev script runs a bare `node --watch`, which
+   * recursively watches the directory of every loaded file — `node_modules` included — and can
+   * exhaust the OS watch budget (`EMFILE`) on a large dependency tree. Names the exact flags to
+   * add, derived from the package's own project graph. Advisory only: nothing is rewritten, and a
+   * package that scopes its watcher (or doesn't use Node's watcher) is never mentioned.
+   */
+  private warnUnscopedNodeWatch(): void {
+    for (const [, managed] of this.processes) {
+      if (!managed.canDev) {
+        continue;
+      }
+      const script = getScriptText(managed.pkg, getDevScript(managed.pkg));
+      if (!script || !usesUnscopedNodeWatch(script)) {
+        continue;
+      }
+      const flags = this.watchPathFlags(managed.pkg);
+      this.systemLog.warn(
+        `${managed.pkg.name}: \`node --watch\` is unscoped — it recursively watches every directory it loads from, including node_modules.`,
+      );
+      this.systemLog.warn(
+        flags
+          ? `${managed.pkg.name}: scope it with \`${flags}\` (or splice in \`$${WATCH_PATHS_ENV}\`, which devtooie sets to exactly that).`
+          : `${managed.pkg.name}: scope it with \`--watch-path\` flags naming the directories it should restart for.`,
+      );
+    }
   }
 
   private startWaitingPoll(): void {
@@ -371,6 +514,7 @@ export class ProcessManager implements ControlManager {
 
     managed.proc = proc;
     managed.status = 'running';
+    this.trackChild(proc, managed.pkg.path);
 
     const { searchName } = managed;
 
@@ -407,6 +551,25 @@ export class ProcessManager implements ControlManager {
   }
 
   /**
+   * This package's ready-made `--watch-path=` flags, derived once per session.
+   *
+   * Deriving them loads TypeScript and parses the package's tsconfig and every transitive project
+   * reference — cheap once, but `packageEnv` runs on every spawn, so an unmemoized derivation
+   * repeats all of that on each restart (and a `.env` edit can restart several packages at once),
+   * blocking the render loop to recompute an identical answer. The project graph is read from disk
+   * at startup like the rest of the config; a change to it takes a devtooie restart either way.
+   */
+  private watchPathFlags(pkg: AnyPackageConfig): string {
+    const cached = this.watchPathFlagsCache.get(pkg.name);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const flags = formatWatchPathFlags(deriveWatchPaths(pkg).paths);
+    this.watchPathFlagsCache.set(pkg.name, flags);
+    return flags;
+  }
+
+  /**
    * Environment for a package's child processes: the current `process.env`, then the
    * package's configured `run.port` as `PORT`, then its resolved `.env` files (later files /
    * package scope win). So `PORT` defaults to the config port but an explicit `.env` `PORT`
@@ -417,6 +580,10 @@ export class ProcessManager implements ControlManager {
     return Object.assign(
       {},
       process.env,
+      // Ready-made `--watch-path=` flags for this package's project graph, so a dev script can
+      // scope `node --watch` without hand-maintaining the path list (see `watch-paths.ts`).
+      // Placed before the `.env` layer so a package can still override it outright.
+      { [WATCH_PATHS_ENV]: this.watchPathFlags(pkg) },
       packageEnvLayer(pkg, { cwd: this.cwd, files: this.envFiles }),
     );
   }
@@ -454,7 +621,14 @@ export class ProcessManager implements ControlManager {
         onChange: () => this.restartForEnvChange(name),
       });
     }
-    this.envWatchDispose = watchEnvFiles({ targets });
+    this.envWatchDispose = watchEnvFiles({
+      targets,
+      onError: (dir, error) => {
+        this.systemLog.warn(
+          `stopped watching ${dir} for .env changes (${error.message}); edits there won't auto-restart packages`,
+        );
+      },
+    });
   }
 
   /** Restart a package in response to an `.env` change, but only if it's currently running. */
@@ -567,6 +741,7 @@ export class ProcessManager implements ControlManager {
         // shutdownAll / forceKillAll can reach (and kill the group of) this
         // child even though it isn't the package's own long-running `proc`.
         managed.extraProcs.add(buildProc);
+        this.trackChild(buildProc, managed.pkg.path);
         let result;
         try {
           result = await buildProc;
@@ -654,6 +829,7 @@ export class ProcessManager implements ControlManager {
     });
 
     managed.extraProcs.add(proc);
+    this.trackChild(proc, managed.pkg.path);
 
     if (proc.stdout) {
       proc.stdout.on('data', (data: Buffer) => {
@@ -714,7 +890,7 @@ export class ProcessManager implements ControlManager {
     }
   }
 
-  /** Graceful shutdown: SIGTERM everything, wait up to 3s, then SIGKILL stragglers. */
+  /** Graceful shutdown: SIGTERM everything, wait up to 10s, then SIGKILL stragglers. */
   async shutdownAll(): Promise<void> {
     if (this.waitingPollTimer) {
       clearInterval(this.waitingPollTimer);
@@ -741,7 +917,7 @@ export class ProcessManager implements ControlManager {
       return;
     }
 
-    this.addLine(this.systemPrefix, chalk.yellow('shutting down...'), 'system', false);
+    this.systemLog.warn('shutting down...');
 
     for (const { proc } of living) {
       this.killTree(proc);
@@ -823,6 +999,51 @@ export class ProcessManager implements ControlManager {
       fs.closeSync(this.logFd);
     } catch {
       /* already closed */
+    }
+  }
+
+  /**
+   * Records a freshly spawned child in `running.json`, for the *next* session's orphan sweep —
+   * nothing in this session reads it back.
+   *
+   * A record is deliberately **not** removed when the child exits. Dev commands are commonly a
+   * wrapper around the process that does the work (a package manager, an env shim, `foo -- bar`),
+   * and the wrapper can exit while what it spawned keeps running in the same detached process
+   * group. Dropping the record then would discard the only handle a later session has on that
+   * group — the exact orphan that binds no port and so can't be found by a port sweep either.
+   * Keeping it costs nothing: {@link sweepRecordedOrphans} verifies the pid is alive *and* still
+   * running in its recorded directory before signalling anything, so a record for a long-dead
+   * process is inert.
+   *
+   * Best-effort throughout: `updateRunning` is a no-op unless this process owns the workspace's
+   * `running.json`, so a session that never wrote one (tests, `devtooie run`) simply records
+   * nothing. Never let a bookkeeping failure interfere with actually running the package.
+   */
+  private trackChild(proc: ResultPromise, cwd: string): void {
+    const { pid } = proc;
+    if (!pid) {
+      return;
+    }
+    this.childRecords.set(pid, cwd);
+    // Bound the list so a long session with many restarts can't grow it without limit; Map
+    // iteration is insertion-ordered, so this drops the oldest records first.
+    while (this.childRecords.size > MAX_CHILD_RECORDS) {
+      const oldest = this.childRecords.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      this.childRecords.delete(oldest);
+    }
+    this.persistChildren();
+  }
+
+  private persistChildren(): void {
+    try {
+      updateRunning(this.cwd, {
+        children: [...this.childRecords].map(([pid, cwd]) => ({ pid, cwd })),
+      });
+    } catch {
+      /* bookkeeping only — never block a spawn */
     }
   }
 
@@ -995,22 +1216,49 @@ export class ProcessManager implements ControlManager {
     return line.showTs ? `${chalk.dim(line.ts)} ` : '';
   }
 
-  /** Left-gutter width for a line: the `[name]` prefix, plus the timestamp column when shown. */
+  /**
+   * Left-gutter width for a line: its `[name]` prefix, plus the timestamp column when shown.
+   * Measured from the prefix itself rather than assuming {@link prefixWidth} — devtooie's own
+   * labels are `padEnd`ed to the widest *package* name, and `padEnd` never truncates, so
+   * `[dt:control] ` stays wider than `prefixWidth` in a workspace of short names. Assuming the
+   * nominal width there under-counts the gutter, and the wrapped rows overflow the terminal (and
+   * are then truncated, losing text).
+   */
   private gutterWidth(line: BufferedLine): number {
-    return this.prefixWidth + (line.showTs ? TIMESTAMP_GUTTER_WIDTH : 0);
+    return stringWidth(line.prefix) + (line.showTs ? TIMESTAMP_GUTTER_WIDTH : 0);
   }
 
-  /** Rendered rows (timestamp + prefix + wrapped, continuation-padded text) of a line at `cols` width. */
+  /**
+   * Rendered rows of a line at `cols` width. **Every** row carries the timestamp (when shown) and
+   * the `[name]` prefix, so a line that wraps keeps an unbroken left gutter instead of leaving
+   * blank space beside its continuations. Wrapped rows are additionally indented to line up under
+   * the value of a `key: value` property (see {@link hangingIndent}), matching how the formatter
+   * aligns a value that contains newlines.
+   */
   wrapLine(line: BufferedLine, cols: number): string[] {
-    const ts = this.tsPrefix(line);
-    const contentWidth = cols - this.gutterWidth(line);
-    if (contentWidth <= 20 || stringWidth(line.text) <= contentWidth) {
-      return [`${ts}${line.prefix}${line.text}`];
+    return this.wrapLineRows(line, cols).map((row) => row.text);
+  }
+
+  /**
+   * As {@link wrapLine}, but each row also carries the display column where its **own content**
+   * begins — past the gutter, and past the hanging indent on a wrapped row. That's the boundary
+   * between presentation and text, which value-scoped selection needs to know to keep the gutter
+   * off the clipboard.
+   */
+  wrapLineRows(line: BufferedLine, cols: number): { text: string; contentStart: number }[] {
+    const gutter = this.gutterWidth(line);
+    const head = `${this.tsPrefix(line)}${line.prefix}`;
+    const contentWidth = cols - gutter;
+    if (contentWidth <= MIN_CONTENT_WIDTH || stringWidth(line.text) <= contentWidth) {
+      return [{ text: `${head}${line.text}`, contentStart: gutter }];
     }
-    const pad = ' '.repeat(this.gutterWidth(line));
-    return wrapAnsi(line.text, contentWidth, { hard: true })
-      .split('\n')
-      .map((row, i) => (i === 0 ? `${ts}${line.prefix}${row}` : `${pad}${row}`));
+    // Cap the indent so continuation rows always keep a usable amount of room.
+    const indent = Math.min(hangingIndent(line.text), contentWidth - MIN_CONTENT_WIDTH);
+    const pad = ' '.repeat(indent);
+    return wrapRows(line.text, contentWidth, indent).map((row, i) => ({
+      text: `${head}${i === 0 ? '' : pad}${row}`,
+      contentStart: gutter + (i === 0 ? 0 : indent),
+    }));
   }
 
   /** Re-clear the screen and replay the buffer through the active filter. */
@@ -1031,20 +1279,24 @@ export class ProcessManager implements ControlManager {
     this.notify();
   }
 
-  /** Emit a system-level line (e.g. shutdown notices), interleaved like any package's output. */
+  /**
+   * Emit an informational system line (interleaved like any package's output). Use
+   * {@link systemLog} directly for another level or to attach structured attrs.
+   */
   logSystem(message: string): void {
-    this.addLine(this.systemPrefix, message, 'system', false);
+    this.systemLog.info(message);
   }
 
   /**
-   * Emit a `[dt:control]` line noting a mutating command received over the
-   * control API. When `pkg` names a known package, the line is tagged with that
-   * package's search name so it shows/hides with the package under an active
-   * filter; otherwise it's tagged `dt:control`.
+   * Emit a `[dt:control]` line noting a mutating command received over the control API, with the
+   * variables that command carried as structured attrs — e.g.
+   * `logControl('restart', { package: 'web' })` renders `[INFO] restart` above an indented
+   * `package: web`. When `attrs.package` names a known package the line is tagged with that
+   * package's search name, so it shows/hides with the package under an active filter; otherwise
+   * it's tagged `dt:control`.
    */
-  logControl(message: string, pkg?: string): void {
-    const searchName = (pkg && this.processes.get(pkg)?.searchName) ?? 'dt:control';
-    this.addLine(this.controlPrefix, message, searchName, false);
+  logControl(command: string, attrs?: Record<string, unknown>): void {
+    this.controlLog.info(attrs ?? {}, command);
   }
 
   /**
@@ -1074,37 +1326,28 @@ export class ProcessManager implements ControlManager {
 
   /**
    * Render one raw output line from a package's child process for display/logging. A package's own
-   * `logs.formatter` (when set) fully owns presentation — its string result is used verbatim, and
-   * if it throws or returns a non-string we fall back to the default rendering (red stderr / plain
-   * stdout). With no custom formatter, devtooie's {@link defaultFormatter} runs: lines it leaves
-   * unchanged (non-structured output) keep the default rendering, and structured logs it formats
-   * are used verbatim. Only real process output goes through here; devtooie's own status lines
-   * (`started`, `stopping…`, …) never do.
+   * `logs.formatter` runs in place of devtooie's {@link defaultFormatter}; either way the formatter
+   * owns presentation of the lines it **rewrites**, and its string result is used verbatim.
+   *
+   * A line the formatter hands back **unchanged** is still ours to render, so it keeps the default
+   * rendering: red for stderr, plain for stdout. That case is not an edge — both formatters pass
+   * non-structured output straight through, so it covers every plain (non-JSON) line a package
+   * emits. Treating a configured formatter differently here used to wash the red out of stderr the
+   * moment `logs.formatter` was set. A formatter that throws or returns a non-string falls back the
+   * same way. Only real process output goes through here; devtooie's own status lines (`started`,
+   * `stopping…`, …) never do.
    */
   private formatOutput(managed: ManagedProcess, line: string, isError: boolean): string {
-    const custom = managed.pkg.logs?.formatter;
-    if (custom) {
-      try {
-        const out = custom(line);
-        if (typeof out === 'string') {
-          return out;
-        }
-      } catch {
-        /* fall back to the default rendering below */
-      }
-      return isError ? chalk.red(line) : line;
-    }
+    const format = managed.pkg.logs?.formatter ?? defaultFormatter;
     let out = line;
     try {
-      const formatted = defaultFormatter(line);
+      const formatted = format(line);
       if (typeof formatted === 'string') {
         out = formatted;
       }
     } catch {
       /* keep the raw line */
     }
-    // The default formatter passes non-structured output through unchanged; keep the plain/red
-    // rendering for those, and use the formatted string for logs it recognized.
     return out === line ? (isError ? chalk.red(line) : line) : out;
   }
 
@@ -1116,20 +1359,48 @@ export class ProcessManager implements ControlManager {
    */
   private addOutput(managed: ManagedProcess, rawLine: string, isError: boolean): void {
     const formatted = this.formatOutput(managed, rawLine, isError);
-    for (const out of formatted.split('\n')) {
-      if (out) {
-        this.addLine(managed.prefix, out, managed.searchName, isError);
+    this.addEntryLines(managed.prefix, formatted, managed.searchName, isError);
+  }
+
+  /**
+   * Buffer the lines of one rendered entry. A formatter that expanded a single raw line into
+   * several produced one entry, so the extra lines are marked as continuations outright rather
+   * than relying on the formatter having indented them. A single-line result carries no such
+   * structure, so its grouping is left to {@link addLine}'s fallback.
+   */
+  private addEntryLines(prefix: string, rendered: string, searchName: string, isError: boolean) {
+    const parts = rendered.split('\n');
+    const expanded = parts.length > 1;
+    let isFirst = true;
+    for (const text of parts) {
+      if (!text) {
+        continue;
       }
+      this.addLine(prefix, text, searchName, isError, expanded ? !isFirst : undefined);
+      isFirst = false;
     }
   }
 
-  private addLine(prefix: string, text: string, searchName: string, isError: boolean): void {
+  /**
+   * Buffer one rendered line. `isContinuation` states outright whether the line continues the
+   * previous entry — callers that split a *known* single entry (a formatter's multi-line result)
+   * pass it, so grouping never depends on how that entry happens to be indented. Omit it for
+   * standalone raw output, where there's no structure to consult and the leading-whitespace
+   * convention is the only available signal.
+   */
+  private addLine(
+    prefix: string,
+    text: string,
+    searchName: string,
+    isError: boolean,
+    isContinuation?: boolean,
+  ): void {
     // Consecutive lines from the same package are grouped: a continuation
     // line shares the group of the entry it belongs to, so filtering and
     // replay keep multi-line log entries intact.
     let groupId: number;
     const prevGroup = this.lastGroupId.get(searchName);
-    if (isContinuationLine(text) && prevGroup !== undefined) {
+    if ((isContinuation ?? isContinuationLine(text)) && prevGroup !== undefined) {
       groupId = prevGroup;
     } else {
       groupId = this.nextGroupId++;
@@ -1317,29 +1588,15 @@ export class ProcessManager implements ControlManager {
   }
 
   /**
-   * Render one line to its terminal string — the timestamp (when enabled) and
-   * prefix followed by the text, hard-wrapped to the content width with wrapped
-   * rows aligned under the prefix. Returns the string (no trailing newline) and
-   * the number of terminal rows it occupies. Pure (writes nothing), so the live
-   * single-line path and the batched replay path produce byte-identical layout.
+   * Render one line to its terminal string for **plain mode**, joining the rows
+   * {@link wrapLine} produces — so plain output and the interactive viewport lay
+   * lines out identically by construction. Returns the string (no trailing
+   * newline) and the number of terminal rows it occupies. Pure (writes nothing),
+   * so the live single-line path and the batched replay path agree.
    */
   private formatLine(line: BufferedLine): { rendered: string; rows: number } {
-    const { prefix, text } = line;
-    const ts = this.tsPrefix(line);
-    const cols = process.stdout.columns || 120;
-    const contentWidth = cols - this.gutterWidth(line);
-
-    if (contentWidth <= 20 || stringWidth(text) <= contentWidth) {
-      return { rendered: `${ts}${prefix}${text}`, rows: 1 };
-    }
-
-    const pad = ' '.repeat(this.gutterWidth(line));
-    const wrapped = wrapAnsi(text, contentWidth, { hard: true });
-    const lines = wrapped.split('\n');
-    const rendered = lines
-      .map((row, i) => (i === 0 ? `${ts}${prefix}${row}` : `${pad}${row}`))
-      .join('\n');
-    return { rendered, rows: lines.length };
+    const rows = this.wrapLine(line, process.stdout.columns || 120);
+    return { rendered: rows.join('\n'), rows: rows.length };
   }
 
   /** Print one line, wrapping to the terminal width. Returns the number of rows it consumed. */

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isMouseSequence, parseMouseEvents } from './mouse.js';
+import { isLegacyMouseSequence, isMouseSequence, parseMouseEvents } from './mouse.js';
 
 const ESC = String.fromCharCode(27);
 /** Build an SGR mouse report: button byte `cb` at 1-based (col,row); `release` uses the `m` terminator. */
@@ -51,5 +51,31 @@ describe('isMouseSequence', () => {
     expect(isMouseSequence('[<0;1;1M')).toBe(true);
     expect(isMouseSequence('hello')).toBe(false);
     expect(isMouseSequence(`${ESC}[B`)).toBe(false); // down arrow, not a mouse report
+  });
+
+  it('is false for a legacy X10 report — it carries no SGR coordinates to decode', () => {
+    expect(isMouseSequence(`${ESC}[M`)).toBe(false);
+    expect(parseMouseEvents(`${ESC}[M`)).toEqual([]);
+  });
+});
+
+describe('isLegacyMouseSequence', () => {
+  // The X10 header arrives as its own input event (Ink terminates a CSI sequence at
+  // the final byte `M`), with the three coordinate bytes following as separate text —
+  // so this matches the bare header, never a longer string that merely starts with it.
+  it('is true for the X10 report header, with or without the ESC the input layer strips', () => {
+    expect(isLegacyMouseSequence(`${ESC}[M`)).toBe(true);
+    expect(isLegacyMouseSequence('[M')).toBe(true);
+  });
+
+  it('is false for an SGR report — the encoding we actually asked for', () => {
+    expect(isLegacyMouseSequence(sgr(64, 3, 3))).toBe(false);
+    expect(isLegacyMouseSequence('[<64;3;3M')).toBe(false);
+  });
+
+  it('is false for ordinary input, CSI keys, and pasted text starting with `[M`', () => {
+    expect(isLegacyMouseSequence('m')).toBe(false);
+    expect(isLegacyMouseSequence(`${ESC}[A`)).toBe(false); // up arrow
+    expect(isLegacyMouseSequence('[Match')).toBe(false);
   });
 });

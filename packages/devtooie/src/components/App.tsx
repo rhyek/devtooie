@@ -2,7 +2,13 @@ import chalk from 'chalk';
 import { render, type Instance } from 'ink';
 import path from 'node:path';
 import React, { useCallback, useRef, useState } from 'react';
-import { getRuntimeDepsMap, getSelectablePackages, loadSelection, saveSelection } from '../lib.js';
+import {
+  displayLogFile,
+  getRuntimeDepsMap,
+  getSelectablePackages,
+  loadSelection,
+  saveSelection,
+} from '../lib.js';
 import type { RunnerArgs } from '../runners/types.js';
 import { BuildProgress, type ControlServer } from './BuildProgress.js';
 import { NativeRunner } from './NativeRunner.js';
@@ -172,7 +178,7 @@ export function renderApp(options: RenderAppOptions = {}): Instance {
     const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
     let message = chalk.dim(`■ devtooie exited after ${seconds}s\n`);
     if (logFileRef.current) {
-      message += chalk.dim(`  logfile: ${path.resolve(logFileRef.current)}\n`);
+      message += chalk.dim(`  logfile: ${displayLogFile(logFileRef.current)}\n`);
     }
     process.stdout.write(message, () => {
       process.exit(0);

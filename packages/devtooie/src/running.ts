@@ -10,10 +10,32 @@ import path from 'node:path';
 export const CONTROL_PORT_MIN = 14000;
 export const CONTROL_PORT_COUNT = 100;
 
+/**
+ * A package process devtooie spawned. Recorded so the *next* session can clean up after a
+ * devtooie that died without running any shutdown path (SIGKILL, a crashed terminal emulator, a
+ * hard machine sleep). Each is spawned `detached: true`, so its pid doubles as its process-group
+ * id and `kill(-pid)` reaches the whole `pnpm → node → …` tree beneath it.
+ */
+export interface ChildRecord {
+  pid: number;
+  /**
+   * The package directory the process was spawned in. Re-checked against the live process before
+   * any cross-session kill: pids are recycled, and a stale record must never be able to kill an
+   * unrelated process that happens to have inherited the number.
+   */
+  cwd: string;
+}
+
 /** Persisted at `node_modules/.devtooie/running.json`: this workspace's control-API port + owner pid. */
 export interface RunningState {
   port: number;
   pid: number;
+  /**
+   * Package processes this session currently has running, maintained as they start and exit.
+   * Only ever consumed by a *later* session sweeping orphans — a live session tracks its own
+   * children in memory.
+   */
+  children?: ChildRecord[];
   /**
    * Absolute directory the session writes its timestamped logs into (`<timestamp>.log`).
    * Lets a tool find the current session's logs even when started with `--log-dir`. Omitted

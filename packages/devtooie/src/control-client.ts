@@ -1,4 +1,5 @@
 import { type InstanceInfo, isPortListening, readRunning } from './running.js';
+import { QUIT_REQUEST_TIMEOUT_MS } from './shutdown-timing.js';
 
 /**
  * A snapshot of a live devtooie session, as returned by `GET /query/status`. `logFile`,
@@ -31,8 +32,12 @@ export interface ControlClient {
   restart(pkg: string): Promise<boolean>;
   /** `POST /command/rebuild/<pkg>` — true if the instance accepted it. */
   rebuild(pkg: string): Promise<boolean>;
-  /** `POST /command/quit` — best-effort graceful shutdown; resolves once the request is sent. */
-  quit(): Promise<void>;
+  /**
+   * `POST /command/quit` — graceful shutdown. The target **blocks** the response until its
+   * packages are torn down (ports freed), so this resolves only once that's done (or the
+   * request times out / the target vanishes). Returns `true` if the target acked `ok`.
+   */
+  quit(): Promise<boolean>;
 }
 
 /** Builds a control client bound to `port`, with no liveness check (fits probing arbitrary candidates). */
@@ -79,12 +84,17 @@ export function createControlClient(port: number, timeoutMs = 500): ControlClien
     rebuild: (pkg) => post(`/command/rebuild/${encodeURIComponent(pkg)}`),
     async quit() {
       try {
-        await fetch(`${base}/command/quit`, {
+        // The target holds this response open until its packages are down, so this
+        // request can take much longer than a probe — use the blocking-quit timeout,
+        // not the short default. Returns true only on an explicit `ok` ack.
+        const res = await fetch(`${base}/command/quit`, {
           method: 'POST',
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: AbortSignal.timeout(QUIT_REQUEST_TIMEOUT_MS),
         });
+        const body = (await res.json().catch(() => ({}))) as { ok?: boolean };
+        return res.ok && body.ok === true;
       } catch {
-        /* best-effort */
+        return false; // timed out, or the target hard-exited before acking
       }
     },
   };

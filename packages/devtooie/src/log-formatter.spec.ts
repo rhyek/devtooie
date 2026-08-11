@@ -110,6 +110,131 @@ describe('createFormatter', () => {
     });
   });
 
+  describe('config as a callback', () => {
+    it('decides the mapping from the parsed log itself', () => {
+      // `at` is only noise on healthcheck events; keep it everywhere else.
+      const f = fmt((log) => ({
+        fields: {
+          custom: {
+            time: { show: false },
+            ...(log.context === 'healthcheck' ? { at: { show: false } } : {}),
+          },
+        },
+      }));
+      expect(f('{"level":"INFO","msg":"pong","context":"healthcheck","at":"T","peer":"web"}')).toBe('[INFO] pong\n  context: healthcheck\n  peer: web'); // prettier-ignore
+      expect(f('{"level":"INFO","msg":"started","context":"bridge","at":"T"}')).toBe('[INFO] started\n  context: bridge\n  at: T'); // prettier-ignore
+      // the unconditionally-hidden field stays hidden in both branches
+      expect(f('{"level":"INFO","msg":"hi","time":"T"}')).toBe('[INFO] hi');
+    });
+
+    it('re-runs per line, and supports renaming from it', () => {
+      const seen: unknown[] = [];
+      const f = fmt((log) => {
+        seen.push(log.context);
+        return { fields: { custom: log.context === 'ingest' ? { when: 'at' } : {} } };
+      });
+      expect(f('{"level":"INFO","msg":"a","context":"ingest","at":"T"}')).toBe('[INFO] a\n  context: ingest\n  when: T'); // prettier-ignore
+      expect(f('{"level":"INFO","msg":"b","context":"other","at":"T"}')).toBe('[INFO] b\n  context: other\n  at: T'); // prettier-ignore
+      expect(seen).toEqual(['ingest', 'other']);
+    });
+
+    it('receives the parsed log, never the raw line', () => {
+      const seen: unknown[] = [];
+      const f = fmt((log) => {
+        seen.push(log);
+        return {};
+      });
+      f('{"level":"INFO","msg":"hi","port":8080}');
+      expect(seen).toEqual([{ level: 'INFO', msg: 'hi', port: 8080 }]);
+    });
+
+    it('can decide the level/message keys and the level map per line', () => {
+      // Two sources multiplexed onto one stream, told apart by a marker field.
+      const f = fmt((log) =>
+        log.src === 'pino' ? { levels: pinoLevels } : { fields: { level: 'lvl', message: 'text' } },
+      );
+      expect(f('{"src":"pino","level":50,"msg":"down"}')).toBe('[ERROR] down\n  src: pino');
+      expect(f('{"src":"go","lvl":"WARN","text":"slow"}')).toBe('[WARN] slow\n  src: go');
+    });
+
+    it('is not invoked for a line that is not a JSON object', () => {
+      let calls = 0;
+      const f = fmt(() => {
+        calls++;
+        return {};
+      });
+      expect(f('not json at all')).toBe('not json at all');
+      expect(f('[1,2,3]')).toBe('[1,2,3]');
+      expect(calls).toBe(0);
+    });
+
+    it('is invoked for a JSON object with no level/message, which still passes through', () => {
+      // It picks the level/message keys, so it has to run before that guard can be applied.
+      let calls = 0;
+      const f = fmt(() => {
+        calls++;
+        return {};
+      });
+      expect(f('{"foo":1}')).toBe('{"foo":1}');
+      expect(calls).toBe(1);
+    });
+  });
+
+  describe('ecosystem helpers with a callback config', () => {
+    it('keeps the pino level map when the config is a callback', () => {
+      const f = (line: string) =>
+        stripAnsi(logging.nodejs.pino.formatter((log) => ({ fields: { custom: { pid: { show: log.pid !== 0 } } } }))(line)); // prettier-ignore
+      expect(f('{"level":30,"msg":"up","pid":0}')).toBe('[INFO] up');
+      expect(f('{"level":30,"msg":"up","pid":7}')).toBe('[INFO] up\n  pid: 7');
+    });
+
+    it("keeps winston's message key when the config is a callback", () => {
+      const f = (line: string) => stripAnsi(logging.nodejs.winston.formatter(() => ({}))(line));
+      expect(f('{"level":"warn","message":"careful","a":1}')).toBe('[WARN] careful\n  a: 1');
+    });
+  });
+
+  describe('multi-line values', () => {
+    const f = fmt();
+
+    it("aligns a multi-line property value's continuation lines under the value", () => {
+      const line = JSON.stringify({
+        level: 'INFO',
+        msg: 'query executed',
+        table: 'users',
+        sql: 'SELECT id, email\nFROM users',
+      });
+      expect(f(line)).toBe(
+        '[INFO] query executed\n' +
+          '  table: users\n' +
+          '  sql: SELECT id, email\n' +
+          '       FROM users', // aligned under the value, past "  sql: "
+      );
+    });
+
+    it('sizes the alignment to the property name', () => {
+      const line = JSON.stringify({ level: 'INFO', msg: 'm', context: 'a\nb' });
+      // "  context: " is 11 wide, so the continuation gets 11 spaces.
+      expect(f(line)).toBe('[INFO] m\n  context: a\n           b');
+    });
+
+    it('indents a multi-line message so it stays part of the entry', () => {
+      const line = JSON.stringify({ level: 'ERROR', msg: 'boom\n  at foo()\n  at bar()' });
+      expect(f(line)).toBe('[ERROR] boom\n    at foo()\n    at bar()');
+    });
+
+    it('leaves blank lines blank rather than padding them out', () => {
+      const line = JSON.stringify({ level: 'INFO', msg: 'm', text: 'a\n\nb' });
+      expect(f(line)).toBe('[INFO] m\n  text: a\n\n        b');
+    });
+
+    it('every continuation line starts with whitespace, so devtooie groups them', () => {
+      const line = JSON.stringify({ level: 'INFO', msg: 'm', text: 'a\nb\nc' });
+      const [, ...rest] = f(line).split('\n');
+      expect(rest.every((l) => /^\s/.test(l))).toBe(true);
+    });
+  });
+
   describe('logging.nodejs.pino.formatter', () => {
     it('maps pino numeric levels to canonical levels', () => {
       const f2 = (line: string) => stripAnsi(logging.nodejs.pino.formatter()(line));

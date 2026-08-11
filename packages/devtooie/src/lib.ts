@@ -38,6 +38,15 @@ export function getDefaultLogFile(dir: string = getLogDir()): string {
 }
 
 /**
+ * How a logfile path is shown to the user: relative to devtooie's working directory
+ * (falling back to the path itself when it *is* the cwd). Shared by the footer and the
+ * exit line so a session reports one and the same string throughout.
+ */
+export function displayLogFile(file: string): string {
+  return path.relative(process.cwd(), file) || file;
+}
+
+/**
  * The most recently modified `*.log` file in `dir` (absolute path), or null when `dir` is
  * missing or holds no logfiles. Used by `devtooie logs` to locate the current session's log
  * when a live instance can't be queried for it.
@@ -156,6 +165,14 @@ function readPackageJson(pkg: AnyPackageConfig): { scripts?: Record<string, stri
   } catch {
     return null;
   }
+}
+
+/**
+ * The raw text of a package.json script, or null when the package has no package.json / no such
+ * script (a Makefile package always returns null — its recipe isn't readable this way).
+ */
+export function getScriptText(pkg: AnyPackageConfig, script: string): string | null {
+  return readPackageJson(pkg)?.scripts?.[script] ?? null;
 }
 
 export function getCommandRunner(pkg: AnyPackageConfig): 'pnpm' | 'make' {

@@ -21,7 +21,7 @@ Every graceful exit funnels through a single `shutdown()` in `NativeRunner`:
 | Trigger                        | Path                                                            |
 | ------------------------------ | -------------------------------------------------------------- |
 | **Ctrl+C**                     | `useInput` → `shutdown()`                                      |
-| **Control API `/command/quit`**| `server.setOnQuit(() => void shutdown())` → `shutdown()`       |
+| **Control API `/command/quit`**| `server.setOnQuit(() => void shutdown())` → `shutdown()` (response held until step 5 acks it) |
 | **Git branch changed**         | `watchGitBranch({ onChange })` → `shutdown()` (stale build)   |
 | **Second Ctrl+C** (impatient)  | `shutdown()` re-entry guard → `forceKillAll()` + `process.exit(1)` |
 
@@ -43,19 +43,27 @@ cleanup is identical no matter how the exit was requested.
    line (see rendering doc — a fullscreen final frame would make Ink clear the
    terminal on unmount and risk a blank block on the restored screen).
 4. **Kill every child**, bounded: `await Promise.race([manager.shutdownAll(),
-   timeout(SHUTDOWN_TIMEOUT_MS)])` — a stuck child can't hang the exit past
-   `SHUTDOWN_TIMEOUT_MS` (10s).
-5. **Close the control server** (`await server.close()`).
-6. **Dispose the manager** (`manager.dispose()` — env-file watchers, the
+   timeout(SHUTDOWN_TIMEOUT_MS)])`. `shutdownAll()` SIGTERMs every process group,
+   waits up to `SHUTDOWN_GRACE_MS` (10s) for each to exit, then SIGKILLs any
+   straggler; the outer `SHUTDOWN_TIMEOUT_MS` (15s) is a safety net kept above
+   that grace so a stuck child can't hang the exit but the graceful wait still
+   runs in full. (These constants live in `shutdown-timing.ts`.)
+5. **Ack a blocking quit** (`server.ackQuit()`). A `POST /command/quit` holds its
+   HTTP response open; this releases it with `200` now that packages are down and
+   their ports are freed — so a handing-off newer session knows the ports are
+   clear *before* we close the server. A no-op for a Ctrl+C quit (no HTTP request
+   was held). Must run **after** step 4 and **before** step 6.
+6. **Close the control server** (`await server.close()`).
+7. **Dispose the manager** (`manager.dispose()` — env-file watchers, the
    `process.on('exit')` handler, buffers).
-7. **Hand off to Ink** (`exit()`, from `useApp()`): unmount the tree, which
+8. **Hand off to Ink** (`exit()`, from `useApp()`): unmount the tree, which
    restores the primary screen and resolves `waitUntilExit`.
-8. **Safety net:** `setTimeout(() => process.exit(0), 1500)`. The process normally
+9. **Safety net:** `setTimeout(() => process.exit(0), 1500)`. The process normally
    exits from `renderApp` (below) within milliseconds, so this never fires; it
    exists only so a stalled teardown can't leave a lingering **parent** process
    (all children are already dead by step 4).
 
-Everything that could leave something running (steps 4–6) happens **before**
+Everything that could leave something running (steps 4–7) happens **before**
 `exit()`. Nothing about the process-exit mechanism can affect it.
 
 ## Process exit + screen restore
@@ -71,7 +79,7 @@ const instance = render(<App logFileRef={logFileRef}/>, { alternateScreen: true,
 void instance.waitUntilExit().finally(() => {
   const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
   let message = `■ devtooie exited after ${seconds}s\n`;
-  if (logFileRef.current) message += `  logfile: ${path.resolve(logFileRef.current)}\n`;
+  if (logFileRef.current) message += `  logfile: ${displayLogFile(logFileRef.current)}\n`;
   process.stdout.write(message, () => process.exit(0));
 });
 ```
@@ -84,8 +92,10 @@ void instance.waitUntilExit().finally(() => {
   **`■ devtooie exited after Ns`** line lands on the clean, restored screen.
 - Exiting from the write **callback** ensures that line is flushed before the
   process dies (rather than racing `process.exit`).
-- The **`logfile:`** line beneath it prints the absolute path of the last logfile
-  written to. `renderApp` seeds `logFileRef.current` with the session's initial
+- The **`logfile:`** line beneath it prints the last logfile written to, through
+  the shared `displayLogFile` helper (`lib.ts`) — relative to devtooie's cwd, the
+  same string the footer showed during the run, so the path doesn't change shape
+  on the way out. `renderApp` seeds `logFileRef.current` with the session's initial
   logfile and `NativeRunner` updates it whenever the log is rotated (`t`), so the
   path reflects the *current* file rather than the one the session opened with.
 
@@ -95,16 +105,19 @@ Result on the primary screen after a session:
 > pnpm dev
 ▶ devtooie started
 ■ devtooie exited after 42.3s
-  logfile: /repo/node_modules/.devtooie/logs/1783966456337.log
+  logfile: node_modules/.devtooie/logs/1783966456337.log
 >
 ```
 
 ## Plain / non-TTY mode
 
 `--plain` (and any non-TTY context) does not use the alternate screen or the
-bookend lines. Its control-API quit is wired directly to `process.exit(0)` (see
-`cli.ts`), and there's no screen to restore. The child-process cleanup still
-applies (the plain runner drives the same `ProcessManager`).
+bookend lines, and there's no screen to restore. During a run it funnels quit
+through its own graceful `shutdown()` (`runners/plain.ts`) — the same
+shutdownAll → `server.ackQuit()` → `server.close()` order as the interactive
+path, so a blocking `/command/quit` (and thus a handoff) works identically. Only
+the pre-run bootstrap handler in `cli.ts` hard-exits (`process.exit(0)`), since
+there's no process manager to shut down before the run phase attaches one.
 
 ## Invariants to preserve
 
@@ -112,7 +125,12 @@ applies (the plain runner drives the same `ProcessManager`).
   (`shutdownAll`), close the server, and dispose the manager *before* `exit()`.
   Never move process-exit logic ahead of that.
 - **One shutdown path.** Ctrl+C, control-API quit, and git-branch-change all call
-  the same `shutdown()`. Don't fork them.
+  the same `shutdown()`. Don't fork them — a blocking `/command/quit` is served by
+  having that one path call `server.ackQuit()`, not by a second handler.
+- **Ack the blocking quit between children-down and server-close.** `server.ackQuit()`
+  must run *after* `shutdownAll` (so the ack means "ports freed") and *before*
+  `server.close()` (so the held response socket is still writable). A handoff relies
+  on that ordering.
 - **The process must always exit.** The `renderApp` handler is the normal exit;
   the `NativeRunner` `setTimeout` is the guaranteed fallback. Keep both.
 - **Second Ctrl+C is a hard kill** — `MOUSE_DISABLE` + `forceKillAll()` +
@@ -130,5 +148,7 @@ applies (the plain runner drives the same `ProcessManager`).
 | --------------------------------------------------- | ---------------------------- |
 | Bookend lines, `waitUntilExit`-driven `process.exit`| `components/App.tsx`         |
 | `shutdown()` sequence, safety net, shutdown collapse| `components/NativeRunner.tsx` |
-| Control-API quit (`onQuit` / `setOnQuit`)           | `command-server.ts`          |
+| Control-API quit (`onQuit` / `setOnQuit` / `ackQuit`, held response) | `command-server.ts`  |
 | `shutdownAll` / `forceKillAll` / `dispose`          | `process-manager.ts`         |
+| Shutdown timing constants (grace, timeout, handoff) | `shutdown-timing.ts`         |
+| Handoff (blocking quit + pid-poll + force-kill)     | `dev-session.ts`             |

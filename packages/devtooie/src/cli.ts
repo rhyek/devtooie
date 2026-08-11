@@ -18,6 +18,7 @@ import { handleShellError } from './errors.js';
 import { runInit } from './init.js';
 import {
   NoProjectConfigError,
+  formatConfigLoadFailure,
   loadConfig,
   findWorkspaceRoot,
   findConfigPath,
@@ -80,8 +81,15 @@ async function anchorAtConfigRoot(invocationCwd: string): Promise<void> {
     const files = getLoadedConfig()?.envFiles ?? DEFAULT_ENV_FILES;
     const { env } = resolveEnv({ cwd: root, relativeDir: '.', files });
     Object.assign(process.env, env);
-  } catch {
-    /* no/invalid config here — nothing to anchor or load */
+  } catch (err) {
+    // Best-effort by design — this runs before *every* command (`init` included), so a config
+    // that exists but won't load must not be fatal here; the commands that actually need it
+    // report the failure in full. Don't go silent though: the workspace `.env` wasn't applied.
+    if (!(err instanceof NoProjectConfigError)) {
+      console.error(
+        chalk.yellow(`devtooie: couldn't load the config at ${root} — workspace .env not applied.`),
+      );
+    }
   }
 }
 
@@ -101,6 +109,15 @@ function readOwnVersion(): string {
   }
 }
 
+/**
+ * Prints *why* a config file that does exist wouldn't load, and exits 1. Kept separate from the
+ * "no config found" message so a broken config never masquerades as a missing one.
+ */
+function exitOnConfigLoadFailure(root: string, err: unknown): never {
+  console.error(formatConfigLoadFailure(findConfigPath(root) ?? root, err));
+  process.exit(1);
+}
+
 /** Loads `devtooie.config.ts`, printing a clear hint and exiting 1 if there is none. */
 async function loadConfigOrExit(): Promise<AnyPackageConfig[]> {
   try {
@@ -110,7 +127,7 @@ async function loadConfigOrExit(): Promise<AnyPackageConfig[]> {
       console.error(err.message);
       process.exit(1);
     }
-    throw err;
+    exitOnConfigLoadFailure(process.cwd(), err);
   }
 }
 
@@ -230,12 +247,19 @@ async function resolveCmdTargetOrExit(
   }
   try {
     await loadConfig(root);
-  } catch {
-    /* fall through to the no-config error below */
+  } catch (err) {
+    if (err instanceof NoProjectConfigError) {
+      console.error(`No devtooie config found from ${invocationCwd}.`);
+      process.exit(1);
+    }
+    exitOnConfigLoadFailure(root, err);
   }
   const config = getLoadedConfig();
   if (!config) {
-    console.error(`No devtooie config found from ${invocationCwd}.`);
+    console.error(
+      `${findConfigPath(root) ?? 'devtooie.config.ts'} loaded but registered no config — ` +
+        'it must export a `defineConfig(...)` call as its default.',
+    );
     process.exit(1);
   }
   const files = config.envFiles ?? DEFAULT_ENV_FILES;
@@ -432,8 +456,9 @@ program
       [cmd, ...cmdArgs] = args as [string, ...string[]];
     }
 
+    // No preamble: `cmd` is meant to be composable, so its output is only the command's own
+    // (the run is still teed to `logFile`, which `devtooie logs --path` can point at).
     const logFile = getDefaultLogFile(program.opts<RootOptions>().logDir);
-    console.error(`devtooie cmd: running in ${dir}; logging output to ${logFile}`);
     process.exit(await runCommand(cmd, cmdArgs, { cwd: dir, env: envLayer, logFile }));
   });
 

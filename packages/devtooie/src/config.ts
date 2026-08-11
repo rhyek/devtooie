@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { z } from 'zod';
-import { DEFAULT_ENV_FILES } from './env.js';
+import { ambientEnv, resolveEnv, DEFAULT_ENV_FILES } from './env.js';
 import {
   type UrlLinkSchema,
   type UrlEntrySchema,
@@ -33,6 +33,24 @@ export function normalizeUrlEntry(entry: UrlEntry): UrlLine {
 
 /** A resolved `command`: which script to run and how it behaves on file changes. */
 export type Command = z.infer<typeof CommandSchema>;
+
+/**
+ * What a `port` callback receives: the package's environment, already resolved.
+ *
+ * An object (rather than a bare `env` argument) so more context can be added later without
+ * breaking existing configs.
+ */
+export interface PortContext {
+  /**
+   * The package's resolved `.env` files merged **over** `process.env` — the same environment
+   * its dev process will be spawned with, minus the `PORT` devtooie injects. File values win
+   * over ambient ones, and package-scope files win over workspace-scope ones.
+   */
+  env: Record<string, string>;
+}
+
+/** A package `port` computed from the package's environment. */
+export type PortResolver = (ctx: PortContext) => number | undefined;
 
 // ---------------------------------------------------------------------------
 // Documented input types = generated types (JSDoc from the schema `.describe()`) with the
@@ -72,7 +90,7 @@ type PackageNameRefs<N extends string> = {
 
 export type PackageConfigInput<N extends string> = Omit<
   GeneratedPackageConfig,
-  'name' | 'command' | 'waitFor' | 'deps' | 'logs'
+  'name' | 'command' | 'waitFor' | 'deps' | 'logs' | 'port'
 > &
   PackageNameRefs<N> & {
     /** Unique identifier; referenced from the CLI (`-p`), `waitFor`, and `deps`. */
@@ -88,10 +106,15 @@ export type PackageConfigInput<N extends string> = Omit<
       timestamps?: boolean;
       /**
        * Transform each raw output line from this package's dev process before it's shown and
-       * logged. Receives one line of the process's stdout/stderr (no devtooie prefix or
-       * timestamp) and returns the string to display. Ideal for pretty-printing a "production"
-       * **structured (JSON) logger** — parse the line, and on a match return a compact
-       * human-readable form; otherwise return it unchanged:
+       * logged. Receives one line of the process's stdout/stderr (no devtooie prefix or timestamp)
+       * and returns the string to display. **This is the general hook** — it sees the whole line as
+       * a plain string and assumes nothing about its format, so it's what you use to reshape
+       * *any* output, structured or not.
+       *
+       * If the process logs **structured JSON**, don't write this by hand — `logging.formatter`
+       * (and its ecosystem presets) already builds one, and devtooie applies the default to every
+       * package automatically. Reach for a hand-written formatter when the output isn't JSON, or
+       * when you want a rendering the built-in one can't express:
        *
        * ```ts
        * import { defineConfig, z } from 'devtooie';
@@ -110,6 +133,9 @@ export type PackageConfigInput<N extends string> = Omit<
        * },
        * ```
        *
+       * Return the line unchanged to pass it through — a formatter that reshapes only some lines
+       * is normal, and is how the built-in one behaves.
+       *
        * devtooie owns the timestamp (its own, shown per `logs.timestamps` and always in the log
        * file), so drop the log's own time field rather than printing it. The returned string
        * (ANSI color allowed) is what's buffered, displayed, and written to the log file. A
@@ -117,6 +143,28 @@ export type PackageConfigInput<N extends string> = Omit<
        */
       formatter?: (line: string) => string;
     };
+    /**
+     * The package's dev port. Injected into its dev process as `PORT` (an explicit `.env`
+     * `PORT` still wins), substituted for `$port` in `healthcheck`/`urls`, and swept on
+     * session handoff.
+     *
+     * Pass a **callback** to derive it from the package's environment. It receives the
+     * package's `.env` files already resolved and merged over `process.env` — the same
+     * environment the dev process will get — so the port can live in an env file instead of
+     * being hardcoded:
+     *
+     * ```ts
+     * {
+     *   name: 'backend',
+     *   port: ({ env }) => Number(env.BACKEND_PORT),
+     *   healthcheck: 'http://localhost:$port/health',
+     * }
+     * ```
+     *
+     * The callback runs once, while the config is being defined, and must return a number
+     * synchronously (or `undefined` for "no port", the same as omitting the field).
+     */
+    port?: number | PortResolver;
     /**
      * The dev process to run and how it behaves. A script/target name, or
      * `[name, { watches, builds, cleans }]`. Default `['dev', { watches: true, builds: true }]`.
@@ -146,9 +194,15 @@ export type DefineConfigOptions<N extends string> = Omit<GeneratedDefineConfig, 
 
 export type ResolvedPackageConfig<N extends string> = Omit<
   z.infer<typeof PackageConfigSchema>,
-  'name' | 'waitFor' | 'deps'
+  'name' | 'waitFor' | 'deps' | 'port'
 > &
-  PackageNameRefs<N> & { name: N; relativeDir: string; path: string };
+  PackageNameRefs<N> & {
+    name: N;
+    relativeDir: string;
+    path: string;
+    /** The package's dev port, with any `port` callback already resolved. */
+    port?: number;
+  };
 
 export type AnyPackageConfig = ResolvedPackageConfig<string>;
 
@@ -170,6 +224,11 @@ export interface Config<N extends string> {
 
 let registeredPackages: AnyPackageConfig[] = [];
 let loadedConfig: Config<string> | null = null;
+/**
+ * Absolute directory package paths resolve against. Set when a config loads; until then the
+ * process cwd, which is what `defineConfig` itself defaults to.
+ */
+let workspaceRoot: string = process.cwd();
 
 export function getRegisteredPackages(): AnyPackageConfig[] {
   return registeredPackages;
@@ -178,6 +237,16 @@ export function getRegisteredPackages(): AnyPackageConfig[] {
 /** The most recently defined config (meta + packages), or null before any `defineConfig` runs. */
 export function getLoadedConfig(): Config<string> | null {
   return loadedConfig;
+}
+
+/**
+ * The workspace root every package path was resolved against — the config's `workspaceDir`, or
+ * the cwd when it doesn't set one. Not the config file's own directory: a config in a subdirectory
+ * can point `workspaceDir` elsewhere, and anything reasoning about "is this process ours?" has to
+ * ask about the same tree the packages actually live in.
+ */
+export function getWorkspaceDir(): string {
+  return workspaceRoot;
 }
 
 export function findPackage(name: string): AnyPackageConfig {
@@ -233,13 +302,15 @@ function substituteUrlEntry(entry: UrlEntry, replace: (s: string) => string): Ur
 }
 
 type ParsedPackage = z.infer<typeof PackageConfigSchema>;
+/** A parsed package whose `port` callback has already been resolved to a number. */
+type PortResolvedPackage = Omit<ParsedPackage, 'port'> & { port?: number };
 
 /** Substitutes intrinsic (`$name`/`$subdomain`/`$port`) then extrinsic tokens in a package's
  * token-bearing fields (`urls`, `healthcheck`), returning just those resolved fields. */
 function substitutePackageTokens(
-  pkg: ParsedPackage,
+  pkg: PortResolvedPackage,
   tokens: Record<string, string | undefined>,
-): Pick<ParsedPackage, 'urls' | 'healthcheck'> {
+): Pick<PortResolvedPackage, 'urls' | 'healthcheck'> {
   const primarySubdomain = Array.isArray(pkg.subdomain) ? pkg.subdomain[0] : pkg.subdomain;
   const replace = (s: string): string => {
     let out = s.replaceAll('$name', pkg.name);
@@ -276,6 +347,38 @@ function formatConfigError(err: z.ZodError): string {
   return `invalid devtooie config:\n${lines.join('\n')}`;
 }
 
+/**
+ * A package's effective port: the literal number, or the result of its `port` callback invoked
+ * with the package's resolved environment (its `.env` files merged over `process.env`). Env
+ * files are read only when there's a callback to feed.
+ */
+function resolvePort(
+  pkg: ParsedPackage,
+  opts: { workspaceDir: string; relativeDir: string; envFiles: string[] },
+): number | undefined {
+  if (typeof pkg.port !== 'function') {
+    return pkg.port;
+  }
+  const { env, files } = resolveEnv({
+    cwd: opts.workspaceDir,
+    relativeDir: opts.relativeDir,
+    files: opts.envFiles,
+  });
+  const port = pkg.port({ env: Object.assign(ambientEnv(), env) });
+  if (port === undefined) {
+    return undefined;
+  }
+  if (typeof port !== 'number' || !Number.isFinite(port)) {
+    const where = files.length
+      ? `env files loaded: ${files.join(', ')}`
+      : 'no env files were found';
+    throw new Error(
+      `${pkg.name}: port callback returned ${String(port)} (check the env vars it reads)\n  ${where}`,
+    );
+  }
+  return port;
+}
+
 export function defineConfig<const N extends string>(opts: DefineConfigOptions<N>): Config<N> {
   const result = DefineConfigSchema.safeParse(opts);
   if (!result.success) {
@@ -284,6 +387,7 @@ export function defineConfig<const N extends string>(opts: DefineConfigOptions<N
   const parsed = result.data;
 
   const workspaceDir = parsed.workspaceDir ?? process.cwd();
+  workspaceRoot = path.resolve(workspaceDir);
 
   // Validate waitFor targets: each must exist and define a healthcheck.
   const healthcheckPackages = new Set(parsed.packages.filter((c) => c.healthcheck).map((c) => c.name)); // prettier-ignore
@@ -303,13 +407,21 @@ export function defineConfig<const N extends string>(opts: DefineConfigOptions<N
 
   const tokens = parsed.tokens ?? {};
 
+  const envFiles = parsed.env?.files ?? DEFAULT_ENV_FILES;
+
   const packages = parsed.packages.map((config) => {
     const relativeDir = config.relativeDir ?? `packages/${config.name}`;
-    return {
+    // Resolved before token substitution so `$port` sees the number, and stored on the resolved
+    // package so nothing downstream ever encounters a callback.
+    const resolved: PortResolvedPackage = {
       ...config,
+      port: resolvePort(config, { workspaceDir, relativeDir, envFiles }),
+    };
+    return {
+      ...resolved,
       relativeDir,
       path: path.resolve(workspaceDir, relativeDir),
-      ...substitutePackageTokens(config, tokens),
+      ...substitutePackageTokens(resolved, tokens),
     };
   });
 
@@ -321,7 +433,7 @@ export function defineConfig<const N extends string>(opts: DefineConfigOptions<N
     apiPort: parsed.apiPort,
     packages: packages as unknown as ResolvedPackageConfig<N>[],
     urls,
-    envFiles: parsed.env?.files ?? DEFAULT_ENV_FILES,
+    envFiles,
     logTimestamps: parsed.logs?.timestamps ?? false,
   };
   registeredPackages = resolved.packages as AnyPackageConfig[];

@@ -1,4 +1,7 @@
 import { z } from 'zod';
+// Type-only — erased at compile time, so `config-schema.ts` still imports nothing but `zod`
+// at runtime and `scripts/gen-config-types.ts` can keep executing it without a build.
+import type { PortResolver } from './config.js';
 
 // The Zod schemas — the single source of the config's shape, defaults, validation, AND field
 // docs (via `.describe()`). `scripts/gen-config-types.ts` reads this file (it imports only
@@ -69,10 +72,17 @@ export const PackageConfigSchema = z.object({
     .union([z.string(), z.array(z.string())])
     .optional()
     .describe('Reverse-proxy subdomain(s); the first feeds `$subdomain` substitution.'),
+  // Overridden in config.ts (a callback Zod can't usefully type — `z.custom` erases to `any`);
+  // documented there. `defineConfig` resolves a callback to a number before anything downstream
+  // sees it, so the *resolved* type is still `number | undefined`.
   port: z
-    .number()
-    .optional()
-    .describe('Dev port; injected into the process as `PORT` and feeds `$port` substitution.'),
+    .union([
+      z.number(),
+      z.custom<PortResolver>((v) => typeof v === 'function', {
+        message: 'port must be a number or a function',
+      }),
+    ])
+    .optional(),
   // Overridden in config.ts (transform → `any`); documented there.
   command: CommandSchema,
   autostart: z

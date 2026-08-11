@@ -9,7 +9,7 @@ resolves build-time, dev-time, and runtime dependencies between them, builds
 whatever needs building (in the right order), and then runs the packages you
 picked.
 
-![devtooie's terminal UI driving the example monorepo](https://raw.githubusercontent.com/rhyek/devtooie/main/packages/devtooie/assets/demo.gif)
+![devtooie's terminal UI driving the example monorepo](https://raw.githubusercontent.com/rhyek/devtooie/main/packages/devtooie/assets/demo-1786328802.gif)
 
 ## Features
 
@@ -52,8 +52,8 @@ loading, healthchecks, and `waitFor` readiness ordering.
 
 ## Requirements
 
-- **Node 20+.** A `.ts` config additionally needs **Node ≥23.6** (native
-  type-stripping); on older Node, use a compiled `devtooie.config.js`/`.mjs`.
+- **Node ≥22.18.** `devtooie.config.ts` is imported directly, so it needs Node's native
+  TypeScript type-stripping — unflagged in 22.18 (and, on the 23.x line, 23.6).
 - **Unix only** (macOS/Linux). Windows is not supported.
 - **pnpm.** Node packages are run with `pnpm run <script>`, and packages that depend
   on each other are resolved through pnpm workspace links (`workspace:*`). (Makefile
@@ -160,10 +160,14 @@ An application needs only a `dev` process — a Node backend:
 {
   "name": "backend",
   "scripts": {
-    "dev": "node --watch src/index.ts",
+    "dev": "node --watch $DEVTOOIE_WATCH_PATHS src/index.ts",
   },
 }
 ```
+
+`$DEVTOOIE_WATCH_PATHS` scopes Node's watcher to what the package actually loads — a bare
+`node --watch` recursively watches `node_modules` too. See
+[docs/package-lifecycle.md](docs/package-lifecycle.md#scoping-a-node---watch-dev-script).
 
 …or a Go program, via a `Makefile`:
 
@@ -206,8 +210,9 @@ TypeScript project references, and typed package names — lives in
 
 devtooie **auto-formats structured (JSON) logs** — from Go `slog`, pino, winston, … — into a
 colored `[LEVEL] message` for local dev, with no `NODE_ENV` branching and nothing to configure. You
-can add on-screen timestamps, and override or customize the formatter per package. See
-**[docs/logging.md](docs/logging.md)**.
+can add on-screen timestamps, and customize that JSON rendering per package with the `logging`
+helpers — or, for output that **isn't** JSON, write a `logs.formatter` over the raw line yourself.
+See **[docs/logging.md](docs/logging.md)**.
 
 Every session is also teed to a timestamped logfile. Read the current one from another terminal
 with **`devtooie logs`** (or `devtooie logs -f` to follow it live) — see
@@ -251,7 +256,14 @@ and the current environment; file values win over the ambient environment (so
 `NODE_OPTIONS=$NODE_OPTIONS --flag` extends the inherited value).
 
 A package's `port` is also injected as `PORT` (an explicit `.env` `PORT`
-still overrides it).
+still overrides it). The reverse direction works too — `port` may be a callback
+that reads these same resolved files to decide the port:
+
+```ts
+{ name: 'backend', port: ({ env }) => Number(env.BACKEND_PORT) }
+```
+
+See [Configuration](docs/configuration.md) for the details.
 
 Customize the list via `env.files` (each name is still resolved at both scopes):
 
@@ -281,9 +293,9 @@ environment on demand — is documented in **[docs/cli.md](docs/cli.md)**.
 If you opt in during `devtooie init`, devtooie installs an agent-facing skill
 file at `.claude/skills/devtooie/SKILL.md` (and, best-effort, under `.agents/` /
 `.cursor/` if those directories already exist). It teaches a coding agent how
-to run devtooie headlessly (`--plain -p <package>`), drive a running session
-through the control API, read the logfile for debugging, and onboard a new
-package. The installed file is **managed** — treat it as generated, not something
+to check whether an app in the repo is already running, run devtooie headlessly
+(`--plain -p <package>`), drive a running session through the control API, read
+the logfile for debugging, and onboard a new package. The installed file is **managed** — treat it as generated, not something
 to hand-edit. `devtooie init` and every `devtooie` run refresh it to the
 installed version.
 

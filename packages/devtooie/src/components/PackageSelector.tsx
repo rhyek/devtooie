@@ -1,6 +1,7 @@
-import { Box, Text, useApp, useInput } from 'ink';
+import { Box, Text, useApp, useInput, useWindowSize } from 'ink';
 import React, { useMemo, useState } from 'react';
 import type { AnyPackageConfig } from '../config.js';
+import { ACCENT_COLOR, MUTED_COLOR, OK_COLOR, ON_ACCENT_COLOR, WARN_COLOR } from '../colors.js';
 import { HotkeyHints } from './HotkeyHints.js';
 
 export type PackageSelectorProps = {
@@ -25,6 +26,11 @@ export function PackageSelector({
   onSubmit,
 }: PackageSelectorProps) {
   const { exit } = useApp();
+  // Fill the whole alternate-screen viewport so Ink treats this frame as
+  // fullscreen and anchors it at the top; without an explicit height the small
+  // frame is drawn wherever the cursor was left on entry (near the bottom, after
+  // the shell prompt + "started" line), leaving a large blank gap above it.
+  const { columns, rows } = useWindowSize();
 
   const itemNames = useMemo(() => new Set(items.map((a) => a.name)), [items]);
 
@@ -81,9 +87,9 @@ export function PackageSelector({
   });
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width={columns} height={rows}>
       <Box>
-        <Text backgroundColor="cyan" color="black" bold>
+        <Text backgroundColor={ACCENT_COLOR} color={ON_ACCENT_COLOR} bold>
           {' devtooie '}
         </Text>
       </Box>
@@ -102,7 +108,7 @@ export function PackageSelector({
       />
       {items.length === 0 ? (
         <Box marginTop={1}>
-          <Text color="yellow">No selectable packages configured.</Text>
+          <Text color={WARN_COLOR}>No selectable packages configured.</Text>
         </Box>
       ) : (
         <Box flexDirection="column" marginTop={1}>
@@ -118,14 +124,14 @@ export function PackageSelector({
 
             if (isLocked) {
               checkbox = '■';
-              color = 'gray';
+              color = MUTED_COLOR;
               suffix = ` (required by ${lockedBy})`;
             } else if (isSelected) {
               checkbox = '■';
-              color = isActive ? 'cyan' : 'green';
+              color = isActive ? ACCENT_COLOR : OK_COLOR;
             } else {
               checkbox = '□';
-              color = isActive ? 'cyan' : undefined;
+              color = isActive ? ACCENT_COLOR : undefined;
             }
 
             return (
@@ -133,7 +139,7 @@ export function PackageSelector({
                 <Text color={color}>
                   {isActive ? '❯' : ' '} {checkbox} {item.name}
                 </Text>
-                {isLocked && <Text color="gray">{suffix}</Text>}
+                {isLocked && <Text color={MUTED_COLOR}>{suffix}</Text>}
               </Box>
             );
           })}

@@ -75,14 +75,14 @@ export function computeWindow(
  * clipping the partially-visible first/last lines. `wrap` turns a line into its
  * rendered rows (called only for the handful of lines actually on screen).
  */
-export function windowRows<T>(
+export function windowRows<T, R = string>(
   lines: readonly T[],
   window: LogWindow,
-  wrap: (line: T) => readonly string[],
-): string[] {
-  const out: string[] = [];
+  wrap: (line: T, index: number) => readonly R[],
+): R[] {
+  const out: R[] = [];
   for (let i = window.startIndex; i < window.endIndex; i++) {
-    const rows = wrap(lines[i]!);
+    const rows = wrap(lines[i]!, i);
     const from = i === window.startIndex ? window.topClip : 0;
     const to = i === window.endIndex - 1 ? rows.length - window.bottomClip : rows.length;
     for (let r = from; r < to; r++) {

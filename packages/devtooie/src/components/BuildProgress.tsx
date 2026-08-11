@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import path from 'node:path';
 import { execa } from 'execa';
-import { Box, Text, useApp } from 'ink';
+import { Box, Text, useApp, useWindowSize } from 'ink';
 import Spinner from 'ink-spinner';
 import { findPackage, getRegisteredPackages, getLoadedConfig } from '../config.js';
 import { startCommandServer } from '../command-server.js';
 import { debugLog } from '../debug-log.js';
+import { ACCENT_COLOR, DANGER_COLOR, OK_COLOR, ON_ACCENT_COLOR } from '../colors.js';
 import { acquireDevSession } from '../dev-session.js';
 import { findConfigPath } from '../load-config.js';
 import { pickRandomPort } from '../running.js';
@@ -46,6 +47,10 @@ export function BuildProgress({
   onComplete,
 }: BuildProgressProps) {
   const { exit } = useApp();
+  // Fill the whole alternate-screen viewport so Ink treats this frame as
+  // fullscreen and anchors it at the top, matching NativeRunner (see
+  // PackageSelector for the gap-at-top rationale).
+  const { columns, rows } = useWindowSize();
   const [state, setState] = useState<BuildState>({ phase: 'resolving' });
 
   // The run phase takes ownership of the control server once handed off via
@@ -198,19 +203,19 @@ export function BuildProgress({
 
   if (state.phase === 'error') {
     return (
-      <Box flexDirection="column">
-        <Text color="red" bold>
+      <Box flexDirection="column" width={columns} height={rows}>
+        <Text color={DANGER_COLOR} bold>
           Build failed
         </Text>
-        <Text color="red">{state.message}</Text>
+        <Text color={DANGER_COLOR}>{state.message}</Text>
       </Box>
     );
   }
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width={columns} height={rows}>
       <Box>
-        <Text backgroundColor="cyan" color="black" bold>
+        <Text backgroundColor={ACCENT_COLOR} color={ON_ACCENT_COLOR} bold>
           {' devtooie '}
         </Text>
       </Box>
@@ -246,29 +251,29 @@ export function BuildProgress({
       <Box marginTop={1}>
         {state.phase === 'building' ? (
           <Text>
-            <Text color="cyan">
+            <Text color={ACCENT_COLOR}>
               <Spinner type="dots" />
             </Text>{' '}
             Building dependencies ({state.current}/{state.total}): {state.name}
           </Text>
         ) : state.phase === 'handoff' ? (
           <Text>
-            <Text color="cyan">
+            <Text color={ACCENT_COLOR}>
               <Spinner type="dots" />
             </Text>{' '}
             {state.message}
           </Text>
         ) : state.phase === 'done' ? (
-          <Text color="green">Dependencies built.</Text>
+          <Text color={OK_COLOR}>Dependencies built.</Text>
         ) : buildablePackages.length > 0 ? (
           <Text>
-            <Text color="cyan">
+            <Text color={ACCENT_COLOR}>
               <Spinner type="dots" />
             </Text>{' '}
             Resolving dependencies...
           </Text>
         ) : (
-          <Text color="green">No build dependencies needed.</Text>
+          <Text color={OK_COLOR}>No build dependencies needed.</Text>
         )}
       </Box>
     </Box>

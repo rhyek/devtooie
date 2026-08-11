@@ -49,6 +49,21 @@ export function envCandidatePaths({
 }
 
 /**
+ * A snapshot of `process.env` with `undefined`-valued keys dropped, so it can be used as a
+ * plain string map. Used as the `${VAR}`-expansion source in {@link resolveEnv} and as the
+ * base layer a package's env files are merged over.
+ */
+export function ambientEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) {
+      env[key] = value;
+    }
+  }
+  return env;
+}
+
+/**
  * Resolves the `.env` files for a package into a flat, expanded variable map without
  * touching `process.env`. Only files that exist are loaded; a later file (or a
  * package-scope file) overrides an earlier one. `${VAR}` references expand against
@@ -58,14 +73,9 @@ export function resolveEnv(opts: ResolveEnvOptions): EnvResolution {
   const candidates = envCandidatePaths(opts);
   const files = candidates.filter((p) => fs.existsSync(p));
 
-  // A copy of process.env (sans undefined values) is the source for `$VAR` lookups. dotenvx
-  // reads from it but writes to neither it nor the real process.env, so nothing is mutated.
-  const ambient: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) {
-      ambient[key] = value;
-    }
-  }
+  // dotenvx reads from this snapshot for `$VAR` lookups but writes to neither it nor the real
+  // process.env, so nothing is mutated.
+  const ambient = ambientEnv();
 
   // Concatenate the existing files in ascending precedence (later overrides earlier, and a
   // later file may reference an earlier file's var), then parse + expand once. `overload:

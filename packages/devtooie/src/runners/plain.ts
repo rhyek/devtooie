@@ -1,11 +1,9 @@
-import chalk from 'chalk';
 import type { startCommandServer } from '../command-server.js';
 import { watchGitBranch } from '../git-watch.js';
 import { ProcessManager } from '../process-manager.js';
+import { SHUTDOWN_TIMEOUT_MS } from '../shutdown-timing.js';
+import { installShutdownSignals } from '../signals.js';
 import type { RunnerArgs } from './types.js';
-
-/** Upper bound on how long graceful shutdown may take before this runner exits anyway. */
-const SHUTDOWN_TIMEOUT_MS = 10_000;
 
 /**
  * Drives a run session with no interactive UI: every selected package streams
@@ -33,6 +31,9 @@ export async function runPlain(
       manager.shutdownAll(),
       new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_TIMEOUT_MS)),
     ]);
+    // Packages are down and their ports freed — ack any blocking `/command/quit`
+    // (e.g. a newer session handing off) before closing the server below.
+    server.ackQuit();
     await server.close();
     manager.dispose();
     process.exit(0);
@@ -50,13 +51,14 @@ export async function runPlain(
 
   const stopBranchWatch = watchGitBranch({
     onChange: (from, to) => {
-      manager.logSystem(chalk.yellow(`git branch changed (${from} → ${to}), shutting down`));
+      manager.systemLog.warn(`git branch changed (${from} → ${to}), shutting down`);
       void shutdown();
     },
   });
 
-  process.on('SIGINT', () => void shutdown());
-  process.on('SIGTERM', () => void shutdown());
+  // SIGHUP included: a closed terminal must tear the packages down like a Ctrl+C, not leave
+  // them orphaned to PID 1 (see `signals.ts`).
+  installShutdownSignals(() => void shutdown());
 
   // This promise only settles by way of shutdown() calling process.exit()
   // itself, so it simply keeps the runner's returned promise pending for the

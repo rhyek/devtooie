@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0 (2026-07-24)
+
+### Features
+
+- **Select and copy log text with the mouse** — double-click a word, triple-click a line, or drag to take a structured log's value on its own.
+- **New `DEVTOOIE_WATCH_PATHS` scopes a `node --watch` dev script** to what it actually loads. See [docs/package-lifecycle.md](docs/package-lifecycle.md#scoping-a-node---watch-dev-script).
+- **A package's `port` accepts a callback**, so it can come from an env file devtooie itself loads. See [docs/configuration.md](docs/configuration.md).
+- **`logging.formatter` accepts a callback**, so the config can depend on the entry being rendered. See [docs/logging.md](docs/logging.md#the-logging-helpers).
+- **devtooie's own lines are labelled and structured** — `[devtooie]`, and `[dt:control]` for control-API commands.
+- **Notices now appear as toasts floating over the logs.**
+
+### Fixes
+
+- **devtooie no longer kills another project's process to free a dev port.** _(Breaking: a port held from outside the workspace is no longer cleared for you.)_
+- **Closing the terminal or quitting shuts packages down cleanly** instead of orphaning them, and packages a killed session left behind are cleaned up on the next start. See [docs/control-api.md](docs/control-api.md#graceful-shutdown).
+- **Mouse scrolling survives reloading the VS Code window.**
+- **A failing `.env` watcher no longer takes the whole session down with it.**
+
 ## 0.5.0 (2026-07-23)
 
 - **New `devtooie logs` subcommand** — print the current session's logfile, `-f/--follow` to stream it live, or `--path` to print just its path; resolves the logfile from the running instance (falling back to the last recorded one), read-only so it never disturbs the session. See [docs/cli.md](docs/cli.md#devtooie-logs).

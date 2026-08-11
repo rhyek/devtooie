@@ -6,6 +6,22 @@ Monorepo for the published `devtooie` npm package.
 - `example/` — a self-contained example monorepo that consumes the package via
   `devtooie: link:../packages/devtooie` (see `example/package.json`).
 
+## NEVER commit personal content — hard rule
+
+This is a **public** repository. Do not put any of the user's personal material into the code,
+docs, tests, comments, commit messages, or example/fixture data — **ever**. That includes:
+
+- Personal conversations or message content (texts, DMs, chat/dating-app messages), from any
+  source or any language.
+- Real names of people, contacts, or private projects; personal locations, travel plans, or
+  any other private details lifted from the user's life or communications.
+
+When you need sample data — example log lines, fixtures, test inputs, doc snippets — **invent
+neutral, obviously-synthetic technical content** (generic service names, `SELECT` queries,
+`foo`/`bar`, placeholder users like `web`/`api`). Never reach for something real the user
+happened to mention. If you're unsure whether a value is personal, treat it as personal and
+use a neutral placeholder instead. When in doubt, ask before committing.
+
 `README.md` is the **repo-root** file — edit it there; it's the canonical copy. It lives at
 the root (not inside the package) so its relative `docs/*.md` links resolve when the README is
 viewed from the repo root on GitHub. The human-facing topic docs live at repo-root `docs/`;

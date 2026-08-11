@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import path from 'node:path';
-import chalk from 'chalk';
 import {
   Box,
   type DOMElement,
@@ -13,13 +12,32 @@ import {
 } from 'ink';
 import type { startCommandServer } from '../command-server.js';
 import { normalizeUrlEntry, type UrlLine } from '../config.js';
+import {
+  ACCENT_COLOR,
+  DANGER_COLOR,
+  FOCUS_COLOR,
+  LINK_COLOR,
+  MUTED_COLOR,
+  OK_COLOR,
+  WARN_COLOR,
+} from '../colors.js';
 import { watchGitBranch } from '../git-watch.js';
-import { getGitBranch } from '../lib.js';
-import { MOUSE_DISABLE, MOUSE_ENABLE, isMouseSequence, parseMouseEvents } from '../mouse.js';
+import { displayLogFile, getGitBranch } from '../lib.js';
+import {
+  MOUSE_DISABLE,
+  MOUSE_ENABLE,
+  isLegacyMouseSequence,
+  isMouseSequence,
+  parseMouseEvents,
+} from '../mouse.js';
 import { ProcessManager } from '../process-manager.js';
+import { SHUTDOWN_TIMEOUT_MS } from '../shutdown-timing.js';
+import { installShutdownSignals } from '../signals.js';
 import type { RunnerArgs } from '../runners/types.js';
+import { BottomChrome } from './BottomChrome.js';
 import { HotkeyHints, type HotkeyHintItem } from './HotkeyHints.js';
 import { LogPane, useDragSelection, useLogViewport } from './LogPane.js';
+import { useToasts } from './ToastStack.js';
 
 export type NativeRunnerProps = {
   args: RunnerArgs;
@@ -68,23 +86,24 @@ function lineWidth(line: UrlLine): number {
   return line.reduce((sum, u) => sum + linkWidth(u), 0) + (line.length - 1);
 }
 
+/** Which role each package status plays; the colors themselves live in `colors.ts`. */
 const STATUS_COLORS: Record<PackageStatus, string> = {
-  stopped: 'red',
-  starting: 'yellow',
-  started: 'green',
-  unknown: 'gray',
-  waiting: 'cyan',
+  stopped: DANGER_COLOR,
+  starting: WARN_COLOR,
+  started: OK_COLOR,
+  unknown: MUTED_COLOR,
+  waiting: ACCENT_COLOR,
 };
-
-/**
- * Upper bound on how long a graceful shutdown may take before this session
- * exits anyway, so a second Ctrl+C (or an impatient caller waiting on
- * `/command/quit`) never has to wait indefinitely for a stuck child process.
- */
-const SHUTDOWN_TIMEOUT_MS = 10_000;
 
 /** Rendered rows scrolled per mouse-wheel notch. */
 const WHEEL_STEP = 3;
+
+/**
+ * How long a filter toast stays up — shorter than the default, because it only
+ * confirms an action the user just took and whose result is already on screen
+ * (the `[filter: …]` line, and the logs themselves changing).
+ */
+const FILTER_TOAST_MS = 2000;
 
 /**
  * Absolute on-screen rect of an Ink element, in 1-based SGR mouse coordinates.
@@ -176,7 +195,7 @@ export function LinksColumn({
     <Box flexDirection="column" alignItems="flex-end" flexShrink={0}>
       {topLevelUrls.map((line, i) => (
         // A brighter blue than Ink's default, which is too dark to read on this background.
-        <Text key={`top-${i}`} wrap="truncate" color="#58a6ff">
+        <Text key={`top-${i}`} wrap="truncate" color={LINK_COLOR}>
           {renderLineText(line)}
         </Text>
       ))}
@@ -185,7 +204,7 @@ export function LinksColumn({
         <React.Fragment key={group.name}>
           <Text bold={group.selected}>{group.name}</Text>
           {group.urls.map((line, i) => (
-            <Text key={i} wrap="truncate" color="#58a6ff">
+            <Text key={i} wrap="truncate" color={LINK_COLOR}>
               {renderLineText(line)}
             </Text>
           ))}
@@ -485,6 +504,9 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
       manager.shutdownAll(),
       new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_TIMEOUT_MS)),
     ]);
+    // Packages are down and their ports freed — ack any blocking `/command/quit`
+    // now (e.g. a newer session handing off), before we close the server below.
+    server.ackQuit();
     await server.close();
     manager.dispose();
     // Ink's teardown drives the exit from here: `exit()` unmounts, restores the
@@ -497,6 +519,13 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
     setTimeout(() => process.exit(0), 1500);
   }, [manager, server, exit, markAllStopped]);
 
+  // Terminal-delivered signals route to the same graceful shutdown as Ctrl+C. Ctrl+C itself
+  // arrives as a keystroke (the TUI runs the terminal in raw mode, so ISIG is off) and is handled
+  // in `useInput` — these handlers cover the signals raw mode can't produce: SIGHUP from a closed
+  // terminal or dropped SSH session, and an explicit `kill`. Without them devtooie dies on the
+  // spot and leaves every detached package group orphaned to PID 1.
+  useEffect(() => installShutdownSignals(() => void shutdown()), [shutdown]);
+
   // Measure the bottom section (scroll indicator + footer) every render so the
   // log pane above it can size itself to the remaining rows. The first
   // measurement also starts every package.
@@ -504,7 +533,14 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
   const topRef = useRef<DOMElement>(null);
   // The clickable ⧉ copy glyph next to the logfile path; hit-tested on mouse press.
   const copyIconRef = useRef<DOMElement>(null);
+  // The clickable "Click here" in the ↓ newer-lines indicator; hit-tested on mouse
+  // press. Only mounted while scrolled up, so a null rect is the natural gate.
+  const jumpToLatestRef = useRef<DOMElement>(null);
   const startedRef = useRef(false);
+  // Whether the next input event is a legacy X10 mouse report's coordinate bytes,
+  // which are swallowed whole (see the input handler). True only in the brief
+  // window after a terminal reattach drops our SGR encoding mode.
+  const swallowLegacyPayloadRef = useRef(false);
   // Runs every render to re-measure the chrome (top indicator + footer) as its
   // content changes; the setState calls bail on unchanged values, so no loop.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -537,6 +573,9 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
   const paneHeight = Math.max(0, rows - topHeight - bottomHeight);
   const viewport = useLogViewport(manager, columns, paneHeight);
 
+  // Transient notices, shown above the footer (see ToastStack / toasts.ts).
+  const toasts = useToasts();
+
   // App-managed drag-to-select-and-copy over the log pane (native terminal
   // selection can't survive our in-place repaints — see selection.ts).
   const dragSelection = useDragSelection({
@@ -544,22 +583,30 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
     firstVisibleFlatRow: viewport.firstVisibleFlatRow,
     topHeight,
     paneHeight,
+    notify: toasts.notify,
+    dismiss: toasts.dismiss,
   });
-  const {
-    clear: clearSelection,
-    onMouse: onMouseSelect,
-    highlights,
-    copiedNotice,
-    flashCopy,
-  } = dragSelection;
+  const { clear: clearSelection, onMouse: onMouseSelect, highlights, flashCopy } = dragSelection;
 
   // Enable SGR mouse reporting so the wheel scrolls the viewport and click-drag
-  // drives the app-managed selection (see mouse.ts / selection.ts). Reporting
-  // takes over the mouse from the terminal while active, so it MUST be disabled
-  // on unmount — and defensively in `shutdown()` — to hand the mouse back.
+  // drives the app-managed selection (see mouse.ts / selection.ts).
+  //
+  // Re-asserted on every resize, not just on mount: a terminal that hands our
+  // session to a *fresh* emulator restores the mouse modes from a snapshot, and
+  // that snapshot can be incomplete. VS Code's "Reload Window" reattaches the pty
+  // to a new xterm.js whose serializer re-emits the tracking mode (`?1002h`) but
+  // not the SGR encoding mode (`?1006h`) — reports come back X10-encoded and stop
+  // decoding, so the wheel and drag-select go dead while the keyboard still works.
+  // Such a reattach always re-measures the terminal, so a resize is our signal to
+  // heal it before the next mouse event; re-writing modes already set is a no-op.
   const { stdout } = useStdout();
   useEffect(() => {
     stdout.write(MOUSE_ENABLE);
+  }, [stdout, columns, rows]);
+
+  // Reporting takes over the mouse from the terminal while active, so it MUST be
+  // disabled on unmount — and defensively in `shutdown()` — to hand the mouse back.
+  useEffect(() => {
     return () => {
       stdout.write(MOUSE_DISABLE);
     };
@@ -603,7 +650,7 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
   useEffect(() => {
     const stopWatching = watchGitBranch({
       onChange: (from, to) => {
-        manager.logSystem(chalk.yellow(`git branch changed (${from} -> ${to}), shutting down`));
+        manager.systemLog.warn(`git branch changed (${from} -> ${to}), shutting down`);
         void shutdown();
       },
     });
@@ -616,6 +663,21 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
     return () => clearInterval(interval);
   }, []);
 
+  // Every filter change goes through here, so the two entry points — `enter` in
+  // filter mode, `esc` in normal mode — can't drift on what they announce. A
+  // change that isn't one (re-applying the same terms, or clearing when nothing
+  // is filtered) says nothing: a toast should mark a transition, not a keypress.
+  const changeFilter = (next: string) => {
+    if (next === activeFilter) {
+      return;
+    }
+    setActiveFilter(next);
+    toasts.notify({
+      message: next ? 'Filter applied' : 'Filter cleared',
+      duration: FILTER_TOAST_MS,
+    });
+  };
+
   useInput((input, key) => {
     // Ctrl+C always works, regardless of mode.
     if (input === 'c' && key.ctrl) {
@@ -624,6 +686,25 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
     }
 
     if (shuttingDown) {
+      return;
+    }
+
+    // A legacy X10 report means the terminal reset our SGR encoding mode behind
+    // our back (see mouse.ts) — re-assert reporting so the *next* event decodes
+    // again. This is the backstop for a reattach that somehow didn't resize us;
+    // the resize effect above normally heals it before any mouse event lands.
+    // The report's coordinate bytes arrive as their own input event, so drop
+    // exactly one event rather than letting them type themselves into the filter
+    // or a custom command — counting characters instead would desync, since X10
+    // encodes each coordinate as `value + 32` and anything past column ~95 is a
+    // byte the UTF-8 decode turns into one or two U+FFFD.
+    if (swallowLegacyPayloadRef.current) {
+      swallowLegacyPayloadRef.current = false;
+      return;
+    }
+    if (isLegacyMouseSequence(input)) {
+      swallowLegacyPayloadRef.current = true;
+      stdout.write(MOUSE_ENABLE);
       return;
     }
 
@@ -645,6 +726,28 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
               continue;
             }
           }
+          // A press on the ↓ indicator's "Click here" jumps to the latest logs —
+          // the mouse equivalent of End, for scrolling back without the keyboard.
+          if (report.type === 'down') {
+            const rect = elementScreenRect(jumpToLatestRef.current);
+            if (rect && rectHit(rect, report.col, report.row)) {
+              viewport.scrollToBottom();
+              continue;
+            }
+          }
+          // A press on a toast's `[action]` runs it (and takes that toast down).
+          // Unlike the two above there can be several at once, so this walks the
+          // targets the rendered stack registered rather than a fixed ref.
+          if (report.type === 'down') {
+            const target = [...toasts.targets.current.values()].find((t) => {
+              const rect = elementScreenRect(t.node);
+              return rect && rectHit(rect, report.col, report.row);
+            });
+            if (target) {
+              target.press();
+              continue;
+            }
+          }
           onMouseSelect(report);
         }
       }
@@ -653,7 +756,7 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
 
     if (mode === 'filter') {
       if (key.return) {
-        setActiveFilter(filterInput.trim());
+        changeFilter(filterInput.trim());
         setMode('normal');
       } else if (key.escape) {
         setFilterInput(activeFilter);
@@ -769,12 +872,18 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
     }
 
     if (key.escape) {
-      // Escape clears an active selection first, then an active filter.
+      // Escape clears an active selection first, then a sticky toast — which is how
+      // one goes away without a mouse — then an active filter. Only *sticky* toasts
+      // are in this chain: a passing notice clears itself, so letting one absorb the
+      // `esc` aimed at the filter beneath it would just cost a keypress.
       if (clearSelection()) {
         return;
       }
+      if (toasts.dismissNewestSticky()) {
+        return;
+      }
       if (activeFilter) {
-        setActiveFilter('');
+        changeFilter('');
         setFilterInput('');
       }
       return;
@@ -835,7 +944,7 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
   // path), which can leave a blank block on the restored primary screen after the
   // alternate screen is torn down. A short final frame avoids that.
   if (shuttingDown) {
-    return <Text color="yellow">Shutting down… (press Ctrl+C again to force kill)</Text>;
+    return <Text color={WARN_COLOR}>Shutting down… (press Ctrl+C again to force kill)</Text>;
   }
 
   const linksColumn = (
@@ -876,7 +985,7 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
   ];
 
   const filterLine = activeFilter ? (
-    <Text color="cyan">[filter: {activeFilter}] esc: clear filter</Text>
+    <Text color={ACCENT_COLOR}>[filter: {activeFilter}] esc: clear filter</Text>
   ) : null;
 
   const packageStatusDots = (
@@ -892,6 +1001,11 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
               ●
             </Text>
             <Text> </Text>
+            {/* Bold + underline, and no color: every hue in the footer already means
+                something (the dot's status, the accent, the notice), so the selection
+                is marked by weight and a rule instead. Bold carries it at a glance;
+                the underline is what makes it unambiguous which name is selected when
+                two sit side by side. */}
             <Text bold={isFocused} underline={isFocused}>
               {pkg.displayName}
             </Text>
@@ -905,21 +1019,21 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
   const isCommands = mode === 'commands';
 
   const topSection = shuttingDown ? (
-    <Text color="yellow">Shutting down... (press Ctrl+C again to force kill)</Text>
+    <Text color={WARN_COLOR}>Shutting down... (press Ctrl+C again to force kill)</Text>
   ) : isFilter ? (
     <>
       <Text bold>Filter output (space-separated terms, all must match):</Text>
       <Box>
-        <Text color="cyan">&gt; </Text>
+        <Text color={ACCENT_COLOR}>&gt; </Text>
         <Text>{filterInput}</Text>
-        <Text color="cyan">_</Text>
+        <Text color={ACCENT_COLOR}>_</Text>
       </Box>
       <Text dimColor>{'  enter: apply   esc: cancel   empty + enter: clear filter'}</Text>
     </>
   ) : isCommands ? (
     <>
       <Text bold>
-        Commands for <Text color="cyan">{focusedPackage?.displayName ?? ''}</Text>{' '}
+        Commands for <Text color={ACCENT_COLOR}>{focusedPackage?.displayName ?? ''}</Text>{' '}
         <Text dimColor>(custom runs via a shell)</Text>:
       </Text>
       {commandMenuItems.map((item, i) => {
@@ -928,12 +1042,10 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
           if (selected) {
             return (
               <Box key="__custom__">
-                <Text color="magenta" bold>
-                  ❯{' '}
-                </Text>
-                <Text color="magenta">&gt; </Text>
+                <Text color={FOCUS_COLOR}>❯ </Text>
+                <Text color={FOCUS_COLOR}>&gt; </Text>
                 <Text>{customCommandInput}</Text>
-                <Text color="magenta">_</Text>
+                <Text color={FOCUS_COLOR}>_</Text>
               </Box>
             );
           }
@@ -944,7 +1056,7 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
           );
         }
         return (
-          <Text key={item.name} color={selected ? 'magenta' : undefined} bold={selected}>
+          <Text key={item.name} color={selected ? FOCUS_COLOR : undefined}>
             {selected ? '❯ ' : '  '}
             {item.name}
           </Text>
@@ -958,11 +1070,7 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
     </>
   ) : (
     <>
-      <Box>
-        <HotkeyHints hints={sessionHints} />
-        {/* Magenta: green/cyan/yellow/red/gray all carry package-status meaning (and green is the git branch), so the copy flash uses a hue none of them claim. */}
-        {copiedNotice && <Text color="magenta">{`    ✓ ${copiedNotice} to clipboard`}</Text>}
-      </Box>
+      <HotkeyHints hints={sessionHints} />
       {filterLine}
     </>
   );
@@ -971,14 +1079,22 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
   // normal mode, where the top section shows the session-level hotkeys.
   const isNormal = !shuttingDown && !isFilter && !isCommands;
 
-  const borderColor = shuttingDown ? 'yellow' : isFilter ? 'cyan' : isCommands ? 'magenta' : 'gray';
+  const borderColor = shuttingDown
+    ? WARN_COLOR
+    : isFilter
+      ? ACCENT_COLOR
+      : isCommands
+        ? FOCUS_COLOR
+        : MUTED_COLOR;
 
   return (
     <Box flexDirection="column" width={columns} height={rows} overflow="hidden">
-      <Box ref={topRef} flexShrink={0}>
+      {/* Centered: the indicators are addressed to the whole viewport, not to the
+          left-aligned log rows they sit against. */}
+      <Box ref={topRef} flexShrink={0} justifyContent="center">
         {viewport.hiddenAbove > 0 && (
           <Text dimColor>
-            {`  ↑ ${viewport.hiddenAbove} older line${viewport.hiddenAbove === 1 ? '' : 's'} — press Home to jump to oldest`}
+            {`↑ ${viewport.hiddenAbove} older line${viewport.hiddenAbove === 1 ? '' : 's'} — press Home to jump to oldest`}
           </Text>
         )}
       </Box>
@@ -986,42 +1102,44 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
           frame; paneHeight is briefly the full height until the footer is measured,
           which is harmless (the run-phase buffer starts empty). */}
       <LogPane rows={viewport.rows} highlights={highlights} />
-      <Box ref={bottomRef} flexDirection="column" flexShrink={0}>
-        {viewport.hiddenBelow > 0 && (
-          <Text dimColor>
-            {`  ↓ ${viewport.hiddenBelow} newer line${viewport.hiddenBelow === 1 ? '' : 's'} — press End to jump to latest`}
-          </Text>
-        )}
-        <Box borderStyle="single" borderColor={borderColor} paddingX={1} columnGap={4}>
-          <Box flexDirection="column" flexGrow={1}>
-            {topSection}
-            <Box marginTop={1}>{packageStatusDots}</Box>
-            {isNormal && <HotkeyHints hints={packageHints} />}
-            <Box flexDirection="column" marginTop={1}>
+      <BottomChrome
+        ref={bottomRef}
+        toasts={toasts}
+        hiddenBelow={viewport.hiddenBelow}
+        jumpToLatestRef={jumpToLatestRef}
+        borderColor={borderColor}
+      >
+        <Box flexDirection="column" flexGrow={1}>
+          {topSection}
+          <Box marginTop={1}>{packageStatusDots}</Box>
+          {isNormal && <HotkeyHints hints={packageHints} />}
+          <Box flexDirection="column" marginTop={1}>
+            <Box columnGap={2}>
+              <Text>
+                <Text color={ACCENT_COLOR}>cwd: </Text>
+                <Text color={OK_COLOR}>{path.basename(process.cwd())}</Text>
+              </Text>
               {gitBranch && (
                 <Text>
-                  <Text color="cyan">git:(</Text>
-                  <Text color="green">{gitBranch}</Text>
-                  <Text color="cyan">)</Text>
+                  <Text color={ACCENT_COLOR}>git: </Text>
+                  <Text color={OK_COLOR}>{gitBranch}</Text>
                 </Text>
               )}
-              {logFilePath && (
-                <Box columnGap={2}>
-                  <Text dimColor>
-                    logfile: {path.relative(process.cwd(), logFilePath) || logFilePath}
-                  </Text>
-                  {/* Click to copy the absolute logfile path (hit-tested via copyIconRef). */}
-                  <Box ref={copyIconRef}>
-                    <Text color="magenta">⧉</Text>
-                  </Box>
-                  {isNormal && <HotkeyHints hints={[{ key: 't', label: 'rotate' }]} />}
-                </Box>
-              )}
             </Box>
+            {logFilePath && (
+              <Box columnGap={2}>
+                <Text dimColor>logfile: {displayLogFile(logFilePath)}</Text>
+                {/* Click to copy the absolute logfile path (hit-tested via copyIconRef). */}
+                <Box ref={copyIconRef}>
+                  <Text color={LINK_COLOR}>⧉</Text>
+                </Box>
+                {isNormal && <HotkeyHints hints={[{ key: 't', label: 'rotate' }]} />}
+              </Box>
+            )}
           </Box>
-          {linksColumn}
         </Box>
-      </Box>
+        {linksColumn}
+      </BottomChrome>
     </Box>
   );
 }

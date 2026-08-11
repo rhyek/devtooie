@@ -17,8 +17,7 @@ export type GeneratedPackageConfig = {
     color?: string | undefined;
     /** Reverse-proxy subdomain(s); the first feeds `$subdomain` substitution. */
     subdomain?: (string | string[]) | undefined;
-    /** Dev port; injected into the process as `PORT` and feeds `$port` substitution. */
-    port?: number | undefined;
+    port?: (number | any) | undefined;
     command: any;
     /** Automatically start this package during the run phase (default `true`). When `false`, devtooie leaves it stopped — start it yourself with the `s` hotkey (or a control-API `restart`). Ignored when `command` is `null` (that package never starts). */
     autostart?: boolean | undefined;
@@ -61,8 +60,7 @@ export type GeneratedDefineConfig = {
         color?: string | undefined;
         /** Reverse-proxy subdomain(s); the first feeds `$subdomain` substitution. */
         subdomain?: (string | string[]) | undefined;
-        /** Dev port; injected into the process as `PORT` and feeds `$port` substitution. */
-        port?: number | undefined;
+        port?: (number | any) | undefined;
         command: any;
         /** Automatically start this package during the run phase (default `true`). When `false`, devtooie leaves it stopped — start it yourself with the `s` hotkey (or a control-API `restart`). Ignored when `command` is `null` (that package never starts). */
         autostart?: boolean | undefined;
