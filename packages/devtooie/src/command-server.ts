@@ -1,5 +1,7 @@
 import http from 'node:http';
 
+import { startedByAgent } from './agent-detection.js';
+
 export interface ControlManager {
   getAllStatuses(): unknown;
   /** The whole resolved config (defaults applied), included in `/query/status` once attached. */
@@ -74,13 +76,15 @@ export async function startCommandServer(opts: {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
     const parts = pathname.split('/').filter(Boolean);
-    // The single consolidated query endpoint. `pid`/`configPath`/`logFile` are available even
-    // before the process manager attaches (from the server's own opts); `packages`/`config`
-    // — and the rotation-aware `logFile` — come from the manager once it does.
+    // The single consolidated query endpoint. `pid`/`configPath`/`logFile`/`startedByAgent`
+    // are available even before the process manager attaches (from the server's own opts, or
+    // from this process's own environment); `packages`/`config` — and the rotation-aware
+    // `logFile` — come from the manager once it does.
     if (pathname === '/query/status') {
       return send(res, 200, {
         pid: process.pid,
         configPath: opts.configPath ?? null,
+        startedByAgent: startedByAgent(),
         logFile: manager ? manager.getLogFile() : (opts.logFile ?? null),
         packages: manager ? manager.getAllStatuses() : null,
         config: manager ? manager.getConfig() : null,

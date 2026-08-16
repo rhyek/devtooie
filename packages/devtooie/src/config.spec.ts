@@ -13,7 +13,7 @@ import {
 
 describe('command / autostart', () => {
   it('resolves an omitted command to the `dev` default', () => {
-    const { packages } = defineConfig({ packages: [{ name: 'svc' }] });
+    const packages = Object.values(defineConfig({ packages: { svc: {} } }).packages);
     expect(packages[0]!.command).toEqual({
       name: 'dev',
       watches: true,
@@ -23,14 +23,16 @@ describe('command / autostart', () => {
   });
 
   it('passes `command: null` through (no dev process)', () => {
-    const { packages } = defineConfig({ packages: [{ name: 'lib', command: null }] });
+    const packages = Object.values(defineConfig({ packages: { lib: { command: null } } }).packages);
     expect(packages[0]!.command).toBeNull();
   });
 
   it('honors autostart and leaves it undefined (⇒ true) by default', () => {
-    const { packages } = defineConfig({
-      packages: [{ name: 'a', autostart: false }, { name: 'b' }],
-    });
+    const packages = Object.values(
+      defineConfig({
+        packages: { a: { autostart: false }, b: {} },
+      }).packages,
+    );
     expect(packages[0]!.autostart).toBe(false);
     expect(packages[1]!.autostart).toBeUndefined();
   });
@@ -38,56 +40,82 @@ describe('command / autostart', () => {
 
 describe('defineConfig path resolution', () => {
   it('defaults relativeDir to packages/<name> and resolves path against cwd', () => {
-    const { packages } = defineConfig({ packages: [{ name: 'svc' }] });
+    const packages = Object.values(defineConfig({ packages: { svc: {} } }).packages);
     const [pkg] = packages;
     expect(pkg!.relativeDir).toBe('packages/svc');
     expect(pkg!.path).toBe(path.resolve(process.cwd(), 'packages/svc'));
   });
 
   it('honors explicit relativeDir and workspaceDir', () => {
-    const { packages } = defineConfig({
-      workspaceDir: '/repo',
-      packages: [{ name: 'svc', relativeDir: 'apps/svc' }],
-    });
+    const packages = Object.values(
+      defineConfig({
+        workspaceDir: '/repo',
+        packages: { svc: { relativeDir: 'apps/svc' } },
+      }).packages,
+    );
     expect(packages[0]!.path).toBe(path.resolve('/repo', 'apps/svc'));
   });
 });
 
 describe('meta defaults', () => {
   it('leaves apiPort undefined when unset (random port chosen at startup)', () => {
-    const cfg = defineConfig({ packages: [{ name: 'svc' }] });
+    const cfg = defineConfig({ packages: { svc: {} } });
     expect(cfg.apiPort).toBeUndefined();
   });
 
   it('passes through a pinned apiPort and exposes it via getLoadedConfig', () => {
     const cfg = defineConfig({
       apiPort: 5000,
-      packages: [{ name: 'svc' }],
+      packages: { svc: {} },
     });
     expect(cfg.apiPort).toBe(5000);
     expect(getLoadedConfig()?.apiPort).toBe(5000);
   });
 
-  it('defaults envFiles to the standard set', () => {
-    const cfg = defineConfig({ packages: [{ name: 'svc' }] });
-    expect(cfg.envFiles).toEqual(['.env', '.env.development', '.env.local']);
+  it("defaults envFiles to the development mode's set", () => {
+    const cfg = defineConfig({ packages: { svc: {} } });
+    expect(cfg.envFiles).toEqual([
+      '.env',
+      '.env.local',
+      '.env.development',
+      '.env.development.local',
+    ]);
+    expect(cfg.envMode).toBe('development');
   });
 
-  it('honors an env.files override', () => {
+  it('follows DEVTOOIE_MODE for both envFiles and envMode', () => {
+    process.env.DEVTOOIE_MODE = 'test';
+    try {
+      const cfg = defineConfig({ packages: { svc: {} } });
+      expect(cfg.envFiles).toEqual(['.env', '.env.local', '.env.test', '.env.test.local']);
+      expect(cfg.envMode).toBe('test');
+    } finally {
+      delete process.env.DEVTOOIE_MODE;
+    }
+  });
+
+  it('rejects the removed env.files option instead of silently ignoring it', () => {
+    expect(() =>
+      // @ts-expect-error - `files` was removed; the schema must say so rather than strip it.
+      defineConfig({ env: { files: ['.env', '.env.test'] }, packages: { svc: {} } }),
+    ).toThrow(/Unrecognized key: "files"/);
+  });
+
+  it('carries env.override through to the resolved config', () => {
     const cfg = defineConfig({
-      env: { files: ['.env', '.env.test'] },
-      packages: [{ name: 'svc' }],
+      env: { override: ['NODE_OPTIONS'] },
+      packages: { svc: {} },
     });
-    expect(cfg.envFiles).toEqual(['.env', '.env.test']);
+    expect(cfg.envOverride).toEqual(['NODE_OPTIONS']);
   });
 
   it('defaults logTimestamps to false', () => {
-    const cfg = defineConfig({ packages: [{ name: 'svc' }] });
+    const cfg = defineConfig({ packages: { svc: {} } });
     expect(cfg.logTimestamps).toBe(false);
   });
 
   it('honors a logs.timestamps override', () => {
-    const cfg = defineConfig({ logs: { timestamps: true }, packages: [{ name: 'svc' }] });
+    const cfg = defineConfig({ logs: { timestamps: true }, packages: { svc: {} } });
     expect(cfg.logTimestamps).toBe(true);
   });
 });
@@ -95,111 +123,422 @@ describe('meta defaults', () => {
 describe('logs (per-package)', () => {
   it('passes a logs.formatter through unchanged (not a validating wrapper)', () => {
     const fmt = (line: string): string => `[fmt] ${line}`;
-    const { packages } = defineConfig({ packages: [{ name: 'svc', logs: { formatter: fmt } }] });
+    const packages = Object.values(
+      defineConfig({ packages: { svc: { logs: { formatter: fmt } } } }).packages,
+    );
     expect(packages[0]!.logs?.formatter).toBe(fmt);
     expect(packages[0]!.logs?.formatter!('hi')).toBe('[fmt] hi');
   });
 
   it('stores a package-level logs.timestamps override', () => {
-    const { packages } = defineConfig({
-      packages: [{ name: 'a', logs: { timestamps: true } }, { name: 'b' }],
-    });
+    const packages = Object.values(
+      defineConfig({
+        packages: { a: { logs: { timestamps: true } }, b: {} },
+      }).packages,
+    );
     expect(packages[0]!.logs?.timestamps).toBe(true);
     expect(packages[1]!.logs).toBeUndefined();
   });
 
   it('leaves logs undefined when not set', () => {
-    const { packages } = defineConfig({ packages: [{ name: 'svc' }] });
+    const packages = Object.values(defineConfig({ packages: { svc: {} } }).packages);
     expect(packages[0]!.logs).toBeUndefined();
   });
 
   it('rejects a non-function logs.formatter', () => {
     expect(() =>
       // @ts-expect-error logs.formatter must be a function
-      defineConfig({ packages: [{ name: 'svc', logs: { formatter: 'nope' } }] }),
+      defineConfig({ packages: { svc: { logs: { formatter: 'nope' } } } }),
     ).toThrow(/logs\.formatter/);
   });
 });
 
-describe('token substitution', () => {
-  it('substitutes intrinsic $name, $port, $subdomain', () => {
-    const { packages } = defineConfig({
-      packages: [
-        {
-          name: 'core',
-
-          port: 3001,
-          subdomain: ['core', 'core-bg'],
-          healthcheck: 'http://localhost:$port/health',
-          urls: ['https://$subdomain.local/$name'],
+describe('tokens', () => {
+  it('merges the package tokens over the config tokens, package winning', () => {
+    const packages = Object.values(
+      defineConfig({
+        tokens: { domain: 'example.com', scheme: 'https' },
+        packages: {
+          api: {
+            tokens: { region: 'us-east', scheme: 'http' },
+            healthcheck: ({ tokens }) => `${tokens.scheme}://${tokens.region}.${tokens.domain}`,
+          },
         },
-      ],
-    });
-    const [pkg] = packages;
-    expect(pkg!.healthcheck).toBe('http://localhost:3001/health');
-    expect(pkg!.urls![0]).toBe('https://core.local/core');
+      }).packages,
+    );
+    expect(packages[0]!.healthcheck?.url).toBe('http://us-east.example.com');
   });
 
-  it('substitutes extrinsic tokens from opts.tokens (string and object urls)', () => {
-    const { packages } = defineConfig({
-      tokens: { domain: 'example.com', proxyport: '8443' },
-      packages: [
-        {
-          name: 'web',
-          urls: [{ label: 'home', url: 'https://app.$domain:$proxyport' }],
+  it('keeps one package tokens out of another package', () => {
+    const seen: (string | undefined)[] = [];
+    defineConfig({
+      packages: {
+        api: { tokens: { region: 'us-east' } },
+        web: {
+          healthcheck: ({ tokens }) => {
+            seen.push((tokens as Record<string, string | undefined>).region);
+            return 'http://localhost/health';
+          },
         },
-      ],
+      },
     });
-    expect(packages[0]!.urls![0]).toEqual({
-      label: 'home',
-      url: 'https://app.example.com:8443',
-    });
+    expect(seen).toEqual([undefined]);
   });
 
-  it('substitutes tokens inside a per-package array (same-line) url entry, keeping its shape', () => {
-    const { packages } = defineConfig({
+  it('gives a package with no tokens of its own just the config tokens', () => {
+    const packages = Object.values(
+      defineConfig({
+        tokens: { domain: 'example.com' },
+        packages: { web: { healthcheck: ({ tokens }) => `https://${tokens.domain}` } },
+      }).packages,
+    );
+    expect(packages[0]!.healthcheck?.url).toBe('https://example.com');
+  });
+
+  it('hands workspace-wide urls only the config tokens', () => {
+    const cfg = defineConfig({
       tokens: { domain: 'example.com' },
-      packages: [
-        {
-          name: 'web',
-
-          port: 3000,
-          urls: [['http://localhost:$port', { label: 'app', url: 'https://app.$domain' }]],
-        },
-      ],
+      urls: [({ tokens }) => `https://status.${tokens.domain}`],
+      packages: { api: { tokens: { region: 'us-east' } } },
     });
+    expect(cfg.urls![0]).toBe('https://status.example.com');
+  });
+
+  // The type-level half of the feature. vitest does not typecheck, so these are enforced by
+  // `tsc -p packages/devtooie/tsconfig.json` — the `@ts-expect-error`s fail the typecheck if
+  // the inference regresses. See docs/configuration.md#callbacks-instead-of-interpolation.
+  it('types each package tokens from what it declares', () => {
+    defineConfig({
+      tokens: { domain: 'example.com' },
+      packages: {
+        api: {
+          tokens: { region: 'us-east' },
+          // both the config token and this package's own are known keys
+          healthcheck: ({ tokens }) => `https://${tokens.region}.${tokens.domain}`,
+        },
+        web: {
+          // @ts-expect-error `region` is the api package's token, not this one's
+          urls: [({ tokens }) => `https://${tokens.region}`],
+        },
+        edge: {
+          // @ts-expect-error no token named `nope` anywhere
+          healthcheck: ({ tokens }) => `https://${tokens.nope}`,
+        },
+      },
+    });
+  });
+
+  // The regression this whole shape exists to prevent: a package that declares NO tokens must
+  // not make its siblings' tokens fall back to a permissive record. `P` is constrained to
+  // `Record<K, unknown>` (not `Record<K, TokenRecord>`) precisely so the inference survives —
+  // TypeScript replaces an inference that fails its constraint with the constraint itself.
+  it('keeps sibling tokens exact when a package omits tokens entirely', () => {
+    defineConfig({
+      tokens: { domain: 'example.com' },
+      packages: {
+        // declares tokens, and still gets exact types despite the siblings below
+        api: {
+          tokens: { region: 'us-east' },
+          healthcheck: ({ tokens }) => `https://${tokens.region}.${tokens.domain}`,
+        },
+        // no `tokens` key at all — not even `{}`
+        web: {
+          healthcheck: ({ tokens }) => `https://${tokens.domain}`,
+        },
+        edge: {
+          // @ts-expect-error still exact: no fallback to a permissive record
+          healthcheck: ({ tokens }) => `https://${tokens.anything}`,
+        },
+      },
+    });
+  });
+
+  // Rejected at both layers: a compile error at the declaration (the `@ts-expect-error`) and
+  // a load-time error from the schema, for configs that reach `defineConfig` unchecked.
+  it('rejects a non-string token value', () => {
+    expect(() =>
+      defineConfig({
+        packages: {
+          // @ts-expect-error token values must be strings
+          api: { tokens: { port: 8080 } },
+        },
+      }),
+    ).toThrow(/tokens\.port/);
+  });
+
+  it('type-checks waitFor and deps against the package keys', () => {
+    // The valid direction compiles and loads.
+    defineConfig({
+      packages: {
+        api: { healthcheck: 'http://localhost/health' },
+        web: { waitFor: ['api'], deps: { runtime: ['api'], build: ['api'], dev: ['api'] } },
+      },
+    });
+    // The invalid direction is a compile error *and* a load-time error.
+    expect(() =>
+      defineConfig({
+        packages: {
+          api: {},
+          edge: {
+            // @ts-expect-error no package named `ghost`
+            waitFor: ['ghost'],
+          },
+        },
+      }),
+    ).toThrow(/waitFor "ghost"/);
+    expect(() =>
+      defineConfig({
+        packages: {
+          api: {},
+          edge: {
+            // @ts-expect-error no package named `nope`
+            deps: { runtime: ['nope'] },
+          },
+        },
+      }),
+    ).toThrow(/deps\.runtime "nope"/);
+  });
+});
+
+describe('package keys', () => {
+  it('rejects an integer-like package name (JS would reorder the keys)', () => {
+    expect(() => defineConfig({ packages: { 2: {} } })).toThrow(/is a number/);
+  });
+
+  it('preserves declaration order of the keys', () => {
+    const cfg = defineConfig({ packages: { zebra: {}, alpha: {}, middle: {} } });
+    expect(Object.keys(cfg.packages)).toEqual(['zebra', 'alpha', 'middle']);
+  });
+
+  it('exposes each package resolved tokens on the config', () => {
+    const cfg = defineConfig({
+      tokens: { domain: 'example.com' },
+      packages: { api: { tokens: { region: 'us-east' } }, web: {} },
+    });
+    expect(cfg.packages.api.tokens).toEqual({ domain: 'example.com', region: 'us-east' });
+    expect(cfg.packages.web.tokens).toEqual({ domain: 'example.com' });
+  });
+});
+
+describe('url/healthcheck callbacks', () => {
+  it('resolves a healthcheck callback with the package port', () => {
+    const packages = Object.values(
+      defineConfig({
+        packages: {
+          core: { port: 3001, healthcheck: ({ port }) => `http://localhost:${port}/health` },
+        },
+      }).packages,
+    );
+    expect(packages[0]!.healthcheck?.url).toBe('http://localhost:3001/health');
+  });
+
+  it('hands the config tokens to a callback (string and object urls)', () => {
+    const packages = Object.values(
+      defineConfig({
+        tokens: { domain: 'example.com', proxyport: '8443' },
+        packages: {
+          web: {
+            urls: [
+              {
+                label: 'home',
+                url: ({ tokens }) => `https://app.${tokens.domain}:${tokens.proxyport}`,
+              },
+            ],
+          },
+        },
+      }).packages,
+    );
+    expect(packages[0]!.urls![0]).toEqual({ label: 'home', url: 'https://app.example.com:8443' });
+  });
+
+  it('resolves callbacks inside a per-package array (same-line) url entry, keeping its shape', () => {
+    const packages = Object.values(
+      defineConfig({
+        tokens: { domain: 'example.com' },
+        packages: {
+          web: {
+            port: 3000,
+            urls: [
+              [
+                ({ port }) => `http://localhost:${port}`,
+                { label: 'app', url: ({ tokens }) => `https://app.${tokens.domain}` },
+              ],
+            ],
+          },
+        },
+      }).packages,
+    );
     expect(packages[0]!.urls![0]).toEqual([
       'http://localhost:3000',
       { label: 'app', url: 'https://app.example.com' },
     ]);
   });
+
+  it('passes a literal string through untouched, `$` and all', () => {
+    // Interpolation is gone: a `$port` in a literal is just a character sequence now.
+    const packages = Object.values(
+      defineConfig({
+        packages: {
+          core: { port: 3001, healthcheck: 'http://localhost:$port/health', urls: ['$name'] },
+        },
+      }).packages,
+    );
+    expect(packages[0]!.healthcheck?.url).toBe('http://localhost:$port/health');
+    expect(packages[0]!.urls![0]).toBe('$name');
+  });
+
+  it('reports the package and field when a callback returns a non-string', () => {
+    expect(() =>
+      defineConfig({
+        // @ts-expect-error a url callback must return a string
+        packages: { core: { port: 3001, healthcheck: ({ port }) => port } },
+      }),
+    ).toThrow(/core healthcheck: callback returned 3001/);
+  });
+
+  // `port` is typed `number` for callbacks, which the type system can't verify (the one
+  // inference channel goes to `tokens`). Reading it on a package that declares none therefore
+  // fails at load time, naming the package — rather than interpolating `undefined` into a URL.
+  it('throws, naming the package, when a callback reads a port the package has not declared', () => {
+    expect(() =>
+      defineConfig({
+        packages: {
+          core: {
+            healthcheck: ({ port }) => `http://localhost:${port}/health`,
+          },
+        },
+      }),
+    ).toThrow(/core: a callback read `port`, but this package declares no `port`/);
+  });
+
+  it('leaves a portless package alone when its callbacks never read the port', () => {
+    const cfg = defineConfig({
+      tokens: { host: 'example.test' },
+      packages: {
+        core: { selectable: true, healthcheck: ({ tokens }) => `https://${tokens.host}/health` },
+      },
+    });
+    expect(cfg.packages.core.healthcheck?.url).toBe('https://example.test/health');
+    expect(cfg.packages.core.port).toBeUndefined();
+  });
+});
+
+describe('healthcheck', () => {
+  const health = (config: Parameters<typeof defineConfig>[0]) =>
+    Object.values(defineConfig(config).packages)[0]!.healthcheck;
+
+  it('normalizes a bare URL to `{ url, timeout }` with the default timeout', () => {
+    expect(health({ packages: { api: { healthcheck: 'http://localhost/health' } } })).toEqual({
+      url: 'http://localhost/health',
+      timeout: 1500,
+    });
+  });
+
+  it('takes the URL and timeout from the object form', () => {
+    expect(
+      health({
+        packages: { api: { healthcheck: { url: 'http://localhost/health', timeout: 10_000 } } },
+      }),
+    ).toEqual({ url: 'http://localhost/health', timeout: 10_000 });
+  });
+
+  it('resolves a callback inside the object form, with the package context', () => {
+    expect(
+      health({
+        tokens: { host: 'api.internal' },
+        packages: {
+          api: {
+            port: 4321,
+            healthcheck: {
+              url: ({ port, tokens }) => `http://${tokens.host}:${port}/health`,
+              timeout: 4000,
+            },
+          },
+        },
+      }),
+    ).toEqual({ url: 'http://api.internal:4321/health', timeout: 4000 });
+  });
+
+  it('defaults the timeout when the object form omits it', () => {
+    expect(
+      health({ packages: { api: { healthcheck: { url: 'http://localhost/health' } } } })?.timeout,
+    ).toBe(1500);
+  });
+
+  it('names the package and field when a callback in the object form returns a non-string', () => {
+    expect(() =>
+      defineConfig({
+        // @ts-expect-error a url callback must return a string
+        packages: { api: { port: 3001, healthcheck: { url: ({ port }) => port } } },
+      }),
+    ).toThrow(/api healthcheck: callback returned 3001/);
+  });
+
+  it('rejects a misspelled key rather than silently keeping the default', () => {
+    expect(() =>
+      defineConfig({
+        // @ts-expect-error `timout` is not a healthcheck option
+        packages: { api: { healthcheck: { url: 'http://localhost/health', timout: 9000 } } },
+      }),
+    ).toThrow(/invalid devtooie config/);
+  });
+
+  it('rejects a non-positive or fractional timeout', () => {
+    for (const timeout of [0, -1, 1.5]) {
+      expect(() =>
+        defineConfig({
+          packages: { api: { healthcheck: { url: 'http://localhost/health', timeout } } },
+        }),
+      ).toThrow(/invalid devtooie config/);
+    }
+  });
+
+  it('satisfies a waitFor dependency declared in the object form', () => {
+    expect(() =>
+      defineConfig({
+        packages: {
+          api: { healthcheck: { url: 'http://localhost/health', timeout: 3000 } },
+          web: { waitFor: ['api'] },
+        },
+      }),
+    ).not.toThrow();
+  });
 });
 
 describe('top-level urls', () => {
-  it('substitutes extrinsic tokens in a bare-string top-level url', () => {
+  it('resolves a callback in a bare-string top-level url', () => {
     const cfg = defineConfig({
       tokens: { domain: 'example.com' },
-      urls: ['https://grafana.$domain'],
-      packages: [{ name: 'svc' }],
+      urls: [({ tokens }) => `https://grafana.${tokens.domain}`],
+      packages: { svc: {} },
     });
     expect(cfg.urls![0]).toBe('https://grafana.example.com');
   });
 
-  it('substitutes extrinsic tokens in an object top-level url and keeps the label', () => {
+  it('resolves a callback in an object top-level url and keeps the label', () => {
     const cfg = defineConfig({
       tokens: { domain: 'example.com', proxyport: '8443' },
-      urls: [{ label: 'Grafana', url: 'https://grafana.$domain:$proxyport' }],
-      packages: [{ name: 'svc' }],
+      urls: [
+        {
+          label: 'Grafana',
+          url: ({ tokens }) => `https://grafana.${tokens.domain}:${tokens.proxyport}`,
+        },
+      ],
+      packages: { svc: {} },
     });
-    const url = cfg.urls![0];
-    expect(url).toEqual({ label: 'Grafana', url: 'https://grafana.example.com:8443' });
+    expect(cfg.urls![0]).toEqual({ label: 'Grafana', url: 'https://grafana.example.com:8443' });
   });
 
-  it('substitutes tokens inside a top-level array (same-line) url entry, keeping its shape', () => {
+  it('resolves callbacks inside a top-level array (same-line) url entry, keeping its shape', () => {
     const cfg = defineConfig({
       tokens: { domain: 'example.com' },
-      urls: [['https://grafana.$domain', { label: 'Logs', url: 'https://logs.$domain' }]],
-      packages: [{ name: 'svc' }],
+      urls: [
+        [
+          ({ tokens }) => `https://grafana.${tokens.domain}`,
+          { label: 'Logs', url: ({ tokens }) => `https://logs.${tokens.domain}` },
+        ],
+      ],
+      packages: { svc: {} },
     });
     expect(cfg.urls![0]).toEqual([
       'https://grafana.example.com',
@@ -207,41 +546,33 @@ describe('top-level urls', () => {
     ]);
   });
 
-  it('leaves a top-level url with no tokens verbatim', () => {
+  it('leaves a literal top-level url verbatim', () => {
     const cfg = defineConfig({
       urls: ['https://dashboard.internal'],
-      packages: [{ name: 'svc' }],
+      packages: { svc: {} },
     });
     expect(cfg.urls![0]).toBe('https://dashboard.internal');
   });
 
   it('leaves urls undefined when none are given', () => {
-    const cfg = defineConfig({ packages: [{ name: 'svc' }] });
+    const cfg = defineConfig({ packages: { svc: {} } });
     expect(cfg.urls).toBeUndefined();
   });
 
-  it('throws when a top-level url references an intrinsic token like $port', () => {
+  it('throws when a top-level url callback reads a port (those links have no package)', () => {
     expect(() =>
       defineConfig({
-        urls: ['http://localhost:$port'],
-        packages: [{ name: 'svc' }],
+        // @ts-expect-error a workspace-wide url has no package, so no `port` in its context
+        urls: [({ port }) => `http://localhost:${port}`],
+        packages: { svc: { port: 3001 } },
       }),
-    ).toThrow(/top-level url.*\$port/);
-  });
-
-  it('throws when a top-level url references an unknown extrinsic token', () => {
-    expect(() =>
-      defineConfig({
-        urls: ['https://$domain'],
-        packages: [{ name: 'svc' }],
-      }),
-    ).toThrow(/top-level url.*\$domain/);
+    ).toThrow(/those links belong to no package/);
   });
 });
 
 describe('command', () => {
   const cmd = (fields: object) =>
-    defineConfig({ packages: [{ name: 'a', ...fields } as never] }).packages[0]!.command;
+    Object.values(defineConfig({ packages: { a: { ...fields } as never } }).packages)[0]!.command;
 
   it('defaults to dev / watches:true / builds:true / cleans:false when omitted', () => {
     expect(cmd({})).toEqual({ name: 'dev', watches: true, builds: true, cleans: false });
@@ -307,9 +638,11 @@ describe('command', () => {
   });
 
   it('getDevScript returns the configured command name, else dev', () => {
-    const { packages } = defineConfig({
-      packages: [{ name: 'a', command: 'start' }, { name: 'b' }, { name: 'c' }],
-    });
+    const packages = Object.values(
+      defineConfig({
+        packages: { a: { command: 'start' }, b: {}, c: {} },
+      }).packages,
+    );
     expect(getDevScript(packages[0]!)).toBe('start');
     expect(getDevScript(packages[1]!)).toBe('dev');
     expect(getDevScript(packages[2]!)).toBe('dev');
@@ -317,11 +650,11 @@ describe('command', () => {
 
   it('rejects the illegal combos at the type level', () => {
     // @ts-expect-error watches:true requires builds:true
-    const a = (): unknown => defineConfig({ packages: [{ name: 'a',  command: ['x', { watches: true, builds: false }]  }] }); // prettier-ignore
+    const a = (): unknown => defineConfig({ packages: { a: {   command: ['x', { watches: true, builds: false }]  } } }); // prettier-ignore
     // @ts-expect-error builds:false requires watches:false
-    const b = (): unknown => defineConfig({ packages: [{ name: 'a',  command: ['x', { builds: false }]  }] }); // prettier-ignore
+    const b = (): unknown => defineConfig({ packages: { a: {   command: ['x', { builds: false }]  } } }); // prettier-ignore
     // @ts-expect-error cleans:true requires builds:true
-    const c = (): unknown => defineConfig({ packages: [{ name: 'a',  command: ['x', { watches: false, builds: false, cleans: true }]  }] }); // prettier-ignore
+    const c = (): unknown => defineConfig({ packages: { a: {   command: ['x', { watches: false, builds: false, cleans: true }]  } } }); // prettier-ignore
     void a;
     void b;
     void c;
@@ -332,7 +665,7 @@ describe('validation', () => {
   it('throws when waitFor targets a package without a healthcheck', () => {
     expect(() =>
       defineConfig({
-        packages: [{ name: 'a', waitFor: ['b'] }, { name: 'b' }],
+        packages: { a: { waitFor: ['b'] }, b: {} },
       }),
     ).toThrow(/waitFor "b".*no healthcheck/);
   });
@@ -340,24 +673,34 @@ describe('validation', () => {
   it('throws when waitFor targets a missing package', () => {
     expect(() =>
       defineConfig({
-        packages: [{ name: 'a', waitFor: ['ghost' as any] }],
+        packages: { a: { waitFor: ['ghost' as any] } },
       }),
     ).toThrow(/waitFor "ghost"/);
   });
 
-  it('throws when a url uses an unknown extrinsic token', () => {
+  it('throws when a dep names a missing package, saying which category', () => {
     expect(() =>
       defineConfig({
-        packages: [{ name: 'a', urls: ['https://$domain'] }],
+        // @ts-expect-error also a compile error — the load-time check is the backstop
+        packages: { a: { deps: { runtime: ['ghost'] } } },
       }),
-    ).toThrow(/\$domain/);
+    ).toThrow(/a has deps\.runtime "ghost" but no such package exists/);
+  });
+
+  it('accepts deps that name real packages', () => {
+    const packages = Object.values(
+      defineConfig({
+        packages: { a: { deps: { build: ['b'], runtime: ['b'] } }, b: {} },
+      }).packages,
+    );
+    expect(packages[0]!.deps).toEqual({ build: ['b'], runtime: ['b'] });
   });
 });
 
 describe('registry + findPackage', () => {
   it('populates the registry on define and looks packages up by name', () => {
     defineConfig({
-      packages: [{ name: 'alpha' }, { name: 'beta' }],
+      packages: { alpha: {}, beta: {} },
     });
     expect(getRegisteredPackages().map((p) => p.name)).toEqual(
       expect.arrayContaining(['alpha', 'beta']),
@@ -366,7 +709,7 @@ describe('registry + findPackage', () => {
   });
 
   it('throws for an unknown package', () => {
-    defineConfig({ packages: [{ name: 'alpha' }] });
+    defineConfig({ packages: { alpha: {} } });
     expect(() => findPackage('nope')).toThrow(/nope/);
   });
 });
@@ -386,74 +729,118 @@ describe('port callback', () => {
 
   it('resolves the port from a workspace-scope env file', () => {
     fs.writeFileSync(path.join(ws, '.env.development'), 'BACKEND_PORT=4321\n');
-    const { packages } = defineConfig({
-      workspaceDir: ws,
-      packages: [{ name: 'api', port: ({ env }) => Number(env.BACKEND_PORT) }],
-    });
+    const packages = Object.values(
+      defineConfig({
+        workspaceDir: ws,
+        packages: { api: { port: ({ envs }) => Number(envs.BACKEND_PORT) } },
+      }).packages,
+    );
     expect(packages[0]!.port).toBe(4321);
   });
 
   it('resolves the port from process.env when no file defines it', () => {
     process.env.DEVTOOIE_TEST_PORT = '5555';
-    const { packages } = defineConfig({
-      workspaceDir: ws,
-      packages: [{ name: 'api', port: ({ env }) => Number(env.DEVTOOIE_TEST_PORT) }],
-    });
+    const packages = Object.values(
+      defineConfig({
+        workspaceDir: ws,
+        packages: { api: { port: ({ envs }) => Number(envs.DEVTOOIE_TEST_PORT) } },
+      }).packages,
+    );
     expect(packages[0]!.port).toBe(5555);
   });
 
-  it('lets an env file override an ambient var of the same name', () => {
+  it('lets an ambient var win over an env file of the same name', () => {
     process.env.DEVTOOIE_TEST_PORT = '5555';
     fs.writeFileSync(path.join(ws, '.env.development'), 'DEVTOOIE_TEST_PORT=6666\n');
-    const { packages } = defineConfig({
-      workspaceDir: ws,
-      packages: [{ name: 'api', port: ({ env }) => Number(env.DEVTOOIE_TEST_PORT) }],
-    });
+    const packages = Object.values(
+      defineConfig({
+        workspaceDir: ws,
+        packages: { api: { port: ({ envs }) => Number(envs.DEVTOOIE_TEST_PORT) } },
+      }).packages,
+    );
+    expect(packages[0]!.port).toBe(5555);
+  });
+
+  it('lets env.override hand the file the win back', () => {
+    process.env.DEVTOOIE_TEST_PORT = '5555';
+    fs.writeFileSync(path.join(ws, '.env.development'), 'DEVTOOIE_TEST_PORT=6666\n');
+    const packages = Object.values(
+      defineConfig({
+        workspaceDir: ws,
+        env: { override: ['DEVTOOIE_TEST_PORT'] },
+        packages: { api: { port: ({ envs }) => Number(envs.DEVTOOIE_TEST_PORT) } },
+      }).packages,
+    );
     expect(packages[0]!.port).toBe(6666);
   });
 
   it('lets a package-scope env file override the workspace-scope one', () => {
     fs.writeFileSync(path.join(ws, '.env.development'), 'BACKEND_PORT=4321\n');
     fs.writeFileSync(path.join(ws, 'packages/api/.env.development'), 'BACKEND_PORT=7777\n');
-    const { packages } = defineConfig({
-      workspaceDir: ws,
-      packages: [{ name: 'api', port: ({ env }) => Number(env.BACKEND_PORT) }],
-    });
+    const packages = Object.values(
+      defineConfig({
+        workspaceDir: ws,
+        packages: { api: { port: ({ envs }) => Number(envs.BACKEND_PORT) } },
+      }).packages,
+    );
     expect(packages[0]!.port).toBe(7777);
   });
 
-  it('honors a custom env.files list', () => {
-    fs.writeFileSync(path.join(ws, '.env.ports'), 'BACKEND_PORT=8888\n');
-    const { packages } = defineConfig({
-      workspaceDir: ws,
-      env: { files: ['.env.ports'] },
-      packages: [{ name: 'api', port: ({ env }) => Number(env.BACKEND_PORT) }],
-    });
-    expect(packages[0]!.port).toBe(8888);
+  it('reads the mode-specific file for the active mode', () => {
+    process.env.DEVTOOIE_MODE = 'test';
+    try {
+      fs.writeFileSync(path.join(ws, '.env.test'), 'BACKEND_PORT=8888\n');
+      fs.writeFileSync(path.join(ws, '.env.development'), 'BACKEND_PORT=4321\n');
+      const packages = Object.values(
+        defineConfig({
+          workspaceDir: ws,
+          packages: { api: { port: ({ envs }) => Number(envs.BACKEND_PORT) } },
+        }).packages,
+      );
+      expect(packages[0]!.port).toBe(8888);
+    } finally {
+      delete process.env.DEVTOOIE_MODE;
+    }
   });
 
-  it('feeds the resolved port into $port substitution', () => {
+  it('feeds the resolved port into the healthcheck/urls callbacks', () => {
     fs.writeFileSync(path.join(ws, '.env.development'), 'BACKEND_PORT=4321\n');
-    const { packages } = defineConfig({
-      workspaceDir: ws,
-      packages: [
-        {
-          name: 'api',
-          port: ({ env }) => Number(env.BACKEND_PORT),
-          healthcheck: 'http://localhost:$port/health',
-          urls: ['http://localhost:$port/todos'],
+    const packages = Object.values(
+      defineConfig({
+        workspaceDir: ws,
+        packages: {
+          api: {
+            port: ({ envs }) => Number(envs.BACKEND_PORT),
+            healthcheck: ({ port }) => `http://localhost:${port}/health`,
+            urls: [({ port }) => `http://localhost:${port}/todos`],
+          },
         },
-      ],
-    });
-    expect(packages[0]!.healthcheck).toBe('http://localhost:4321/health');
+      }).packages,
+    );
+    expect(packages[0]!.healthcheck?.url).toBe('http://localhost:4321/health');
     expect(packages[0]!.urls).toEqual(['http://localhost:4321/todos']);
   });
 
+  it('hands the same resolved env to a healthcheck callback', () => {
+    fs.writeFileSync(path.join(ws, '.env.development'), 'PUBLIC_HOST=api.internal\n');
+    const packages = Object.values(
+      defineConfig({
+        workspaceDir: ws,
+        packages: {
+          api: { port: 3001, healthcheck: ({ envs }) => `http://${envs.PUBLIC_HOST}/health` },
+        },
+      }).packages,
+    );
+    expect(packages[0]!.healthcheck?.url).toBe('http://api.internal/health');
+  });
+
   it('treats an undefined return as no port', () => {
-    const { packages } = defineConfig({
-      workspaceDir: ws,
-      packages: [{ name: 'api', port: () => undefined }],
-    });
+    const packages = Object.values(
+      defineConfig({
+        workspaceDir: ws,
+        packages: { api: { port: () => undefined } },
+      }).packages,
+    );
     expect(packages[0]!.port).toBeUndefined();
   });
 
@@ -462,7 +849,7 @@ describe('port callback', () => {
     expect(() =>
       defineConfig({
         workspaceDir: ws,
-        packages: [{ name: 'api', port: ({ env }) => Number(env.BACKEND_PORT) }],
+        packages: { api: { port: ({ envs }) => Number(envs.BACKEND_PORT) } },
       }),
     ).toThrow(/api: port callback returned NaN[\s\S]*\.env\.development/);
   });
@@ -471,25 +858,27 @@ describe('port callback', () => {
     expect(() =>
       defineConfig({
         workspaceDir: ws,
-        packages: [{ name: 'api', port: ({ env }) => Number(env.BACKEND_PORT) }],
+        packages: { api: { port: ({ envs }) => Number(envs.BACKEND_PORT) } },
       }),
     ).toThrow(/no env files were found/);
   });
 
   it('still accepts a literal numeric port', () => {
-    const { packages } = defineConfig({
-      workspaceDir: ws,
-      packages: [{ name: 'api', port: 3001, healthcheck: 'http://localhost:$port/health' }],
-    });
+    const packages = Object.values(
+      defineConfig({
+        workspaceDir: ws,
+        packages: { api: { port: 3001, healthcheck: 'http://localhost:3001/health' } },
+      }).packages,
+    );
     expect(packages[0]!.port).toBe(3001);
-    expect(packages[0]!.healthcheck).toBe('http://localhost:3001/health');
+    expect(packages[0]!.healthcheck?.url).toBe('http://localhost:3001/health');
   });
 });
 
 describe('getWorkspaceDir', () => {
   it('reports the root package paths resolved against, not the config file directory', () => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-ws-')));
-    defineConfig({ workspaceDir: dir, packages: [{ name: 'svc' }] });
+    defineConfig({ workspaceDir: dir, packages: { svc: {} } });
     try {
       // What decides whether a port holder belongs to this workspace — a config living in a
       // subdirectory can point `workspaceDir` somewhere else entirely.
@@ -501,7 +890,7 @@ describe('getWorkspaceDir', () => {
   });
 
   it('defaults to the process cwd', () => {
-    defineConfig({ packages: [{ name: 'svc' }] });
+    defineConfig({ packages: { svc: {} } });
     expect(getWorkspaceDir()).toBe(path.resolve(process.cwd()));
   });
 });

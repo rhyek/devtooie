@@ -41,37 +41,22 @@ for tooling to read.
 
 ## Scoping a `node --watch` dev script
 
-`node --watch` registers a **recursive** watch on the directory of every file the process loads,
-with no ignore list — so `node_modules` is watched wholesale. A service with a real dependency
-tree ends up holding thousands of watch roots, which wastes restarts on files you never edit and,
-on macOS, can exhaust the machine-wide FSEvents budget and fail the watcher with `EMFILE`.
+devtooie runs the `dev` script exactly as written, so what the process watches is up to the script.
+Worth knowing if you use Node's own watcher: `node --watch`
+registers a **recursive** watch on the directory of every file the process loads, with no ignore
+list, so `node_modules` is watched wholesale. A service with a real dependency tree ends up
+holding thousands of watch roots, which wastes restarts on files you never edit and, on macOS,
+can exhaust the machine-wide FSEvents budget and fail the watcher with `EMFILE`.
 
-Scope it with `--watch-path`. devtooie derives the right directories for each package and puts
-them in **`DEVTOOIE_WATCH_PATHS`**, ready to splice into the command:
+Scope it by naming the directories yourself:
 
 ```jsonc
 {
   "scripts": {
     // watches only what this package actually loads at runtime
-    "dev": "node --watch $DEVTOOIE_WATCH_PATHS src/index.ts",
+    "dev": "node --watch --watch-path=./src --watch-path=../shared/dist src/index.ts",
   },
 }
 ```
 
-The variable holds a space-separated list of `--watch-path=<dir>` flags covering:
-
-- **the package itself** — its `outDir` when it transpiles, or its sources when Node runs its
-  TypeScript directly;
-- **each workspace dependency**, at the directory its `exports` actually resolves to. A
-  source-consumption library (`exports` → `./src/index.ts`) contributes its `src`; a compiled one
-  (`exports` → `./dist/index.js`) contributes its `dist`.
-- **transitive TypeScript project references**, for build-only deps nothing imports at runtime.
-
-Third-party packages are excluded — they're what the flag exists to leave out. If TypeScript isn't
-installed the variable is empty, which simply leaves `node --watch` as it was. Same if any of the
-derived paths contains a space: the script splices the variable in unquoted, so the shell would
-split such a path in half — an unscoped watcher is the better outcome than a broken command.
-
-Nothing is rewritten for you: devtooie only **warns** at startup when a package's dev script runs a
-bare `node --watch`, naming the flags to add. Scripts that already pass `--watch-path`, or that use
-a different watcher (`tsx watch`, `nodemon`, `tsc --watch`), are left alone.
+Other watchers (`tsx watch`, `nodemon`, `tsc --watch`) don't behave this way and need nothing.

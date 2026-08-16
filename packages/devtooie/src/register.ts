@@ -4,9 +4,19 @@ import type { AnyPackageConfig } from './config.js';
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface Register {}
 
-type Resolved = Register extends { packageConfigs: infer T extends readonly AnyPackageConfig[] }
+type Resolved = Register extends {
+  packageConfigs: infer T extends Record<string, AnyPackageConfig>;
+}
   ? T
-  : readonly AnyPackageConfig[];
+  : Record<string, AnyPackageConfig>;
 
-export type PackageConfig = Resolved[number];
-export type PackageName = PackageConfig['name'];
+/**
+ * The resolved config of one package. Index it by name — `PackageConfig<'api'>` — to get that
+ * package's own type, including its `tokens`; bare `PackageConfig` is the union of them all.
+ */
+export type PackageConfig<N extends PackageName = PackageName> = N extends keyof Resolved
+  ? Resolved[N]
+  : never;
+
+/** Your package names, once `Register` is augmented; `string` otherwise. */
+export type PackageName = Extract<keyof Resolved, string>;

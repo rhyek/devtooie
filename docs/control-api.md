@@ -16,14 +16,20 @@ it says where a session _would_ answer, not that one is running — query the po
   {
     "pid": 12345,
     "configPath": "/abs/devtooie.config.ts", // the devtooie.config.* it was started with
+    "startedByAgent": false, // was this session launched by a coding agent?
     "logFile": "/abs/.../node_modules/.devtooie/logs/1784784120727.log", // current logfile (rotation-aware)
     "packages": { "web": "running", "api": "waiting" }, // running | stopped | waiting | restarting | rebuilding; null until the build finishes
     "config": {/* … */}, // the resolved config; null until the build finishes
   }
   ```
 
-  `pid`, `configPath`, and `logFile` are present immediately — even while the session
-  is still building — so the endpoint never blocks on the build. `packages` and `config`
+  `pid`, `configPath`, `startedByAgent`, and `logFile` are present immediately — even while
+  the session is still building — so the endpoint never blocks on the build.
+  `startedByAgent` reports whether the session was launched by a coding agent rather than by
+  a person, detected from the environment variables agents set (`CLAUDECODE`, `CURSOR_AGENT`,
+  `AGENT`, and friends); it decides whether a starting session may quit this one without
+  asking — see [Taking over a running session](./cli.md#taking-over-a-running-session).
+  Instances older than 0.7.0 omit the field, which reads as `false`. `packages` and `config`
   are `null` until the process manager attaches, then populated. `config` is fully
   **resolved** (defaults applied, `command` normalized to `{ name, watches, builds, cleans }`)
   as loaded at startup — restart devtooie to pick up edits. `logFile` tracks in-session
@@ -36,8 +42,9 @@ it says where a session _would_ answer, not that one is running — query the po
   [Graceful shutdown](#graceful-shutdown)) — so once the request returns, the ports are clear.
   It can take up to ~15s if a package is slow to exit.
 
-This is what lets a second `devtooie` invocation hand off from a running one, what
-[`devtooie logs`](cli.md#devtooie-logs) locates the current logfile with, and what an
+This is what lets a second `devtooie` invocation hand off from a running one — once that
+takeover is authorized, see [Taking over a running session](cli.md#taking-over-a-running-session)
+— what [`devtooie logs`](cli.md#devtooie-logs) locates the current logfile with, and what an
 external tool (or the agent skill) uses to drive a session headlessly.
 
 ## Graceful shutdown

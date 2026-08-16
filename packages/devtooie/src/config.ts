@@ -1,13 +1,7 @@
 import path from 'node:path';
 import type { z } from 'zod';
-import { ambientEnv, resolveEnv, DEFAULT_ENV_FILES } from './env.js';
-import {
-  type UrlLinkSchema,
-  type UrlEntrySchema,
-  type CommandSchema,
-  type PackageConfigSchema,
-  DefineConfigSchema,
-} from './config-schema.js';
+import { ambientEnv, resolveEnv, envFileNames, currentMode, type EnvOverride } from './env.js';
+import { type CommandSchema, type PackageConfigSchema, DefineConfigSchema, DEFAULT_HEALTHCHECK_TIMEOUT_MS } from './config-schema.js'; // prettier-ignore
 import type { GeneratedPackageConfig, GeneratedDefineConfig } from './config.generated.js';
 
 export const PackageType = { BACKEND: 'backend', BROWSER: 'browser', LIB: 'lib' } as const;
@@ -15,12 +9,12 @@ export type PackageType = (typeof PackageType)[keyof typeof PackageType];
 export type PackageTypeValue = 'backend' | 'browser' | 'lib';
 
 /** A single link: a bare URL, or a labeled URL (the label is shown in place of the URL). */
-export type UrlLink = z.infer<typeof UrlLinkSchema>;
+export type UrlLink = string | { label: string; url: string };
 /**
  * One footer line's worth of links: a single link, or an array of links rendered on the
  * same line separated by a space. `urls` is a list of these entries, one line each.
  */
-export type UrlEntry = z.infer<typeof UrlEntrySchema>;
+export type UrlEntry = UrlLink | UrlLink[];
 
 /** One footer line after normalization: the links to render on it (label falls back to url). */
 export type UrlLine = { label?: string; url: string }[];
@@ -35,22 +29,127 @@ export function normalizeUrlEntry(entry: UrlEntry): UrlLine {
 export type Command = z.infer<typeof CommandSchema>;
 
 /**
- * What a `port` callback receives: the package's environment, already resolved.
+ * What every config callback receives. devtooie does no string interpolation — a value that
+ * depends on the environment is a function of this context, evaluated once while the config
+ * is being defined.
  *
- * An object (rather than a bare `env` argument) so more context can be added later without
+ * An object (rather than positional arguments) so more context can be added later without
  * breaking existing configs.
  */
-export interface PortContext {
+export interface ConfigContext<T = TokenRecord> {
   /**
    * The package's resolved `.env` files merged **over** `process.env` — the same environment
    * its dev process will be spawned with, minus the `PORT` devtooie injects. File values win
-   * over ambient ones, and package-scope files win over workspace-scope ones.
+   * over ambient ones, and package-scope files win over workspace-scope ones. (For the
+   * workspace-wide `urls`, which belong to no package, this is the workspace scope alone.)
    */
-  env: Record<string, string>;
+  envs: Record<string, string>;
+  /**
+   * The config's top-level `tokens` merged with this package's own `tokens` (the package's
+   * win), **typed from what you declared** — so `tokens.domain` is known and a typo is a
+   * compile error. The workspace-wide `urls` see only the top-level ones.
+   */
+  tokens: T;
 }
 
+/** What a package's `healthcheck`/`urls` callbacks receive: {@link ConfigContext} plus the port. */
+export interface PackageContext<T = TokenRecord> extends ConfigContext<T> {
+  /**
+   * The package's resolved `port` — a literal, or its `port` callback's result (already
+   * validated to be a finite number). Typed as `number`, not `number | undefined`, so it drops
+   * straight into a URL or arithmetic with no `!` or `??`.
+   *
+   * That is **enforced at load time rather than by the type system**: whether a package declared
+   * a `port` can't be reflected here (a mapped type infers exactly one type parameter, and this
+   * config spends it on per-package `tokens`). So for a package with no `port`, reading `port`
+   * in a callback throws immediately when the config loads, naming the package — instead of
+   * silently interpolating `undefined` into a URL. A portless package whose callbacks never
+   * read `port` is unaffected.
+   */
+  port: number;
+}
+
+/** Any `tokens` record: your own string values, keyed however you like. */
+export type TokenRecord = Record<string, string | undefined>;
+
+/**
+ * A package's own `tokens` as inferred from the config, normalized. A package that declares
+ * none infers `unknown` for its slot, which becomes the empty record here.
+ *
+ * The type parameter `P` in {@link defineConfig} is constrained to `Record<K, unknown>` rather
+ * than `Record<K, TokenRecord>` on purpose: TypeScript validates an inferred type against its
+ * constraint and, on failure, **throws the inference away and substitutes the constraint**. A
+ * package with no `tokens` doesn't infer a `TokenRecord`, so the tighter constraint discarded
+ * the inference for *every* package at once (see microsoft/TypeScript#52262). Keeping the
+ * constraint permissive and normalizing here is what lets one package declare `tokens` while
+ * its siblings declare nothing.
+ */
+export type OwnTokens<Own> = unknown extends Own
+  ? Record<never, never>
+  : Own extends TokenRecord
+    ? Own
+    : Record<never, never>;
+
+/**
+ * The token type a package's callbacks see: the config's top-level `tokens` with this
+ * package's own merged **over** them.
+ */
+export type PackageTokens<Top, Own> =
+  // An override, not a merge: a key the package redeclares replaces the config's, so the
+  // config's must be removed rather than intersected (`'https' & 'http'` would be `never`).
+  Omit<Top, keyof OwnTokens<Own>> & OwnTokens<Own>;
+
 /** A package `port` computed from the package's environment. */
-export type PortResolver = (ctx: PortContext) => number | undefined;
+export type PortResolver<T = TokenRecord> = (ctx: ConfigContext<T>) => number | undefined;
+
+/** A URL computed from the package's environment. */
+export type UrlResolver<T = TokenRecord> = (ctx: PackageContext<T>) => string;
+
+/**
+ * A URL in the config: a literal string, or a callback devtooie invokes once at load time.
+ * `C` is the context the callback gets — {@link PackageContext} for a package's fields,
+ * {@link ConfigContext} for the workspace-wide `urls` (which have no port).
+ */
+export type UrlValue<C = PackageContext> = string | ((ctx: C) => string);
+/**
+ * A `healthcheck` as written in the config: the URL on its own (a string or a callback), or an
+ * object pairing it with a `timeout`. {@link defineConfig} normalizes both to
+ * {@link ResolvedHealthcheck}.
+ */
+export type HealthcheckInput<C = PackageContext> =
+  | UrlValue<C>
+  | {
+      /**
+       * The URL devtooie polls for readiness — a literal, or a callback over
+       * `{ envs, tokens, port }` invoked once at load time:
+       * `url: ({ port }) => \`http://localhost:${port}/health\``.
+       */
+      url: UrlValue<C>;
+      /**
+       * **Milliseconds** a single probe may take before devtooie aborts it. Defaults to
+       * `1500`.
+       *
+       * Raise it for a service slow to answer on a cold start: aborting the request is
+       * itself what makes such a server log a dropped connection (`ECONNRESET`), and the
+       * abandoned probe leaves the package showing `starting` until a later one lands.
+       *
+       * Probes for a package never overlap — the next starts 2 s after the previous one
+       * *started*, or immediately if that has already passed — so a longer timeout slows
+       * this package's polling instead of stacking requests, and affects no other package.
+       */
+      timeout?: number;
+    };
+/** A package's `healthcheck` after resolution: the URL to probe, and how long a probe may take. */
+export interface ResolvedHealthcheck {
+  /** The URL devtooie polls, with any callback already resolved to a string. */
+  url: string;
+  /** **Milliseconds** a single probe may take before it's aborted (default `1500`). */
+  timeout: number;
+}
+/** One link as written in the config: a URL, or a labeled URL. */
+export type UrlLinkInput<C = PackageContext> = UrlValue<C> | { label: string; url: UrlValue<C> };
+/** One `urls` entry as written in the config: a single link, or several rendered on one line. */
+export type UrlEntryInput<C = PackageContext> = UrlLinkInput<C> | UrlLinkInput<C>[];
 
 // ---------------------------------------------------------------------------
 // Documented input types = generated types (JSDoc from the schema `.describe()`) with the
@@ -73,7 +172,10 @@ export type CommandOptions =
  */
 export type CommandInput = string | [string, CommandOptions];
 
-/** Name-referencing fields shared by the input and resolved package types (pinned to `N`). */
+/**
+ * Name-referencing fields shared by the input and resolved package types. Every name is
+ * validated against the real package list by `defineConfig` at load time.
+ */
 type PackageNameRefs<N extends string> = {
   /** Package names whose `healthcheck` must pass before this package starts. */
   waitFor?: NoInfer<N>[];
@@ -88,13 +190,29 @@ type PackageNameRefs<N extends string> = {
   };
 };
 
-export type PackageConfigInput<N extends string> = Omit<
+/**
+ * One package as written in the config. `Own` is that package's own `tokens` and `Top` the
+ * config's — both inferred from what you wrote, so the callbacks below see the merged record
+ * with real keys.
+ */
+export type PackageConfigInput<Own = unknown, Top = object, N extends string = string> = Omit<
   GeneratedPackageConfig,
-  'name' | 'command' | 'waitFor' | 'deps' | 'logs' | 'port'
+  'name' | 'command' | 'waitFor' | 'deps' | 'logs' | 'port' | 'urls' | 'healthcheck' | 'tokens'
 > &
   PackageNameRefs<N> & {
-    /** Unique identifier; referenced from the CLI (`-p`), `waitFor`, and `deps`. */
-    name: N;
+    /**
+     * Values of your own for this package's callbacks, merged **over** the config's top-level
+     * `tokens` and handed to them as `tokens` — typed from what you declare here, so
+     * `tokens.region` is known and a typo is a compile error.
+     *
+     * Only this package's callbacks see these; a sibling that doesn't declare `region` gets a
+     * compile error for `tokens.region`. Packages with no tokens of their own simply omit the
+     * field.
+     *
+     * (`NoInfer` on the value type keeps the declaration checked — a non-string token value is
+     * an error here — without that check re-entering inference.)
+     */
+    tokens?: Own & NoInfer<TokenRecord>;
     /** Per-package log options, overriding the top-level {@link DefineConfigOptions.logs}. */
     logs?: {
       /**
@@ -145,8 +263,8 @@ export type PackageConfigInput<N extends string> = Omit<
     };
     /**
      * The package's dev port. Injected into its dev process as `PORT` (an explicit `.env`
-     * `PORT` still wins), substituted for `$port` in `healthcheck`/`urls`, and swept on
-     * session handoff.
+     * `PORT` still wins), handed to this package's `healthcheck`/`urls` callbacks, and swept
+     * on session handoff.
      *
      * Pass a **callback** to derive it from the package's environment. It receives the
      * package's `.env` files already resolved and merged over `process.env` — the same
@@ -156,15 +274,49 @@ export type PackageConfigInput<N extends string> = Omit<
      * ```ts
      * {
      *   name: 'backend',
-     *   port: ({ env }) => Number(env.BACKEND_PORT),
-     *   healthcheck: 'http://localhost:$port/health',
+     *   port: ({ envs }) => Number(envs.BACKEND_PORT),
+     *   healthcheck: ({ port }) => `http://localhost:${port}/health`,
      * }
      * ```
      *
      * The callback runs once, while the config is being defined, and must return a number
      * synchronously (or `undefined` for "no port", the same as omitting the field).
      */
-    port?: number | PortResolver;
+    port?: number | PortResolver<PackageTokens<Top, Own>>;
+    /**
+     * Links shown in the running footer, one entry per line. An entry is a URL, a
+     * `{ label, url }`, or an **array** of those (rendered on one line, space-separated).
+     *
+     * Any URL — bare or inside `{ label, url }` — may instead be a **callback** receiving
+     * `{ envs, tokens, port }`, so a link can be built from this package's resolved port or
+     * environment rather than hardcoded:
+     *
+     * ```ts
+     * urls: [
+     *   ({ port }) => `http://localhost:${port}/todos`,
+     *   { label: 'home', url: ({ tokens }) => `https://app.${tokens.domain}` },
+     * ]
+     * ```
+     */
+    urls?: UrlEntryInput<PackageContext<PackageTokens<Top, Own>>>[];
+    /**
+     * A URL polled for readiness; also required by anything that lists this package in its
+     * `waitFor`. Like `urls`, it may be a callback over `{ envs, tokens, port }`:
+     * `healthcheck: ({ port }) => \`http://localhost:${port}/health\``.
+     *
+     * Pass an object to give this package's probes a longer deadline than the 1500 ms default —
+     * worth doing for a service slow to answer on a cold start, since devtooie aborting the
+     * request is itself what makes the server log a dropped connection:
+     *
+     * ```ts
+     * healthcheck: { url: ({ port }) => `http://localhost:${port}/health`, timeout: 10_000 }
+     * ```
+     *
+     * devtooie probes one package at a time, no more often than every 2 s (measured from the
+     * start of the previous probe), so a longer `timeout` slows this package's polling rather
+     * than stacking requests — and affects no other package.
+     */
+    healthcheck?: HealthcheckInput<PackageContext<PackageTokens<Top, Own>>>;
     /**
      * The dev process to run and how it behaves. A script/target name, or
      * `[name, { watches, builds, cleans }]`. Default `['dev', { watches: true, builds: true }]`.
@@ -182,38 +334,97 @@ export type PackageConfigInput<N extends string> = Omit<
     command?: CommandInput | null;
   };
 
-export type DefineConfigOptions<N extends string> = Omit<GeneratedDefineConfig, 'packages'> & {
-  /** Your package definitions. */
-  packages: PackageConfigInput<N>[];
+/**
+ * `defineConfig`'s options. `Top` is the config's own `tokens` and `P` the per-package ones,
+ * keyed by package name — `packages` is a mapped type over `P` so each package's callbacks are
+ * typed with *its* tokens merged over `Top`, and `K` (the keys) types every name reference.
+ */
+export type DefineConfigOptions<
+  Top extends TokenRecord,
+  P extends Record<string, unknown>,
+  K extends string = Extract<keyof P, string>,
+> = Omit<GeneratedDefineConfig, 'packages' | 'urls' | 'tokens'> & {
+  /**
+   * Your package definitions, **keyed by package name**. The key is the package's name —
+   * what `-p` takes, what `waitFor`/`deps` reference, and what `relativeDir` defaults from
+   * (`packages/<key>`).
+   */
+  // `& Record<K, unknown>` is a second, **key-only** inference channel, and it is what keeps the
+  // package names narrowed. The mapped type infers `P` from each package's `tokens`, but a
+  // package literal made up entirely of callbacks is context-sensitive: TypeScript skips it in
+  // the pass that would register its key, so with the mapped type alone a config where *every*
+  // package declares nothing but callbacks inferred no keys at all and `K` widened to `string`
+  // (dropping the `waitFor`/`deps` checks). `Record<K, unknown>` has `unknown` values, so it
+  // needs no contextual typing and infers the keys regardless — without competing with `P`.
+  packages: { [Q in keyof P]: PackageConfigInput<P[Q], Top, K> } & Record<K, unknown>;
+  /**
+   * Values of your own, handed to every callback as `tokens` (merged under each package's own
+   * `tokens`) and typed from what you declare here.
+   */
+  tokens?: Top;
+  /**
+   * Workspace-wide footer links, not tied to a package — same entry shape as a package's
+   * `urls`, but a callback here gets only `{ envs, tokens }` (there's no package, so no
+   * `port`, and only the top-level tokens), with `envs` resolved at the workspace scope.
+   */
+  urls?: UrlEntryInput<ConfigContext<Top>>[];
 };
 
 // ---------------------------------------------------------------------------
-// Resolved (runtime) types — normalized `command`, substituted urls. Derived from the
+// Resolved (runtime) types — normalized `command`, callbacks already invoked. Derived from the
 // schema via `z.infer`; name-referencing fields overlaid with `N`.
 // ---------------------------------------------------------------------------
 
-export type ResolvedPackageConfig<N extends string> = Omit<
+export type ResolvedPackageConfig<N extends string, T = TokenRecord> = Omit<
   z.infer<typeof PackageConfigSchema>,
-  'name' | 'waitFor' | 'deps' | 'port'
+  'waitFor' | 'deps' | 'port' | 'urls' | 'healthcheck' | 'tokens'
 > &
   PackageNameRefs<N> & {
+    /** The package's name — the key it was declared under. */
     name: N;
+    /**
+     * The config's top-level `tokens` with this package's own merged over them, typed from
+     * what was declared. Available on the exported config, so other scripts can read a
+     * package's tokens: `config.packages.api.tokens.region`.
+     */
+    tokens: T;
     relativeDir: string;
     path: string;
     /** The package's dev port, with any `port` callback already resolved. */
     port?: number;
+    /** Footer links, with every callback already resolved to a string. */
+    urls?: UrlEntry[];
+    /** The readiness probe, normalized from whichever form the config wrote. */
+    healthcheck?: ResolvedHealthcheck;
   };
 
 export type AnyPackageConfig = ResolvedPackageConfig<string>;
 
-export interface Config<N extends string> {
+/**
+ * The resolved config `defineConfig` returns (and a config file exports). `P` carries each
+ * package's declared tokens, so `packages` is keyed by name with per-package token types.
+ */
+export interface Config<
+  N extends string,
+  P extends Record<N, unknown> = Record<N, TokenRecord>,
+  Top = TokenRecord,
+> {
   /** User-pinned control-API port, or `undefined` to let devtooie pick a random one at startup. */
   apiPort?: number;
-  packages: ResolvedPackageConfig<N>[];
-  /** Resolved workspace-wide URLs (extrinsic tokens substituted), or `undefined` if none. */
+  /**
+   * The resolved packages, **keyed by name** — the same keys the config declared, so
+   * `config.packages.api.tokens` is that package's tokens and `config.packages.ghost` is a
+   * compile error. Use `Object.values(config.packages)` to iterate.
+   */
+  packages: { [Q in N]: ResolvedPackageConfig<Q, PackageTokens<Top, P[Q]>> };
+  /** Workspace-wide URLs, with every callback resolved to a string, or `undefined` if none. */
   urls?: UrlEntry[];
-  /** Resolved `.env` filenames loaded per package (defaults to {@link DEFAULT_ENV_FILES}). */
+  /** Resolved `.env` filenames loaded per package, for the active mode. */
   envFiles: string[];
+  /** The active mode (`--mode`, else `DEVTOOIE_MODE`, else `development`). */
+  envMode: string;
+  /** Variables whose `.env` value may beat the ambient environment. */
+  envOverride?: EnvOverride;
   /** Whether to prefix on-screen log lines with a timestamp (defaults to `false`). */
   logTimestamps: boolean;
 }
@@ -263,77 +474,68 @@ export function getDevScript(pkg: AnyPackageConfig): string {
 }
 
 // ---------------------------------------------------------------------------
-// Token substitution (post-parse; Zod can't express intrinsic/extrinsic tokens)
+// Callback resolution (post-parse) — every `port`/`healthcheck`/`urls` callback is invoked
+// exactly once here, so nothing downstream ever encounters a function.
 // ---------------------------------------------------------------------------
 
 /**
- * Replaces every remaining `$key` in `input` with `tokens[key]`, throwing (naming
- * `context` and the token) when the key is absent or its value is `undefined`. Used both
- * for a package's extrinsic pass (after intrinsic tokens are resolved) and for top-level
- * urls, which have only extrinsic tokens.
+ * Memoizes a synchronous factory. Every context is built through one of these, so a config
+ * whose values are all literals never reads an `.env` file, and one that has ten callbacks
+ * reads them once.
  */
-function substituteTokens(
-  input: string,
-  tokens: Record<string, string | undefined>,
-  context: string,
-): string {
-  return input.replace(/\$([a-z][a-z0-9_]*)/gi, (_match, key: string) => {
-    if (key in tokens) {
-      const val = tokens[key];
-      if (val === undefined) {
-        throw new Error(`${context} uses $${key} but tokens.${key} is undefined`);
-      }
-      return val;
-    }
-    throw new Error(`${context} uses $${key} but no such token was provided`);
-  });
+function once<T>(factory: () => T): () => T {
+  let cached: { value: T } | undefined;
+  return () => (cached ??= { value: factory() }).value;
 }
 
-/** Substitutes tokens in one link (bare string or `{ label, url }`), preserving its shape. */
-function substituteUrlLink(link: UrlLink, replace: (s: string) => string): UrlLink {
-  return typeof link === 'string' ? replace(link) : { ...link, url: replace(link.url) };
+/**
+ * A URL as written in the config, resolved to a string: returned as-is when it's already one,
+ * otherwise the callback's return value. `where` names the field in the error a callback that
+ * doesn't return a string produces.
+ */
+function resolveUrlValue(value: UrlValue, ctx: () => PackageContext, where: string): string {
+  if (typeof value !== 'function') {
+    return value;
+  }
+  const url = value(ctx());
+  if (typeof url !== 'string') {
+    throw new Error(`${where}: callback returned ${String(url)} (expected a string)`);
+  }
+  return url;
 }
 
-/** Substitutes tokens across a `urls` entry, which may be a single link or an array of links. */
-function substituteUrlEntry(entry: UrlEntry, replace: (s: string) => string): UrlEntry {
-  return Array.isArray(entry)
-    ? entry.map((link) => substituteUrlLink(link, replace))
-    : substituteUrlLink(entry, replace);
+/** Resolves one link (bare URL or `{ label, url }`), preserving its shape. */
+function resolveUrlLink(link: UrlLinkInput, ctx: () => PackageContext, where: string): UrlLink {
+  return typeof link === 'object'
+    ? { ...link, url: resolveUrlValue(link.url, ctx, where) }
+    : resolveUrlValue(link, ctx, where);
 }
 
-type ParsedPackage = z.infer<typeof PackageConfigSchema>;
-/** A parsed package whose `port` callback has already been resolved to a number. */
-type PortResolvedPackage = Omit<ParsedPackage, 'port'> & { port?: number };
-
-/** Substitutes intrinsic (`$name`/`$subdomain`/`$port`) then extrinsic tokens in a package's
- * token-bearing fields (`urls`, `healthcheck`), returning just those resolved fields. */
-function substitutePackageTokens(
-  pkg: PortResolvedPackage,
-  tokens: Record<string, string | undefined>,
-): Pick<PortResolvedPackage, 'urls' | 'healthcheck'> {
-  const primarySubdomain = Array.isArray(pkg.subdomain) ? pkg.subdomain[0] : pkg.subdomain;
-  const replace = (s: string): string => {
-    let out = s.replaceAll('$name', pkg.name);
-    if (out.includes('$subdomain')) {
-      if (!primarySubdomain) {
-        throw new Error(`${pkg.name} uses $subdomain but subdomain is not defined`);
-      }
-      out = out.replaceAll('$subdomain', primarySubdomain);
-    }
-    if (out.includes('$port')) {
-      if (pkg.port === undefined) {
-        throw new Error(`${pkg.name} uses $port but port is not defined`);
-      }
-      out = out.replaceAll('$port', String(pkg.port));
-    }
-    // Extrinsic tokens: any remaining $key must resolve from tokens.
-    return substituteTokens(out, tokens, pkg.name);
-  };
+/**
+ * Normalizes a `healthcheck` to `{ url, timeout }`: the bare-URL form takes the default
+ * timeout, and either form's URL may be a callback.
+ */
+function resolveHealthcheck(
+  value: HealthcheckInput,
+  ctx: () => PackageContext,
+  where: string,
+): ResolvedHealthcheck {
+  const spec = typeof value === 'object' ? value : { url: value, timeout: undefined };
   return {
-    urls: pkg.urls?.map((entry) => substituteUrlEntry(entry, replace)),
-    healthcheck: pkg.healthcheck ? replace(pkg.healthcheck) : undefined,
+    url: resolveUrlValue(spec.url, ctx, where),
+    timeout: spec.timeout ?? DEFAULT_HEALTHCHECK_TIMEOUT_MS,
   };
 }
+
+/** Resolves a `urls` entry, which may be a single link or an array rendered on one line. */
+function resolveUrlEntry(entry: UrlEntryInput, ctx: () => PackageContext, where: string): UrlEntry {
+  return Array.isArray(entry)
+    ? entry.map((link) => resolveUrlLink(link, ctx, where))
+    : resolveUrlLink(entry, ctx, where);
+}
+
+/** A parsed package plus the `name` taken from the key it was declared under. */
+type ParsedPackage = z.infer<typeof PackageConfigSchema> & { name: string };
 
 /** Renders a Zod parse failure into a readable, multi-line message. */
 function formatConfigError(err: z.ZodError): string {
@@ -348,27 +550,23 @@ function formatConfigError(err: z.ZodError): string {
 }
 
 /**
- * A package's effective port: the literal number, or the result of its `port` callback invoked
- * with the package's resolved environment (its `.env` files merged over `process.env`). Env
- * files are read only when there's a callback to feed.
+ * A package's effective port: the literal number, or the result of its `port` callback. The
+ * callback can't see `port` itself, so it gets the base {@link ConfigContext}.
  */
 function resolvePort(
   pkg: ParsedPackage,
-  opts: { workspaceDir: string; relativeDir: string; envFiles: string[] },
+  ctx: () => ConfigContext,
+  envFilesLoaded: () => string[],
 ): number | undefined {
   if (typeof pkg.port !== 'function') {
     return pkg.port;
   }
-  const { env, files } = resolveEnv({
-    cwd: opts.workspaceDir,
-    relativeDir: opts.relativeDir,
-    files: opts.envFiles,
-  });
-  const port = pkg.port({ env: Object.assign(ambientEnv(), env) });
+  const port = pkg.port(ctx());
   if (port === undefined) {
     return undefined;
   }
   if (typeof port !== 'number' || !Number.isFinite(port)) {
+    const files = envFilesLoaded();
     const where = files.length
       ? `env files loaded: ${files.join(', ')}`
       : 'no env files were found';
@@ -379,7 +577,38 @@ function resolvePort(
   return port;
 }
 
-export function defineConfig<const N extends string>(opts: DefineConfigOptions<N>): Config<N> {
+/**
+ * Builds the context a package's `healthcheck`/`urls` callbacks get.
+ *
+ * {@link PackageContext.port} is typed `number` so callbacks don't have to unwrap it, which the
+ * type system can't verify — a mapped type infers only one type parameter and this config spends
+ * it on per-package `tokens`. So when the package has no port, `port` becomes a getter that
+ * throws. Callbacks all run here, once, while the config loads, so a package that reads a port it
+ * never declared fails immediately with its own name in the message rather than quietly producing
+ * `…:undefined`. Non-enumerable so a spread or a debug log of the context can't trip it.
+ */
+function withPort(
+  base: ConfigContext,
+  port: number | undefined,
+  whyMissing: () => string,
+): PackageContext {
+  if (port !== undefined) {
+    return { ...base, port };
+  }
+  return Object.defineProperty({ ...base } as PackageContext, 'port', {
+    enumerable: false,
+    configurable: true,
+    get(): never {
+      throw new Error(whyMissing());
+    },
+  });
+}
+
+export function defineConfig<
+  const Top extends TokenRecord,
+  P extends Record<string, unknown>,
+  K extends string = Extract<keyof P, string>,
+>(opts: DefineConfigOptions<Top, P, K>): Config<K, P, Top> {
   const result = DefineConfigSchema.safeParse(opts);
   if (!result.success) {
     throw new Error(formatConfigError(result.error));
@@ -389,10 +618,30 @@ export function defineConfig<const N extends string>(opts: DefineConfigOptions<N
   const workspaceDir = parsed.workspaceDir ?? process.cwd();
   workspaceRoot = path.resolve(workspaceDir);
 
-  // Validate waitFor targets: each must exist and define a healthcheck.
-  const healthcheckPackages = new Set(parsed.packages.filter((c) => c.healthcheck).map((c) => c.name)); // prettier-ignore
-  const allNames = new Set(parsed.packages.map((c) => c.name));
-  for (const config of parsed.packages) {
+  // The key IS the package name. Everything downstream works on an array, so flatten here.
+  const parsedPackages = Object.entries(parsed.packages).map(([name, config]) => ({
+    ...config,
+    name,
+  }));
+
+  // JavaScript enumerates integer-like keys first, in ascending numeric order, regardless of
+  // where they were written — which would silently reorder startup and the TUI. Reject them
+  // rather than surprise anyone with a package that jumps the queue.
+  for (const { name } of parsedPackages) {
+    if (/^(0|[1-9]\d*)$/.test(name)) {
+      throw new Error(
+        `package name "${name}" is a number — object keys that look like integers are reordered ` +
+          'by JavaScript, which would change the order packages start in. Use a non-numeric name.',
+      );
+    }
+  }
+
+  // `waitFor`/`deps` names are type-checked against the package keys, so a bad name is normally
+  // a compile error. Re-checked here for configs that reach `defineConfig` unchecked (plain JS,
+  // a `satisfies`-free dynamic build) and to enforce the healthcheck rule types can't express.
+  const healthcheckPackages = new Set(parsedPackages.filter((c) => c.healthcheck).map((c) => c.name)); // prettier-ignore
+  const allNames = new Set(parsedPackages.map((c) => c.name));
+  for (const config of parsedPackages) {
     for (const waitName of config.waitFor ?? []) {
       if (!allNames.has(waitName)) {
         throw new Error(`${config.name} has waitFor "${waitName}" but no such package exists`);
@@ -403,40 +652,93 @@ export function defineConfig<const N extends string>(opts: DefineConfigOptions<N
         );
       }
     }
+    for (const [kind, names] of Object.entries(config.deps ?? {})) {
+      for (const depName of names ?? []) {
+        if (!allNames.has(depName)) {
+          throw new Error(
+            `${config.name} has deps.${kind} "${depName}" but no such package exists`,
+          );
+        }
+      }
+    }
   }
 
   const tokens = parsed.tokens ?? {};
 
-  const envFiles = parsed.env?.files ?? DEFAULT_ENV_FILES;
+  const envFiles = envFileNames();
+  const envOverride = parsed.env?.override;
 
-  const packages = parsed.packages.map((config) => {
-    const relativeDir = config.relativeDir ?? `packages/${config.name}`;
-    // Resolved before token substitution so `$port` sees the number, and stored on the resolved
-    // package so nothing downstream ever encounters a callback.
-    const resolved: PortResolvedPackage = {
-      ...config,
-      port: resolvePort(config, { workspaceDir, relativeDir, envFiles }),
-    };
+  /** A scope's `.env` files merged over `process.env` — the environment a callback sees. */
+  const envsFor = (relativeDir: string) => {
+    const load = once(() =>
+      resolveEnv({ cwd: workspaceDir, relativeDir, files: envFiles, override: envOverride }),
+    );
     return {
-      ...resolved,
+      envs: once(() => Object.assign(ambientEnv(), load().env)),
+      files: () => load().files,
+    };
+  };
+
+  const packages = parsedPackages.map((config) => {
+    const relativeDir = config.relativeDir ?? `packages/${config.name}`;
+    const env = envsFor(relativeDir);
+    // The package's own tokens win over the config's, so a package can override a shared value.
+    const pkgTokens = config.tokens ? { ...tokens, ...config.tokens } : tokens;
+    const baseCtx = once((): ConfigContext => ({ envs: env.envs(), tokens: pkgTokens }));
+    // Resolved first so the `healthcheck`/`urls` callbacks below can read it, and stored on the
+    // resolved package so nothing downstream ever encounters a callback.
+    const port = resolvePort(config, baseCtx, env.files);
+    const ctx = once((): PackageContext =>
+      withPort(
+        baseCtx(),
+        port,
+        () =>
+          `${config.name}: a callback read \`port\`, but this package declares no \`port\`. ` +
+          `Add \`port\` to ${config.name} in devtooie.config.ts, or drop \`port\` from the callback.`,
+      ),
+    );
+    return {
+      ...config,
+      // Stored resolved (config tokens + this package's own) so the exported config exposes
+      // each package's tokens: `config.packages.api.tokens`.
+      tokens: pkgTokens,
+      port,
       relativeDir,
       path: path.resolve(workspaceDir, relativeDir),
-      ...substitutePackageTokens(resolved, tokens),
+      urls: config.urls?.map((entry) => resolveUrlEntry(entry, ctx, `${config.name} urls`)),
+      healthcheck:
+        config.healthcheck === undefined
+          ? undefined
+          : resolveHealthcheck(config.healthcheck, ctx, `${config.name} healthcheck`),
     };
   });
 
-  const urls = parsed.urls?.map((entry) =>
-    substituteUrlEntry(entry, (s) => substituteTokens(s, tokens, 'top-level url')),
+  // Workspace-wide urls belong to no package: workspace-scope env, and no `port` to offer.
+  const workspaceCtx = once((): PackageContext =>
+    withPort(
+      { envs: envsFor('.').envs(), tokens },
+      undefined,
+      () =>
+        'a workspace-wide `urls` callback read `port`, but those links belong to no package, so ' +
+        "there's no port to give them. Move the link into a package's `urls`, or drop `port`.",
+    ),
   );
+  const urls = parsed.urls?.map((entry) => resolveUrlEntry(entry, workspaceCtx, 'top-level url'));
 
-  const resolved: Config<N> = {
+  const resolved: Config<string> = {
     apiPort: parsed.apiPort,
-    packages: packages as unknown as ResolvedPackageConfig<N>[],
+    // Back to a record, keyed by name, preserving the declaration order of the keys.
+    packages: Object.fromEntries(
+      packages.map((pkg) => [pkg.name, pkg]),
+    ) as unknown as Config<string>['packages'],
     urls,
     envFiles,
+    envMode: currentMode(),
+    envOverride,
     logTimestamps: parsed.logs?.timestamps ?? false,
   };
-  registeredPackages = resolved.packages as AnyPackageConfig[];
-  loadedConfig = resolved as Config<string>;
-  return resolved;
+  registeredPackages = packages as unknown as AnyPackageConfig[];
+  loadedConfig = resolved;
+  // The runtime shape is identical; only the key/token types are sharper for the caller.
+  return resolved as unknown as Config<K, P, Top>;
 }

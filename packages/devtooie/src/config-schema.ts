@@ -1,7 +1,7 @@
 import { z } from 'zod';
 // Type-only — erased at compile time, so `config-schema.ts` still imports nothing but `zod`
 // at runtime and `scripts/gen-config-types.ts` can keep executing it without a build.
-import type { PortResolver } from './config.js';
+import type { PortResolver, UrlResolver } from './config.js';
 
 // The Zod schemas — the single source of the config's shape, defaults, validation, AND field
 // docs (via `.describe()`). `scripts/gen-config-types.ts` reads this file (it imports only
@@ -12,11 +12,37 @@ import type { PortResolver } from './config.js';
 // So: `.describe()` on a *kept* field flows to consumer hover automatically; *overridden*
 // fields are documented in `config.ts` and need no `.describe()` here.
 
-export const UrlLinkSchema = z.union([
+// A URL anywhere in the config: a literal string, or a callback devtooie invokes once at load
+// time with the package's context (`{ envs, tokens, port }`). Overridden in config.ts, since
+// `z.custom` erases the callback to `any`; `defineConfig` resolves every callback to a string
+// before anything downstream sees it.
+export const UrlValueSchema = z.union([
   z.string(),
-  z.object({ label: z.string(), url: z.string() }),
+  z.custom<UrlResolver>((v) => typeof v === 'function', {
+    message: 'a url must be a string or a function',
+  }),
+]);
+
+export const UrlLinkSchema = z.union([
+  UrlValueSchema,
+  z.object({ label: z.string(), url: UrlValueSchema }),
 ]);
 export const UrlEntrySchema = z.union([UrlLinkSchema, z.array(UrlLinkSchema)]);
+
+/** How long a healthcheck probe may take before it's aborted, when the package doesn't say. */
+export const DEFAULT_HEALTHCHECK_TIMEOUT_MS = 1500;
+
+// A `healthcheck`: the URL on its own (string or callback), or an object adding `timeout`.
+// Strict so a misspelled `timout` fails at load rather than silently leaving the default in
+// place. Overridden in config.ts (the callback erases to `any`); `defineConfig` normalizes
+// every form to `{ url: string; timeout: number }` before anything downstream sees it.
+export const HealthcheckSchema = z.union([
+  UrlValueSchema,
+  z.strictObject({
+    url: UrlValueSchema,
+    timeout: z.number().int().positive().optional(),
+  }),
+]);
 
 // `command` options. `watches`/`cleans` both imply building, so `builds: false` is only legal
 // when the command neither watches nor cleans — rejected at parse time otherwise (e.g.
@@ -49,16 +75,15 @@ export const CommandSchema = z
           },
   );
 
-// All per-package config is flat (no `run` nesting). `name`/`relativeDir` identify the package;
-// the rest describe how to run/select/link it (omit them all for a build-only lib).
+// All per-package config is flat (no `run` nesting). The package's *name* is the key it's
+// declared under in `packages` (injected by `defineConfig` after parsing), so it isn't a field
+// here; the rest describe how to run/select/link it (omit them all for a build-only lib).
 export const PackageConfigSchema = z.object({
-  // Overridden in config.ts (pinned to `N`); documented there.
-  name: z.string(),
   relativeDir: z
     .string()
     .optional()
     .describe(
-      'Directory holding the package, relative to `workspaceDir`. Defaults to `packages/<name>`.',
+      'Directory holding the package, relative to `workspaceDir`. Defaults to `packages/<name>`, where `<name>` is the key this package is declared under.',
     ),
   selectable: z.boolean().optional().describe('Show in the interactive picker (default `true`).'),
   shortName: z.string().optional().describe('Shorter label used in the TUI in place of `name`.'),
@@ -68,10 +93,9 @@ export const PackageConfigSchema = z.object({
     .describe(
       "Color for this package's log-prefix label, overriding the auto-assigned palette color. Any Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`), `'rgb(175,135,255)'`, or `'ansi256(140)'`.",
     ),
-  subdomain: z
-    .union([z.string(), z.array(z.string())])
-    .optional()
-    .describe('Reverse-proxy subdomain(s); the first feeds `$subdomain` substitution.'),
+  // Overridden in config.ts (pinned to the keys the package declares); documented there.
+  // Must be parsed, not stripped — it's what a callback's `tokens` is built from.
+  tokens: z.record(z.string(), z.string().optional()).optional(),
   // Overridden in config.ts (a callback Zod can't usefully type — `z.custom` erases to `any`);
   // documented there. `defineConfig` resolves a callback to a number before anything downstream
   // sees it, so the *resolved* type is still `number | undefined`.
@@ -91,18 +115,10 @@ export const PackageConfigSchema = z.object({
     .describe(
       'Automatically start this package during the run phase (default `true`). When `false`, devtooie leaves it stopped — start it yourself with the `s` hotkey (or a control-API `restart`). Ignored when `command` is `null` (that package never starts).',
     ),
-  urls: z
-    .array(UrlEntrySchema)
-    .optional()
-    .describe(
-      'Footer links; each entry is one line (a string, `{ label, url }`, or an array on one line).',
-    ),
-  healthcheck: z
-    .string()
-    .optional()
-    .describe(
-      'URL polled for readiness; also required by anything that lists this package in its `waitFor`.',
-    ),
+  // Overridden in config.ts (urls/healthcheck admit callbacks `z.custom` erases to `any`);
+  // documented there. Both are resolved to plain strings by `defineConfig`.
+  urls: z.array(UrlEntrySchema).optional(),
+  healthcheck: HealthcheckSchema.optional(),
   // Overridden in config.ts (pinned to package names); documented there.
   waitFor: z.array(z.string()).optional(),
   tsconfig: z
@@ -141,12 +157,11 @@ export const DefineConfigSchema = z.object({
     .describe(
       'Fixed control-API port; omit to let devtooie pick one (recorded in `running.json`).',
     ),
-  // Overridden in config.ts (→ PackageConfigInput<N>[]); documented there.
-  packages: z.array(PackageConfigSchema),
-  urls: z
-    .array(UrlEntrySchema)
-    .optional()
-    .describe('Workspace-wide footer links, not tied to a package (extrinsic `$token`s only).'),
+  // Keyed by package name; the key becomes the package's `name`. Overridden in config.ts (a
+  // mapped type carrying each package's own token types); documented there.
+  packages: z.record(z.string().min(1), PackageConfigSchema),
+  // Overridden in config.ts (callbacks `z.custom` erases to `any`); documented there.
+  urls: z.array(UrlEntrySchema).optional(),
   workspaceDir: z
     .string()
     .optional()
@@ -154,11 +169,20 @@ export const DefineConfigSchema = z.object({
   tokens: z
     .record(z.string(), z.string().optional())
     .optional()
-    .describe('Values for extrinsic `$token` substitution in `urls`/`healthcheck`.'),
+    .describe('Arbitrary values handed to every `port`/`healthcheck`/`urls` callback as `tokens`.'),
   env: z
-    .object({ files: z.array(z.string()).optional() })
+    // Strict so a config still passing the removed `files` option fails loudly. Stripping it
+    // would leave the config looking fine while loading a different set of files than it asks for.
+    .strictObject({
+      override: z
+        .union([z.boolean(), z.array(z.string())])
+        .optional()
+        .describe(
+          'Variables whose `.env` value may beat the ambient environment (`true` for all). By default the ambient environment wins, as in Next.js/Vite/`node --env-file`.',
+        ),
+    })
     .optional()
-    .describe('`.env` filenames loaded per package (defaults to the standard set).'),
+    .describe('Environment-loading options. Which files load is chosen with `--mode`.'),
   logs: z
     .object({
       timestamps: z

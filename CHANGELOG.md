@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.7.0 (2026-08-15)
+
+### Features
+
+- **`port`, `healthcheck`, and `urls` take a callback over `{ envs, tokens, port }`.** See [docs/configuration.md](docs/configuration.md#callbacks-instead-of-interpolation).
+- **Packages can declare their own `tokens`, and a callback's `tokens` is typed from what you declared.** See [Typed tokens](docs/configuration.md#typed-tokens).
+- **`healthcheck` takes `{ url, timeout }`**, so a package slow to answer on a cold start stops having its probe hung up on. See [Readiness probing](docs/configuration.md#readiness-probing).
+- **New `--mode <name>` selects which `.env.<mode>` files load**, defaulting to `development`. See [Environment loading](README.md#environment-env-loading).
+- **devtooie asks before taking over a session already running for the project**, and refuses when there's no terminal to ask in. See [docs/cli.md](docs/cli.md#taking-over-a-running-session).
+- **Refreshed the per-package log label colors.**
+
+### Fixes
+
+- **Fixed a hang when an environment variable contained a literal `${VAR}` self-reference**, which could leave devtooie spinning with no output.
+
+### Breaking changes
+
+- **`packages` is now keyed by package name instead of an array.** Convert `packages: [{ name: 'api', … }]` to `packages: { api: { … } }` and drop the `name` field. See [docs/configuration.md](docs/configuration.md).
+- **`$port`/`$name`/`$subdomain`/`$token` interpolation is gone**, the `subdomain` field with it — use the callbacks above, whose argument is now `envs`, not `env`.
+- **`.env` files now load in Vite's order**, so `.env.development` beats `.env.local`; move a personal override of a development value into `.env.development.local`.
+- **The ambient environment now wins over `.env` files**, so `FOO=bar devtooie` overrides a file for one run. Name the variables whose file value should still win with `env: { override: [...] }`, or `true` for all of them.
+- **Removed `env.files`** — use `--mode` for alternate file sets; custom filenames and subdirectory placement are no longer supported.
+- **Removed `DEVTOOIE_WATCH_PATHS`** — pass your own `--watch-path` flags in the dev script instead. See [docs/package-lifecycle.md](docs/package-lifecycle.md#scoping-a-node---watch-dev-script).
+- **Starting a second session no longer quits the first automatically** — pass `--kill-others`.
+- **The resolved `config.packages.<name>.healthcheck` is now `{ url, timeout }`** rather than a URL string.
+
 ## 0.6.0 (2026-07-24)
 
 ### Features
@@ -35,7 +61,7 @@
 ## 0.3.1
 
 - Docs restructured: the README is now a slim landing page that links to focused topic docs under `docs/` (`configuration.md`, `package-lifecycle.md`, `cli.md`, `control-api.md`), and the installed agent skill now loads a single consolidated guide, `docs/agents.md` (replacing `docs/usage-guide.md`).
-- `.env.development.pre` is no longer loaded by default. The default `.env` files are now `.env`, `.env.development`, and `.env.local`; re-add any other name (including `.env.development.pre`) via `defineConfig({ env: { files } })` if you relied on it.
+- `.env.development.pre` is no longer loaded by default. The default `.env` files are now `.env`, `.env.development`, and `.env.local`. (`env.files`, the escape hatch this release suggested for re-adding other names, was itself removed in 0.7.0 — see that entry.)
 - Docs: the Features list now highlights that per-package logs are **filterable** in the terminal UI — the `f` hotkey narrows the combined stream to a package name or search term — instead of just noting the colored name prefix.
 
 ## 0.3.0

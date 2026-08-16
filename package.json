@@ -8,6 +8,7 @@
   "scripts": {
     "build": "pnpm --filter devtooie build",
     "lint": "eslint .",
+    "test:types": "vitest --typecheck.only --run",
     "format": "prettier --write .",
     "prepare": "simple-git-hooks",
     "test": "vitest run",

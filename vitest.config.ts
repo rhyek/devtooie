@@ -6,5 +6,11 @@ export default defineConfig({
     // Restore all spies/mocks to their originals after each test, so a spy left
     // unrestored in one test can't leak into later tests.
     restoreMocks: true,
+    // `*.test-d.ts` files assert on types (`expectTypeOf`) and are only meaningful under
+    // `--typecheck` — see `pnpm test:types`.
+    typecheck: {
+      include: ['packages/**/src/**/*.test-d.ts'],
+      tsconfig: './packages/devtooie/tsconfig.typecheck.json',
+    },
   },
 });

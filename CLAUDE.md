@@ -97,6 +97,30 @@ The root `build` script delegates to `pnpm --filter devtooie build`, which clean
 (`dist/cli.js`) executable. CI (`.github/workflows/pr.yaml` and `release.yaml`)
 uses this same command.
 
+## Type-level tests — assert types, not "some error"
+
+`defineConfig`'s inference (per-package `tokens`, the package-name union, the callback `port`)
+is asserted in `packages/devtooie/src/config.test-d.ts` with vitest's `expectTypeOf`
+(`expect-type`, already a vitest dependency — nothing to install):
+
+```sh
+pnpm test:types      # vitest --typecheck.only --run
+```
+
+**`expectTypeOf` is a no-op without `--typecheck`** — it compiles and "passes" under plain
+`pnpm test`, which is why the assertions live in `*.test-d.ts` and get their own script and CI
+step. `vitest.config.ts` points `typecheck.tsconfig` at `packages/devtooie/tsconfig.typecheck.json`,
+which is the normal tsconfig minus three spec files that already fail typecheck on main — so a
+real type error anywhere else still fails the run rather than being blanket-ignored.
+
+Prefer these over `@ts-expect-error`. A `@ts-expect-error` passes when the line errors for *any*
+reason, which has already hidden a bug here: an assertion meant to prove a token typo was
+rejected was really only passing because the value was `string | undefined`. Assert the type
+instead — `expectTypeOf(ctx.port).toEqualTypeOf<number>()`, or
+`expectTypeOf(ctx.tokens).not.toHaveProperty('region')`. Keep `@ts-expect-error` only for
+things that are genuinely "this must not compile" (an unknown field, a bad `waitFor` name), and
+when you write one, confirm it fails for the intended reason.
+
 ## Testing changes in `./example`
 
 After **any** change to `packages/devtooie`, rebuild so the change is picked up
