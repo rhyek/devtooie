@@ -12,7 +12,7 @@ import {
   getRegisteredPackages,
   getLoadedConfig,
 } from './config.js';
-import { DEFAULT_ENV_FILES, packageEnvLayer, resolveEnv } from './env.js';
+import { envFileNames, packageEnvLayer, resolveEnv, resolveMode } from './env.js';
 import { acquireDevSession } from './dev-session.js';
 import { handleShellError } from './errors.js';
 import { runInit } from './init.js';
@@ -44,9 +44,12 @@ import { createPlainStatusReporter } from './plain-status.js';
 import { renderAppInProduction } from './render-app-production.js';
 import { runPlain } from './runners/plain.js';
 import { refreshSkillIfStale } from './skill.js';
+import { preflightTakeover } from './takeover.js';
 
 interface RootOptions {
   package: string[];
+  /** Declared for --help/validation; the value in force is read from argv by resolveMode. */
+  mode?: string;
   ui?: boolean;
   plain?: boolean;
   lastAnswers: boolean;
@@ -54,6 +57,7 @@ interface RootOptions {
   build: boolean;
   rebuild: boolean;
   logDir?: string;
+  killOthers: boolean;
 }
 
 /**
@@ -61,6 +65,18 @@ interface RootOptions {
  * `chdir` us to the config root. `cmd` uses it to figure out which package you're "inside".
  */
 const INVOCATION_CWD = process.cwd();
+
+// Resolved from raw argv and published to the environment before anything else runs: the config is
+// loaded (and its `port`/`urls` callbacks resolve `.env` files) inside anchorAtConfigRoot, which
+// happens before Commander parses. Writing it back also hands every child process the mode for
+// free, the way Vite exposes MODE.
+try {
+  process.env.DEVTOOIE_MODE = resolveMode(process.argv);
+} catch (err) {
+  // Runs before Commander, so there's no usage output to lean on — just say what's wrong.
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+}
 
 /**
  * Very early step (runs for every command): find the workspace root (nearest ancestor with a
@@ -78,7 +94,14 @@ async function anchorAtConfigRoot(invocationCwd: string): Promise<void> {
   }
   try {
     await loadConfig(root);
-    const files = getLoadedConfig()?.envFiles ?? DEFAULT_ENV_FILES;
+    const files = getLoadedConfig()?.envFiles ?? envFileNames();
+    // Deliberately resolved WITHOUT the config's `env.override`. An overriding variable is
+    // typically self-referential (`NODE_OPTIONS=$NODE_OPTIONS --flag`), and this merge is the
+    // base that every later per-package resolution expands against — applying the override here
+    // would fold the file's contribution into the ambient value, and the package-level pass
+    // would then append it a second time. Without it these keys resolve to their ambient value,
+    // so the assignment is a no-op for them and each child appends exactly once. (Nothing is
+    // lost for devtooie's own process: node reads NODE_OPTIONS at startup, long before this.)
     const { env } = resolveEnv({ cwd: root, relativeDir: '.', files });
     Object.assign(process.env, env);
   } catch (err) {
@@ -262,22 +285,24 @@ async function resolveCmdTargetOrExit(
     );
     process.exit(1);
   }
-  const files = config.envFiles ?? DEFAULT_ENV_FILES;
+  const files = config.envFiles ?? envFileNames();
+  const override = config.envOverride;
 
+  const configPackages = Object.values(config.packages);
   if (explicitName !== undefined) {
-    const pkg = config.packages.find((p) => p.name === explicitName);
+    const pkg = configPackages.find((p) => p.name === explicitName);
     if (!pkg) {
       console.error(`Package "${explicitName}" not found in the devtooie config.`);
       process.exit(1);
     }
-    return { dir: pkg.path, envLayer: packageEnvLayer(pkg, { cwd: root, files }) };
+    return { dir: pkg.path, envLayer: packageEnvLayer(pkg, { cwd: root, files, override }) };
   }
 
-  const pkg = findAncestorPackage(invocationCwd, config.packages, root);
+  const pkg = findAncestorPackage(invocationCwd, configPackages, root);
   if (pkg) {
-    return { dir: pkg.path, envLayer: packageEnvLayer(pkg, { cwd: root, files }) };
+    return { dir: pkg.path, envLayer: packageEnvLayer(pkg, { cwd: root, files, override }) };
   }
-  return { dir: root, envLayer: resolveEnv({ cwd: root, relativeDir: '.', files }).env };
+  return { dir: root, envLayer: resolveEnv({ cwd: root, relativeDir: '.', files, override }).env };
 }
 
 async function buildOne(pkg: AnyPackageConfig, script: string): Promise<void> {
@@ -348,6 +373,10 @@ const program = new Command()
     collect,
     [],
   )
+  .option(
+    '-m, --mode <name>',
+    'environment mode selecting the .env.<mode> files to load (default: "development")',
+  )
   .option('--ui', 'run the interactive TUI (default)')
   .option('--plain', 'run without the TUI, streaming logs to stdout')
   .option('--last-answers', 'skip the selector and reuse the last saved selection', false)
@@ -361,6 +390,11 @@ const program = new Command()
   .option(
     '--log-dir <dir>',
     'write the timestamped session log into this directory (default: node_modules/.devtooie/logs/)',
+  )
+  .option(
+    '--kill-others',
+    "quit a devtooie session already running for this project instead of asking (agents: don't pass this unprompted)",
+    false,
   );
 
 program
@@ -419,6 +453,13 @@ program
   .option(
     '-c, --cmd <script>',
     'run this package script / make target instead of a literal command; args after `--` are forwarded to it',
+  )
+  // Also declared on the root, but Commander rejects a root-only option that appears after a
+  // subcommand — so both `devtooie --mode test cmd …` and `devtooie cmd --mode test …` work.
+  // resolveMode already read it off raw argv; this declaration is for --help and validation.
+  .option(
+    '-m, --mode <name>',
+    'environment mode selecting the .env.<mode> files to load (default: "development")',
   )
   .argument(
     '[args...]',
@@ -553,14 +594,34 @@ program.action(async () => {
   }
 
   const logFile = getDefaultLogFile(opts.logDir);
+  const configPath =
+    findConfigPath(process.cwd()) ?? path.join(process.cwd(), 'devtooie.config.ts');
+
+  // Resolved before the preflight below, so a `--plain` invocation that can't name its
+  // packages fails with that usage error instead of first asking whether to quit a session
+  // it was never going to start.
+  const plainNames = opts.plain ? resolveSelectedNames(opts, '--plain') : null;
+
+  // Settle what happens to a session already running for this project *before* anything
+  // starts. Acquisition frees the dev ports by killing whatever in this workspace holds
+  // them, so once it begins the other session is gone either way — declining has to mean
+  // exiting here. Shared by both the --plain and TUI paths, and deliberately ahead of the
+  // TUI's alternate screen, so the prompt is an ordinary terminal prompt.
+  const takeover = await preflightTakeover({
+    configPath,
+    killOthers: opts.killOthers,
+    apiPortOverride: getLoadedConfig()?.apiPort,
+  });
+  if (!takeover.ok) {
+    console.error(takeover.message);
+    process.exit(1);
+  }
 
   if (opts.plain) {
-    const names = resolveSelectedNames(opts, '--plain');
+    const names = plainNames ?? [];
     saveSelection(names);
     try {
       const statusReporter = createPlainStatusReporter();
-      const configPath =
-        findConfigPath(process.cwd()) ?? path.join(process.cwd(), 'devtooie.config.ts');
       const port = await acquireDevSession({
         configPath,
         apiPortOverride: getLoadedConfig()?.apiPort,

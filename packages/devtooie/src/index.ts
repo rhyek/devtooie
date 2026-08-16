@@ -20,12 +20,27 @@ export type {
   AnyPackageConfig,
   Config,
   PackageTypeValue,
-  PortContext,
+  ConfigContext,
+  PackageContext,
+  TokenRecord,
+  PackageTokens,
   PortResolver,
+  UrlResolver,
+  UrlValue,
+  UrlLinkInput,
+  UrlEntryInput,
   UrlLink,
   UrlEntry,
   Command,
 } from './config.js';
 export type { Register, PackageConfig, PackageName } from './register.js';
-export { resolveEnv, envCandidatePaths, ambientEnv, DEFAULT_ENV_FILES } from './env.js';
+export {
+  resolveEnv,
+  envCandidatePaths,
+  ambientEnv,
+  envFileNames,
+  currentMode,
+  DEFAULT_MODE,
+  type EnvOverride,
+} from './env.js';
 export type { EnvResolution } from './env.js';

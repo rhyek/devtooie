@@ -8,6 +8,7 @@ devtooie --plain -p web   # no TUI: run `web` (+ its deps), streaming logs
 devtooie -p web -p api    # repeatable -p: run multiple named packages
 devtooie --build -p web   # build `web` + its build-time deps, then exit
 devtooie --rebuild -p web # like --build, but clears dist/ first
+devtooie --mode test      # load .env.test instead of .env.development
 ```
 
 Every command works from **anywhere in the repo**: as a first step devtooie walks up to the
@@ -19,12 +20,14 @@ Common options:
 | Option                 | Description                                                                                                  |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `-p, --package <name>` | Repeatable. Package(s) to run, bypassing the interactive selector.                                           |
+| `-m, --mode <name>`    | Environment mode selecting the `.env.<mode>` files to load. Defaults to `development`. Also accepted after a subcommand (`devtooie cmd --mode test`). See [Environment loading](../README.md#environment-env-loading). |
 | `--ui`                 | Interactive terminal UI (default). Mutually exclusive with `--plain`.                                        |
 | `--plain`              | No TUI — stream logs to stdout with colored name prefixes. Requires `-p` or `--last-answers`.                |
 | `--last-answers`       | Skip selection; reuse the last saved selection.                                                              |
 | `--build`              | Build the selected packages and their build-time deps, then exit (no run phase).                             |
 | `--rebuild`            | Like `--build`, but first clears `dist/` for every build target.                                             |
 | `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/`. Each run gets a fresh `<timestamp>.log`; previous sessions' logs are kept. Also used by [`devtooie cmd`](#devtooie-cmd). |
+| `--kill-others`        | Quit a devtooie session already running for this project instead of asking. See [Taking over a running session](#taking-over-a-running-session). |
 
 Subcommands:
 
@@ -36,6 +39,30 @@ Subcommands:
   resolved `.env`); see [below](#devtooie-cmd).
 - **`devtooie logs`** — print (or `-f/--follow`) the current dev session's logfile; see
   [below](#devtooie-logs).
+
+## Taking over a running session
+
+Only one devtooie session can run a project at a time, so starting a second one has to
+quit the first — along with every dev process under it. Since 0.7.0 devtooie asks before
+doing that:
+
+| Situation                                             | What happens                          |
+| ----------------------------------------------------- | ------------------------------------- |
+| `--kill-others` passed                                | Quits the running session, no question |
+| Both sessions were started by a coding agent          | Quits it, no question                  |
+| A terminal is attached                                | Asks you to confirm (default **yes**)  |
+| No terminal to ask in                                 | Refuses, exits `1`, leaves it running  |
+
+The agent rule keeps agents unblocked without letting one interrupt you: an agent may
+replace a session another agent started, but a session **you** started is never taken over
+without your say-so. devtooie spots an agent by the environment variables they set
+(`CLAUDECODE`, `CURSOR_AGENT`, `GEMINI_CLI`, `CODEX_SANDBOX`, `AGENT`, and others). Editor
+variables like `COPILOT_DEBUG_NONCE` don't count — an installed AI extension isn't an agent
+at the keyboard. Set `DEVTOOIE_STARTED_BY_AGENT=0` (or `=1`) to override the detection for a
+shell where it guesses wrong.
+
+A session's own answer is published as `startedByAgent` on
+[`GET /query/status`](./control-api.md).
 
 ## `devtooie cmd`
 

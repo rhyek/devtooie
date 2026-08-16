@@ -33,6 +33,7 @@ afterEach(async () => {
 const SNAPSHOT = {
   pid: 4242,
   configPath: '/ws/devtooie.config.ts',
+  startedByAgent: true,
   logFile: '/ws/node_modules/.devtooie/logs/171.log',
   packages: { web: 'running' },
   config: { packages: [] },
@@ -54,6 +55,18 @@ describe('createControlClient', () => {
       res.end(JSON.stringify({ web: 'running' }));
     });
     expect(await createControlClient(port).queryStatus()).toBeNull();
+  });
+
+  it('queryStatus() reads a missing startedByAgent as false (pre-0.7.0 instance)', async () => {
+    const { startedByAgent: _omitted, ...oldShape } = SNAPSHOT;
+    const port = await startServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(oldShape));
+    });
+    expect(await createControlClient(port).queryStatus()).toEqual({
+      ...oldShape,
+      startedByAgent: false,
+    });
   });
 
   it('queryStatus() returns null when nothing is listening', async () => {

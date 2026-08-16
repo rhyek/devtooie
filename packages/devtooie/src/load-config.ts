@@ -86,8 +86,8 @@ export async function loadConfig(cwd: string = process.cwd()): Promise<AnyPackag
   if (registered.length) {
     return registered;
   }
-  if (mod.default && Array.isArray(mod.default.packages)) {
-    return mod.default.packages;
+  if (mod.default?.packages) {
+    return Object.values(mod.default.packages);
   }
   throw new Error(
     `config module ${path.basename(configPath)} did not export a defineConfig default`,

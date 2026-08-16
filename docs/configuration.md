@@ -6,19 +6,34 @@
 
 | Field          | Meaning                                                                                     |
 | -------------- | ------------------------------------------------------------------------------------------- |
-| `packages`     | Your package definitions (see below).                                                       |
+| `packages`     | Your package definitions, **keyed by package name** (see below).                            |
 | `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.            |
-| `env`          | `.env` files loaded per package — see [Environment loading](../README.md#environment-env-loading). |
+| `env`          | Environment-loading options — currently just `override`, below. Which files load is chosen with `--mode`; see [Environment loading](../README.md#environment-env-loading). |
 | `logs`         | Top-level log options (`{ timestamps? }`); timestamps + structured-log formatting — see [Logging](./logging.md). |
 | `apiPort`      | Pin the [control API](./control-api.md) port (otherwise chosen automatically).              |
+| `urls`         | Workspace-wide footer links, not tied to a package. Same shape as a package's `urls`, but a callback here gets only `{ envs, tokens }`. |
+| `tokens`       | Values of your own, handed to every callback as `tokens` (a package's own `tokens` are merged on top) — see [Callbacks](#callbacks-instead-of-interpolation). |
 
-Each package entry has a flat set of fields (only `name` is required; omit the rest for a
-build-only lib):
+`packages` is an object keyed by package name:
 
-- **`name`** — a unique identifier. Referenced from the CLI (`-p <name>`),
-  from `waitFor`, and from `deps`.
+```ts
+packages: {
+  api: { port: 3001, healthcheck: ({ port }) => `http://localhost:${port}/health` },
+  web: { port: 3000, waitFor: ['api'] },
+  // a build-only lib needs no fields at all
+  isomorphic: { selectable: false },
+}
+```
+
+The **key is the package's name** — what `-p <name>` takes, what `waitFor`/`deps` reference,
+and what `relativeDir` defaults from. So names can't be duplicated or drift out of sync, and
+TypeScript checks every name reference against them. There is no `name` field.
+
+Each package's value has a flat set of fields, all optional (omit them all for a build-only
+lib):
+
 - **`relativeDir`** — directory containing the package, relative to
-  `workspaceDir`. Defaults to `packages/<name>`.
+  `workspaceDir`. Defaults to `packages/<key>`.
 - **`selectable`** (default `true`) — show in the interactive picker.
 - **`color`** — override the auto-assigned color of this package's log-prefix label. Any
   Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`),
@@ -33,30 +48,26 @@ build-only lib):
   Set **`false`** to leave it stopped; start it yourself with the **`s`** hotkey (or a
   control-API `restart`). Ignored when `command` is `null`. (If a package `waitFor`s an
   `autostart: false` one, it waits until you start it.)
-- **`port`** — the package's dev port; feeds `$port` substitution, injected as `PORT`, and
-  swept on session handoff. Pass a **callback** to derive it from the package's
-  [environment](../README.md#environment-env-loading) instead of hardcoding it — it receives
-  that package's `.env` files already resolved and merged over `process.env` (the same
-  environment the dev process gets), and returns the number:
-
-  ```ts
-  {
-    name: 'backend',
-    port: ({ env }) => Number(env.BACKEND_PORT),
-    healthcheck: 'http://localhost:$port/health',
-  }
-  ```
-
-  The callback runs once while the config is being defined and must be synchronous. Return
+- **`port`** — the package's dev port; injected as `PORT`, handed to this package's
+  `healthcheck`/`urls` callbacks, and swept on session handoff. Pass a **callback** to derive
+  it from the package's [environment](../README.md#environment-env-loading) instead of
+  hardcoding it — see [Callbacks](#callbacks-instead-of-interpolation) below. Return
   `undefined` for "no port" (the same as omitting the field); returning `NaN` — the usual sign
   of a missing variable — is an error naming the package and the env files that were loaded.
+  Declaring a `port` is what lets this package's other callbacks use `port` — see
+  [The `port` in a callback](#the-port-in-a-callback).
 - **`urls`** — links shown in the running footer, one entry per line. Each entry is a
-  string, a `{ label, url }`, or an **array** of those (rendered on the same line,
-  space-separated).
+  URL, a `{ label, url }`, or an **array** of those (rendered on the same line,
+  space-separated). Any URL may be a callback.
 - **`healthcheck`** — a URL polled for readiness; also required by anything
-  that lists this package in its `waitFor`.
+  that lists this package in its `waitFor`. May be a callback, or
+  `{ url, timeout }` to give this package's probes longer than the 1500 ms
+  default. See [Readiness probing](#readiness-probing).
+- **`tokens`** — values of your own for this package's callbacks, merged **over** the
+  top-level `tokens`. Only declare it where the package has tokens — never `tokens: {}`. See
+  [Typed tokens](#typed-tokens).
 - **`waitFor`** — package names to wait on (each must define a `healthcheck`)
-  before this package starts.
+  before this package starts. Type-checked against the keys of `packages`.
 - **`tsconfig`** — the tsconfig file (relative to the package dir) devtooie reads for
   this package's project references. Defaults to `tsconfig.build.json`, then
   `tsconfig.json`. See [project references](#typescript-project-references--shared-libraries).
@@ -65,6 +76,175 @@ build-only lib):
   top-level [`logs.timestamps`](./logging.md#timestamps) for this package (inheriting it when
   omitted); `formatter` (`(line: string) => string`) **overrides the default structured-log
   formatter** that devtooie already applies to every package. See [Logging](./logging.md).
+
+## `env.override`
+
+The ambient environment wins over `.env` files, as in Next.js, Vite and `node --env-file` — so
+`FOO=bar devtooie` overrides a file for a single run. `env.override` names the variables where the
+file is allowed to win instead:
+
+```ts
+defineConfig({
+  env: { override: ['NODE_OPTIONS'] },   // or `true` for every variable
+  packages: {/* … */},
+});
+```
+
+The case it exists for is a file that *extends* an inherited value rather than replacing it —
+`NODE_OPTIONS="$NODE_OPTIONS --disable-warning=ExperimentalWarning"`. Without the override that
+line silently does nothing whenever the shell already sets `NODE_OPTIONS`, which VS Code's
+integrated terminal always does.
+
+Which **files** load isn't configured here — that's [`--mode`](./cli.md).
+
+## Callbacks instead of interpolation
+
+devtooie does **no string interpolation**. A value that depends on the port, the environment, or
+anything else is written as a plain function of it, so it's ordinary TypeScript your editor
+checks — nothing to learn, nothing to escape, and a `$` in a string is just a `$`.
+
+`port`, `healthcheck`, and every `urls` entry (including the `url` inside a `{ label, url }`)
+accept either a literal or a callback:
+
+```ts
+export default defineConfig({
+  tokens: { domain: 'example.test' },
+  packages: {
+    backend: {
+      tokens: { region: 'us-east' },
+      port: ({ envs }) => Number(envs.BACKEND_PORT),
+      healthcheck: ({ port }) => `http://localhost:${port}/health`,
+      urls: [
+        ({ port }) => `http://localhost:${port}/todos`,
+        // `tokens` here is { domain, region } — both typed
+        { label: 'public', url: ({ tokens }) => `https://${tokens.region}.${tokens.domain}` },
+      ],
+    },
+  },
+});
+```
+
+Each callback receives one object:
+
+| Key      | What it is                                                                                                                  |
+| -------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `envs`   | The package's `.env` files resolved and merged with `process.env` (which wins by default) — the same environment the dev process gets. See [Environment loading](../README.md#environment-env-loading). |
+| `tokens` | The top-level `tokens` with this package's own `tokens` merged **over** them. Typed from what you declared, so a typo is a compile error. |
+| `port`   | The package's resolved `port`, typed **`number`** (not `number \| undefined`) so it drops straight into a URL. A package that declares no `port` has nothing to give, which types can't express here — so reading `port` in that case throws when the config loads, naming the package. Not offered to `port` itself, nor to the workspace-wide `urls`. |
+
+Callbacks run **once**, while the config is being defined, and must be synchronous. A `port`
+callback returns a number (or `undefined`); the rest return a string.
+
+### Typed tokens
+
+`tokens` is typed from what you write: `tokens.region` is a known key, `tokens.regoin` is a
+compile error, and a package's own tokens stay **private to that package** — `api`'s `region`
+is not a key on `web`'s `tokens`.
+
+Declare them only where you have them. A package with no tokens of its own writes nothing:
+
+```ts
+export default defineConfig({
+  tokens: { domain: 'example.test', proto: 'https' },
+  packages: {
+    api: {
+      tokens: { region: 'us-east', proto: 'http' },   // `proto` overrides the config's
+      // tokens is { domain, proto, region } — all typed
+      healthcheck: ({ tokens, port }) => `${tokens.proto}://${tokens.region}.${tokens.domain}:${port}`,
+    },
+    web: {
+      // no `tokens` here — and `tokens.region` below would be a compile error
+      healthcheck: ({ tokens, port }) => `${tokens.proto}://${tokens.domain}:${port}`,
+    },
+  },
+});
+```
+
+A package's own tokens are an **override**, not a merge: a key it redeclares replaces the
+config's for that package only.
+
+The resolved tokens are on the config's exported value too, keyed by package name — so other
+scripts in the repo can read them:
+
+```ts
+import config from './devtooie.config.js';
+
+config.packages.api.tokens.region;   // 'us-east'
+config.packages.web.tokens.domain;   // 'example.test'
+config.packages.web.tokens.region;   // compile error — that's api's
+```
+
+You can also skip `tokens` entirely and close over ordinary `const`s in the config file, which
+is just as typed:
+
+```ts
+const domain = 'example.test';
+// …
+urls: [() => `https://api.${domain}`];
+```
+
+## Readiness probing
+
+A package with a `healthcheck` is polled while it runs: the footer dot turns green once a probe
+passes, and any package listing it in `waitFor` starts at that moment. devtooie probes each
+package in exactly one place, no matter how many others wait on it.
+
+Probes never overlap. The next one starts **2 s after the previous one started** — so a fast
+answer leaves an idle gap, while a probe that runs past 2 s is followed immediately.
+
+A probe that hasn't answered within `timeout` — **in milliseconds**, 1500 by default — is
+aborted. Raise it for a
+service slow to answer on a cold start: devtooie hanging up mid-request is itself what makes such
+a server log a dropped connection, and the aborted probe leaves the package showing `starting`
+until the next one lands.
+
+```ts
+packages: {
+  api: {
+    port: 3001,
+    healthcheck: {
+      url: ({ port }) => `http://localhost:${port}/health`,
+      timeout: 10_000,
+    },
+  },
+}
+```
+
+`timeout` is per package, so raising it slows that package's polling and affects no other.
+
+### The `port` in a callback
+
+A callback's `port` is typed **`number`**, not `number | undefined`, so it goes straight into a
+URL or arithmetic with no `!` or `??`:
+
+```ts
+healthcheck: ({ port }) => `http://localhost:${port}/health`,
+urls: [({ port }) => `http://localhost:${port + 1}/debug`],
+```
+
+That holds for a literal `port: 3000` and for a `port` callback alike. Whether a package
+declared a `port` at all is the one thing that **can't** be reflected in the type: a mapped type
+infers exactly one type parameter, and this config spends it on per-package
+[`tokens`](#typed-tokens).
+
+So the guarantee is enforced when the config loads instead. If a package with no `port` reads
+`port` in a callback, devtooie throws immediately, naming the package:
+
+```
+api: a callback read `port`, but this package declares no `port`. Add `port` to api in
+devtooie.config.ts, or drop `port` from the callback.
+```
+
+Every callback runs once, while the config loads, so this surfaces on the very next command —
+rather than quietly producing `http://localhost:undefined/health`. A package with no `port`
+whose callbacks never mention `port` is unaffected.
+
+The **resolved** `port` on the exported config stays honest, since a package really may not have
+one:
+
+```ts
+config.packages.api.port; // number | undefined
+```
 
 ## Logging
 
@@ -107,7 +287,7 @@ augment the `'devtooie'` module with it:
 import { defineConfig } from 'devtooie';
 
 const config = defineConfig({
-  packages: [/* … */],
+  packages: {/* … */},
 });
 export default config;
 
@@ -118,6 +298,21 @@ declare module 'devtooie' {
 }
 ```
 
-`import type { PackageConfig, PackageName } from 'devtooie'` then narrows to your
-actual package names instead of the generic wide types. Purely opt-in — the
-scaffolded config doesn't include it.
+`import type { PackageConfig, PackageName } from 'devtooie'` then gives you:
+
+- **`PackageName`** — the literal union of your package names (the keys of `packages`).
+- **`PackageConfig<'api'>`** — one package's resolved type, indexed by name, including its own
+  [`tokens`](#typed-tokens). Bare `PackageConfig` is the union of them all.
+
+```ts
+import type { PackageConfig, PackageName } from 'devtooie';
+
+declare function restart(name: PackageName): void;
+restart('web');    // ok
+restart('nope');   // compile error
+
+type ApiTokens = PackageConfig<'api'>['tokens'];   // { domain: …; region: … }
+```
+
+Purely opt-in — the scaffolded config doesn't include it, and you don't need it to get typed
+`waitFor`/`deps` inside the config itself (those are checked against the keys either way).

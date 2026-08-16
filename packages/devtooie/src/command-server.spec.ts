@@ -33,6 +33,7 @@ describe('command-server', () => {
     expect(await res.json()).toEqual({
       pid: process.pid,
       configPath: '/ws/devtooie.config.ts',
+      startedByAgent: expect.any(Boolean),
       logFile: '/ws/logs/1.log',
       packages: null,
       config: null,
@@ -58,6 +59,7 @@ describe('command-server', () => {
     expect(await res.json()).toEqual({
       pid: process.pid,
       configPath: '/ws/devtooie.config.ts',
+      startedByAgent: expect.any(Boolean),
       logFile: '/ws/logs/2-rotated.log',
       packages: { web: 'running' },
       config: { packages: [] },

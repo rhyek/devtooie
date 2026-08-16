@@ -84,27 +84,26 @@ The one file you author and commit — the single source of truth the CLI reads 
 import { defineConfig } from 'devtooie';
 
 export default defineConfig({
-  packages: [
-    {
-      name: 'core-api',
+  // Keyed by package name — the key IS the name, so there is no `name` field.
+  packages: {
+    'core-api': {
       port: 3001, // Is provided as PORT environment variable to the process
-      // `$port` is substituted with this package's `port`.
-      healthcheck: 'http://localhost:$port/health',
+      // `healthcheck` and `urls` take a string or a callback over this package's
+      // `{ envs, tokens, port }` — devtooie does no string interpolation of its own.
+      healthcheck: ({ port }) => `http://localhost:${port}/health`,
     },
-    {
-      name: 'worker',
+    worker: {
       // A dev process that doesn't watch files: it builds once, then runs. devtooie
       // doesn't watch your source, so after you edit its code you (or an agent, via the
       // control API) restart it — the command's flags say which. See Package lifecycle.
       command: ['start', { watches: false, builds: true }],
     },
-    {
-      name: 'web',
+    web: {
       port: 3000,
-      waitFor: ['core-api'], // Hold until core-api's healthcheck passes
+      waitFor: ['core-api'], // Hold until core-api's healthcheck passes — typo-checked
       deps: { runtime: ['core-api'] }, // Selecting web also runs core-api
     },
-  ],
+  },
 });
 ```
 
@@ -139,10 +138,12 @@ An application needs only a `dev` process — a Node backend:
 {
   "name": "backend",
   "scripts": {
-    "dev": "node --watch $DEVTOOIE_WATCH_PATHS src/index.ts",
+    "dev": "node --watch --watch-path=./src src/index.ts",
   },
 }
 ```
+
+devtooie runs the `dev` script exactly as written, so what the process watches is up to the script.
 
 …or a Go program, via a `Makefile`:
 
@@ -161,21 +162,36 @@ scratch to clear stale build output — those enable the rebuild command (the `b
 
 `defineConfig` accepts:
 
-| Field          | Meaning                                                                                                    |
-| -------------- | ---------------------------------------------------------------------------------------------------------- |
-| `packages`     | Your package definitions (see below).                                                                      |
-| `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.                           |
-| `env`          | `.env` files loaded per package — see [Environment loading](#environment-env-loading).                     |
-| `logs`         | Log display options: `{ timestamps?: boolean }` (default `false`) — see [Log timestamps](#log-timestamps). |
-| `apiPort`      | Pin the [control API](#drive-a-running-session-via-the-control-api) port (otherwise chosen automatically). |
+| Field          | Meaning                                                                                                                                                            |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `packages`     | Your package definitions, **keyed by package name** (see below).                                                                                                                              |
+| `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.                                                                                   |
+| `env`          | Environment-loading options — currently just `override` (which variables a `.env` file may win over the ambient environment for). Which files load is chosen with `--mode`. See [Environment loading](#environment-env-loading). |
+| `logs`         | Log display options: `{ timestamps?: boolean }` (default `false`) — see [Log timestamps](#log-timestamps).                                                         |
+| `apiPort`      | Pin the [control API](#drive-a-running-session-via-the-control-api) port (otherwise chosen automatically).                                                         |
+| `urls`         | Workspace-wide footer links, not tied to a package. Same shape as a package's `urls`, but a callback here gets only `{ envs, tokens }` (no package, so no `port`). |
+| `tokens`       | Values of your own, handed to every callback as `tokens` (a package's own `tokens` are merged on top) — see [Callbacks](#callbacks-instead-of-interpolation).      |
 
-Each package entry has a flat set of fields (only `name` is required; omit the rest for a
-build-only lib):
+`packages` is an object **keyed by package name**:
 
-- **`name`** — a unique identifier. Referenced from the CLI (`-p <name>`), from `waitFor`, and
-  from `deps`.
+```ts
+packages: {
+  api: { port: 3001, healthcheck: ({ port }) => `http://localhost:${port}/health` },
+  web: { port: 3000, waitFor: ['api'] },
+  isomorphic: { selectable: false }, // a build-only lib needs no fields at all
+}
+```
+
+The key is the package's name — what `-p <name>` takes, what `waitFor`/`deps` reference, and
+what `relativeDir` defaults from. **There is no `name` field**, names can't drift, and every
+name reference is type-checked against the keys. Integer-like keys (`'2'`) are rejected at load
+time, since JavaScript reorders them and that would change start order.
+
+Each package's value has a flat set of fields, all optional (omit them all for a build-only
+lib):
+
 - **`relativeDir`** — directory containing the package, relative to `workspaceDir`. Defaults
-  to `packages/<name>`.
+  to `packages/<key>`.
 - **`selectable`** (default `true`) — show in the interactive picker.
 - **`color`** — override the auto-assigned color of this package's log-prefix label. Any
   Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`),
@@ -188,24 +204,18 @@ build-only lib):
 - **`autostart`** (default `true`) — whether to auto-start this package in the run phase. Set
   **`false`** to leave it stopped; start it with the **`s`** hotkey or a control-API `restart`
   (`POST /command/restart/<name>` starts a stopped package). Ignored when `command` is `null`.
-- **`port`** — the package's dev port; feeds `$port` substitution, injected as `PORT`, and swept on session handoff. May be a **callback** that derives it from the package's [environment](#environment-env-loading) — it receives that package's `.env` files already resolved and merged over `process.env` (the same environment the dev process gets) and returns the number:
-
-  ```ts
-  {
-    name: 'backend',
-    port: ({ env }) => Number(env.BACKEND_PORT),
-    healthcheck: 'http://localhost:$port/health',
-  }
-  ```
-
-  It runs once while the config is being defined and must be synchronous. Return `undefined` for "no port" (same as omitting the field); returning `NaN` — the usual sign of a missing variable — is an error naming the package and the env files that were loaded.
-
-- **`urls`** — links shown in the running footer, one entry per line. Each entry is a string, a
-  `{ label, url }`, or an **array** of those (rendered on the same line, space-separated).
+- **`port`** — the package's dev port; injected as `PORT`, handed to this package's `healthcheck`/`urls` callbacks, and swept on session handoff. May be a **callback** deriving it from the package's [environment](#environment-env-loading) — see [Callbacks instead of interpolation](#callbacks-instead-of-interpolation). Return `undefined` for "no port" (same as omitting the field); returning `NaN` — the usual sign of a missing variable — is an error naming the package and the env files that were loaded. Declaring a `port` is what lets this package's other callbacks use `port` — see [The `port` in a callback](#the-port-in-a-callback).
+- **`urls`** — links shown in the running footer, one entry per line. Each entry is a URL, a
+  `{ label, url }`, or an **array** of those (rendered on the same line, space-separated). Any
+  URL may be a callback.
 - **`healthcheck`** — a URL polled for readiness; also required by anything that lists this
-  package in its `waitFor`.
+  package in its `waitFor`. May be a callback, or `{ url, timeout }` to give this package's
+  probes longer than the 1500 ms default. See [Readiness probing](#readiness-probing).
 - **`waitFor`** — package names to wait on (each must define a `healthcheck`) before this
-  package starts.
+  package starts. Type-checked against the keys of `packages`.
+- **`tokens`** — values of your own for this package's callbacks, merged **over** the top-level
+  `tokens`. Only declare it where the package has tokens — never `tokens: {}`. See
+  [Typed tokens](#typed-tokens).
 - **`tsconfig`** — the tsconfig file (relative to the package dir) devtooie reads for this
   package's project references. Defaults to `tsconfig.build.json`, then `tsconfig.json`. See
   [project references](#typescript-project-references--shared-libraries).
@@ -214,6 +224,151 @@ build-only lib):
   top-level [`logs.timestamps`](#log-timestamps) for this package (inheriting it when omitted);
   `formatter` (`(line: string) => string`) **overrides the default structured-log formatter** that
   devtooie already applies to every package. See [Structured logs](#structured-logs).
+
+### Callbacks instead of interpolation
+
+devtooie does **no string interpolation**. A value that depends on the port, the environment, or
+anything else is written as a plain function of it — ordinary TypeScript, checked by the compiler,
+with nothing to escape. A `$` in a config string is just a `$`.
+
+`port`, `healthcheck`, and every `urls` entry (including the `url` inside a `{ label, url }`)
+accept either a literal or a callback:
+
+```ts
+export default defineConfig({
+  tokens: { domain: 'example.test' },
+  packages: {
+    backend: {
+      tokens: { region: 'us-east' },
+      port: ({ envs }) => Number(envs.BACKEND_PORT),
+      healthcheck: ({ port }) => `http://localhost:${port}/health`,
+      urls: [
+        ({ port }) => `http://localhost:${port}/todos`,
+        // `tokens` here is { domain, region } — both typed
+        { label: 'public', url: ({ tokens }) => `https://${tokens.region}.${tokens.domain}` },
+      ],
+    },
+  },
+});
+```
+
+Each callback receives one object:
+
+| Key      | What it is                                                                                                                                                              |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `envs`   | The package's `.env` files resolved and merged with `process.env` (which wins by default) — the same environment the dev process gets. See [Environment loading](#environment-env-loading). |
+| `tokens` | The top-level `tokens` with this package's own `tokens` merged **over** them. Typed from what you declared, so a typo is a compile error.                               |
+| `port`   | The package's resolved `port`, typed **`number`** (not `number \| undefined`) so it drops straight into a URL. A package that declares no `port` has nothing to give, which types can't express here — so reading `port` in that case throws when the config loads, naming the package. Not offered to `port` itself, nor to the workspace-wide `urls`. |
+
+Callbacks run **once**, while the config is being defined, and must be synchronous. A `port`
+callback returns a number (or `undefined`); the rest return a string.
+
+#### Typed tokens
+
+`tokens` is typed from what you write: `tokens.region` is a known key, `tokens.regoin` is a
+compile error, and a package's own tokens are **private to that package** — `api`'s `region` is
+not a key on `web`'s `tokens`.
+
+Declare them only where you have them. A package with no tokens of its own writes nothing (no
+`tokens: {}` needed):
+
+```ts
+export default defineConfig({
+  tokens: { domain: 'example.test', proto: 'https' },
+  packages: {
+    api: {
+      tokens: { region: 'us-east', proto: 'http' }, // `proto` overrides the config's
+      // tokens is { domain, proto, region } — all typed
+      healthcheck: ({ tokens, port }) =>
+        `${tokens.proto}://${tokens.region}.${tokens.domain}:${port}`,
+    },
+    web: {
+      // no `tokens` here — `tokens.region` below would be a compile error
+      healthcheck: ({ tokens, port }) => `${tokens.proto}://${tokens.domain}:${port}`,
+    },
+  },
+});
+```
+
+A package's own tokens are an **override**, not a merge: a key it redeclares replaces the
+config's, for that package only.
+
+The resolved tokens are on the exported config too, keyed by package name, so other scripts can
+read them:
+
+```ts
+import config from './devtooie.config.js';
+
+config.packages.api.tokens.region; // 'us-east'
+config.packages.web.tokens.domain; // 'example.test'
+config.packages.web.tokens.region; // compile error — that's api's
+```
+
+You can also skip `tokens` entirely and close over ordinary `const`s in the config file — just
+as typed, with no rules to remember.
+
+### Readiness probing
+
+A package with a `healthcheck` is polled while it runs: the footer dot turns green once a probe
+passes, and any package listing it in `waitFor` starts at that moment. devtooie probes each
+package in exactly one place, no matter how many others wait on it.
+
+Probes never overlap. The next one starts **2 s after the previous one started** — so a fast
+answer leaves an idle gap, while a probe that runs past 2 s is followed immediately.
+
+A probe that hasn't answered within `timeout` — **in milliseconds**, 1500 by default — is
+aborted. Raise it for a
+service slow to answer on a cold start: devtooie hanging up mid-request is itself what makes such
+a server log a dropped connection (`ECONNRESET`, `Error: aborted`), and the aborted probe leaves
+the package showing `starting` until the next one lands.
+
+```ts
+packages: {
+  api: {
+    port: 3001,
+    healthcheck: {
+      url: ({ port }) => `http://localhost:${port}/health`,
+      timeout: 10_000,
+    },
+  },
+}
+```
+
+`timeout` is per package, so raising it slows that package's polling and affects no other.
+
+#### The `port` in a callback
+
+A callback's `port` is typed **`number`**, not `number | undefined`, so it goes straight into a
+URL or arithmetic with no `!` or `??`:
+
+```ts
+healthcheck: ({ port }) => `http://localhost:${port}/health`,
+urls: [({ port }) => `http://localhost:${port + 1}/debug`],
+```
+
+That holds for a literal `port: 3000` and for a `port` callback alike. Whether a package
+declared a `port` at all is the one thing that **can't** be reflected in the type: a mapped type
+infers exactly one type parameter, and this config spends it on per-package
+[`tokens`](#typed-tokens).
+
+So the guarantee is enforced when the config loads instead. If a package with no `port` reads
+`port` in a callback, devtooie throws immediately, naming the package:
+
+```
+api: a callback read `port`, but this package declares no `port`. Add `port` to api in
+devtooie.config.ts, or drop `port` from the callback.
+```
+
+Every callback runs once, while the config loads, so this surfaces on the very next command —
+rather than quietly producing `http://localhost:undefined/health`. A package with no `port`
+whose callbacks never mention `port` is unaffected.
+
+The **resolved** `port` on the exported config stays honest, since a package really may not have
+one:
+
+```ts
+config.packages.api.port; // number | undefined
+```
 
 ### Log timestamps
 
@@ -224,7 +379,7 @@ every on-screen log line (both the interactive TUI and `--plain` output) with a
 ```ts
 export default defineConfig({
   logs: { timestamps: true },
-  packages: [/* … */],
+  packages: {/* … */},
 });
 ```
 
@@ -243,10 +398,10 @@ package; when omitted, the package inherits the top-level value:
 ```ts
 export default defineConfig({
   logs: { timestamps: false }, // top-level default
-  packages: [
-    { name: 'api' }, // inherits → no timestamps on screen
-    { name: 'worker', logs: { timestamps: true } }, // overrides → timestamps on screen
-  ],
+  packages: {
+    api: {}, // inherits → no timestamps on screen
+    worker: { logs: { timestamps: true } }, // overrides → timestamps on screen
+  },
 });
 ```
 
@@ -297,11 +452,11 @@ assumption.
 import { defineConfig, logging } from 'devtooie';
 
 export default defineConfig({
-  packages: [
-    { name: 'go-svc' }, // no config — slog's string levels just work via the default
-    { name: 'api', logs: { formatter: logging.nodejs.pino.formatter() } }, // pino numeric levels
-    { name: 'web', logs: { formatter: logging.nodejs.winston.formatter() } }, // winston message key + levels
-  ],
+  packages: {
+    'go-svc': {}, // no config — slog's string levels just work via the default
+    api: { logs: { formatter: logging.nodejs.pino.formatter() } }, // pino numeric levels
+    web: { logs: { formatter: logging.nodejs.winston.formatter() } }, // winston message key + levels
+  },
 });
 ```
 
@@ -390,10 +545,12 @@ a worker — **including when you don't yet know whether devtooie manages it, or
 uses devtooie at all**. Work through these four steps; each is cheap, and any one of them can end
 with a complete answer.
 
-Check before you start anything: launching a session while one is already up **hands off** — the
-new invocation shuts the running one down and takes its place (see
-[Graceful shutdown](#graceful-shutdown)). Starting devtooie "just to see" restarts everything the
-human already had running.
+Check before you start anything. Only one session can run a project, so starting a second one
+means quitting the first and every dev process under it. devtooie will **refuse** to do that
+from an agent when a person started the running session — you'll get an error and a non-zero
+exit, not a session (see [Taking over a running session](#taking-over-a-running-session)).
+Starting devtooie "just to see" is never free: at best it's an error, at worst it restarts
+everything the human had running.
 
 **1. Is this repo devtooie-managed?** Walk up from the app's directory for a config file —
 `devtooie.config.ts` (also `.mts`, `.js`, `.mjs`):
@@ -435,7 +592,7 @@ curl -s --max-time 2 "http://127.0.0.1:$port/query/status"
 
 | Value                       | What it means                                                                       |
 | --------------------------- | ----------------------------------------------------------------------------------- |
-| `running`                   | up — its process is live and past its `healthcheck`, if it has one.                 |
+| `running`                   | its process is live. Readiness isn't reported here — poll its `healthcheck` yourself. |
 | `waiting`                   | not up yet; held back by `waitFor` / a dependency's healthcheck.                    |
 | `stopped`                   | not running — it exited, crashed, or was never started.                             |
 | `restarting` / `rebuilding` | mid-cycle after a control command or a code/`.env` change; it's on its way back up. |
@@ -469,11 +626,47 @@ nonetheless taken is exactly that case (or another project on the same port).
 with `POST /command/quit` and restart a single package with `POST /command/restart/<name>`; for a
 process devtooie doesn't own, report it and let the human decide.
 
+## Taking over a running session
+
+Only one devtooie session can run a project at a time, so starting a second one quits the
+first — and every dev process under it. What happens when you try:
+
+| Situation                                        | What devtooie does                      |
+| ------------------------------------------------ | --------------------------------------- |
+| `--kill-others` passed                           | Quits the running session, no question  |
+| The running session was also started by an agent | Quits it, no question                   |
+| A TTY is attached (a human is there)             | Prompts for confirmation                |
+| No TTY — the usual agent case                    | **Refuses**, exits `1`, leaves it alone |
+
+Your shell has no TTY, so row 3 is never you: every start of yours resolves to row 2 (quietly
+allowed) or row 4 (refused). devtooie detects an agent from the environment variables agents set (`CLAUDECODE`, `CURSOR_AGENT`, `GEMINI_CLI`,
+`CODEX_SANDBOX`, `AGENT`, and others), and publishes each session's answer as `startedByAgent`
+on [`GET /query/status`](#drive-a-running-session-via-the-control-api). So:
+
+- **A session you (or another agent) started, you may replace.** No prompt, no flag, nothing
+  to ask — it happens automatically. Expect your own session to be replaced the same way.
+- **A session the user started, you may not.** devtooie exits `1` with an explanation instead
+  of starting.
+
+**Never add `--kill-others` on your own initiative** — not to "unblock" yourself, not after
+hitting the error, not in a script you write for the user. It terminates a session the user is
+probably watching in another terminal, along with every server and watcher under it, and the
+error you just got is devtooie deliberately stopping you. When you hit it, report to the user
+that a session is already running and ask what they want: reuse it (you usually can — see
+[Drive a running session via the control API](#drive-a-running-session-via-the-control-api)),
+have them stop it, or have them tell you to pass `--kill-others`. Only that last answer, from
+the user, authorizes the flag.
+
+Note that a running session is usually **better** than a new one: you can read its logs, query
+package status, and restart individual packages over the control API without disturbing
+anything else.
+
 ## Invoke headlessly
 
 First confirm nothing is already running — see
-[Is the app already running?](#is-the-app-already-running) — since a new session shuts the running
-one down and takes over.
+[Is the app already running?](#is-the-app-already-running). If a session is up, read
+[Taking over a running session](#taking-over-a-running-session) before doing anything else:
+starting yours means ending theirs.
 
 Never launch devtooie's interactive TUI from an agent — there is no TTY to drive it. Always
 pass `--plain` together with an explicit `-p <package>` (repeatable) so no interactive selector
@@ -517,12 +710,14 @@ Common options:
 | Option                 | Description                                                                                                                                                                                                |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `-p, --package <name>` | Repeatable. Package(s) to run, bypassing the interactive selector.                                                                                                                                         |
+| `-m, --mode <name>`    | Environment mode selecting the `.env.<mode>` files to load. Defaults to `development`; also accepted after a subcommand. See [Modes](#modes---mode).                                                        |
 | `--ui`                 | Interactive terminal UI (default). Mutually exclusive with `--plain`.                                                                                                                                      |
 | `--plain`              | No TUI — stream logs to stdout with colored name prefixes. Requires `-p` or `--last-answers`.                                                                                                              |
 | `--last-answers`       | Skip selection; reuse the last saved selection.                                                                                                                                                            |
 | `--build`              | Build the selected packages and their build-time deps, then exit (no run phase).                                                                                                                           |
 | `--rebuild`            | Like `--build`, but first clears `dist/` for every build target.                                                                                                                                           |
 | `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/`. Each run gets a fresh `<timestamp>.log`; previous sessions' logs are kept. Also used by `devtooie cmd`. |
+| `--kill-others`        | Quit a devtooie session already running for this project instead of asking. **Never pass this on your own initiative** — see [Taking over a running session](#taking-over-a-running-session).              |
 
 Subcommands:
 
@@ -548,35 +743,67 @@ scopes**: the workspace root and the package's own directory. Only files that ex
 your-monorepo/
 ├── .env                     # workspace scope — base for every package
 ├── .env.local               # workspace scope, higher precedence
+├── .env.development         # workspace scope, the default mode
 └── packages/
     ├── core-api/
     │   ├── .env              # package scope — overrides workspace scope
-    │   └── .env.local        # highest precedence for core-api
+    │   └── .env.local        # package scope, higher precedence
     └── web/
         └── .env
 ```
 
-Default files, **ascending precedence within a scope**:
+Files for a mode, **ascending precedence within a scope**:
 
 1. `.env`
-2. `.env.development`
-3. `.env.local`
+2. `.env.local`
+3. `.env.<mode>`
+4. `.env.<mode>.local`
+
+The two `.local` files are the personal tier — commit `.env` and `.env.<mode>`, and keep
+`.env*.local` out of git.
 
 **Package scope overrides workspace scope**, and within a scope a later file overrides an earlier
-one. `${VAR}` references expand against already-loaded files and the current environment; file
-values win over the ambient environment (so `NODE_OPTIONS=$NODE_OPTIONS --flag` extends the
-inherited value).
+one. `${VAR}` references expand against already-loaded files and the current environment.
 
-A package's `port` is also injected as `PORT` (an explicit `.env` `PORT` still overrides it). The reverse direction works too: `port` may be a callback (`port: ({ env }) => Number(env.BACKEND_PORT)`) that reads these same resolved files to decide the port.
-
-Customize the list via `env.files` (each name is still resolved at both scopes):
+**The ambient environment wins over the files**, as in Next.js, Vite and `node --env-file` — so
+`FOO=bar devtooie` overrides a file for a single run. `env.override` names the exceptions, for
+when a file needs to *extend* an inherited value rather than lose to it:
 
 ```ts
 defineConfig({
-  env: { files: ['.env', '.env.local'] },
-  packages: [/* … */],
+  env: { override: ['NODE_OPTIONS'] },   // or `true` for every variable
+  packages: {/* … */},
 });
 ```
+
+With that, `NODE_OPTIONS=$NODE_OPTIONS --flag` appends to whatever the shell already set.
+
+A package's `port` is also injected as `PORT` (an explicit `.env` `PORT` still overrides it). The reverse direction works too: `port` may be a callback (`port: ({ envs }) => Number(envs.BACKEND_PORT)`) that reads these same resolved files to decide the port, and `healthcheck`/`urls` callbacks get the same `envs` — see [Callbacks instead of interpolation](#callbacks-instead-of-interpolation).
+
+### Modes (`--mode`)
+
+`--mode <name>` selects which `.env.<mode>` files load. It defaults to `development`, so plain
+`devtooie` loads `.env.development` / `.env.development.local`.
+
+```sh
+devtooie --mode test                  # loads .env.test / .env.test.local
+devtooie --mode test cmd -- vitest    # the same environment, for a one-off command
+devtooie cmd --mode test -- vitest    # equivalent — both flag positions work
+```
+
+Any name is valid (`test`, `staging`, `e2e.ci`); a name can't be empty, `.`/`..`, or contain a
+path separator. `DEVTOOIE_MODE=test devtooie` is equivalent to the flag, and the resolved mode is
+passed to every child process as `DEVTOOIE_MODE`.
+
+**Modes are exclusive**: `--mode test` does *not* load `.env.development`. Values shared across
+modes belong in `.env` / `.env.local`, which load in every mode. (This is deliberate — a
+cumulative mode could override an inherited variable but never unset one, so a `.env.test` that
+forgot `DATABASE_URL` would silently run against the development database.)
+
+`--mode` does **not** set `NODE_ENV`: a mode name is free-form, while `NODE_ENV` is effectively
+limited to `development`/`production`/`test` by the wider ecosystem. Set it from the mode's own
+file instead — `NODE_ENV=test` inside `.env.test`. (That line is itself subject to ambient-wins,
+so a shell or CI runner exporting `NODE_ENV` beats it; add it to `env.override` if that matters.)
 
 While a session runs, devtooie **watches these files (and where new ones would appear) and
 restarts the affected package(s)** on change — editing a workspace-level file restarts every
@@ -659,34 +886,29 @@ it has `clean` + `build` (or `build:clean`) scripts. Otherwise it's a no-op; use
 
 ### Scoping a `node --watch` dev script
 
-`node --watch` registers a **recursive** watch on the directory of every file the process loads,
-with no ignore list — so `node_modules` is watched wholesale. A service with a real dependency tree
-ends up holding thousands of watch roots, which wastes restarts on files nobody edits and, on macOS,
-can exhaust the machine-wide FSEvents budget and fail the watcher with `EMFILE`.
+devtooie runs the `dev` script exactly as written, so what the process watches is up to the script.
+Worth knowing when you onboard a package that uses Node's own
+watcher: `node --watch` registers a **recursive** watch on the directory of every file the process
+loads, with no ignore list — so `node_modules` is watched wholesale. A service with a real
+dependency tree ends up holding thousands of watch roots, which wastes restarts on files nobody
+edits and, on macOS, can exhaust the machine-wide FSEvents budget and fail the watcher with
+`EMFILE`.
 
-Scope it with `--watch-path`. devtooie derives the right directories per package and exposes them to
-every package process as **`DEVTOOIE_WATCH_PATHS`** — a space-separated list of `--watch-path=<dir>`
-flags, ready to splice in:
+Scope it by naming the directories in the script:
 
 ```jsonc
 {
   "scripts": {
-    "dev": "node --watch $DEVTOOIE_WATCH_PATHS src/index.ts",
+    // watches only what this package actually loads at runtime
+    "dev": "node --watch --watch-path=./src --watch-path=../shared/dist src/index.ts",
   },
 }
 ```
 
-It covers the package itself (its `outDir` when it transpiles, its sources when Node runs the
-TypeScript directly), each workspace dependency at the directory its `exports` actually resolves to
-(`./src/index.ts` → that `src`; `./dist/index.js` → that `dist`), and transitive TypeScript project
-references. Third-party packages are excluded. The variable is empty — leaving the command
-unchanged — when TypeScript is absent, or when a derived path contains a space (the script splices
-it in unquoted, so the shell would split that path in half).
-
-devtooie never rewrites the script — it only **warns** at startup when a package runs a bare
-`node --watch`, naming the flags to add. If you see that warning while onboarding or debugging a
-package, fix the script rather than ignoring it. Scripts already passing `--watch-path`, or using a
-different watcher (`tsx watch`, `nodemon`, `tsc --watch`), are left alone.
+Good candidates are the package's own sources (or its `outDir` when it transpiles) plus the
+directory each workspace dependency's `exports` actually resolves to — `./src/index.ts` → that
+`src`, `./dist/index.js` → that `dist`. Other watchers (`tsx watch`, `nodemon`, `tsc --watch`)
+don't behave this way and need nothing.
 
 ## Drive a running session via the control API
 
@@ -702,9 +924,14 @@ removed when a session ends, so it says where a session _would_ answer, not that
 
 Endpoints (all plain HTTP, no auth — localhost-only):
 
-- `GET /query/status` — a single snapshot of the session, `{ pid, configPath, logFile, packages, config }`:
+- `GET /query/status` — a single snapshot of the session,
+  `{ pid, configPath, startedByAgent, logFile, packages, config }`:
   - `pid` / `configPath` — the session's PID and the absolute path to the `devtooie.config.*` it
     was started with; available immediately, even while the session is still building.
+  - `startedByAgent` — whether a coding agent started this session rather than a person. Decides
+    whether a starting session may quit it without asking; see
+    [Taking over a running session](#taking-over-a-running-session). Omitted by instances older
+    than 0.7.0, which reads as `false`.
   - `logFile` — absolute path to the logfile currently being written (tracks in-session rotation).
   - `packages` — per-package status map (e.g. `{ "web": "running" }`), one of `running`,
     `stopped`, `waiting`, `restarting`, `rebuilding`; `null` until the build finishes. See
@@ -724,9 +951,10 @@ Endpoints (all plain HTTP, no auth — localhost-only):
   call it. The session then closes its control server and exits a moment later; if you need to
   confirm the process itself is gone, poll `GET /` afterwards (connection refused = gone).
 
-This is what lets a second `devtooie` invocation hand off from a running one, what `devtooie logs`
-finds the current logfile with, and what an external tool (or the agent skill) uses to drive a
-session headlessly.
+This is what lets a second `devtooie` invocation hand off from a running one — once that takeover
+is authorized, see [Taking over a running session](#taking-over-a-running-session) — what
+`devtooie logs` finds the current logfile with, and what an external tool (or the agent skill)
+uses to drive a session headlessly.
 
 Do not hardcode package names. Discover them either from a running session (`GET /query/status`)
 or by asking devtooie directly:
@@ -762,9 +990,11 @@ grace.
 A **blocking `POST /command/quit`** is acknowledged at the end of phase 3 — packages down and ports
 freed, just before the control server closes — so a caller that awaits the response knows the ports
 are clear the moment it returns. This is how a newer `devtooie` invocation hands off from a running
-one: it calls `POST /command/quit`, waits for that ack, and only then binds the ports itself (falling
-back to force-killing the old process if it overruns its graceful window). You get the same guarantee
-for free — await the response and the session's ports are yours.
+one — once that takeover is authorized (see
+[Taking over a running session](#taking-over-a-running-session)): it calls `POST /command/quit`,
+waits for that ack, and only then binds the ports itself (falling back to force-killing the old
+process if it overruns its graceful window). You get the same guarantee for free — await the
+response and the session's ports are yours.
 
 If a package needs to flush or persist state on shutdown, do it on `SIGTERM`, and keep it under the
 10-second grace or it will be `SIGKILL`ed mid-cleanup.
@@ -901,14 +1131,13 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
    - `compile` or `tsc` → rename to `build`
    - a script that runs `rimraf dist` (or equivalent) → rename to `clean`
 
-3. **Add the package to `devtooie.config.ts`.** Append a new entry to the `packages` array passed
-   to `defineConfig`:
+3. **Add the package to `devtooie.config.ts`.** Add a new key to the `packages` object passed to
+   `defineConfig`. **The key is the package's name** — there is no `name` field:
 
    ```ts
-   {
-     name: 'my-pkg',
+   'my-pkg': {
      port: 3001,
-     healthcheck: 'http://localhost:$port/health',
+     healthcheck: ({ port }) => `http://localhost:${port}/health`,
      deps: { runtime: ['other-pkg'] },
      waitFor: ['other-pkg'],
    }
@@ -919,11 +1148,14 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
    - `port` — the dev port it listens on. devtooie injects this into the package's process as the
      `PORT` env var, so the app can read `process.env.PORT` without you duplicating it in a `.env`
      (an explicit `.env` `PORT` still wins).
-   - `healthcheck` / `urls` — strings that may contain **tokens** substituted at load time:
-     `$port`, `$name`, `$subdomain` (intrinsic), plus any extrinsic `$key` you declare in the
-     top-level `tokens` map passed to `defineConfig`. Write `http://localhost:$port/health` rather
-     than hardcoding the port, so it can't drift. Each `urls` entry is a string, a `{ label, url }`,
-     or an array of those (an array entry's links render on one footer line, space-separated).
+   - `healthcheck` / `urls` — a URL string, or a **callback** over this package's
+     `{ envs, tokens, port }` (see [Callbacks](#callbacks-instead-of-interpolation)). Write
+     ``healthcheck: ({ port }) => `http://localhost:${port}/health` `` rather than hardcoding the
+     port, so it can't drift. **There is no `$port`/`$name` interpolation** — a `$` in a config
+     string is a literal `$`. Each `urls` entry is a URL, a `{ label, url }`, or an array of those
+     (an array entry's links render on one footer line, space-separated), and any URL in them may
+     be a callback. `healthcheck` also takes `{ url, timeout }` when the package is slow to answer
+     on a cold start — see [Readiness probing](#readiness-probing).
    - `deps: { build, dev, runtime }` — names of other packages this one depends on; drives
      build/start ordering and what gets pulled in when this package is selected. For **TypeScript**
      deps you usually don't need `deps.build`: devtooie infers build-time deps from project
@@ -932,14 +1164,21 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
      `workspace:*` entry in the consumer's `package.json` so pnpm links it, plus a tsconfig
      `references` entry). Use `deps.build` only for edges TS can't express.
    - `waitFor` — names of packages whose `healthcheck` must pass before this one starts (each named
-     package must itself define a `healthcheck`).
+     package must itself define a `healthcheck`). Names in `waitFor`/`deps` are **type-checked
+     against the keys of `packages`**, so a typo is a compile error (and still a clear load-time
+     error for a config that reaches devtooie unchecked).
+   - `tokens` — optional values of your own for this package's callbacks, merged over the config's
+     top-level `tokens`. Only add it when this package actually has tokens — never write
+     `tokens: {}`. See [Typed tokens](#typed-tokens).
 
-   Keep `name` consistent with how the package should be referred to elsewhere (control API paths,
-   `-p` flags, etc).
+   Choose the key to match how the package should be referred to elsewhere (control API paths,
+   `-p` flags, etc). It must not be an integer-like string (`'2'`): JavaScript reorders such keys,
+   which would change start order, so devtooie rejects them at load time.
 
    For workspace-wide links not tied to any package (dashboards, docs), add a top-level `urls`
    array to `defineConfig` — same entry shape as a package's `urls`. These render in the TUI footer
-   above the per-package links and substitute only extrinsic `tokens` (no `$port`/`$name`/`$subdomain`).
+   above the per-package links; a callback there gets `{ envs, tokens }` but no `port`, since the
+   entry belongs to no package.
 
 4. **Shared TypeScript libraries.** A package others depend on (shared types/logic) is onboarded
    like any other, plus:
@@ -997,14 +1236,14 @@ version. The skill points at this guide.
 
 ## Typed package names (advanced)
 
-Most people don't need this. If you want other scripts in your repo to import a literal union of
-your package names from `devtooie`, name the config value and augment the `'devtooie'` module with it:
+Most people don't need this. Name the config value and augment the `'devtooie'` module with it so
+other scripts in your repo can import the resolved package type:
 
 ```ts
 import { defineConfig } from 'devtooie';
 
 const config = defineConfig({
-  packages: [/* … */],
+  packages: {/* … */},
 });
 export default config;
 
@@ -1015,5 +1254,21 @@ declare module 'devtooie' {
 }
 ```
 
-`import type { PackageConfig, PackageName } from 'devtooie'` then narrows to your actual package
-names instead of the generic wide types. Purely opt-in — the scaffolded config doesn't include it.
+`import type { PackageConfig, PackageName } from 'devtooie'` then gives you:
+
+- **`PackageName`** — the literal union of your package names (the keys of `packages`).
+- **`PackageConfig<'api'>`** — one package's resolved type, indexed by name, including its own
+  [`tokens`](#typed-tokens). Bare `PackageConfig` is the union of them all.
+
+```ts
+import type { PackageConfig, PackageName } from 'devtooie';
+
+declare function restart(name: PackageName): void;
+restart('web'); // ok
+restart('nope'); // compile error
+
+type ApiTokens = PackageConfig<'api'>['tokens']; // { domain: …; region: … }
+```
+
+Purely opt-in — the scaffolded config doesn't include it, and it is **not** needed for typed
+`waitFor`/`deps` inside the config itself (those are checked against the keys either way).

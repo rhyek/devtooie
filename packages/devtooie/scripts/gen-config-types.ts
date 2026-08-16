@@ -17,7 +17,20 @@ function gen(schema: Parameters<typeof zodToTs>[0], name: string): string {
     auxiliaryTypeStore: createAuxiliaryTypeStore(),
     unrepresentable: 'any',
   });
-  return 'export ' + printNode(createTypeAlias(node, name));
+  return 'export ' + stripNeverIndexSignatures(printNode(createTypeAlias(node, name)));
+}
+
+/**
+ * Drops the `[x: string]: never;` index signature `zod-to-ts` emits for a `z.strictObject`.
+ * It carries no information in the generated type — "no extra keys" is already how a TS object
+ * literal type behaves — and TypeScript rejects it outright as soon as the object has any
+ * property, since a real property's type isn't assignable to `never`.
+ */
+function stripNeverIndexSignatures(source: string): string {
+  return source
+    .split('\n')
+    .filter((line) => !/^\s*\[x: string\]: never;\s*$/.test(line))
+    .join('\n');
 }
 
 const header = `// AUTO-GENERATED from config-schema.ts by scripts/gen-config-types.ts — DO NOT EDIT.

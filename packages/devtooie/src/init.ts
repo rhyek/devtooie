@@ -10,9 +10,10 @@ function configTemplate(): string {
   return `import { defineConfig } from 'devtooie';
 
 export default defineConfig({
-  packages: [
-    // { name: 'my-pkg', run: { port: 3001 } },
-  ],
+  // Keyed by package name — the key is the name, so there's no \`name\` field.
+  packages: {
+    // 'my-pkg': { port: 3001 },
+  },
 });
 `;
 }

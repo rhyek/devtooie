@@ -98,14 +98,14 @@ export const DEVTOOIE_LABEL_COLOR: Color = '#d7af5f';
  */
 export const PACKAGE_PALETTE: readonly Color[] = [
   '#4C9AFF', // blue
-  '#E04262', // crimson
-  '#7A6FFF', // periwinkle
-  '#FF9636', // orange
-  '#3FCF7F', // emerald
-  '#A56EFF', // purple
-  '#FFC53D', // gold
   '#22C3C3', // teal
-  '#A8D93C', // lime
+  '#7A6FFF', // periwinkle
+  '#FFC53D', // gold
+  '#E04262', // crimson
+  '#32CD32', // green
+  '#A56EFF', // purple
+  '#FF8C00', // orange
+  '#FFDC5C', // yellow
   '#C77DFF', // violet
 ];
 

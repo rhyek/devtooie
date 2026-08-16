@@ -17,7 +17,7 @@ every on-screen log line (both the interactive TUI and `--plain` output) with a
 ```ts
 export default defineConfig({
   logs: { timestamps: true },
-  packages: [/* … */],
+  packages: {/* … */},
 });
 ```
 
@@ -36,10 +36,10 @@ package; when omitted, the package inherits the top-level value:
 ```ts
 export default defineConfig({
   logs: { timestamps: false }, // top-level default
-  packages: [
-    { name: 'api' }, // inherits → no timestamps on screen
-    { name: 'worker', logs: { timestamps: true } }, // overrides → timestamps on screen
-  ],
+  packages: {
+    api: {}, // inherits → no timestamps on screen
+    worker: { logs: { timestamps: true } }, // overrides → timestamps on screen
+  },
 });
 ```
 
@@ -110,11 +110,11 @@ Override a package's formatter with one of the `logging` helpers (exported from 
 import { defineConfig, logging } from 'devtooie';
 
 export default defineConfig({
-  packages: [
-    { name: 'go-svc' }, // no config — slog's string levels just work via the default
-    { name: 'api', logs: { formatter: logging.nodejs.pino.formatter() } }, // pino numeric levels → labels
-    { name: 'web', logs: { formatter: logging.nodejs.winston.formatter() } }, // winston `message` key + levels
-  ],
+  packages: {
+    'go-svc': {}, // no config — slog's string levels just work via the default
+    api: { logs: { formatter: logging.nodejs.pino.formatter() } }, // pino numeric levels → labels
+    web: { logs: { formatter: logging.nodejs.winston.formatter() } }, // winston `message` key + levels
+  },
 });
 ```
 

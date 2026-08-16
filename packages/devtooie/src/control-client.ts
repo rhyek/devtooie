@@ -10,6 +10,12 @@ export interface SessionStatus {
   pid: number;
   /** Absolute path to the `devtooie.config.*` the session was started with. */
   configPath: string;
+  /**
+   * Whether that session was started by a coding agent rather than by a person. Absent from
+   * instances older than 0.7.0, which read as `false` — so a new session never auto-quits one
+   * it can't ask about.
+   */
+  startedByAgent: boolean;
   /** Absolute path to the logfile currently being written (rotation-aware), or null. */
   logFile: string | null;
   /** Per-package status map (`getAllStatuses()`), or null before the manager attaches. */
@@ -72,6 +78,7 @@ export function createControlClient(port: number, timeoutMs = 500): ControlClien
         return {
           pid: body.pid,
           configPath: body.configPath,
+          startedByAgent: body.startedByAgent === true,
           logFile: typeof body.logFile === 'string' ? body.logFile : null,
           packages: (body.packages ?? null) as Record<string, unknown> | null,
           config: body.config ?? null,

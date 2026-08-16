@@ -1,6 +1,10 @@
 node_modules/
 dist/
 .DS_Store
+
+# Personal env overrides. The example's other .env files are committed on purpose —
+# they're synthetic demo content — but the `.local` tier never should be.
+.env*.local
 docs/superpowers/
 .superpowers/
 

@@ -2,14 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { execaSync } from 'execa';
-import type { AnyPackageConfig } from './config.js';
+import type { AnyPackageConfig, ResolvedHealthcheck } from './config.js';
 import {
   getRegisteredPackages,
   getLoadedConfig,
   getDevScript,
   normalizeUrlEntry,
 } from './config.js';
-import { DEFAULT_ENV_FILES } from './env.js';
+import { envFileNames } from './env.js';
 import type { RunnerArgs } from './runners/types.js';
 
 const require = createRequire(import.meta.url);
@@ -522,14 +522,14 @@ export function buildRunnerArgs(
   const sortedPackages = sortPackages(deps.allPackages, selectedSet);
   const rebuildableSet = new Set(deps.allPackages.filter(canRebuild).map((a) => a.name));
   const waitForMap: Record<string, string[]> = {};
-  const healthcheckUrls: Record<string, string> = {};
+  const healthchecks: Record<string, ResolvedHealthcheck> = {};
   const extraCommandsMap: Record<string, string[]> = {};
   for (const a of deps.allPackages) {
     if (a.waitFor?.length) {
       waitForMap[a.name] = a.waitFor;
     }
     if (a.healthcheck) {
-      healthcheckUrls[a.name] = a.healthcheck;
+      healthchecks[a.name] = a.healthcheck;
     }
     const extra = getExtraCommands(a);
     if (extra.length) {
@@ -543,10 +543,11 @@ export function buildRunnerArgs(
     buildDepSet: deps.buildSet,
     rebuildableSet,
     waitForMap,
-    healthcheckUrls,
+    healthchecks,
     extraCommandsMap,
     topLevelUrls: config?.urls?.map(normalizeUrlEntry),
-    envFiles: config?.envFiles ?? DEFAULT_ENV_FILES,
+    envFiles: config?.envFiles ?? envFileNames(),
+    envOverride: config?.envOverride,
     logTimestamps: config?.logTimestamps ?? false,
     cwd: process.cwd(),
   };

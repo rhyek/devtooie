@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch $DEVTOOIE_WATCH_PATHS src/index.ts",
+    "dev": "node --watch --watch-path=./src --watch-path=../db/src --watch-path=../isomorphic/dist src/index.ts",
     "add-random-todo": "node src/cmd/add-random-todo.ts"
   },
   "dependencies": {

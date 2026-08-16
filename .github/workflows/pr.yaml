@@ -28,3 +28,6 @@ jobs:
       - run: pnpm build
 
       - run: pnpm test
+
+      # Type-level assertions (`*.test-d.ts`) are only enforced under --typecheck.
+      - run: pnpm test:types

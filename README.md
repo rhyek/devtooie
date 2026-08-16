@@ -96,27 +96,26 @@ on every run.
 import { defineConfig } from 'devtooie';
 
 export default defineConfig({
-  packages: [
-    {
-      name: 'core-api',
+  // keyed by package name — the key is the name, so there's no `name` field
+  packages: {
+    'core-api': {
       port: 3001, // is provided as PORT environment variable to the process
-      // `$port` is substituted with this package's `port`.
-      healthcheck: 'http://localhost:$port/health',
+      // `healthcheck` and `urls` take a string or a callback over this package's
+      // `{ envs, tokens, port }` — devtooie does no string interpolation of its own.
+      healthcheck: ({ port }) => `http://localhost:${port}/health`,
     },
-    {
-      name: 'worker',
+    worker: {
       // a dev process that doesn't watch files: it builds once, then runs. devtooie
       // doesn't watch your source, so after you edit its code you (or an agent, via the
       // control API) restart it — the command's flags say which. See docs/package-lifecycle.md.
       command: ['start', { watches: false, builds: true }],
     },
-    {
-      name: 'web',
+    web: {
       port: 3000,
-      waitFor: ['core-api'], // hold until core-api's healthcheck passes
+      waitFor: ['core-api'], // hold until core-api's healthcheck passes — typo-checked
       deps: { runtime: ['core-api'] }, // selecting web also runs core-api
     },
-  ],
+  },
 });
 ```
 
@@ -160,14 +159,14 @@ An application needs only a `dev` process — a Node backend:
 {
   "name": "backend",
   "scripts": {
-    "dev": "node --watch $DEVTOOIE_WATCH_PATHS src/index.ts",
+    "dev": "node --watch --watch-path=./src src/index.ts",
   },
 }
 ```
 
-`$DEVTOOIE_WATCH_PATHS` scopes Node's watcher to what the package actually loads — a bare
-`node --watch` recursively watches `node_modules` too. See
-[docs/package-lifecycle.md](docs/package-lifecycle.md#scoping-a-node---watch-dev-script).
+devtooie runs the `dev` script exactly as written, so what the process watches is up to the script.
+See [docs/package-lifecycle.md](docs/package-lifecycle.md#scoping-a-node---watch-dev-script) for why
+`--watch-path` is worth adding when you use Node's own watcher.
 
 …or a Go program, via a `Makefile`:
 
@@ -236,43 +235,75 @@ directory. Only files that exist are loaded.
 your-monorepo/
 ├── .env                     # workspace scope — base for every package
 ├── .env.local               # workspace scope, higher precedence
+├── .env.development         # workspace scope, the default mode
 └── packages/
     ├── core-api/
     │   ├── .env              # package scope — overrides workspace scope
-    │   └── .env.local        # highest precedence for core-api
+    │   └── .env.local        # package scope, higher precedence
     └── web/
         └── .env
 ```
 
-Default files, **ascending precedence within a scope**:
+Files for a mode, **ascending precedence within a scope**:
 
 1. `.env`
-2. `.env.development`
-3. `.env.local`
+2. `.env.local`
+3. `.env.<mode>`
+4. `.env.<mode>.local`
+
+The two `.local` files are the personal tier — commit `.env` and `.env.<mode>`, and keep
+`.env*.local` out of git.
 
 **Package scope overrides workspace scope**, and within a scope a later file
 overrides an earlier one. `${VAR}` references expand against already-loaded files
-and the current environment; file values win over the ambient environment (so
-`NODE_OPTIONS=$NODE_OPTIONS --flag` extends the inherited value).
+and the current environment.
+
+**The ambient environment wins over the files**, as in Next.js, Vite and
+`node --env-file` — so `FOO=bar devtooie` overrides a file for one run. Name the
+exceptions with `env.override` when a file needs to *extend* an inherited value:
+
+```ts
+defineConfig({
+  env: { override: ['NODE_OPTIONS'] },   // or `true` for every variable
+  packages: {/* … */},
+});
+```
+
+With that, `NODE_OPTIONS=$NODE_OPTIONS --flag` appends to whatever the shell
+already set instead of losing to it.
+
+### Modes
+
+`--mode <name>` picks which `.env.<mode>` files load; it defaults to
+`development`, so plain `devtooie` loads `.env.development`.
+
+```sh
+devtooie --mode test               # loads .env.test / .env.test.local
+devtooie --mode test cmd -- vitest # same environment, one-off command
+```
+
+Any name works (`test`, `staging`, `e2e`), and the mode is passed to every child
+process as `DEVTOOIE_MODE`. **Modes are exclusive** — `--mode test` does *not*
+load `.env.development` — so values shared across modes belong in `.env` and
+`.env.local`, which load in every mode.
+
+`--mode` deliberately leaves `NODE_ENV` alone (a mode name is free-form, and
+`NODE_ENV` isn't). Set it from the mode's own file if you want it:
+`NODE_ENV=test` in `.env.test`.
 
 A package's `port` is also injected as `PORT` (an explicit `.env` `PORT`
 still overrides it). The reverse direction works too — `port` may be a callback
 that reads these same resolved files to decide the port:
 
 ```ts
-{ name: 'backend', port: ({ env }) => Number(env.BACKEND_PORT) }
+backend: { port: ({ envs }) => Number(envs.BACKEND_PORT) }
 ```
 
-See [Configuration](docs/configuration.md) for the details.
-
-Customize the list via `env.files` (each name is still resolved at both scopes):
-
-```ts
-defineConfig({
-  env: { files: ['.env', '.env.local'] },
-  packages: [/* … */],
-});
-```
+`healthcheck` and `urls` take the same kind of callback, which additionally gets the
+resolved `port`. `healthcheck` also accepts `{ url, timeout }`, for a service slow to
+answer while it warms up — see
+[Readiness probing](docs/configuration.md#readiness-probing). See
+[Configuration](docs/configuration.md) for the details.
 
 While a session runs, devtooie **watches these files (and where new ones would
 appear) and restarts the affected package(s)** on change — editing a

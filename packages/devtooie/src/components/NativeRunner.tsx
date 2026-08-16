@@ -215,8 +215,8 @@ export function LinksColumn({
 }
 
 /** Seed status for a package once it's (re)started: `starting` if it has a healthcheck, else `unknown`. */
-function initialStatus(name: string, healthcheckUrls: Record<string, string>): PackageStatus {
-  return healthcheckUrls[name] ? 'starting' : 'unknown';
+function initialStatus(name: string, healthchecks: RunnerArgs['healthchecks']): PackageStatus {
+  return healthchecks[name] ? 'starting' : 'unknown';
 }
 
 // ---------------------------------------------------------------------------
@@ -225,7 +225,7 @@ function initialStatus(name: string, healthcheckUrls: Record<string, string>): P
 
 function usePackageStatuses(args: RunnerArgs, manager: ProcessManager) {
   const packages = useMemo(() => args.sortedPackages, [args.sortedPackages]);
-  const healthcheckUrls = args.healthcheckUrls;
+  const healthchecks = args.healthchecks;
 
   const [statuses, setStatuses] = useState<Map<string, PackageStatus>>(() => {
     const map = new Map<string, PackageStatus>();
@@ -235,62 +235,13 @@ function usePackageStatuses(args: RunnerArgs, manager: ProcessManager) {
     return map;
   });
 
-  // Poll every package with a configured healthcheck, but only while the TUI
-  // already considers it starting/started — this owns just the
-  // starting <-> started distinction, nothing else.
-  //
-  // Mirrors the `waitingPollInFlight` guard in ProcessManager's own
-  // healthcheck poll: a tick is skipped entirely while the previous tick's
-  // fetches are still outstanding, and each fetch is bounded with a timeout,
-  // so a hung endpoint can neither pile up requests nor hang forever.
-  useEffect(() => {
-    const names = Object.keys(healthcheckUrls);
-    if (names.length === 0) {
-      return;
-    }
-    let pollInFlight = false;
-    const interval = setInterval(() => {
-      if (pollInFlight) {
-        return;
-      }
-      pollInFlight = true;
-      const fetches = names.map((name) => {
-        const url = healthcheckUrls[name]!;
-        return fetch(url, { signal: AbortSignal.timeout(1500) })
-          .then((res) => {
-            setStatuses((prev) => {
-              const curr = prev.get(name);
-              if (curr !== 'starting' && curr !== 'started') {
-                return prev;
-              }
-              const next: PackageStatus = res.ok ? 'started' : 'starting';
-              return curr === next ? prev : new Map(prev).set(name, next);
-            });
-          })
-          .catch(() => {
-            setStatuses((prev) => {
-              const curr = prev.get(name);
-              if (curr !== 'starting' && curr !== 'started') {
-                return prev;
-              }
-              return curr === 'starting' ? prev : new Map(prev).set(name, 'starting');
-            });
-          });
-      });
-      void Promise.allSettled(fetches).finally(() => {
-        pollInFlight = false;
-      });
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [healthcheckUrls]);
-
   // Reconcile against the ProcessManager every 2s. The manager is the source
-  // of truth for process lifecycle, so this catches every transition the TUI
-  // didn't itself drive — a crash, a dependency's healthcheck finally
-  // passing, or (notably) a restart/rebuild issued through the control
-  // server rather than a hotkey. Without this loop, an externally triggered
-  // rebuild would flip the dot red the moment the process stops and never
-  // flip it back once it returns, since nothing local calls markStarted.
+  // of truth for both halves of a package's status: its process lifecycle,
+  // and — since it owns the one healthcheck probe loop per package — whether
+  // that package's healthcheck is currently passing. So this catches every
+  // transition the TUI didn't itself drive: a crash, a dependency's
+  // healthcheck finally passing, a restart/rebuild issued through the control
+  // server rather than a hotkey, and the starting -> started flip.
   useEffect(() => {
     const interval = setInterval(() => {
       setStatuses((prev) => {
@@ -314,10 +265,11 @@ function usePackageStatuses(args: RunnerArgs, manager: ProcessManager) {
               target = 'stopped';
               break;
             case 'running':
-              target =
-                tuiStatus === 'starting' || tuiStatus === 'started'
-                  ? tuiStatus
-                  : initialStatus(name, healthcheckUrls);
+              target = !healthchecks[name]
+                ? 'unknown'
+                : manager.isReady(name)
+                  ? 'started'
+                  : 'starting';
               break;
             default:
               target = tuiStatus;
@@ -331,13 +283,13 @@ function usePackageStatuses(args: RunnerArgs, manager: ProcessManager) {
       });
     }, 2000);
     return () => clearInterval(interval);
-  }, [manager, healthcheckUrls]);
+  }, [manager, healthchecks]);
 
   const markStarted = useCallback(
     (name: string) => {
-      setStatuses((prev) => new Map(prev).set(name, initialStatus(name, healthcheckUrls)));
+      setStatuses((prev) => new Map(prev).set(name, initialStatus(name, healthchecks)));
     },
-    [healthcheckUrls],
+    [healthchecks],
   );
 
   const markStopped = useCallback((name: string) => {
@@ -356,11 +308,11 @@ function usePackageStatuses(args: RunnerArgs, manager: ProcessManager) {
     setStatuses((prev) => {
       const next = new Map(prev);
       for (const pkg of packages) {
-        next.set(pkg.name, initialStatus(pkg.name, healthcheckUrls));
+        next.set(pkg.name, initialStatus(pkg.name, healthchecks));
       }
       return next;
     });
-  }, [packages, healthcheckUrls]);
+  }, [packages, healthchecks]);
 
   const markAllStopped = useCallback(() => {
     setStatuses((prev) => {

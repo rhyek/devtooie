@@ -104,21 +104,21 @@ describe('runner detection', () => {
 
 describe('resolveDeps (§8)', () => {
   function setup() {
-    return defineConfig({
-      workspaceDir: '/repo',
-      packages: [
-        { name: 'reverse-proxy', selectable: false },
-        {
-          name: 'core-svc',
-          deps: { runtime: ['reverse-proxy'] },
+    return Object.values(
+      defineConfig({
+        workspaceDir: '/repo',
+        packages: {
+          'reverse-proxy': { selectable: false },
+          'core-svc': {
+            deps: { runtime: ['reverse-proxy'] },
+          },
+          web: {
+            deps: { runtime: ['core-svc', 'reverse-proxy'], dev: ['graphql-codegen'] },
+          },
+          'graphql-codegen': {},
         },
-        {
-          name: 'web',
-          deps: { runtime: ['core-svc', 'reverse-proxy'], dev: ['graphql-codegen'] },
-        },
-        { name: 'graphql-codegen' },
-      ],
-    }).packages;
+      }).packages,
+    );
   }
 
   it('adds one level of runtime deps to runSet (NOT transitive)', () => {
@@ -171,32 +171,38 @@ describe('tsconfig project-reference inference', () => {
   afterAll(() => fs.rmSync(ws, { recursive: true, force: true }));
 
   it('falls back to tsconfig.json when no tsconfig.build.json exists', () => {
-    const packages = defineConfig({
-      workspaceDir: ws,
-      packages: [{ name: 'lib-a' }, { name: 'lib-b' }, { name: 'app-json' }],
-    }).packages;
+    const packages = Object.values(
+      defineConfig({
+        workspaceDir: ws,
+        packages: { 'lib-a': {}, 'lib-b': {}, 'app-json': {} },
+      }).packages,
+    );
     const app = packages.find((p) => p.name === 'app-json')!;
     expect(getTsconfigBuildPackages(app).map((p) => p.name)).toEqual(['lib-a']);
   });
 
   it('prefers tsconfig.build.json over tsconfig.json', () => {
-    const packages = defineConfig({
-      workspaceDir: ws,
-      packages: [{ name: 'lib-a' }, { name: 'lib-b' }, { name: 'app-both' }],
-    }).packages;
+    const packages = Object.values(
+      defineConfig({
+        workspaceDir: ws,
+        packages: { 'lib-a': {}, 'lib-b': {}, 'app-both': {} },
+      }).packages,
+    );
     const app = packages.find((p) => p.name === 'app-both')!;
     expect(getTsconfigBuildPackages(app).map((p) => p.name)).toEqual(['lib-b']);
   });
 
   it('prefers run.tsconfig over tsconfig.build.json', () => {
-    const packages = defineConfig({
-      workspaceDir: ws,
-      packages: [
-        { name: 'lib-a' },
-        { name: 'lib-b' },
-        { name: 'app-custom', tsconfig: 'tsconfig.app.json' },
-      ],
-    }).packages;
+    const packages = Object.values(
+      defineConfig({
+        workspaceDir: ws,
+        packages: {
+          'lib-a': {},
+          'lib-b': {},
+          'app-custom': { tsconfig: 'tsconfig.app.json' },
+        },
+      }).packages,
+    );
     const app = packages.find((p) => p.name === 'app-custom')!;
     expect(getTsconfigBuildPackages(app).map((p) => p.name)).toEqual(['lib-a']);
   });
@@ -248,15 +254,17 @@ describe('state + persistence', () => {
 
 describe('display sort + runner args', () => {
   function packages() {
-    return defineConfig({
-      workspaceDir: '/repo',
-      packages: [
-        { name: 'proxy', selectable: false },
-        { name: 'api', deps: { runtime: ['proxy'] } },
-        { name: 'web', deps: { runtime: ['api', 'proxy'] } },
-        { name: 'lib-x' },
-      ],
-    }).packages;
+    return Object.values(
+      defineConfig({
+        workspaceDir: '/repo',
+        packages: {
+          proxy: { selectable: false },
+          api: { deps: { runtime: ['proxy'] } },
+          web: { deps: { runtime: ['api', 'proxy'] } },
+          'lib-x': {},
+        },
+      }).packages,
+    );
   }
 
   it('orders by dependency weight (heaviest first), ties broken by name', () => {
@@ -268,10 +276,12 @@ describe('display sort + runner args', () => {
   });
 
   it('depScore counts a dep reached via two kinds once per kind', () => {
-    const [both] = defineConfig({
-      workspaceDir: '/repo',
-      packages: [{ name: 'both', deps: { build: ['leaf'], runtime: ['leaf'] } }, { name: 'leaf' }],
-    }).packages;
+    const [both] = Object.values(
+      defineConfig({
+        workspaceDir: '/repo',
+        packages: { both: { deps: { build: ['leaf'], runtime: ['leaf'] } }, leaf: {} },
+      }).packages,
+    );
     // `leaf` is a build dep AND a runtime dep of `both`, so it counts twice.
     expect(depScore(both!)).toBe(2);
   });
@@ -303,15 +313,17 @@ describe('display sort + runner args', () => {
   });
 
   it('buildRunnerArgs surfaces top-level urls as normalized lines from the loaded config', () => {
-    const all = defineConfig({
-      workspaceDir: '/repo',
-      urls: [
-        'https://dashboard.internal',
-        { label: 'Grafana', url: 'https://grafana.internal' },
-        ['https://logs.internal', { label: 'Traces', url: 'https://traces.internal' }],
-      ],
-      packages: [{ name: 'web' }],
-    }).packages;
+    const all = Object.values(
+      defineConfig({
+        workspaceDir: '/repo',
+        urls: [
+          'https://dashboard.internal',
+          { label: 'Grafana', url: 'https://grafana.internal' },
+          ['https://logs.internal', { label: 'Traces', url: 'https://traces.internal' }],
+        ],
+        packages: { web: {} },
+      }).packages,
+    );
     const web = all.find((a) => a.name === 'web')!;
     const args = buildRunnerArgs([web], resolveDeps([web]));
     // Each entry becomes one line (an array of links); an array entry is a multi-link line.
@@ -330,15 +342,19 @@ describe('display sort + runner args', () => {
   });
 
   it('buildRunnerArgs carries logTimestamps from the loaded config (default false)', () => {
-    const off = defineConfig({ workspaceDir: '/repo', packages: [{ name: 'web' }] }).packages;
+    const off = Object.values(
+      defineConfig({ workspaceDir: '/repo', packages: { web: {} } }).packages,
+    );
     const web = off.find((a) => a.name === 'web')!;
     expect(buildRunnerArgs([web], resolveDeps([web])).logTimestamps).toBe(false);
 
-    const on = defineConfig({
-      workspaceDir: '/repo',
-      logs: { timestamps: true },
-      packages: [{ name: 'web' }],
-    }).packages;
+    const on = Object.values(
+      defineConfig({
+        workspaceDir: '/repo',
+        logs: { timestamps: true },
+        packages: { web: {} },
+      }).packages,
+    );
     const web2 = on.find((a) => a.name === 'web')!;
     expect(buildRunnerArgs([web2], resolveDeps([web2])).logTimestamps).toBe(true);
   });

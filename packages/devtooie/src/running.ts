@@ -185,6 +185,10 @@ export async function decideControlPort(opts: {
 
     const info = await opts.env.probe(candidate);
     if (info && info.configPath === opts.configPath) {
+      // Authorized upstream by the takeover preflight (see `takeover.ts`), which reads the
+      // same `running.json` port this loop starts from. The one case it can't have seen: a
+      // deleted `running.json` while an instance still runs, where the random start has a
+      // ~1-in-100 chance of landing on it anyway and handing off unasked.
       onStatus('closing previous session');
       await opts.env.shutdown(candidate, info.pid);
       return finalize(candidate);

@@ -1,69 +1,43 @@
 import { defineConfig, logging } from 'devtooie';
 
 export default defineConfig({
-  packages: [
-    // Note: @example/db (packages/db) is deliberately NOT a devtooie package. It's a
-    // source-consumption TS library — its package.json `exports` point straight at `src` (no build,
-    // no emit) and the backend type-strips it on the fly via Node's native TS support. With no dev
-    // process and nothing to build, there's nothing for devtooie to manage: the pnpm `workspace:*`
-    // link + package `exports` wire it entirely, and the backend's `node --watch` picks up edits to
-    // its source. Contrast `isomorphic` below, which IS a devtooie build-dep — compiled to `dist`
-    // and discovered via a tsconfig project reference.
-    //
-    // Note the backend's dev script pairs `--watch` with explicit `--watch-path` entries (its own
-    // `src`, plus `../db/src` and `../isomorphic/dist`). A bare `node --watch` registers a
-    // *recursive* watch on the directory of every file the process loads — `node_modules`
-    // included, with no filter — so a service with a real dependency tree ends up holding
-    // thousands of watch roots it never wanted. Naming the paths keeps every restart that matters
-    // and drops the dependency-tree churn.
-    {
-      name: 'isomorphic',
+  // Values of your own, handed to every callback as `tokens`. A package can add its own on
+  // top (see `backend`) — only that package's callbacks see them.
+  tokens: { domain: 'example.test' },
+  // The ambient environment wins over `.env` files by default, so `FOO=bar pnpm dev` overrides
+  // one for a single run. `override` names the exceptions — here so `.env.development` can
+  // *extend* an inherited NODE_OPTIONS (VS Code's terminal sets one) instead of losing to it.
+  env: { override: ['NODE_OPTIONS'] },
+  // Keyed by package name: the key is the name `-p` takes and what `waitFor`/`deps` reference.
+  packages: {
+    // @example/db is deliberately not a devtooie package: a source-consumption library with no
+    // build and no dev process, wired entirely by `workspace:*` + package `exports`.
+    isomorphic: {
       relativeDir: 'packages/isomorphic',
-      // A shared, dependency-free TS library consumed by `backend` and `frontend`. devtooie
-      // discovers it as a build-time dep from each app's `tsconfig.json` project references,
-      // builds it once first, then runs its `tsc --watch` dev process so edits re-emit `dist`
-      // and both apps pick them up live. Hidden from the picker — a dep, not a selection.
+      // A build-time dep, discovered from the apps' tsconfig project references: built once
+      // first, then `tsc --watch` re-emits `dist` live. Hidden from the picker.
       selectable: false,
     },
-    {
-      name: 'backend',
+    backend: {
       relativeDir: 'packages/backend',
       shortName: 'api',
-      // `port` can be a literal (see `worker`/`frontend` below) or a callback over the
-      // package's environment. devtooie resolves this package's `.env` files first — merged
-      // over `process.env`, package scope winning — and hands them here, so the port lives in
-      // `.env.development` (`BACKEND_PORT=3001`) instead of being hardcoded twice. The number
-      // it returns is what `$port` substitutes below and what the process receives as `PORT`.
-      port: ({ env }) => Number(env.BACKEND_PORT),
-      healthcheck: 'http://localhost:$port/health',
-      urls: ['http://localhost:$port/todos'],
+      tokens: { region: 'us-east' },
+      port: ({ envs }) => Number(envs.BACKEND_PORT),
+      healthcheck: ({ port }) => `http://localhost:${port}/health`,
+      urls: [
+        ({ port }) => `http://localhost:${port}/todos`,
+        { label: 'public', url: ({ tokens }) => `https://${tokens.region}.${tokens.domain}` },
+      ],
     },
-    {
-      name: 'worker',
+    worker: {
       relativeDir: 'packages/worker',
-      // A Go program — no package.json. devtooie drives it through the single `start`
-      // target in its Makefile (`go run .`) instead of npm scripts. It doesn't watch
-      // files, but `go run .` compiles from current source every start, so it's a clean
-      // rebuild (`cleans: true`). After editing its code, restart it; both restart and
-      // rebuild are offered in the TUI, and both just re-run `go run .`.
+      // A Go program driven through its Makefile's `start` target (`go run .`). It doesn't
+      // watch files, but recompiles from source every start — so restart after editing it.
       command: ['start', { watches: false, builds: true, cleans: true }],
       port: 3002,
-      healthcheck: 'http://localhost:$port/health',
-      // devtooie applies a default structured-log formatter to every package (non-JSON passes
-      // through, JSON is pretty-printed as `[LEVEL] message`), so the worker's `log/slog` output is
-      // already formatted with no config. `logging.formatter` is that same default, configured.
-      // (Node services would use `logging.nodejs.pino.formatter()` etc.)
-      //
-      // It takes either shape. A plain object is enough when the rules are the same for every
-      // line — e.g. just hiding slog's own `time`, since devtooie stamps its own timestamp:
-      //
-      //   formatter: logging.formatter({ fields: { custom: { time: { show: false } } } }),
-      //
-      // Pass a callback instead and it returns the config for the entry being rendered. It
-      // receives the *parsed* log — devtooie does the parsing, so there's nothing to JSON.parse
-      // and no non-JSON line to guard against. Here the worker attaches `port` to every line via
-      // its base logger (see main.go), which is worth seeing on the startup lines but is pure
-      // noise on the heartbeat that repeats every 5s:
+      healthcheck: ({ port }) => `http://localhost:${port}/health`,
+      // JSON logs are formatted by default; `logging.formatter` configures that default. It
+      // takes a plain object, or a callback over the parsed entry when the rules vary by line.
       logs: {
         formatter: logging.formatter((log) => ({
           fields: {
@@ -75,17 +49,18 @@ export default defineConfig({
         })),
       },
     },
-    {
-      name: 'frontend',
+    frontend: {
       relativeDir: 'packages/frontend',
       shortName: 'web',
       port: 3000,
-      healthcheck: 'http://localhost:$port/',
-      urls: [{ label: 'home', url: 'http://localhost:$port' }],
-      // Selecting `frontend` also runs `backend`; `frontend` waits for the
-      // backend's healthcheck to pass before it starts.
+      // The object form raises this package's probe deadline: a dev server compiling on its
+      // first request can take longer than the 1500ms default, and aborting that request is
+      // what makes the server log a dropped connection.
+      healthcheck: { url: ({ port }) => `http://localhost:${port}/`, timeout: 5000 },
+      urls: [{ label: 'home', url: ({ port }) => `http://localhost:${port}` }],
+      // Selecting `frontend` also runs `backend`, and holds until its healthcheck passes.
       deps: { runtime: ['backend'] },
       waitFor: ['backend'],
     },
-  ],
+  },
 });

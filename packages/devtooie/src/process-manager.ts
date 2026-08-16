@@ -5,28 +5,21 @@ import { execa, type ResultPromise } from 'execa';
 import stringWidth from 'string-width';
 import wrapAnsi from 'wrap-ansi';
 import sliceAnsi from 'slice-ansi';
-import type { AnyPackageConfig } from './config.js';
+import type { AnyPackageConfig, ResolvedHealthcheck } from './config.js';
 import { getDevScript, getLoadedConfig } from './config.js';
 import { defaultFormatter } from './log-formatter.js';
 import type { ControlManager } from './command-server.js';
 import { debugLog } from './debug-log.js';
-import { DEFAULT_ENV_FILES, packageEnvLayer } from './env.js';
+import { envFileNames, packageEnvLayer, type EnvOverride } from './env.js';
 import { watchEnvFiles, type WatchTarget } from './env-watch.js';
 import {
   getDefaultLogFile,
   getExecArgs,
   getRebuildCommands,
-  getScriptText,
   hasDevScript,
   logTimestamp,
   stripAnsi,
 } from './lib.js';
-import {
-  WATCH_PATHS_ENV,
-  deriveWatchPaths,
-  formatWatchPathFlags,
-  usesUnscopedNodeWatch,
-} from './watch-paths.js';
 import { updateRunning } from './running.js';
 import type { RunnerArgs } from './runners/types.js';
 import { SHUTDOWN_GRACE_MS } from './shutdown-timing.js';
@@ -151,6 +144,14 @@ const MAX_CHILD_RECORDS = 200;
 /** Rendered width of a displayed timestamp gutter: `"YYYY-MM-DD HH:MM:SS "` (19 chars + a space). */
 const TIMESTAMP_GUTTER_WIDTH = 20;
 const WAIT_FOR_POLL_MS = 2000;
+/**
+ * Floor on a package's healthcheck cadence, measured from the **start** of the previous probe:
+ * a probe that settles quickly is followed by an idle gap, while one that runs past this (a slow
+ * cold start, or a timeout) is followed immediately. Probes never overlap, so a package's
+ * `healthcheck.timeout` slows its own polling instead of stacking requests on a struggling
+ * service — and affects no other package.
+ */
+const HEALTHCHECK_POLL_MS = 2000;
 /** Below this many columns of content there's no room to wrap meaningfully — emit one long row. */
 const MIN_CONTENT_WIDTH = 20;
 
@@ -228,16 +229,19 @@ export class ProcessManager implements ControlManager {
   /** Per-package resolved on-screen timestamp visibility, keyed by the line's `searchName`. */
   private showTsBySearchName = new Map<string, boolean>();
   private filterTerms: string[] = [];
-  /** Memoized `--watch-path=` flags per package name (see {@link ProcessManager.watchPathFlags}). */
-  private readonly watchPathFlagsCache = new Map<string, string>();
   private buffer: BufferedLine[] = [];
   private rebuildableSet: Set<string>;
   /** App name -> names of packages whose healthchecks must pass before it starts. */
   private waitForMap: Record<string, string[]>;
-  /** App name -> its resolved healthcheck URL. */
-  private healthcheckUrls: Record<string, string>;
+  /** App name -> its resolved healthcheck (URL + per-probe timeout). */
+  private healthchecks: Record<string, ResolvedHealthcheck>;
+  /** Names whose healthcheck is currently passing. The single source of readiness in a session. */
+  private ready = new Set<string>();
+  /** Pending next-probe timers, keyed by package; an entry means that package's loop is live. */
+  private probeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Packages with a probe in flight, so a loop is never started twice. */
+  private probing = new Set<string>();
   private waitingPollTimer: ReturnType<typeof setInterval> | null = null;
-  private waitingPollInFlight = false;
   /** Names mid restart/rebuild, reported as a transitional status. */
   private transitions = new Map<string, 'rebuilding' | 'restarting'>();
   /** Count of currently-visible (filter-matching) rows, used to decide when to clear scrollback. */
@@ -259,6 +263,8 @@ export class ProcessManager implements ControlManager {
   private logFilePath: string;
   /** `.env` filenames resolved (per package) and injected into each spawned child. */
   private envFiles: string[];
+  /** Variables whose `.env` value may beat the ambient environment. */
+  private envOverride?: EnvOverride;
   /** Workspace root that package `relativeDir`s resolve against for `.env` loading. */
   private cwd: string;
   /** Tears down the `.env` file watchers; null until `startAll` wires them up. */
@@ -285,9 +291,10 @@ export class ProcessManager implements ControlManager {
       sortedPackages,
       rebuildableSet,
       waitForMap,
-      healthcheckUrls,
+      healthchecks,
       logFile,
       envFiles,
+      envOverride,
       cwd,
       logTimestamps = false,
     }: RunnerArgs,
@@ -297,8 +304,9 @@ export class ProcessManager implements ControlManager {
     this.defaultShowTimestamps = logTimestamps;
     this.rebuildableSet = rebuildableSet;
     this.waitForMap = waitForMap;
-    this.healthcheckUrls = healthcheckUrls;
-    this.envFiles = envFiles ?? DEFAULT_ENV_FILES;
+    this.healthchecks = healthchecks;
+    this.envFiles = envFiles ?? envFileNames();
+    this.envOverride = envOverride;
     this.cwd = cwd ?? process.cwd();
 
     const displayName = (a: AnyPackageConfig) => a.shortName ?? a.name;
@@ -383,7 +391,6 @@ export class ProcessManager implements ControlManager {
 
   startAll(): void {
     debugLog(`startAll: starting ${this.processes.size} processes`);
-    this.warnUnscopedNodeWatch();
     for (const [name, managed] of this.processes) {
       if (managed.pkg.autostart === false) {
         // Opted out of auto-start: leave it stopped (not waiting) for a manual start via the
@@ -406,51 +413,23 @@ export class ProcessManager implements ControlManager {
     if ([...this.processes.values()].some((m) => m.status === 'waiting')) {
       this.startWaitingPoll();
     }
+    this.syncProbes();
     this.startEnvWatchers();
     debugLog(`startAll: done, buffer.length=${this.buffer.length}`);
   }
 
-  /**
-   * Warns once per session about packages whose dev script runs a bare `node --watch`, which
-   * recursively watches the directory of every loaded file — `node_modules` included — and can
-   * exhaust the OS watch budget (`EMFILE`) on a large dependency tree. Names the exact flags to
-   * add, derived from the package's own project graph. Advisory only: nothing is rewritten, and a
-   * package that scopes its watcher (or doesn't use Node's watcher) is never mentioned.
-   */
-  private warnUnscopedNodeWatch(): void {
-    for (const [, managed] of this.processes) {
-      if (!managed.canDev) {
-        continue;
-      }
-      const script = getScriptText(managed.pkg, getDevScript(managed.pkg));
-      if (!script || !usesUnscopedNodeWatch(script)) {
-        continue;
-      }
-      const flags = this.watchPathFlags(managed.pkg);
-      this.systemLog.warn(
-        `${managed.pkg.name}: \`node --watch\` is unscoped — it recursively watches every directory it loads from, including node_modules.`,
-      );
-      this.systemLog.warn(
-        flags
-          ? `${managed.pkg.name}: scope it with \`${flags}\` (or splice in \`$${WATCH_PATHS_ENV}\`, which devtooie sets to exactly that).`
-          : `${managed.pkg.name}: scope it with \`--watch-path\` flags naming the directories it should restart for.`,
-      );
-    }
-  }
-
   private startWaitingPoll(): void {
     this.waitingPollTimer = setInterval(() => {
-      if (this.waitingPollInFlight) {
-        return;
-      }
-      this.waitingPollInFlight = true;
-      void this.pollWaitingPackages().finally(() => {
-        this.waitingPollInFlight = false;
-      });
+      this.pollWaitingPackages();
     }, WAIT_FOR_POLL_MS);
   }
 
-  private async pollWaitingPackages(): Promise<void> {
+  /**
+   * Releases any package whose `waitFor` dependencies have all become ready. Reads the readiness
+   * the probe loop maintains rather than fetching — a package's healthcheck is polled in exactly
+   * one place, however many other packages are waiting on it.
+   */
+  private pollWaitingPackages(): void {
     for (const [name, managed] of this.processes) {
       if (managed.status !== 'waiting') {
         continue;
@@ -459,23 +438,10 @@ export class ProcessManager implements ControlManager {
       if (!waitFor) {
         continue;
       }
-
-      const results = await Promise.all(
-        waitFor.map(async (depName) => {
-          const url = this.healthcheckUrls[depName];
-          if (!url) {
-            return true; // no healthcheck configured for this dep = assume ready
-          }
-          try {
-            const res = await fetch(url);
-            return res.ok;
-          } catch {
-            return false;
-          }
-        }),
-      );
-
-      if (results.every(Boolean)) {
+      // A dep with no healthcheck can't be probed, so it counts as ready. `defineConfig` rejects
+      // that config, so this only covers a config that reached the runtime unchecked.
+      const allReady = waitFor.every((dep) => !this.healthchecks[dep] || this.ready.has(dep));
+      if (allReady) {
         this.addLine(
           managed.prefix,
           chalk.green(`${waitFor.join(', ')} ready, starting...`),
@@ -491,6 +457,127 @@ export class ProcessManager implements ControlManager {
       clearInterval(this.waitingPollTimer);
       this.waitingPollTimer = null;
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Healthcheck probing — one loop per package, owning session readiness
+  // ---------------------------------------------------------------------------
+
+  /** Whether a package's healthcheck is currently passing. */
+  isReady(name: string): boolean {
+    return this.ready.has(name);
+  }
+
+  /**
+   * Whether this package's healthcheck should be polled right now: it has one, and someone needs
+   * the answer — the interactive UI showing a running package's readiness dot, or a package still
+   * waiting on it. A plain (headless) session displays no readiness, so it probes only what a
+   * `waitFor` gate is actually blocked on, exactly as it did before readiness moved in here.
+   */
+  private shouldProbe(name: string): boolean {
+    if (!this.healthchecks[name]) {
+      return false;
+    }
+    if (!this.plain && this.processes.get(name)?.status === 'running') {
+      return true;
+    }
+    return [...this.processes].some(
+      ([waiter, m]) => m.status === 'waiting' && this.waitForMap[waiter]?.includes(name),
+    );
+  }
+
+  /**
+   * Reconciles the probe loops against the current statuses: starts one for every package that
+   * should be probed, stops the rest. A package that isn't being probed is never `ready` — which
+   * is what keeps a waiter from releasing against a dependency that has since stopped.
+   *
+   * Called after anything that can change a package's status, so no caller has to reason about
+   * which loops that status change implies.
+   */
+  private syncProbes(): void {
+    for (const name of this.processes.keys()) {
+      if (this.shouldProbe(name)) {
+        this.startProbing(name);
+      } else {
+        this.stopProbing(name);
+      }
+    }
+  }
+
+  private startProbing(name: string): void {
+    if (this.probeTimers.has(name) || this.probing.has(name)) {
+      return; // loop already live (a timer pending, or a probe in flight)
+    }
+    this.scheduleProbe(name, 0);
+  }
+
+  private stopProbing(name: string): void {
+    const timer = this.probeTimers.get(name);
+    if (timer) {
+      clearTimeout(timer);
+      this.probeTimers.delete(name);
+    }
+    // An in-flight probe can't be recalled; it re-checks `shouldProbe` before rescheduling.
+    this.ready.delete(name);
+  }
+
+  private scheduleProbe(name: string, delay: number): void {
+    this.probeTimers.set(
+      name,
+      setTimeout(() => {
+        this.probeTimers.delete(name);
+        void this.probe(name);
+      }, delay),
+    );
+  }
+
+  /**
+   * One healthcheck request, followed by the next probe scheduled `HEALTHCHECK_POLL_MS` after
+   * *this* one started — so a fast answer leaves an idle gap and a slow one (or a timeout) is
+   * retried immediately, without ever running two probes at once.
+   */
+  private async probe(name: string): Promise<void> {
+    const healthcheck = this.healthchecks[name];
+    if (!healthcheck || !this.shouldProbe(name)) {
+      this.ready.delete(name);
+      return;
+    }
+    const startedAt = Date.now();
+    this.probing.add(name);
+    // Refused, unreachable, or past `timeout` — all mean "not ready yet".
+    let ok = false;
+    try {
+      const res = await fetch(healthcheck.url, {
+        signal: AbortSignal.timeout(healthcheck.timeout),
+      });
+      // Drain the body so the socket is released cleanly. Abandoning it unread makes the server
+      // see the connection torn down mid-response — the same log noise aborting a probe causes.
+      await res.arrayBuffer();
+      ok = res.ok;
+    } catch {
+      /* not ready */
+    } finally {
+      this.probing.delete(name);
+    }
+    if (this.disposed || !this.shouldProbe(name)) {
+      this.ready.delete(name);
+      return; // stopped (or torn down) while this probe was in flight
+    }
+    if (ok) {
+      this.ready.add(name);
+    } else {
+      this.ready.delete(name);
+    }
+    this.scheduleProbe(name, Math.max(0, HEALTHCHECK_POLL_MS - (Date.now() - startedAt)));
+  }
+
+  /** Cancels every pending probe and drops all readiness (shutdown/teardown). */
+  private stopAllProbes(): void {
+    for (const timer of this.probeTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.probeTimers.clear();
+    this.ready.clear();
   }
 
   start(name: string): void {
@@ -543,30 +630,13 @@ export class ProcessManager implements ControlManager {
       if (m?.proc === proc) {
         m.status = 'stopped';
         m.proc = null;
+        this.syncProbes();
         this.addLine(pfx, `exited with code ${String(result.exitCode)}`, searchName, false);
       }
     });
 
+    this.syncProbes();
     this.addLine(pfx, chalk.green('started'), searchName, false);
-  }
-
-  /**
-   * This package's ready-made `--watch-path=` flags, derived once per session.
-   *
-   * Deriving them loads TypeScript and parses the package's tsconfig and every transitive project
-   * reference — cheap once, but `packageEnv` runs on every spawn, so an unmemoized derivation
-   * repeats all of that on each restart (and a `.env` edit can restart several packages at once),
-   * blocking the render loop to recompute an identical answer. The project graph is read from disk
-   * at startup like the rest of the config; a change to it takes a devtooie restart either way.
-   */
-  private watchPathFlags(pkg: AnyPackageConfig): string {
-    const cached = this.watchPathFlagsCache.get(pkg.name);
-    if (cached !== undefined) {
-      return cached;
-    }
-    const flags = formatWatchPathFlags(deriveWatchPaths(pkg).paths);
-    this.watchPathFlagsCache.set(pkg.name, flags);
-    return flags;
   }
 
   /**
@@ -580,11 +650,7 @@ export class ProcessManager implements ControlManager {
     return Object.assign(
       {},
       process.env,
-      // Ready-made `--watch-path=` flags for this package's project graph, so a dev script can
-      // scope `node --watch` without hand-maintaining the path list (see `watch-paths.ts`).
-      // Placed before the `.env` layer so a package can still override it outright.
-      { [WATCH_PATHS_ENV]: this.watchPathFlags(pkg) },
-      packageEnvLayer(pkg, { cwd: this.cwd, files: this.envFiles }),
+      packageEnvLayer(pkg, { cwd: this.cwd, files: this.envFiles, override: this.envOverride }),
     );
   }
 
@@ -660,6 +726,8 @@ export class ProcessManager implements ControlManager {
     const proc = managed.proc;
     managed.proc = null;
     managed.status = 'stopped';
+    // Drops its readiness too: a waiter must never release against a dependency that just stopped.
+    this.syncProbes();
     this.addLine(managed.prefix, chalk.yellow('stopping...'), managed.searchName, false);
     this.killTree(proc);
 
@@ -896,6 +964,7 @@ export class ProcessManager implements ControlManager {
       clearInterval(this.waitingPollTimer);
       this.waitingPollTimer = null;
     }
+    this.stopAllProbes();
 
     // Detach living processes from managed state up front so each process's
     // own `.then()` handler (still pending) doesn't log a spurious "exited"
@@ -989,6 +1058,11 @@ export class ProcessManager implements ControlManager {
       return;
     }
     this.disposed = true;
+    this.stopAllProbes();
+    if (this.waitingPollTimer) {
+      clearInterval(this.waitingPollTimer);
+      this.waitingPollTimer = null;
+    }
     if (this.envWatchDispose) {
       this.envWatchDispose();
       this.envWatchDispose = null;

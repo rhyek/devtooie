@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import chalk from 'chalk';
@@ -110,7 +111,7 @@ function runnerArgs(a: AnyPackageConfig): RunnerArgs {
     buildDepSet: new Set(),
     rebuildableSet: new Set(),
     waitForMap: {},
-    healthcheckUrls: {},
+    healthchecks: {},
     extraCommandsMap: {},
     logFile,
   };
@@ -538,7 +539,7 @@ describe('ProcessManager env injection', () => {
         buildDepSet: new Set(),
         rebuildableSet: new Set(),
         waitForMap: {},
-        healthcheckUrls: {},
+        healthchecks: {},
         extraCommandsMap: {},
         logFile: envLog,
         envFiles: ['.env.local'],
@@ -594,7 +595,7 @@ describe('ProcessManager PORT injection', () => {
         buildDepSet: new Set(),
         rebuildableSet: new Set(),
         waitForMap: {},
-        healthcheckUrls: {},
+        healthchecks: {},
         extraCommandsMap: {},
         logFile: portLog,
         cwd: portDir,
@@ -661,7 +662,7 @@ describe('ProcessManager child NODE_ENV inheritance', () => {
         buildDepSet: new Set(),
         rebuildableSet: new Set(),
         waitForMap: {},
-        healthcheckUrls: {},
+        healthchecks: {},
         extraCommandsMap: {},
         logFile: log,
         cwd: dir,
@@ -740,7 +741,7 @@ describe('ProcessManager NODE_ENV from a .env file', () => {
         buildDepSet: new Set(),
         rebuildableSet: new Set(),
         waitForMap: {},
-        healthcheckUrls: {},
+        healthchecks: {},
         extraCommandsMap: {},
         logFile: log,
         envFiles: ['.env.development'],
@@ -792,7 +793,7 @@ describe('ProcessManager env-change restart', () => {
         buildDepSet: new Set(),
         rebuildableSet: new Set(),
         waitForMap: {},
-        healthcheckUrls: {},
+        healthchecks: {},
         extraCommandsMap: {},
         logFile: log,
         envFiles: ['.env.local'],
@@ -852,7 +853,7 @@ describe('ProcessManager logs.formatter', () => {
       buildDepSet: new Set(),
       rebuildableSet: new Set(),
       waitForMap: {},
-      healthcheckUrls: {},
+      healthchecks: {},
       extraCommandsMap: {},
       logFile: fmtLog,
       cwd: fmtDir,
@@ -1009,7 +1010,7 @@ describe('ProcessManager stderr color through a formatter', () => {
       buildDepSet: new Set(),
       rebuildableSet: new Set(),
       waitForMap: {},
-      healthcheckUrls: {},
+      healthchecks: {},
       extraCommandsMap: {},
       logFile: errLog,
       cwd: errDir,
@@ -1039,6 +1040,173 @@ describe('ProcessManager stderr color through a formatter', () => {
     const line = await bufferedStderrLine(createFormatter());
     expect(line?.text).toBe(chalk.red('plain stderr line'));
   }, 10_000);
+});
+
+describe('ProcessManager healthcheck probing', () => {
+  let hcDir: string;
+  let mgr: ProcessManager | undefined;
+  let server: HealthServer | undefined;
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  interface HealthServer {
+    url: string;
+    /** Wall-clock ms at which each request reached the server, in order. */
+    starts: number[];
+    close: () => Promise<void>;
+  }
+
+  /** A healthcheck endpoint on an ephemeral port that logs when each request arrives. */
+  async function startHealthServer({ delay = 0 } = {}): Promise<HealthServer> {
+    const starts: number[] = [];
+    const srv = http.createServer((_req, res) => {
+      starts.push(Date.now());
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end('ok');
+      }, delay);
+    });
+    await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve));
+    const { port } = srv.address() as { port: number };
+    return {
+      url: `http://127.0.0.1:${port}/health`,
+      starts,
+      close: () => new Promise<void>((resolve) => srv.close(() => resolve())),
+    };
+  }
+
+  /** A manager over `names`, all backed by the same idle fixture package. */
+  function makeManager(
+    names: string[],
+    extra: Partial<RunnerArgs>,
+    opts: { plain?: boolean } = {},
+  ): ProcessManager {
+    const packages: AnyPackageConfig[] = names.map((name) => ({
+      name,
+      relativeDir: '.',
+      path: hcDir,
+    }));
+    return new ProcessManager(
+      {
+        sortedPackages: packages,
+        selectedSet: new Set(names),
+        buildDepSet: new Set(),
+        rebuildableSet: new Set(),
+        waitForMap: {},
+        healthchecks: {},
+        extraCommandsMap: {},
+        logFile: path.join(hcDir, 'devlog.txt'),
+        cwd: hcDir,
+        ...extra,
+      },
+      opts,
+    );
+  }
+
+  beforeAll(() => {
+    hcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-pm-health-'));
+    fs.writeFileSync(
+      path.join(hcDir, 'package.json'),
+      JSON.stringify({
+        name: 'hcfix',
+        version: '1.0.0',
+        scripts: { dev: 'node -e "setInterval(()=>{},1e9)"' },
+      }),
+    );
+  });
+
+  afterEach(async () => {
+    // Kill first, then let each child's exit handler log before `dispose()` closes the
+    // logfile — these tests leave packages running, so the two would otherwise race.
+    mgr?.killAll();
+    await wait(300);
+    mgr?.dispose();
+    mgr = undefined;
+    await server?.close();
+    server = undefined;
+  });
+
+  afterAll(() => {
+    fs.rmSync(hcDir, { recursive: true, force: true });
+  });
+
+  it('gives up on a probe once the configured timeout passes', async () => {
+    server = await startHealthServer({ delay: 400 });
+    mgr = makeManager(['api'], { healthchecks: { api: { url: server.url, timeout: 100 } } });
+    mgr.startAll();
+    await wait(1200);
+    expect(server.starts.length).toBeGreaterThan(0); // it did probe...
+    expect(mgr.isReady('api')).toBe(false); // ...and abandoned each probe at 100ms
+  }, 10_000);
+
+  it('waits out a slow response when the timeout allows it', async () => {
+    server = await startHealthServer({ delay: 400 });
+    mgr = makeManager(['api'], { healthchecks: { api: { url: server.url, timeout: 3000 } } });
+    mgr.startAll();
+    await wait(1200);
+    expect(mgr.isReady('api')).toBe(true);
+  }, 10_000);
+
+  it('probes a package once per cycle however many packages wait on it', async () => {
+    server = await startHealthServer();
+    mgr = makeManager(['api', 'web', 'worker'], {
+      healthchecks: { api: { url: server.url, timeout: 1500 } },
+      waitForMap: { web: ['api'], worker: ['api'] },
+    });
+    mgr.startAll();
+    await wait(4600);
+    // One loop at a 2s floor: probes at ~0/2000/4000 — not two pollers' worth, and not one
+    // per waiter.
+    expect(server.starts.length).toBeLessThanOrEqual(3);
+    expect(server.starts.length).toBeGreaterThanOrEqual(2);
+    // Both waiters were released by the readiness that loop maintains.
+    expect(mgr.getStatus('web')).toBe('running');
+    expect(mgr.getStatus('worker')).toBe('running');
+  }, 15_000);
+
+  // Headless (plain) sessions display no readiness, so a package is probed there only while a
+  // `waitFor` gate is blocked on it — the branch that replaced the gate's own fetch.
+  it('releases a waitFor gate in a plain (headless) session', async () => {
+    server = await startHealthServer();
+    mgr = makeManager(
+      ['api', 'web'],
+      {
+        healthchecks: { api: { url: server.url, timeout: 1500 } },
+        waitForMap: { web: ['api'] },
+      },
+      { plain: true },
+    );
+    mgr.startAll();
+    expect(mgr.getStatus('web')).toBe('waiting');
+
+    await wait(3000);
+    expect(server.starts.length).toBeGreaterThan(0); // the dep was probed on the gate's behalf
+    expect(mgr.getStatus('web')).toBe('running');
+  }, 15_000);
+
+  it('re-probes immediately when a probe outruns the 2s floor', async () => {
+    server = await startHealthServer({ delay: 2400 });
+    mgr = makeManager(['api'], { healthchecks: { api: { url: server.url, timeout: 5000 } } });
+    mgr.startAll();
+    await wait(5000);
+    expect(server.starts.length).toBeGreaterThanOrEqual(2);
+    // The 2s floor is measured from the previous probe's start, so a 2.4s probe is followed
+    // straight away rather than after another 2s of idling.
+    const gap = server.starts[1]! - server.starts[0]!;
+    expect(gap).toBeGreaterThanOrEqual(2300);
+    expect(gap).toBeLessThan(3200);
+  }, 15_000);
+
+  it('drops readiness when the package stops', async () => {
+    server = await startHealthServer();
+    mgr = makeManager(['api'], { healthchecks: { api: { url: server.url, timeout: 1500 } } });
+    mgr.startAll();
+    await wait(1000);
+    expect(mgr.isReady('api')).toBe(true);
+
+    await mgr.stop('api');
+    // A waiter must never release against a dependency that has since stopped.
+    expect(mgr.isReady('api')).toBe(false);
+  }, 15_000);
 });
 
 describe('ProcessManager rebuild (clean + build)', () => {
@@ -1079,7 +1247,7 @@ describe('ProcessManager rebuild (clean + build)', () => {
         buildDepSet: new Set(),
         rebuildableSet: new Set([a.name]),
         waitForMap: {},
-        healthcheckUrls: {},
+        healthchecks: {},
         extraCommandsMap: {},
         logFile: path.join(rbDir, 'devlog.txt'),
         cwd: rbDir,

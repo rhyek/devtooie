@@ -3,11 +3,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  DEFAULT_ENV_FILES,
   ambientEnv,
   envCandidatePaths,
-  resolveEnv,
+  envFileNames,
+  literalizeForExpansion,
   packageEnvLayer,
+  resolveEnv,
+  resolveMode,
 } from './env.js';
 import type { AnyPackageConfig } from './config.js';
 
@@ -24,9 +26,90 @@ function write(rel: string, contents: string): void {
   fs.writeFileSync(p, contents);
 }
 
-describe('DEFAULT_ENV_FILES', () => {
-  it('is base → dev → local, ascending precedence within a scope', () => {
-    expect(DEFAULT_ENV_FILES).toEqual(['.env', '.env.development', '.env.local']);
+/** Sets ambient vars for one assertion and always restores them. */
+function withAmbient(vars: Record<string, string>, fn: () => void): void {
+  const before = new Map(Object.keys(vars).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, vars);
+  try {
+    fn();
+  } finally {
+    for (const [k, v] of before) {
+      if (v === undefined) {
+        delete process.env[k];
+      } else {
+        process.env[k] = v;
+      }
+    }
+  }
+}
+
+describe('envFileNames', () => {
+  it('is base → local → mode → mode.local, ascending precedence within a scope', () => {
+    expect(envFileNames('development')).toEqual([
+      '.env',
+      '.env.local',
+      '.env.development',
+      '.env.development.local',
+    ]);
+  });
+
+  it('substitutes any mode name', () => {
+    expect(envFileNames('test')).toEqual(['.env', '.env.local', '.env.test', '.env.test.local']);
+    expect(envFileNames('apple')).toEqual(['.env', '.env.local', '.env.apple', '.env.apple.local']);
+  });
+
+  it('defaults to the development mode when DEVTOOIE_MODE is unset', () => {
+    withAmbient({}, () => {
+      delete process.env.DEVTOOIE_MODE;
+      expect(envFileNames()).toEqual(envFileNames('development'));
+    });
+  });
+});
+
+describe('resolveMode', () => {
+  it('reads --mode, --mode=, and -m', () => {
+    expect(resolveMode(['node', 'cli', '--mode', 'test'])).toBe('test');
+    expect(resolveMode(['node', 'cli', '--mode=test'])).toBe('test');
+    expect(resolveMode(['node', 'cli', '-m', 'test'])).toBe('test');
+  });
+
+  it('accepts the flag before or after a subcommand', () => {
+    expect(resolveMode(['node', 'cli', '--mode', 'test', 'cmd'])).toBe('test');
+    expect(resolveMode(['node', 'cli', 'cmd', '--mode', 'test'])).toBe('test');
+  });
+
+  it('stops at the first `--` so the wrapped command keeps its own flags', () => {
+    // `--mode watch` here belongs to vitest, not devtooie.
+    withAmbient({}, () => {
+      delete process.env.DEVTOOIE_MODE;
+      expect(resolveMode(['node', 'cli', 'cmd', '--', 'vitest', '--mode', 'watch'])).toBe(
+        'development',
+      );
+      // ...but a mode before the `--` still counts.
+      expect(
+        resolveMode(['node', 'cli', '--mode', 'test', 'cmd', '--', 'vitest', '--mode', 'watch']),
+      ).toBe('test');
+    });
+  });
+
+  it('falls back to DEVTOOIE_MODE, then development', () => {
+    withAmbient({ DEVTOOIE_MODE: 'staging' }, () => {
+      expect(resolveMode(['node', 'cli'])).toBe('staging');
+    });
+    withAmbient({}, () => {
+      delete process.env.DEVTOOIE_MODE;
+      expect(resolveMode(['node', 'cli'])).toBe('development');
+    });
+  });
+
+  it('rejects a mode name that is not safe as a filename segment', () => {
+    expect(() => resolveMode(['node', 'cli', '--mode', '../../etc'])).toThrow(/path separator/);
+    expect(() => resolveMode(['node', 'cli', '--mode', '..'])).toThrow(/mode name/);
+    expect(() => resolveMode(['node', 'cli', '--mode', ''])).toThrow(/mode name/);
+  });
+
+  it('allows dots inside a mode name', () => {
+    expect(resolveMode(['node', 'cli', '--mode', 'e2e.ci'])).toBe('e2e.ci');
   });
 });
 
@@ -49,12 +132,29 @@ describe('envCandidatePaths', () => {
     const paths = envCandidatePaths({ cwd, relativeDir: '.', files: ['.env', '.env.local'] });
     expect(paths).toEqual([path.join(cwd, '.env'), path.join(cwd, '.env.local')]);
   });
+
+  it('produces the full eight-path order for a mode', () => {
+    const paths = envCandidatePaths({
+      cwd,
+      relativeDir: 'packages/api',
+      files: envFileNames('test'),
+    });
+    expect(paths.map((p) => path.relative(cwd, p))).toEqual([
+      '.env',
+      '.env.local',
+      '.env.test',
+      '.env.test.local',
+      path.join('packages/api', '.env'),
+      path.join('packages/api', '.env.local'),
+      path.join('packages/api', '.env.test'),
+      path.join('packages/api', '.env.test.local'),
+    ]);
+  });
 });
 
 describe('resolveEnv', () => {
   it('loads only files that exist', () => {
     write('.env', 'A=1\n');
-    // no package files
     const { env, files } = resolveEnv({ cwd, relativeDir: 'packages/api' });
     expect(env).toEqual({ A: '1' });
     expect(files).toEqual([path.join(cwd, '.env')]);
@@ -67,62 +167,60 @@ describe('resolveEnv', () => {
     expect(env.KEY).toBe('pkg');
   });
 
-  it('within a scope, a later file in the list overrides an earlier one', () => {
+  it('a mode file outranks .env.local within a scope (Vite order)', () => {
+    write('.env.local', 'KEY=local\n');
+    write('.env.development', 'KEY=mode\n');
+    const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
+    expect(env.KEY).toBe('mode');
+  });
+
+  it('.env.<mode>.local is the highest-ranked file in a scope', () => {
     write('.env', 'KEY=base\n');
     write('.env.local', 'KEY=local\n');
+    write('.env.development', 'KEY=mode\n');
+    write('.env.development.local', 'KEY=modelocal\n');
     const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
-    expect(env.KEY).toBe('local');
+    expect(env.KEY).toBe('modelocal');
+  });
+
+  it('package-scope .env.local outranks a workspace-scope mode file (scope beats mode)', () => {
+    write('.env.development', 'KEY=wsmode\n');
+    write('packages/api/.env.local', 'KEY=pkglocal\n');
+    const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
+    expect(env.KEY).toBe('pkglocal');
+  });
+
+  it('modes are exclusive: another mode does not load .env.development', () => {
+    write('.env', 'KEY=base\n');
+    write('.env.development', 'KEY=dev\nDEV_ONLY=yes\n');
+    write('.env.test', 'KEY=test\n');
+    const { env } = resolveEnv({
+      cwd,
+      relativeDir: 'packages/api',
+      files: envFileNames('test'),
+    });
+    expect(env.KEY).toBe('test');
+    expect(env.DEV_ONLY).toBeUndefined();
+  });
+
+  it('loads a custom mode', () => {
+    write('.env.apple', 'KEY=apple\n');
+    const { env } = resolveEnv({
+      cwd,
+      relativeDir: 'packages/api',
+      files: envFileNames('apple'),
+    });
+    expect(env.KEY).toBe('apple');
   });
 
   it('expands ${VAR} against earlier files and process.env', () => {
-    process.env.DEVTOOIE_ENV_SPEC = 'fromproc';
-    try {
+    withAmbient({ DEVTOOIE_ENV_SPEC: 'fromproc' }, () => {
       write('.env', 'BASE=hello\n');
       write('packages/api/.env.local', 'GREETING=${BASE} world\nECHO=${DEVTOOIE_ENV_SPEC}\n');
       const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
       expect(env.GREETING).toBe('hello world');
       expect(env.ECHO).toBe('fromproc');
-    } finally {
-      delete process.env.DEVTOOIE_ENV_SPEC;
-    }
-  });
-
-  it('a file var overrides an ambient env var of the same name', () => {
-    process.env.DEVTOOIE_ENV_OVERRIDE = 'ambient';
-    try {
-      write('.env', 'DEVTOOIE_ENV_OVERRIDE=fromfile\n');
-      const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
-      expect(env.DEVTOOIE_ENV_OVERRIDE).toBe('fromfile');
-    } finally {
-      delete process.env.DEVTOOIE_ENV_OVERRIDE;
-    }
-  });
-
-  it('a self-reference extends the ambient value (append pattern)', () => {
-    process.env.DEVTOOIE_ENV_APPEND = '--require /tmp/boot.js';
-    try {
-      write(
-        '.env',
-        'DEVTOOIE_ENV_APPEND=$DEVTOOIE_ENV_APPEND --disable-warning=ExperimentalWarning\n',
-      );
-      const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
-      expect(env.DEVTOOIE_ENV_APPEND).toBe(
-        '--require /tmp/boot.js --disable-warning=ExperimentalWarning',
-      );
-    } finally {
-      delete process.env.DEVTOOIE_ENV_APPEND;
-    }
-  });
-
-  it('a cross-reference prefers a file var over an ambient var of the same name', () => {
-    process.env.DEVTOOIE_ENV_CROSS = 'ambient';
-    try {
-      write('.env', 'DEVTOOIE_ENV_CROSS=fromfile\nDERIVED=${DEVTOOIE_ENV_CROSS}-x\n');
-      const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
-      expect(env.DERIVED).toBe('fromfile-x');
-    } finally {
-      delete process.env.DEVTOOIE_ENV_CROSS;
-    }
+    });
   });
 
   it('supports ${VAR:-default} and ${VAR:+alt} operators', () => {
@@ -144,6 +242,174 @@ describe('resolveEnv', () => {
     expect(Object.keys(env)).toEqual(['DEVTOOIE_ENV_SPEC_ONLY']);
     expect(process.env.DEVTOOIE_ENV_SPEC_ONLY).toBeUndefined();
     expect(process.env).toEqual(before);
+  });
+});
+
+describe('resolveEnv precedence against the ambient environment', () => {
+  it('the ambient environment wins over a file var of the same name', () => {
+    withAmbient({ DEVTOOIE_ENV_OVERRIDE: 'ambient' }, () => {
+      write('.env', 'DEVTOOIE_ENV_OVERRIDE=fromfile\n');
+      const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
+      expect(env.DEVTOOIE_ENV_OVERRIDE).toBe('ambient');
+    });
+  });
+
+  it('a cross-reference resolves against the ambient value the file lost to', () => {
+    withAmbient({ DEVTOOIE_ENV_CROSS: 'ambient' }, () => {
+      write('.env', 'DEVTOOIE_ENV_CROSS=fromfile\nDERIVED=${DEVTOOIE_ENV_CROSS}-x\n');
+      const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
+      expect(env.DEVTOOIE_ENV_CROSS).toBe('ambient');
+      expect(env.DERIVED).toBe('ambient-x');
+    });
+  });
+
+  it('a file var still wins where the ambient has none', () => {
+    write('.env', 'DEVTOOIE_ENV_FILE_ONLY=fromfile\n');
+    const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
+    expect(env.DEVTOOIE_ENV_FILE_ONLY).toBe('fromfile');
+  });
+
+  it('override: [name] lets just that var beat the ambient', () => {
+    withAmbient({ DEVTOOIE_ENV_A: 'ambientA', DEVTOOIE_ENV_B: 'ambientB' }, () => {
+      write('.env', 'DEVTOOIE_ENV_A=fileA\nDEVTOOIE_ENV_B=fileB\n');
+      const { env } = resolveEnv({
+        cwd,
+        relativeDir: 'packages/api',
+        override: ['DEVTOOIE_ENV_A'],
+      });
+      expect(env.DEVTOOIE_ENV_A).toBe('fileA');
+      expect(env.DEVTOOIE_ENV_B).toBe('ambientB');
+    });
+  });
+
+  it('override: true restores blanket file-wins', () => {
+    withAmbient({ DEVTOOIE_ENV_A: 'ambientA', DEVTOOIE_ENV_B: 'ambientB' }, () => {
+      write('.env', 'DEVTOOIE_ENV_A=fileA\nDEVTOOIE_ENV_B=fileB\n');
+      const { env } = resolveEnv({ cwd, relativeDir: 'packages/api', override: true });
+      expect(env.DEVTOOIE_ENV_A).toBe('fileA');
+      expect(env.DEVTOOIE_ENV_B).toBe('fileB');
+    });
+  });
+
+  it('an overridden self-reference extends the ambient value (append pattern)', () => {
+    withAmbient({ DEVTOOIE_ENV_APPEND: '--require /tmp/boot.js' }, () => {
+      write('.env', 'DEVTOOIE_ENV_APPEND=$DEVTOOIE_ENV_APPEND --disable-warning=Experimental\n');
+      const { env } = resolveEnv({
+        cwd,
+        relativeDir: 'packages/api',
+        override: ['DEVTOOIE_ENV_APPEND'],
+      });
+      expect(env.DEVTOOIE_ENV_APPEND).toBe('--require /tmp/boot.js --disable-warning=Experimental');
+    });
+  });
+});
+
+describe('two-stage resolution (anchor merge, then per-package)', () => {
+  // The CLI resolves workspace-scope env once at startup and merges it into its own process.env,
+  // then resolves again per package. That first merge must NOT apply `override`, or a
+  // self-referential value folds the file's contribution into the ambient base and the second
+  // pass appends it again. Regression for a double-append that predates modes.
+  it('appends a self-referential override exactly once', () => {
+    withAmbient({ DEVTOOIE_ENV_TWOSTAGE: '--require /boot.js' }, () => {
+      write('.env', 'DEVTOOIE_ENV_TWOSTAGE=$DEVTOOIE_ENV_TWOSTAGE --flag\n');
+
+      // Stage 1: the anchor merge — no override, so this key resolves to its ambient value.
+      const anchor = resolveEnv({ cwd, relativeDir: '.' });
+      expect(anchor.env.DEVTOOIE_ENV_TWOSTAGE).toBe('--require /boot.js');
+      Object.assign(process.env, anchor.env);
+
+      // Stage 2: the package layer, which does apply the override.
+      const { env } = resolveEnv({
+        cwd,
+        relativeDir: 'packages/api',
+        override: ['DEVTOOIE_ENV_TWOSTAGE'],
+      });
+      expect(env.DEVTOOIE_ENV_TWOSTAGE).toBe('--require /boot.js --flag');
+    });
+  });
+});
+
+describe('literalizeForExpansion', () => {
+  // This is the primary regression guard, and it is deliberately a property assertion rather than
+  // a behavioral one. The bug it prevents is a *synchronous* infinite loop inside dotenvx, which
+  // no test timeout can interrupt — a test that just called resolveEnv would hang the whole runner
+  // instead of failing (verified: neutering the fix blocks the suite indefinitely). Asserting the
+  // invariant directly fails fast and points straight at the cause.
+  it('leaves no unescaped `$` for the expander to re-parse', () => {
+    const out = literalizeForExpansion({
+      SELF: '--require /boot.js ${SELF}',
+      PLAIN: 'no dollars here',
+      MIXED: 'a$b ${C} $D',
+    });
+    for (const value of Object.values(out)) {
+      // Every `$` must be preceded by a backslash.
+      expect(value.replaceAll('\\$', '')).not.toContain('$');
+    }
+  });
+
+  it('leaves values without a `$` untouched', () => {
+    expect(literalizeForExpansion({ A: 'plain', B: '' })).toEqual({ A: 'plain', B: '' });
+  });
+});
+
+describe('resolveEnv expansion safety', () => {
+  // Behavioral companions to the invariant test above: with the fix these return immediately and
+  // assert the *values* are right. Without it they would hang, which is why they are not the
+  // primary guard.
+  it(
+    'does not hang when an ambient value contains a literal self-reference',
+    { timeout: 5000 },
+    () => {
+      withAmbient({ DEVTOOIE_ENV_POISON: '--require /boot.js ${DEVTOOIE_ENV_POISON}' }, () => {
+        write('.env', 'DEVTOOIE_ENV_POISON=$DEVTOOIE_ENV_POISON --flag\n');
+        const { env } = resolveEnv({
+          cwd,
+          relativeDir: 'packages/api',
+          override: ['DEVTOOIE_ENV_POISON'],
+        });
+        // The inner literal is preserved verbatim rather than expanded again.
+        expect(env.DEVTOOIE_ENV_POISON).toBe('--require /boot.js ${DEVTOOIE_ENV_POISON} --flag');
+      });
+    },
+  );
+
+  it('does not hang when the poisoned var is not overridden', { timeout: 5000 }, () => {
+    withAmbient({ DEVTOOIE_ENV_POISON2: 'x ${DEVTOOIE_ENV_POISON2}' }, () => {
+      write('.env', 'DEVTOOIE_ENV_POISON2=$DEVTOOIE_ENV_POISON2 --flag\n');
+      const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
+      // Ambient wins, and comes back as the real value — no stray escape backslash.
+      expect(env.DEVTOOIE_ENV_POISON2).toBe('x ${DEVTOOIE_ENV_POISON2}');
+    });
+  });
+
+  it('preserves a `$` inside an ambient value instead of expanding it away', () => {
+    withAmbient({ DEVTOOIE_ENV_DOLLAR: 'hello$world' }, () => {
+      write('.env', 'MSG=${DEVTOOIE_ENV_DOLLAR}!\n');
+      const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
+      expect(env.MSG).toBe('hello$world!');
+    });
+  });
+
+  it('returns an ambient-won value without a stray escape backslash', () => {
+    withAmbient({ DEVTOOIE_ENV_ESC: 'a$b' }, () => {
+      write('.env', 'DEVTOOIE_ENV_ESC=fromfile\n');
+      const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
+      expect(env.DEVTOOIE_ENV_ESC).toBe('a$b');
+    });
+  });
+
+  it('round-trips an ambient value that already contains an escaped dollar', () => {
+    withAmbient({ DEVTOOIE_ENV_PREESC: 'lit\\$eral' }, () => {
+      write('.env', 'OUT=${DEVTOOIE_ENV_PREESC}\n');
+      const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
+      expect(env.OUT).toBe('lit\\$eral');
+    });
+  });
+
+  it('still expands file-to-file references (escaping is not over-applied)', () => {
+    write('.env', 'A=one\nB=${A}/two\n');
+    const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
+    expect(env.B).toBe('one/two');
   });
 });
 
@@ -178,5 +444,11 @@ describe('ambientEnv', () => {
     } finally {
       delete process.env.DEVTOOIE_TEST_AMBIENT;
     }
+  });
+
+  it('returns real values, not the escaped copies used for expansion', () => {
+    withAmbient({ DEVTOOIE_TEST_RAW: 'a$b' }, () => {
+      expect(ambientEnv().DEVTOOIE_TEST_RAW).toBe('a$b');
+    });
   });
 });
