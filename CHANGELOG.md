@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.1 (2026-08-16)
+
+- **Fixed the installed agent skill being invisible to coding agents.**
+- **The agent skill now loads its guide on demand** instead of pulling the whole thing into every session's context.
+
 ## 0.7.0 (2026-08-15)
 
 ### Features

@@ -17,6 +17,35 @@ describe('skill rendering', () => {
     expect(out).toContain('do not edit');
   });
 
+  // The regression that made this skill undiscoverable in every repo it was installed into.
+  //
+  // YAML frontmatter has to start on line 1. The banner used to be an HTML comment ABOVE it, so
+  // the block was never parsed as frontmatter — and the agent saw the banner where `description`
+  // should be. That field is the entire basis on which a skill is invoked, so the effect was a
+  // skill that could not trigger, in a way nothing surfaces as an error.
+  it('opens with frontmatter on line 1, with the banner INSIDE it', () => {
+    const lines = renderSkill('1.2.3').split('\n');
+
+    expect(lines[0]).toBe('---');
+    expect(lines[1]).toContain('devtooie skill v1.2.3');
+    expect(lines[1]!.startsWith('#')).toBe(true);
+
+    // …and the fields a loader needs are still where it expects them.
+    const close = lines.indexOf('---', 1);
+    const frontmatter = lines.slice(1, close);
+    expect(frontmatter.some((l) => l.startsWith('name:'))).toBe(true);
+    expect(frontmatter.some((l) => l.startsWith('description:'))).toBe(true);
+  });
+
+  it('re-rendering an already-managed file does not stack banners', () => {
+    // `refreshSkillIfStale` re-renders in place on every version bump.
+    const once = renderSkill('1.2.3');
+    const twice = renderSkill('1.2.4');
+    expect(once.match(/do not edit/g)).toHaveLength(1);
+    expect(twice.match(/do not edit/g)).toHaveLength(1);
+    expect(twice).not.toContain('v1.2.3');
+  });
+
   it('contentHash is stable and differs by input', () => {
     expect(contentHash('a')).toBe(contentHash('a'));
     expect(contentHash('a')).not.toBe(contentHash('b'));

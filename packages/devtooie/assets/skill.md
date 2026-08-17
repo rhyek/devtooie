@@ -22,9 +22,20 @@ running?"_ section — it covers how to tell whether devtooie manages that app i
 how to read a live session's per-package state, and how to check an app devtooie doesn't manage.
 Do it before starting anything: a new session hands off from (and shuts down) a running one.
 
-The consolidated guide below ships inside the installed `devtooie` package, so it always
-matches the version currently in `node_modules`. Read it before acting — it covers driving
-devtooie headlessly, the control API, onboarding a package, reading logs, and the full
-configuration/CLI/API reference:
+The consolidated guide ships inside the installed `devtooie` package, so it always matches the
+version currently in `node_modules`. It covers driving devtooie headlessly, the control API,
+onboarding a package, reading logs, and the full configuration/CLI/API reference.
 
-@node_modules/devtooie/docs/agents.md
+**Read it now, before acting**, with the Read tool:
+
+```
+${CLAUDE_PROJECT_DIR}/node_modules/devtooie/docs/agents.md
+```
+
+That should already read as an absolute path. If it still shows an unresolved placeholder, your
+harness does not substitute them — read `node_modules/devtooie/docs/agents.md` resolved from the
+repository root instead, NOT from this skill's own directory, which has no `node_modules` under it.
+
+Nothing loads the guide for you. That path is deliberately not an `@` reference: `@` force-loads
+the whole file, which defeats the progressive disclosure a skill exists to provide. If you have not
+run Read, you have not seen it.

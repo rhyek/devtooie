@@ -2,18 +2,42 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-const BANNER_RE = /^<!-- devtooie skill v.*? — managed by `devtooie init`; do not edit -->\n+/;
+/**
+ * The managed banner, in both the shape we write now and the one we used to.
+ *
+ * The old form was an HTML comment ABOVE the frontmatter, and it silently broke every install:
+ * YAML frontmatter has to begin on line 1, so a comment in front of it means the block is never
+ * parsed as frontmatter at all. The agent then sees the banner text where the `description`
+ * should be — i.e. the one field that decides whether the skill is ever invoked became the
+ * sentence "do not edit". The skill was undiscoverable in every repo it had been installed into.
+ *
+ * Both forms are stripped so an existing file is migrated rather than accumulating banners.
+ */
+const BANNER_RE =
+  /^(?:<!-- devtooie skill v.*? — managed by `devtooie init`; do not edit -->\n+|# devtooie skill v.*? — managed by `devtooie init`; do not edit\n)/;
 
 function banner(version: string): string {
-  return `<!-- devtooie skill v${version} — managed by \`devtooie init\`; do not edit -->\n\n`;
+  return `# devtooie skill v${version} — managed by \`devtooie init\`; do not edit\n`;
 }
 
-/** Reads the shipped `assets/skill.md` template and prepends/refreshes the managed banner. */
+/**
+ * Reads the shipped `assets/skill.md` template and refreshes the managed banner.
+ *
+ * The banner goes INSIDE the frontmatter, as a YAML comment on the line after the opening `---`.
+ * That keeps it the first thing a human sees when they open the file — which is the whole point of
+ * a "do not edit" notice — while the YAML parser drops it, so it costs nothing and cannot be
+ * mistaken for content. Putting it above the frontmatter is what broke discovery; putting it below
+ * the closing `---` would work too, but a reader would meet it after the metadata rather than
+ * before, and it would be loaded as part of the skill body.
+ */
 export function renderSkill(version: string): string {
   const templatePath = path.join(import.meta.dirname, '../assets/skill.md');
-  const template = fs.readFileSync(templatePath, 'utf8');
-  const body = template.replace(BANNER_RE, '');
-  return banner(version) + body;
+  const template = fs.readFileSync(templatePath, 'utf8').replace(BANNER_RE, '');
+
+  if (!template.startsWith('---\n')) {
+    throw new Error('assets/skill.md must open with YAML frontmatter on line 1');
+  }
+  return `---\n` + banner(version) + template.slice('---\n'.length);
 }
 
 export function contentHash(s: string): string {
