@@ -70,9 +70,8 @@ Agent-facing:
 - `packages/devtooie/assets/skill.md` — the installed skill. It is intentionally just
   frontmatter + an instruction to Read `node_modules/devtooie/docs/agents.md`, so put actual
   content in `agents.md`, not here. The path is deliberately **not** an `@` reference: `@`
-  force-loads the whole guide into context the moment the skill is listed, which defeats the
-  progressive disclosure a skill exists to provide — the agent should read it when it decides
-  to act, not before.
+  force-loads the whole guide on invocation, which defeats the progressive disclosure a skill
+  exists to provide — the agent should read it when it decides to act, not before.
   - **Frontmatter must start on line 1.** `renderSkill` stamps the managed banner as a YAML
     comment *inside* the frontmatter for exactly this reason. A banner above the `---` means
     the block is never parsed as frontmatter, and the skill's `description` — the only basis
