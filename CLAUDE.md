@@ -68,10 +68,16 @@ Agent-facing:
   or agent-facing change to the README or a topic doc must be mirrored here in the same
   change** — it is the file the installed skill loads, and it must never fall behind.
 - `packages/devtooie/assets/skill.md` — the installed skill. It is intentionally just
-  frontmatter + a single auto-expanded `@node_modules/devtooie/docs/agents.md` reference, so
-  put actual content in `agents.md`, not here. Only a **top-level** skill-body reference
-  auto-expands — a reference nested inside `agents.md` would not (and globs/directories
-  aren't supported), which is why the skill points at the one consolidated file.
+  frontmatter + an instruction to Read `node_modules/devtooie/docs/agents.md`, so put actual
+  content in `agents.md`, not here. The path is deliberately **not** an `@` reference: `@`
+  force-loads the whole guide into context the moment the skill is listed, which defeats the
+  progressive disclosure a skill exists to provide — the agent should read it when it decides
+  to act, not before.
+  - **Frontmatter must start on line 1.** `renderSkill` stamps the managed banner as a YAML
+    comment *inside* the frontmatter for exactly this reason. A banner above the `---` means
+    the block is never parsed as frontmatter, and the skill's `description` — the only basis
+    on which it is ever invoked — is lost, silently. `skill.spec.ts` guards this; don't move
+    the banner.
 
 After touching any of that surface, grep the README and `docs/` for the affected names and
 reconcile every copy, `agents.md` included.
