@@ -39,7 +39,9 @@ it says where a session _would_ answer, not that one is running — query the po
   are `null` until the process manager attaches, then populated. `config` is fully
   **resolved** (defaults applied, `command` normalized to `{ name, watches, builds, cleans }`)
   as loaded at startup — restart devtooie to pick up edits. `logFile` tracks in-session
-  log rotation, so it's always the file currently being written. `devReverseProxy` is present
+  log rotation, so it's always the file currently being written. The same resolved `config`,
+  without a session, is what [`devtooie show-config`](./cli.md#devtooie-show-config) prints.
+  `devReverseProxy` is present
   from the start (the proxy binds before anything else) and lists every hostname it routes —
   see [Dev reverse proxy](./dev-reverse-proxy.md).
 

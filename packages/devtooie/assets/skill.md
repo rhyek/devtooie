@@ -1,6 +1,6 @@
 ---
 name: devtooie
-description: Use when you need to know whether an app, service, or dev server in this repo is currently running or already started — e.g. "is the backend up?", or before launching one yourself — INCLUDING when you don't yet know whether devtooie manages that app, or whether this repo uses devtooie at all (the guide covers how to tell, and how to check an app devtooie does not manage); when running, building, or restarting a local dev package through devtooie; when asked to add, configure, or onboard a package into devtooie; when asked to improve or restructure a Node/TypeScript monorepo for devtooie — e.g. converting packages to TypeScript project references and reshaping their dev/build/clean scripts to be more devtooie-compatible; when you need to know how to handle a package's lifecycle (whether to restart or rebuild it) after changing its code; or when debugging a running package by reading its logs.
+description: Use when you need to know whether an app, service, or dev server in this repo is currently running or already started — e.g. "is the backend up?", or before launching one yourself — INCLUDING when you don't yet know whether devtooie manages that app, or whether this repo uses devtooie at all (the guide covers how to tell, and how to check an app devtooie does not manage); when you need to reach a package — find the URL, hostname, port, or public origin an app or API is served at, to call it with curl or fetch, open it in a browser, or point another service at it (never guess a port or hostname: `devtooie show-config` prints the resolved ones); when running, building, or restarting a local dev package through devtooie; when asked to add, configure, or onboard a package into devtooie; when asked to improve or restructure a Node/TypeScript monorepo for devtooie — e.g. converting packages to TypeScript project references and reshaping their dev/build/clean scripts to be more devtooie-compatible; when you need to know how to handle a package's lifecycle (whether to restart or rebuild it) after changing its code; or when debugging a running package by reading its logs.
 ---
 
 # devtooie
@@ -16,6 +16,11 @@ queried for logs while a session runs.
 > restart one package in place without stopping the session, `POST /command/restart/<name>`.
 > Reaching for a raw OS kill is a mistake: it kills the process out from under devtooie and
 > looks like the session "died" on its own.
+
+If you need to **reach a package** — its URL, hostname, or port, to `curl` it or open it — run
+`devtooie show-config` (no session needed) and read that package's `publicOrigin` (the hostname it
+is served at, via devtooie's dev reverse proxy) or its `port` on localhost. The guide's _"Reach a
+package"_ section says which to use and how. Never guess a port or hostname.
 
 If all you need is **whether an app is already running**, read the guide's _"Is the app already
 running?"_ section — it covers how to tell whether devtooie manages that app in the first place,

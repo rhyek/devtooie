@@ -10,7 +10,6 @@ import {
   getLoadedConfig,
   getWorkspaceDir,
   getDevScript,
-  publicOriginFor,
 } from './config.js';
 import { packageEnvLayer } from './env.js';
 
@@ -382,12 +381,16 @@ describe('url/healthcheck callbacks', () => {
     const packages = Object.values(
       defineConfig({
         packages: {
-          core: { port: 3001, healthcheck: 'http://localhost:$port/health', urls: ['$name'] },
+          core: {
+            port: 3001,
+            healthcheck: 'http://localhost:$port/health',
+            urls: ['https://example.test/$name'],
+          },
         },
       }).packages,
     );
     expect(packages[0]!.healthcheck?.url).toBe('http://localhost:$port/health');
-    expect(packages[0]!.urls![0]).toBe('$name');
+    expect(packages[0]!.urls![0]).toBe('https://example.test/$name');
   });
 
   it('reports the package and field when a callback returns a non-string', () => {
@@ -1031,7 +1034,7 @@ describe('devReverseProxy', () => {
     expect(defineConfig({ packages: { web: {} } }).devReverseProxy).toBeUndefined();
   });
 
-  test('parses literals, defaulting urlScheme to https', () => {
+  test('parses literals; a custom rootDomain defaults urlScheme to https', () => {
     const cfg = withProxy({ port: 4000, rootDomain: 'example.test' });
     expect(cfg.devReverseProxy).toEqual({
       port: 4000,
@@ -1133,9 +1136,9 @@ describe('devReverseProxy', () => {
         lib: {},
       },
     });
+    // Only the canonical hostname — not a second link for the bare root `defaultPackage` serves.
     expect(cfg.packages.web.urls).toEqual([
       { label: 'web.example.test', url: 'https://web.example.test' },
-      { label: 'example.test', url: 'https://example.test' },
       'http://localhost:3000',
     ]);
     expect(cfg.packages.api.urls).toEqual([
@@ -1145,7 +1148,7 @@ describe('devReverseProxy', () => {
     expect(cfg.packages.lib.urls).toBeUndefined();
   });
 
-  test('uses urlScheme for the prepended links (http implies the proxy port)', () => {
+  test('uses urlScheme for the prepended links (http carries the proxy port)', () => {
     const cfg = defineConfig({
       devReverseProxy: { port: 4000, rootDomain: 'example.test', urlScheme: 'http' },
       packages: { web: { port: 3000, subdomain: 'web' } },
@@ -1155,15 +1158,15 @@ describe('devReverseProxy', () => {
     ]);
   });
 
-  test('computes the public origin of a routable package, and nothing for the rest', () => {
+  test('exposes the public origin of a routable package on the resolved config, and nothing for the rest', () => {
     const cfg = defineConfig({
       devReverseProxy: { port: 4000, rootDomain: 'example.test' },
       packages: { web: { port: 3000, subdomain: ['web', 'www'] }, worker: { port: 3002 } },
     });
-    expect(publicOriginFor(cfg, cfg.packages.web)).toBe('https://web.example.test');
-    expect(publicOriginFor(cfg, cfg.packages.worker)).toBeUndefined();
+    expect(cfg.packages.web.publicOrigin).toBe('https://web.example.test');
+    expect(cfg.packages.worker.publicOrigin).toBeUndefined();
     const noProxy = defineConfig({ packages: { web: { port: 3000, subdomain: 'web' } } });
-    expect(publicOriginFor(noProxy, noProxy.packages.web)).toBeUndefined();
+    expect(noProxy.packages.web.publicOrigin).toBeUndefined();
   });
 
   test('injects PUBLIC_ORIGIN next to PORT, and an explicit .env PUBLIC_ORIGIN wins', () => {
@@ -1177,8 +1180,7 @@ describe('devReverseProxy', () => {
         devReverseProxy: { port: 4000, rootDomain: 'example.test' },
         packages: { web: { port: 3000, subdomain: 'web' }, api: { port: 3001, subdomain: 'api' } },
       });
-      const layer = (pkg: AnyPackageConfig) =>
-        packageEnvLayer(pkg, { cwd: dir, publicOrigin: publicOriginFor(cfg, pkg) });
+      const layer = (pkg: AnyPackageConfig) => packageEnvLayer(pkg, { cwd: dir });
       expect(layer(cfg.packages.web)).toMatchObject({
         PORT: '3000',
         PUBLIC_ORIGIN: 'https://web.example.test',
@@ -1193,82 +1195,209 @@ describe('devReverseProxy', () => {
   });
 });
 
-// The port of the public URLs. `https` (the default) means a TLS terminator sits in front, so no
-// port; `http` means the browser hits the proxy itself, so its own port (`http://web.localhost:4000`).
-// `urlPort` overrides either.
-describe('devReverseProxy.urlPort', () => {
-  test('is absent from public URLs under https', () => {
+// The port of the public URLs follows the scheme: `http` means the browser hits the proxy itself,
+// so its own port (`http://web.localhost:4000`); `https` means a TLS terminator sits in front, so
+// no port.
+describe('public URL port', () => {
+  test('is the proxy port under http', () => {
     const cfg = defineConfig({
-      devReverseProxy: { port: 4000, rootDomain: 'localhost' },
+      devReverseProxy: { port: 4000, rootDomain: 'localhost', defaultPackage: 'web' },
       packages: { web: { port: 3000, subdomain: 'web' } },
     });
-    expect(cfg.devReverseProxy?.urlPort).toBeUndefined();
-    expect(publicOriginFor(cfg, cfg.packages.web)).toBe('https://web.localhost');
-  });
-
-  test('defaults to the proxy port under http, so localhost works with no terminator', () => {
-    const cfg = defineConfig({
-      devReverseProxy: { port: 4000, rootDomain: 'localhost', urlScheme: 'http', defaultPackage: 'web' }, // prettier-ignore
-      packages: { web: { port: 3000, subdomain: 'web' } },
-    });
-    expect(cfg.devReverseProxy?.urlPort).toBe(4000);
-    expect(publicOriginFor(cfg, cfg.packages.web)).toBe('http://web.localhost:4000');
+    expect(cfg.packages.web.publicOrigin).toBe('http://web.localhost:4000');
     expect(cfg.packages.web.urls).toEqual([
       { label: 'web.localhost:4000', url: 'http://web.localhost:4000' },
-      { label: 'localhost:4000', url: 'http://localhost:4000' },
     ]);
   });
 
-  test('an explicit urlPort wins under either scheme', () => {
-    const https = defineConfig({
-      devReverseProxy: { port: 4000, rootDomain: 'localhost', urlPort: 8443 },
+  test('is absent under https', () => {
+    const cfg = defineConfig({
+      devReverseProxy: { port: 4000, rootDomain: 'localhost', urlScheme: 'https' },
       packages: { web: { port: 3000, subdomain: 'web' } },
     });
-    expect(publicOriginFor(https, https.packages.web)).toBe('https://web.localhost:8443');
-    const http = defineConfig({
-      devReverseProxy: { port: 4000, rootDomain: 'localhost', urlScheme: 'http', urlPort: 80 },
+    expect(cfg.packages.web.publicOrigin).toBe('https://web.localhost');
+  });
+});
+
+// `rootDomain` defaults to `localhost`, and the scheme follows the root: `http` on `localhost`
+// (nothing in front, so the URLs carry the proxy port), `https` on any other root (a TLS
+// terminator in front, so no port). Both stay overridable.
+describe('devReverseProxy defaults from rootDomain', () => {
+  test('rootDomain defaults to localhost, with http and the proxy port', () => {
+    const cfg = defineConfig({
+      devReverseProxy: { port: 4000 },
       packages: { web: { port: 3000, subdomain: 'web' } },
     });
-    expect(publicOriginFor(http, http.packages.web)).toBe('http://web.localhost:80');
+    expect(cfg.devReverseProxy).toEqual({
+      port: 4000,
+      rootDomain: 'localhost',
+      defaultPackage: undefined,
+      urlScheme: 'http',
+    });
+    expect(cfg.packages.web.publicOrigin).toBe('http://web.localhost:4000');
   });
 
-  test('appears in the resolved block, the public origin, and the prepended links', () => {
+  test('a custom rootDomain implies https with no port', () => {
     const cfg = defineConfig({
-      devReverseProxy: {
-        port: 4000,
-        rootDomain: 'localhost',
-        urlScheme: 'http',
-        urlPort: 4000,
-        defaultPackage: 'web',
-      },
+      devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
       packages: { web: { port: 3000, subdomain: 'web' } },
     });
-    expect(cfg.devReverseProxy?.urlPort).toBe(4000);
-    expect(publicOriginFor(cfg, cfg.packages.web)).toBe('http://web.localhost:4000');
-    expect(cfg.packages.web.urls).toEqual([
-      { label: 'web.localhost:4000', url: 'http://web.localhost:4000' },
-      { label: 'localhost:4000', url: 'http://localhost:4000' },
+    expect(cfg.devReverseProxy).toMatchObject({ urlScheme: 'https' });
+    expect(cfg.devReverseProxy).not.toHaveProperty('urlPort');
+    expect(cfg.packages.web.publicOrigin).toBe('https://web.myproject.example.test');
+  });
+
+  test('an explicit urlScheme overrides the root-derived default', () => {
+    const plainTerminator = defineConfig({
+      devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test', urlScheme: 'http' },
+      packages: { web: { port: 3000, subdomain: 'web' } },
+    });
+    expect(plainTerminator.packages.web.publicOrigin).toBe(
+      'http://web.myproject.example.test:4000',
+    );
+    const tlsOnLocalhost = defineConfig({
+      devReverseProxy: { port: 4000, urlScheme: 'https' },
+      packages: { web: { port: 3000, subdomain: 'web' } },
+    });
+    expect(tlsOnLocalhost.packages.web.publicOrigin).toBe('https://web.localhost');
+  });
+});
+
+// A `urls` entry may be a path: resolved against the package's public origin under the dev
+// reverse proxy, else against `http://localhost:<port>` — one link either way, never both.
+describe('path urls', () => {
+  test('resolve against http://localhost:<port> without a proxy', () => {
+    const cfg = defineConfig({
+      packages: { api: { port: 3001, urls: ['/todos', { label: 'health', url: '/health' }] } },
+    });
+    expect(cfg.packages.api.urls).toEqual([
+      'http://localhost:3001/todos',
+      { label: 'health', url: 'http://localhost:3001/health' },
     ]);
   });
 
-  test('resolves a callback over the workspace context', () => {
+  test('resolve against the public origin under the proxy, and only that', () => {
     const cfg = defineConfig({
-      devReverseProxy: {
-        port: 4000,
-        rootDomain: 'localhost',
-        urlPort: ({ envs }) => Number(envs.DEVTOOIE_SPEC_URL_PORT ?? '4000'),
+      devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
+      packages: {
+        api: { port: 3001, subdomain: 'api', urls: ['/todos', [{ label: 'a', url: '/a' }, '/b']] },
       },
-      packages: { web: { port: 3000, subdomain: 'web' } },
     });
-    expect(cfg.devReverseProxy?.urlPort).toBe(4000);
+    expect(cfg.packages.api.urls).toEqual([
+      { label: 'api.myproject.example.test', url: 'https://api.myproject.example.test' },
+      'https://api.myproject.example.test/todos',
+      [
+        { label: 'a', url: 'https://api.myproject.example.test/a' },
+        'https://api.myproject.example.test/b',
+      ],
+    ]);
   });
 
-  test('rejects a callback returning NaN, naming the field', () => {
-    expect(() =>
-      defineConfig({
-        devReverseProxy: { port: 4000, rootDomain: 'localhost', urlPort: () => Number('x') },
-        packages: { web: { port: 3000, subdomain: 'web' } },
-      }),
-    ).toThrow(/devReverseProxy\.urlPort: callback returned NaN/);
+  test('fall back to localhost for a package the proxy does not route', () => {
+    const cfg = defineConfig({
+      devReverseProxy: { port: 4000 },
+      packages: { worker: { port: 3002, urls: ['/metrics'] } },
+    });
+    expect(cfg.packages.worker.urls).toEqual(['http://localhost:3002/metrics']);
+  });
+
+  test('a callback may return a path too', () => {
+    const cfg = defineConfig({
+      packages: { api: { port: 3001, urls: [({ tokens }) => `/${tokens.section ?? 'todos'}`] } },
+    });
+    expect(cfg.packages.api.urls).toEqual(['http://localhost:3001/todos']);
+  });
+
+  test('leave absolute urls alone', () => {
+    const cfg = defineConfig({
+      devReverseProxy: { port: 4000 },
+      packages: { api: { port: 3001, subdomain: 'api', urls: ['https://status.example.test'] } },
+    });
+    expect(cfg.packages.api.urls?.[1]).toBe('https://status.example.test');
+  });
+
+  test('reject a path on a package with no port to base it on, naming both', () => {
+    expect(() => defineConfig({ packages: { docs: { urls: ['/index.html'] } } })).toThrow(
+      /docs urls: "\/index\.html" is a path, but this package declares no `port`/,
+    );
+  });
+
+  test('reject a path in the workspace-wide urls', () => {
+    expect(() => defineConfig({ urls: ['/status'], packages: { api: {} } })).toThrow(
+      /top-level url: "\/status" is a path, but workspace-wide urls belong to no package/,
+    );
+  });
+});
+
+// A path `healthcheck` always resolves against the package itself on loopback — never the public
+// origin, since devtooie's own proxy holds requests until this very probe passes. The resolved
+// `url` is what the status probe polls.
+describe('path healthchecks', () => {
+  test('resolve against http://localhost:<port>, bare and in the object form', () => {
+    const cfg = defineConfig({
+      packages: {
+        api: { port: 3001, healthcheck: '/health' },
+        web: { port: 3000, healthcheck: { url: '/', timeout: 5000 } },
+      },
+    });
+    expect(cfg.packages.api.healthcheck).toEqual({ url: 'http://localhost:3001/health', timeout: 1500 }); // prettier-ignore
+    expect(cfg.packages.web.healthcheck).toEqual({ url: 'http://localhost:3000/', timeout: 5000 });
+  });
+
+  test('ignore the public origin even for a package the proxy routes', () => {
+    const cfg = defineConfig({
+      devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
+      packages: { api: { port: 3001, subdomain: 'api', healthcheck: '/health', urls: ['/todos'] } },
+    });
+    expect(cfg.packages.api.healthcheck?.url).toBe('http://localhost:3001/health');
+    expect(cfg.packages.api.urls).toContain('https://api.myproject.example.test/todos');
+  });
+
+  test('a callback may return a path too', () => {
+    const cfg = defineConfig({
+      packages: { api: { port: 3001, healthcheck: () => '/ready' } },
+    });
+    expect(cfg.packages.api.healthcheck?.url).toBe('http://localhost:3001/ready');
+  });
+
+  test('reject a path on a package with no port, naming both', () => {
+    expect(() => defineConfig({ packages: { docs: { healthcheck: '/' } } })).toThrow(
+      /docs healthcheck: "\/" is a path, but this package declares no `port`/,
+    );
+  });
+});
+
+// A relative path may be written with or without the leading slash; both forms resolve alike.
+describe('paths without a leading slash', () => {
+  test('urls: `todos` is `/todos`', () => {
+    const cfg = defineConfig({
+      devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
+      packages: {
+        api: { port: 3001, subdomain: 'api', urls: ['todos', { label: 'x', url: 'a/b?c=1' }] },
+        worker: { port: 3002, urls: ['metrics'] },
+      },
+    });
+    expect(cfg.packages.api.urls?.slice(1)).toEqual([
+      'https://api.myproject.example.test/todos',
+      { label: 'x', url: 'https://api.myproject.example.test/a/b?c=1' },
+    ]);
+    expect(cfg.packages.worker.urls).toEqual(['http://localhost:3002/metrics']);
+  });
+
+  test('healthcheck: `health` is `/health`', () => {
+    const cfg = defineConfig({
+      packages: { api: { port: 3001, healthcheck: 'health' } },
+    });
+    expect(cfg.packages.api.healthcheck?.url).toBe('http://localhost:3001/health');
+  });
+
+  test('anything with a scheme is left alone', () => {
+    const cfg = defineConfig({
+      packages: {
+        api: { port: 3001, healthcheck: 'HTTP://127.0.0.1:3001/health', urls: ['ws://localhost:3001/socket'] }, // prettier-ignore
+      },
+    });
+    expect(cfg.packages.api.healthcheck?.url).toBe('HTTP://127.0.0.1:3001/health');
+    expect(cfg.packages.api.urls).toEqual(['ws://localhost:3001/socket']);
   });
 });

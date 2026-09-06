@@ -297,10 +297,6 @@ describe('devReverseProxy', () => {
         rootDomain: (ctx) => `example.${ctx.tokens.tld}`,
         defaultPackage: 'web',
         urlScheme: 'http',
-        urlPort: (ctx) => {
-          expectTypeOf(ctx).not.toHaveProperty('port');
-          return Number(ctx.envs.DEV_REVERSE_PROXY_PORT);
-        },
       },
       packages: { web: { port: 3000, subdomain: 'web' } },
     });
@@ -322,6 +318,16 @@ describe('devReverseProxy', () => {
     expectTypeOf(config.devReverseProxy!.rootDomain).toEqualTypeOf<string>();
     expectTypeOf(config.devReverseProxy!.urlScheme).toEqualTypeOf<'http' | 'https'>();
     expectTypeOf(config.devReverseProxy!.defaultPackage).toEqualTypeOf<string | undefined>();
-    expectTypeOf(config.devReverseProxy!.urlPort).toEqualTypeOf<number | undefined>();
+    expectTypeOf(config.packages.web.publicOrigin).toEqualTypeOf<string | undefined>();
+  });
+});
+
+describe('devReverseProxy rootDomain', () => {
+  test('is optional on the options and a plain string on the resolved config', () => {
+    const config = defineConfig({
+      devReverseProxy: { port: 4000 },
+      packages: { web: { port: 3000, subdomain: 'web' } },
+    });
+    expectTypeOf(config.devReverseProxy!.rootDomain).toEqualTypeOf<string>();
   });
 });

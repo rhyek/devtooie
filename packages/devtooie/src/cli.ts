@@ -11,7 +11,6 @@ import {
   findPackage,
   getRegisteredPackages,
   getLoadedConfig,
-  publicOriginFor,
 } from './config.js';
 import { envFileNames, packageEnvLayer, resolveEnv, resolveMode } from './env.js';
 import { acquireDevSession, startSessionDevReverseProxy } from './dev-session.js';
@@ -292,13 +291,7 @@ async function resolveCmdTargetOrExit(
   const configPackages = Object.values(config.packages);
   // The same layer the session spawns the package with: `PORT`, `PUBLIC_ORIGIN` under the dev
   // reverse proxy, then its `.env` files.
-  const layerFor = (pkg: AnyPackageConfig) =>
-    packageEnvLayer(pkg, {
-      cwd: root,
-      files,
-      override,
-      publicOrigin: publicOriginFor(config, pkg),
-    });
+  const layerFor = (pkg: AnyPackageConfig) => packageEnvLayer(pkg, { cwd: root, files, override });
   if (explicitName !== undefined) {
     const pkg = configPackages.find((p) => p.name === explicitName);
     if (!pkg) {
@@ -452,6 +445,34 @@ program
         2,
       ),
     );
+    process.exit(0);
+  });
+
+program
+  .command('show-config')
+  .description(
+    'print the fully resolved config as JSON (what a running session reports on GET /query/status) — no session needed',
+  )
+  // Declared here too so `devtooie show-config --mode test` works (see `cmd`); the config
+  // resolves against that mode's `.env` files, which is what a callback `port` reads.
+  .option(
+    '-m, --mode <name>',
+    'environment mode selecting the .env.<mode> files to load (default: "development")',
+  )
+  .action(async () => {
+    await loadConfigOrExit();
+    const config = getLoadedConfig();
+    if (!config) {
+      console.error(
+        `${findConfigPath(process.cwd()) ?? 'devtooie.config.ts'} loaded but registered no config — ` +
+          'it must export a `defineConfig(...)` call as its default.',
+      );
+      process.exit(1);
+    }
+    // The config is resolved exactly once, when the file loads (callbacks run, defaults applied,
+    // `command` normalized); this is that object, serialized the way the control API serves it.
+    // Function-valued fields (`logs.formatter`) have no JSON form and are omitted, there too.
+    console.log(JSON.stringify(config, null, 2));
     process.exit(0);
   });
 

@@ -104,12 +104,11 @@ export type GeneratedDefineConfig = {
     })[])[] | undefined;
     devReverseProxy?: {
         port: number | any;
-        rootDomain: string | any;
+        rootDomain?: (string | any) | undefined;
         /** The package the bare `rootDomain` routes to. Must declare a `port`. Omit for a 404 there. */
         defaultPackage?: string | undefined;
-        /** Scheme of the public URLs devtooie derives (footer links, `PUBLIC_ORIGIN`). `https` (the default) means a TLS terminator sits in front, so the URLs carry no port; `http` means the browser hits the proxy directly, so they carry the proxy port. */
-        urlScheme: "http" | "https";
-        urlPort?: (number | any) | undefined;
+        /** Scheme of the public URLs devtooie derives (footer links, `PUBLIC_ORIGIN`). Defaults from `rootDomain`: `http` on `localhost` (the browser hits the proxy directly, so the URLs carry its `port`), `https` on any other root (a TLS terminator in front, so no port). */
+        urlScheme?: ("http" | "https") | undefined;
     } | undefined;
     /** Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`. */
     workspaceDir?: string | undefined;

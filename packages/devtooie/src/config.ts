@@ -315,8 +315,10 @@ export type PackageConfigInput<Own = unknown, Top = object, N extends string = s
     urls?: UrlEntryInput<PackageContext<PackageTokens<Top, Own>>>[];
     /**
      * A URL polled for readiness; also required by anything that lists this package in its
-     * `waitFor`. Like `urls`, it may be a callback over `{ envs, tokens, port, subdomain }`:
-     * `healthcheck: ({ port }) => \`http://localhost:${port}/health\``.
+     * `waitFor`. A bare path (`'/health'`) is probed at `http://localhost:<port>/health` — always
+     * the package itself on loopback, never the dev reverse proxy, which holds requests until
+     * this very probe passes. Like `urls`, it may instead be a callback over
+     * `{ envs, tokens, port, subdomain }`.
      *
      * Pass an object to give this package's probes a longer deadline than the 1500 ms default —
      * worth doing for a service slow to answer on a cold start, since devtooie aborting the
@@ -364,43 +366,32 @@ export interface DevReverseProxyInput<Top = TokenRecord, N extends string = stri
   port: number | ((ctx: ConfigContext<Top>) => number);
   /**
    * The domain the packages live under: `<subdomain>.<rootDomain>` routes to the package with
-   * that `subdomain`. A lowercase hostname, literal or a callback over `{ envs, tokens }`:
+   * that `subdomain`. Defaults to `localhost`, which browsers resolve to loopback with nothing
+   * in front. A lowercase hostname, literal or a callback over `{ envs, tokens }`:
    * `rootDomain: ({ envs }) => \`myproject.${envs.LOCALDEV_DOMAIN}\``.
    */
-  rootDomain: string | ((ctx: ConfigContext<Top>) => string);
+  rootDomain?: string | ((ctx: ConfigContext<Top>) => string);
   /** The package the bare `rootDomain` routes to. Must declare a `port`. Omit for a 404 there. */
   defaultPackage?: NoInfer<N>;
   /**
-   * Scheme of the public URLs devtooie derives (footer links, `PUBLIC_ORIGIN`). `https` (the
-   * default) means a TLS terminator sits in front, so the URLs carry no port; `http` means the
-   * browser hits the proxy directly (`http://web.localhost:4000`), so they carry the proxy's
-   * own `port`. Set `urlPort` to override either.
+   * Scheme of the public URLs devtooie derives (footer links, `PUBLIC_ORIGIN`). Defaults from
+   * `rootDomain`: `http` on `localhost`, `https` on any other root. `http` means the browser
+   * hits the proxy directly, so the URLs carry its `port` (`http://web.localhost:4000`);
+   * `https` means a TLS terminator sits in front, so they carry no port.
    */
   urlScheme?: 'http' | 'https';
-  /**
-   * Port of the public URLs, when the rule `urlScheme` implies is wrong for your setup — a
-   * plain-HTTP terminator on 80, say, or a TLS one on 8443. A literal, or a callback over
-   * `{ envs, tokens }` like `port`. Omit for no port under `https` and the proxy port under
-   * `http`.
-   */
-  urlPort?: number | ((ctx: ConfigContext<Top>) => number);
 }
 
-/**
- * The dev reverse proxy after resolution: callbacks invoked, `urlScheme` defaulted, `urlPort`
- * settled (explicit, else the proxy port under `http`, else none).
- */
+/** The dev reverse proxy after resolution: callbacks invoked, `rootDomain`/`urlScheme` defaulted. */
 export interface ResolvedDevReverseProxy {
-  /** The loopback port the proxy listens on. */
+  /** The loopback port the proxy listens on — and the port of the public URLs under `http`. */
   port: number;
-  /** The domain packages are routed under. */
+  /** The domain packages are routed under (`localhost` unless the config says otherwise). */
   rootDomain: string;
   /** The package the bare `rootDomain` routes to, if any. */
   defaultPackage?: string;
-  /** Scheme of the public URLs devtooie derives. */
+  /** Scheme of the public URLs devtooie derives; `https` means they carry no port. */
   urlScheme: 'http' | 'https';
-  /** Port of the public URLs, or `undefined` for none (a TLS terminator on 443). */
-  urlPort?: number;
 }
 
 /**
@@ -471,6 +462,14 @@ export type ResolvedPackageConfig<N extends string, T = TokenRecord> = Omit<
     urls?: UrlEntry[];
     /** The readiness probe, normalized from whichever form the config wrote. */
     healthcheck?: ResolvedHealthcheck;
+    /**
+     * The package's public origin under the dev reverse proxy —
+     * `<urlScheme>://<canonical subdomain>.<rootDomain>[:<port>]` — or `undefined` when the
+     * config has no `devReverseProxy` or the proxy doesn't route this package (no `subdomain`
+     * or no `port`). Injected into the package's process as `PUBLIC_ORIGIN` (an explicit `.env`
+     * value still wins), and what the proxy's footer links are built from.
+     */
+    publicOrigin?: string;
   };
 
 export type AnyPackageConfig = ResolvedPackageConfig<string>;
@@ -566,49 +565,92 @@ function once<T>(factory: () => T): () => T {
 }
 
 /**
- * A URL as written in the config, resolved to a string: returned as-is when it's already one,
- * otherwise the callback's return value. `where` names the field in the error a callback that
- * doesn't return a string produces.
+ * What a URL is resolved against: the context its callback gets, the package's `port` and (under
+ * the dev reverse proxy) public origin that a relative path is based on, and `where`, naming the
+ * field in error messages. The workspace-wide `urls` have neither port nor origin.
  */
-function resolveUrlValue(value: UrlValue, ctx: () => PackageContext, where: string): string {
-  if (typeof value !== 'function') {
-    return value;
-  }
-  const url = value(ctx());
-  if (typeof url !== 'string') {
-    throw new Error(`${where}: callback returned ${String(url)} (expected a string)`);
-  }
-  return url;
+interface UrlScope {
+  ctx: () => PackageContext;
+  port: number | undefined;
+  publicOrigin: string | undefined;
+  where: string;
 }
 
-/** Resolves one link (bare URL or `{ label, url }`), preserving its shape. */
-function resolveUrlLink(link: UrlLinkInput, ctx: () => PackageContext, where: string): UrlLink {
+/**
+ * Every form a resolved URL can take. Identical for an absolute URL; for a relative path they
+ * differ once the dev reverse proxy routes the package — and each call site picks: `urls` show
+ * `public` (one link, not a loopback twin), a `healthcheck` probes `private` (the package itself;
+ * the proxy holds requests until that very probe passes, so probing through it would never pass).
+ */
+export interface ResolvedUrlForms {
+  /** Under the dev reverse proxy, `<publicOrigin>/path`; otherwise the same as `private`. */
+  public: string;
+  /** The package itself on loopback: `http://localhost:<port>/path`. */
+  private: string;
+}
+
+/** `true` for anything with a scheme (`https://…`, `ws://…`, `mailto:…`) — left exactly as written. */
+const ABSOLUTE_URL_RE = /^[a-z][a-z0-9+.-]*:/i;
+
+/**
+ * A URL as written in the config, resolved into its {@link ResolvedUrlForms}: a literal or a
+ * callback's return value, absolute as-is, or a relative path — with or without the leading
+ * slash (`/todos` and `todos` alike) — based on the package.
+ */
+function resolveUrlForms(value: UrlValue, scope: UrlScope): ResolvedUrlForms {
+  let url: unknown = value;
+  if (typeof value === 'function') {
+    url = value(scope.ctx());
+    if (typeof url !== 'string') {
+      throw new Error(`${scope.where}: callback returned ${String(url)} (expected a string)`);
+    }
+  }
+  const text = url as string;
+  if (ABSOLUTE_URL_RE.test(text)) {
+    return { public: text, private: text };
+  }
+  const path = text.startsWith('/') ? text : `/${text}`;
+  if (scope.port === undefined) {
+    throw new Error(
+      scope.publicOrigin === undefined && scope.where === 'top-level url'
+        ? `${scope.where}: ${JSON.stringify(text)} is a path, but workspace-wide urls belong to no ` +
+            "package, so there's nothing to base it on. Move it into a package's `urls`, or write the full URL."
+        : `${scope.where}: ${JSON.stringify(text)} is a path, but this package declares no \`port\` to ` +
+            'base it on. Add `port` to it, or write the full URL.',
+    );
+  }
+  const priv = `http://localhost:${String(scope.port)}${path}`;
+  return {
+    public: scope.publicOrigin === undefined ? priv : `${scope.publicOrigin}${path}`,
+    private: priv,
+  };
+}
+
+/** Resolves one link (bare URL or `{ label, url }`) to its public form, preserving its shape. */
+function resolveUrlLink(link: UrlLinkInput, scope: UrlScope): UrlLink {
   return typeof link === 'object'
-    ? { ...link, url: resolveUrlValue(link.url, ctx, where) }
-    : resolveUrlValue(link, ctx, where);
+    ? { ...link, url: resolveUrlForms(link.url, scope).public }
+    : resolveUrlForms(link, scope).public;
 }
 
 /**
  * Normalizes a `healthcheck` to `{ url, timeout }`: the bare-URL form takes the default
- * timeout, and either form's URL may be a callback.
+ * timeout, either form's URL may be a callback or a path, and the URL is the *private* one —
+ * what the status probe polls.
  */
-function resolveHealthcheck(
-  value: HealthcheckInput,
-  ctx: () => PackageContext,
-  where: string,
-): ResolvedHealthcheck {
+function resolveHealthcheck(value: HealthcheckInput, scope: UrlScope): ResolvedHealthcheck {
   const spec = typeof value === 'object' ? value : { url: value, timeout: undefined };
   return {
-    url: resolveUrlValue(spec.url, ctx, where),
+    url: resolveUrlForms(spec.url, scope).private,
     timeout: spec.timeout ?? DEFAULT_HEALTHCHECK_TIMEOUT_MS,
   };
 }
 
 /** Resolves a `urls` entry, which may be a single link or an array rendered on one line. */
-function resolveUrlEntry(entry: UrlEntryInput, ctx: () => PackageContext, where: string): UrlEntry {
+function resolveUrlEntry(entry: UrlEntryInput, scope: UrlScope): UrlEntry {
   return Array.isArray(entry)
-    ? entry.map((link) => resolveUrlLink(link, ctx, where))
-    : resolveUrlLink(entry, ctx, where);
+    ? entry.map((link) => resolveUrlLink(link, scope))
+    : resolveUrlLink(entry, scope);
 }
 
 /** A parsed package plus the `name` taken from the key it was declared under. */
@@ -721,7 +763,9 @@ function resolveDevReverseProxy(
     fail('port', port);
   }
   const rootDomain =
-    typeof block.rootDomain === 'function' ? block.rootDomain(ctx()) : block.rootDomain;
+    typeof block.rootDomain === 'function'
+      ? block.rootDomain(ctx())
+      : (block.rootDomain ?? 'localhost');
   if (typeof rootDomain !== 'string' || rootDomain === '') {
     fail('rootDomain', rootDomain);
   }
@@ -731,25 +775,30 @@ function resolveDevReverseProxy(
         '(labels of a-z, 0-9 and hyphens, not starting or ending with a hyphen)',
     );
   }
-  // The public port: explicit, else the proxy's own under `http` (no terminator in front, the
-  // browser hits the proxy), else none (`https`: a TLS terminator on 443).
-  let urlPort = typeof block.urlPort === 'function' ? block.urlPort(ctx()) : block.urlPort;
-  if (urlPort !== undefined && (typeof urlPort !== 'number' || !Number.isFinite(urlPort))) {
-    fail('urlPort', urlPort);
-  }
-  urlPort ??= block.urlScheme === 'http' ? port : undefined;
-  return {
-    port,
-    rootDomain,
-    defaultPackage: block.defaultPackage,
-    urlScheme: block.urlScheme,
-    urlPort,
-  };
+  // The scheme follows the root unless the config says: `localhost` has nothing in front, so
+  // the browser hits the proxy itself over http; any other root has a TLS terminator in front.
+  const urlScheme = block.urlScheme ?? (rootDomain === 'localhost' ? 'http' : 'https');
+  return { port, rootDomain, defaultPackage: block.defaultPackage, urlScheme };
 }
 
-/** A public hostname with the proxy's public port, when it has one: `web.localhost:4000`. */
+/**
+ * A public hostname as it appears in URLs: with the proxy's port under `http` (the browser hits
+ * the proxy directly), bare under `https` (a TLS terminator on 443 in front).
+ */
 function publicHost(proxy: ResolvedDevReverseProxy, host: string): string {
-  return proxy.urlPort === undefined ? host : `${host}:${String(proxy.urlPort)}`;
+  return proxy.urlScheme === 'http' ? `${host}:${String(proxy.port)}` : host;
+}
+
+/** The origin a package's public URLs start from, or `undefined` when the proxy doesn't route it. */
+function publicOriginOf(
+  proxy: ResolvedDevReverseProxy | undefined,
+  pkg: { name: string; port: number | undefined; subdomain?: string | string[] | undefined },
+): string | undefined {
+  const [canonical] = subdomainsOf(pkg);
+  if (!proxy || canonical === undefined || pkg.port === undefined) {
+    return undefined;
+  }
+  return `${proxy.urlScheme}://${publicHost(proxy, `${canonical}.${proxy.rootDomain}`)}`;
 }
 
 /**
@@ -807,24 +856,6 @@ export function proxyHostsFor(
     hosts.push(proxy.rootDomain);
   }
   return hosts;
-}
-
-/**
- * The public origin the dev reverse proxy gives `pkg` — `<urlScheme>://<canonical subdomain>.
- * <rootDomain>` — or `undefined` when the proxy doesn't route it. Injected into the package's
- * process as `PUBLIC_ORIGIN` (an explicit `.env` value still wins), so an app can name its own
- * public host (Vite's `server.allowedHosts`, `server.hmr`) without repeating the subdomain.
- */
-export function publicOriginFor(
-  config: Pick<Config<string>, 'devReverseProxy'> | null,
-  pkg: Pick<AnyPackageConfig, 'name' | 'port' | 'subdomain'>,
-): string | undefined {
-  const [subdomain] = subdomainsOf(pkg);
-  if (!config?.devReverseProxy || pkg.port === undefined || subdomain === undefined) {
-    return undefined;
-  }
-  const proxy = config.devReverseProxy;
-  return `${proxy.urlScheme}://${publicHost(proxy, `${subdomain}.${proxy.rootDomain}`)}`;
 }
 
 export function defineConfig<
@@ -919,6 +950,18 @@ export function defineConfig<
     };
   };
 
+  // Workspace-wide urls belong to no package: workspace-scope env, no `port` to offer, and no
+  // `subdomain` either (plain `undefined`, as for a package without one).
+  const workspaceEnv = envsFor('.');
+  const workspaceBase = once((): ConfigContext => ({ envs: workspaceEnv.envs(), tokens }));
+
+  // The dev reverse proxy sees the workspace context, like the workspace-wide urls. Resolved
+  // before the packages, since a package's public origin — what its path urls are based on —
+  // depends on it; validated after them, since that needs their *resolved* ports.
+  const devReverseProxy =
+    parsed.devReverseProxy &&
+    resolveDevReverseProxy(parsed.devReverseProxy, workspaceBase, workspaceEnv.files);
+
   const packages = parsedPackages.map((config) => {
     const relativeDir = config.relativeDir ?? `packages/${config.name}`;
     const env = envsFor(relativeDir);
@@ -939,6 +982,11 @@ export function defineConfig<
           `Add \`port\` to ${config.name} in devtooie.config.ts, or drop \`port\` from the callback.`,
       ),
     );
+    // What this package's relative URLs resolve against: its port on loopback, and — when the
+    // dev reverse proxy routes it — its public origin. `urls` show the public form, the
+    // `healthcheck` probes the private one (see `ResolvedUrlForms`).
+    const publicOrigin = publicOriginOf(devReverseProxy, { name: config.name, port, subdomain: config.subdomain }); // prettier-ignore
+    const scope = (where: string): UrlScope => ({ ctx, port, publicOrigin, where });
     return {
       ...config,
       // Stored resolved (config tokens + this package's own) so the exported config exposes
@@ -947,18 +995,16 @@ export function defineConfig<
       port,
       relativeDir,
       path: path.resolve(workspaceDir, relativeDir),
-      urls: config.urls?.map((entry) => resolveUrlEntry(entry, ctx, `${config.name} urls`)),
+      urls: config.urls?.map((entry) => resolveUrlEntry(entry, scope(`${config.name} urls`))),
       healthcheck:
         config.healthcheck === undefined
           ? undefined
-          : resolveHealthcheck(config.healthcheck, ctx, `${config.name} healthcheck`),
+          : resolveHealthcheck(config.healthcheck, scope(`${config.name} healthcheck`)),
+      // The same value the package's process gets as `PUBLIC_ORIGIN`, on the exported config.
+      publicOrigin,
     };
   });
 
-  // Workspace-wide urls belong to no package: workspace-scope env, no `port` to offer, and no
-  // `subdomain` either (plain `undefined`, as for a package without one).
-  const workspaceEnv = envsFor('.');
-  const workspaceBase = once((): ConfigContext => ({ envs: workspaceEnv.envs(), tokens }));
   const workspaceCtx = once((): PackageContext =>
     packageContext(
       workspaceBase(),
@@ -969,14 +1015,17 @@ export function defineConfig<
         "there's no port to give them. Move the link into a package's `urls`, or drop `port`.",
     ),
   );
-  const urls = parsed.urls?.map((entry) => resolveUrlEntry(entry, workspaceCtx, 'top-level url'));
+  const urls = parsed.urls?.map((entry) =>
+    resolveUrlEntry(entry, {
+      ctx: workspaceCtx,
+      port: undefined,
+      publicOrigin: undefined,
+      where: 'top-level url',
+    }),
+  );
 
-  // The dev reverse proxy sees the workspace context, like the workspace-wide urls. Validated
-  // after the packages so it can check their *resolved* ports; then each routable package gets
-  // its public hostname(s) ahead of its own footer links, so the resolved config shows them too.
-  const devReverseProxy =
-    parsed.devReverseProxy &&
-    resolveDevReverseProxy(parsed.devReverseProxy, workspaceBase, workspaceEnv.files);
+  // Now that every package's port is known: check the proxy against them, then put each routable
+  // package's public hostname(s) ahead of its own footer links, so the resolved config shows them.
   if (devReverseProxy) {
     validateDevReverseProxy(devReverseProxy, packages as unknown as AnyPackageConfig[]);
     for (const pkg of packages) {
@@ -984,15 +1033,11 @@ export function defineConfig<
       if (canonical === undefined || pkg.port === undefined) {
         continue;
       }
-      const hosts = [`${canonical}.${devReverseProxy.rootDomain}`];
-      if (devReverseProxy.defaultPackage === pkg.name) {
-        hosts.push(devReverseProxy.rootDomain);
-      }
-      const links: UrlEntry[] = hosts.map((host) => ({
-        label: publicHost(devReverseProxy, host),
-        url: `${devReverseProxy.urlScheme}://${publicHost(devReverseProxy, host)}`,
-      }));
-      pkg.urls = [...links, ...(pkg.urls ?? [])];
+      // One link, the canonical hostname — not one per alias, and not the bare root for
+      // `defaultPackage` either; those route too, but the footer needn't repeat the app.
+      const host = publicHost(devReverseProxy, `${canonical}.${devReverseProxy.rootDomain}`);
+      const link = { label: host, url: `${devReverseProxy.urlScheme}://${host}` };
+      pkg.urls = [link, ...(pkg.urls ?? [])];
     }
   }
 

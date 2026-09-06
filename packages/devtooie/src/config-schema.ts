@@ -179,12 +179,14 @@ export const DevReverseProxySchema = z.strictObject({
       message: 'devReverseProxy.port must be a number or a function',
     }),
   ]),
-  rootDomain: z.union([
-    z.string(),
-    z.custom<(ctx: ConfigContext) => string>((v) => typeof v === 'function', {
-      message: 'devReverseProxy.rootDomain must be a string or a function',
-    }),
-  ]),
+  rootDomain: z
+    .union([
+      z.string(),
+      z.custom<(ctx: ConfigContext) => string>((v) => typeof v === 'function', {
+        message: 'devReverseProxy.rootDomain must be a string or a function',
+      }),
+    ])
+    .optional(),
   defaultPackage: z
     .string()
     .optional()
@@ -193,18 +195,10 @@ export const DevReverseProxySchema = z.strictObject({
     ),
   urlScheme: z
     .enum(['http', 'https'])
-    .default('https')
+    .optional()
     .describe(
-      'Scheme of the public URLs devtooie derives (footer links, `PUBLIC_ORIGIN`). `https` (the default) means a TLS terminator sits in front, so the URLs carry no port; `http` means the browser hits the proxy directly, so they carry the proxy port.',
+      'Scheme of the public URLs devtooie derives (footer links, `PUBLIC_ORIGIN`). Defaults from `rootDomain`: `http` on `localhost` (the browser hits the proxy directly, so the URLs carry its `port`), `https` on any other root (a TLS terminator in front, so no port).',
     ),
-  urlPort: z
-    .union([
-      z.number(),
-      z.custom<(ctx: ConfigContext) => number>((v) => typeof v === 'function', {
-        message: 'devReverseProxy.urlPort must be a number or a function',
-      }),
-    ])
-    .optional(),
 });
 
 export const DefineConfigSchema = z.object({

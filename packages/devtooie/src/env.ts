@@ -222,16 +222,7 @@ export function resolveEnv(opts: ResolveEnvOptions): EnvResolution {
  */
 export function packageEnvLayer(
   pkg: AnyPackageConfig,
-  opts: {
-    cwd: string;
-    files?: string[];
-    override?: EnvOverride;
-    /**
-     * The package's public origin under the dev reverse proxy (`publicOriginFor`), injected as
-     * `PUBLIC_ORIGIN` under the same rule as `PORT`: an explicit `.env` value still wins.
-     */
-    publicOrigin?: string;
-  },
+  opts: { cwd: string; files?: string[]; override?: EnvOverride },
 ): Record<string, string> {
   const { env } = resolveEnv({
     cwd: opts.cwd,
@@ -243,8 +234,8 @@ export function packageEnvLayer(
   if (pkg.port !== undefined) {
     injected.PORT = String(pkg.port);
   }
-  if (opts.publicOrigin !== undefined) {
-    injected.PUBLIC_ORIGIN = opts.publicOrigin;
+  if (pkg.publicOrigin !== undefined) {
+    injected.PUBLIC_ORIGIN = pkg.publicOrigin;
   }
   return Object.assign(injected, env);
 }

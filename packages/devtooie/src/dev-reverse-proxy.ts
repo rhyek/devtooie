@@ -160,11 +160,11 @@ export async function startDevReverseProxy(opts: {
   /** The control API's port, if known, so a 503 page can spell out the exact `restart` URL. */
   controlApiPort?: number;
   /**
-   * How the public URLs are formed (`config.devReverseProxy.urlScheme`/`urlPort`), so the 404
-   * page can list every route as a link that actually works. Defaults to `https` with no port.
+   * Scheme of the public URLs (`config.devReverseProxy.urlScheme`), so the 404 page can list
+   * every route as a link that actually works: under `http` (the default) they carry the
+   * proxy's own port, under `https` none (a TLS terminator on 443 in front).
    */
   urlScheme?: 'http' | 'https';
-  urlPort?: number;
   /** Override of {@link READY_HOLD_MS}. */
   readyTimeoutMs?: number;
 }): Promise<DevReverseProxyServer> {
@@ -184,8 +184,11 @@ export async function startDevReverseProxy(opts: {
       ? `POST http://127.0.0.1:${String(opts.controlApiPort)}/command/restart/${name}`
       : `POST /command/restart/${name} on the control API`;
 
+  const urlScheme = opts.urlScheme ?? 'http';
+  // `port` (the bound one) is assigned below, before any request can arrive.
+  let port = opts.port;
   const publicUrl = (host: string) =>
-    `${opts.urlScheme ?? 'https'}://${host}${opts.urlPort === undefined ? '' : `:${String(opts.urlPort)}`}`;
+    `${urlScheme}://${host}${urlScheme === 'http' ? `:${String(port)}` : ''}`;
 
   const notFound = (req: http.IncomingMessage, res: http.ServerResponse, host: string | null) => {
     const urls = routes.map((r) => publicUrl(r.host));
@@ -457,7 +460,7 @@ export async function startDevReverseProxy(opts: {
     });
     server.listen(opts.port, '127.0.0.1', resolve);
   });
-  const port = (server.address() as net.AddressInfo).port;
+  port = (server.address() as net.AddressInfo).port;
 
   return {
     port,

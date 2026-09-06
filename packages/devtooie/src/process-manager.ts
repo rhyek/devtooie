@@ -6,7 +6,7 @@ import stringWidth from 'string-width';
 import wrapAnsi from 'wrap-ansi';
 import sliceAnsi from 'slice-ansi';
 import type { AnyPackageConfig, ResolvedHealthcheck } from './config.js';
-import { getDevScript, getLoadedConfig, publicOriginFor } from './config.js';
+import { getDevScript, getLoadedConfig } from './config.js';
 import { defaultFormatter } from './log-formatter.js';
 import type { ControlManager } from './command-server.js';
 import { debugLog } from './debug-log.js';
@@ -664,12 +664,7 @@ export class ProcessManager implements ControlManager {
     return Object.assign(
       {},
       process.env,
-      packageEnvLayer(pkg, {
-        cwd: this.cwd,
-        files: this.envFiles,
-        override: this.envOverride,
-        publicOrigin: publicOriginFor(getLoadedConfig(), pkg),
-      }),
+      packageEnvLayer(pkg, { cwd: this.cwd, files: this.envFiles, override: this.envOverride }),
     );
   }
 

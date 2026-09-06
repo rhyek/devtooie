@@ -105,9 +105,10 @@ export default defineConfig({
   packages: {
     'core-api': {
       port: 3001, // is provided as PORT environment variable to the process
-      // `healthcheck` and `urls` take a string or a callback over this package's
+      // A relative path is resolved against this package's port (or its public origin under
+      // the dev reverse proxy); `healthcheck` and `urls` also take a full URL or a callback over
       // `{ envs, tokens, port, subdomain }` — devtooie does no string interpolation of its own.
-      healthcheck: ({ port }) => `http://localhost:${port}/health`,
+      healthcheck: '/health',
     },
     worker: {
       // a dev process that doesn't watch files: it builds once, then runs. devtooie
@@ -297,7 +298,7 @@ load `.env.development` — so values shared across modes belong in `.env` and
 `NODE_ENV=test` in `.env.test`.
 
 With a [dev reverse proxy](docs/dev-reverse-proxy.md) configured, a routable package also gets
-`PUBLIC_ORIGIN` (its public `<urlScheme>://<subdomain>.<rootDomain>[:<urlPort>]`), under the same
+`PUBLIC_ORIGIN` (its public `<urlScheme>://<subdomain>.<rootDomain>[:<port>]`), under the same
 rule.
 
 A package's `port` is also injected as `PORT` (an explicit `.env` `PORT`
@@ -326,7 +327,8 @@ env (or invoke one of its scripts/targets with `-c`) — see
 ## Advanced CLI usage
 
 Every flag and subcommand — plus `devtooie cmd` for running a command in a package's
-environment on demand — is documented in **[docs/cli.md](docs/cli.md)**.
+environment on demand, and `devtooie show-config` for printing the fully resolved config as JSON
+without a session — is documented in **[docs/cli.md](docs/cli.md)**.
 
 ## Agent skill
 

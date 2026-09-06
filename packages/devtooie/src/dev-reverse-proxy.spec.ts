@@ -127,7 +127,6 @@ async function proxyFor(
     readyTimeoutMs?: number;
     controlApiPort?: number;
     urlScheme?: 'http' | 'https';
-    urlPort?: number;
   } = {},
 ): Promise<DevReverseProxyServer> {
   const proxy = await startDevReverseProxy({ port: 0, rootDomain: ROOT, routes, ...opts });
@@ -258,7 +257,7 @@ describe('routing', () => {
           route(ROOT, 'web', web.port),
           route(`api.${ROOT}`, 'api', api.port),
         ],
-        { defaultPackage: 'web', urlScheme: 'http', urlPort: 4000 },
+        { defaultPackage: 'web', urlScheme: 'http' },
       );
       proxy.attach(stubManager({ web: 'running', api: 'running' }));
       const reply = await request(proxy.port, host, { headers: { accept: 'text/html' } });
@@ -266,7 +265,7 @@ describe('routing', () => {
       expect(reply.headers['content-type']).toMatch(/^text\/html/);
       // Listed as the public URLs, so each one is a link that actually works.
       for (const known of [`web.${ROOT}`, `www.${ROOT}`, `api.${ROOT}`, ROOT]) {
-        expect(reply.body).toContain(`href="http://${known}:4000"`);
+        expect(reply.body).toContain(`href="http://${known}:${String(proxy.port)}"`);
       }
       expect(reply.body).toContain(host);
     },

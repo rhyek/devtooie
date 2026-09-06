@@ -18,17 +18,13 @@ The proxy does no TLS, no path-based routing, and no auth.
 export default defineConfig({
   devReverseProxy: {
     port: ({ envs }) => Number(envs.DEV_REVERSE_PROXY_PORT), // number | callback
-    rootDomain: ({ envs }) => `myproject.${envs.LOCALDEV_DOMAIN}`, // string | callback
+    rootDomain: ({ envs }) => `myproject.${envs.LOCALDEV_DOMAIN}`, // string | callback, default 'localhost'
     defaultPackage: 'web', // optional: what the bare rootDomain routes to
-    urlScheme: 'https', // optional, default 'https': scheme of the public URLs
+    urlScheme: 'https', // optional; defaults from rootDomain: http on localhost, https elsewhere
   },
   packages: {
     web: { port: 3000, subdomain: ['web', 'www'] },
-    api: {
-      port: 3001,
-      subdomain: 'api',
-      healthcheck: ({ port }) => `http://localhost:${port}/health`,
-    },
+    api: { port: 3001, subdomain: 'api', healthcheck: '/health' },
     worker: { port: 3002 }, // a port but no subdomain: simply not routed
   },
 });
@@ -39,16 +35,17 @@ export default defineConfig({
 - **`port`** and **`rootDomain`** take a literal or a callback over the workspace-scope context
   `{ envs, tokens }` (the same one the workspace-wide `urls` get), resolved once at load like a
   package `port`. A callback returning `NaN` or an empty string is an error naming the field
-  and the env files that were loaded.
+  and the env files that were loaded. `rootDomain` defaults to **`localhost`**, which browsers
+  resolve to loopback with nothing in front (see [No terminator](#no-terminator-plain-localhost)).
 - **`defaultPackage`** — the package the bare `rootDomain` routes to. Must declare a `port`.
   Without it the bare root is a 404.
-- **`urlScheme`** — `'http' | 'https'`, default `'https'`. The scheme of the public URLs devtooie
-  derives (footer links, `PUBLIC_ORIGIN`). `https` means a TLS terminator sits in front, so the
-  URLs carry no port; `http` means the browser hits the proxy directly, so they carry the proxy
-  port — which is how a plain `localhost` setup works with nothing in front (see below).
-- **`urlPort`** — the port of the public URLs, when the rule `urlScheme` implies is wrong for
-  your setup (a plain-HTTP terminator on 80, a TLS one on 8443). A literal or a callback over
-  `{ envs, tokens }`. Omit for no port under `https` and the proxy port under `http`.
+- **`urlScheme`** — `'http' | 'https'`. The scheme of the public URLs devtooie derives (footer
+  links, `PUBLIC_ORIGIN`), and with it whether they carry a port. **Defaults from `rootDomain`**:
+  `http` on `localhost`, `https` on any other root. `http` means the browser hits the proxy
+  directly, so the URLs carry the proxy `port` — how a plain `localhost` setup works with nothing
+  in front; `https` means a TLS terminator sits in front, so they carry no port. So the same
+  package is `http://api.localhost:4000` under the default root and `https://api.myproject.test`
+  under a custom one, with nothing else to set.
 
 **Routable packages** are those declaring both `subdomain` and `port`. A package with a port
 but no subdomain is simply not routed. Validation, when the block is present:
@@ -127,14 +124,14 @@ Every routable package's process — one declaring both `subdomain` and `port` �
 wins. It is built from the block as
 
 ```
-<urlScheme>://<canonical subdomain>.<rootDomain>[:<urlPort>]
+<urlScheme>://<canonical subdomain>.<rootDomain>[:<port>]
 ```
 
 where the canonical subdomain is the package's `subdomain` (the first entry of an array — aliases
-never appear here) and the port follows the [`urlScheme` rule](#config): an explicit `urlPort`,
-else the proxy port under `http`, else none. So `https://web.example.test` behind a TLS
-terminator, and `http://web.localhost:21050` on plain `localhost`. A package with a port but no
-subdomain gets no `PUBLIC_ORIGIN` at all.
+never appear here) and the port follows the [`urlScheme` rule](#config): the proxy `port` under
+`http`, none under `https`. So `https://web.myproject.test` behind a TLS terminator, and
+`http://web.localhost:21050` on plain `localhost`. A package with a port but no subdomain gets
+no `PUBLIC_ORIGIN` at all.
 
 Apps use it for things like Vite's `server.allowedHosts` and `server.hmr` without repeating the
 subdomain in their own config. `devtooie cmd` hands the same variable to a one-off command.
@@ -142,14 +139,18 @@ subdomain in their own config. `devtooie cmd` hands the same variable to a one-o
 ## Footer links and the resolved config
 
 For every routable package, `<urlScheme>://<canonical subdomain>.<rootDomain>` is prepended to
-that package's resolved `urls` (and `<urlScheme>://<rootDomain>` for `defaultPackage`), labelled
+that package's resolved `urls` — one link, even for a package with aliases or the
+`defaultPackage` (whose bare root routes too but isn't listed again) — labelled
 with the hostname — so the public URL is the first thing in the footer. This happens in
 `defineConfig`, so the exported config shows it too, as does `config.devReverseProxy`:
 
 ```ts
 config.devReverseProxy; // { port: 4000, rootDomain: 'myproject.example.test', defaultPackage: 'web', urlScheme: 'https' } | undefined
+config.packages.web.publicOrigin; // 'https://web.myproject.example.test' — the same value injected as PUBLIC_ORIGIN
 config.packages.web.urls; // [{ label: 'web.myproject.example.test', url: 'https://web.myproject.example.test' }, …]
 ```
+
+`devtooie show-config` prints all of this as JSON without starting a session.
 
 ## Lifecycle
 
@@ -168,17 +169,16 @@ the same table under `devReverseProxy`.
 
 ## No terminator: plain `localhost`
 
-With `rootDomain: 'localhost'` and `urlScheme: 'http'` nothing needs to sit in front: browsers
-resolve every `*.localhost` name to the loopback address, so `http://web.localhost:<proxy port>`
-reaches the proxy, which routes it by the `web` label. The public URLs devtooie derives carry
-the proxy port automatically under `http`, so footer links and `PUBLIC_ORIGIN` are right, and
-Vite's HMR client (see above) connects to the same port the page came from.
+With the default `rootDomain` (`localhost`) nothing needs to sit in front: browsers resolve
+every `*.localhost` name to the loopback address, so `http://web.localhost:<proxy port>` reaches
+the proxy, which routes it by the `web` label. `localhost` implies `urlScheme: 'http'`, under
+which the public URLs devtooie derives carry the proxy port, so footer links and
+`PUBLIC_ORIGIN` are right and Vite's HMR client (see above) connects to the same port the page
+came from.
 
 ```ts
 devReverseProxy: {
   port: ({ envs }) => Number(envs.DEV_REVERSE_PROXY_PORT),
-  rootDomain: 'localhost',
-  urlScheme: 'http',
   defaultPackage: 'frontend', // http://localhost:<proxy port> is the app
 },
 ```
@@ -188,8 +188,9 @@ devReverseProxy: {
 
 ## The TLS terminator
 
-Anything that terminates TLS and forwards to a loopback port works. With Caddy, one site block
-per project:
+Anything that terminates TLS and forwards to a loopback port works. Point `rootDomain` at its
+domain: a root other than `localhost` implies `urlScheme: 'https'`, so the public URLs point at
+the terminator with no port. With Caddy, one site block per project:
 
 ```caddyfile
 *.myproject.example.test, myproject.example.test {

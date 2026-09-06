@@ -349,7 +349,6 @@ export async function startSessionDevReverseProxy(opts: {
     routes: routesFromConfig(config),
     controlApiPort: opts.controlApiPort,
     urlScheme: proxy.urlScheme,
-    urlPort: proxy.urlPort,
   });
 }
 
