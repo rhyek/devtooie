@@ -37,6 +37,11 @@ It's a good reference for how a real workspace is wired: project-reference build
   the affected package on change.
 - **Readiness ordering.** `healthcheck` + `waitFor` hold a package until the services it
   needs are up.
+- **One hostname per package.** Optionally, devtooie runs the dev reverse proxy itself: give a
+  package a `subdomain` and reach it at `http://api.localhost:4000` — or
+  `https://api.myproject.test` behind a TLS terminator — instead of a bare port, with a status
+  page while the package is stopped or still starting. Vite HMR works through it. See
+  [Dev reverse proxy](#dev-reverse-proxy).
 - **Lifecycle-aware.** Each package declares whether its dev process watches or just builds,
   so you know exactly what to do after a code edit.
 - **Control API + agent skill.** A localhost HTTP API drives a running session headlessly and
@@ -89,7 +94,7 @@ export default defineConfig({
     'core-api': {
       port: 3001, // Is provided as PORT environment variable to the process
       // `healthcheck` and `urls` take a string or a callback over this package's
-      // `{ envs, tokens, port }` — devtooie does no string interpolation of its own.
+      // `{ envs, tokens, port, subdomain }` — devtooie does no string interpolation of its own.
       healthcheck: ({ port }) => `http://localhost:${port}/health`,
     },
     worker: {
@@ -171,6 +176,7 @@ scratch to clear stale build output — those enable the rebuild command (the `b
 | `apiPort`      | Pin the [control API](#drive-a-running-session-via-the-control-api) port (otherwise chosen automatically).                                                         |
 | `urls`         | Workspace-wide footer links, not tied to a package. Same shape as a package's `urls`, but a callback here gets only `{ envs, tokens }` (no package, so no `port`). |
 | `tokens`       | Values of your own, handed to every callback as `tokens` (a package's own `tokens` are merged on top) — see [Callbacks](#callbacks-instead-of-interpolation).      |
+| `devReverseProxy` | Run devtooie's own dev reverse proxy, routing `<subdomain>.<rootDomain>` to packages by their `subdomain`. `{ port, rootDomain, defaultPackage?, urlScheme?, urlPort? }`; present = enabled. See [Dev reverse proxy](#dev-reverse-proxy). |
 
 `packages` is an object **keyed by package name**:
 
@@ -205,6 +211,17 @@ lib):
   **`false`** to leave it stopped; start it with the **`s`** hotkey or a control-API `restart`
   (`POST /command/restart/<name>` starts a stopped package). Ignored when `command` is `null`.
 - **`port`** — the package's dev port; injected as `PORT`, handed to this package's `healthcheck`/`urls` callbacks, and swept on session handoff. May be a **callback** deriving it from the package's [environment](#environment-env-loading) — see [Callbacks instead of interpolation](#callbacks-instead-of-interpolation). Return `undefined` for "no port" (same as omitting the field); returning `NaN` — the usual sign of a missing variable — is an error naming the package and the env files that were loaded. Declaring a `port` is what lets this package's other callbacks use `port` — see [The `port` in a callback](#the-port-in-a-callback).
+- **`subdomain`** — the package's dev subdomain, a string or an array of them (the first is the
+  canonical subdomain, the rest are aliases). It is data for tooling that reads the exported
+  config — a reverse proxy building its routing table from each package's `subdomain` and
+  resolved `port` (`config.packages.api.subdomain`). With a
+  top-level [`devReverseProxy`](#dev-reverse-proxy), devtooie is that proxy: it routes
+  `<subdomain>.<rootDomain>` to this package's `port` (aliases too) and injects `PUBLIC_ORIGIN`
+  into its process. Without one, devtooie doesn't use it. Either way the canonical entry is
+  handed to this package's callbacks as `subdomain` — see
+  [Callbacks](#callbacks-instead-of-interpolation). Each entry must be a DNS label — lowercase
+  letters, digits, and hyphens, not starting or ending with a hyphen, at most 63 characters —
+  and no two packages may declare the same one, canonical or alias.
 - **`urls`** — links shown in the running footer, one entry per line. Each entry is a URL, a
   `{ label, url }`, or an **array** of those (rendered on the same line, space-separated). Any
   URL may be a callback.
@@ -232,7 +249,8 @@ anything else is written as a plain function of it — ordinary TypeScript, chec
 with nothing to escape. A `$` in a config string is just a `$`.
 
 `port`, `healthcheck`, and every `urls` entry (including the `url` inside a `{ label, url }`)
-accept either a literal or a callback:
+accept either a literal or a callback — as do the top-level `devReverseProxy.port` and
+`rootDomain`, over the workspace context `{ envs, tokens }`:
 
 ```ts
 export default defineConfig({
@@ -259,6 +277,7 @@ Each callback receives one object:
 | `envs`   | The package's `.env` files resolved and merged with `process.env` (which wins by default) — the same environment the dev process gets. See [Environment loading](#environment-env-loading). |
 | `tokens` | The top-level `tokens` with this package's own `tokens` merged **over** them. Typed from what you declared, so a typo is a compile error.                               |
 | `port`   | The package's resolved `port`, typed **`number`** (not `number \| undefined`) so it drops straight into a URL. A package that declares no `port` has nothing to give, which types can't express here — so reading `port` in that case throws when the config loads, naming the package. Not offered to `port` itself, nor to the workspace-wide `urls`. |
+| `subdomain` | The package's canonical `subdomain` — the first entry when it declared several — so a URL can be built from it without repeating it: `` urls: [({ subdomain, envs }) => `https://${subdomain}.${envs.LOCALDEV_DOMAIN}`] ``. Plain data, unlike `port`: `undefined` (in type and in value) for a package that declares none, so branch on it if a callback has to work either way. Not offered to `port`, nor to the workspace-wide `urls`. |
 
 Callbacks run **once**, while the config is being defined, and must be synchronous. A `port`
 callback returns a number (or `undefined`); the rest return a string.
@@ -538,6 +557,203 @@ building those deps first. Give a shared lib a watching `dev` (e.g. `tsc --watch
 `dev`/`build` building only itself — the lib owns its watcher. See the
 [`example/`](https://github.com/rhyek/devtooie/tree/main/example) monorepo.
 
+## Dev reverse proxy
+
+devtooie can run the project's dev reverse proxy itself. A TLS terminator on the machine
+(Caddy, say — not devtooie's concern) forwards `*.<rootDomain>` to one loopback port per
+project; devtooie owns that port and routes each request by the first label of its `Host`
+header to the package that declares that `subdomain`, on that package's resolved `port`.
+
+Because devtooie also knows every package's live status, the proxy can **answer for a package
+that is stopped or still starting** — a page saying so, rather than a bare connection error.
+
+The proxy does no TLS, no path-based routing, and no auth.
+
+### Config
+
+```ts
+export default defineConfig({
+  devReverseProxy: {
+    port: ({ envs }) => Number(envs.DEV_REVERSE_PROXY_PORT), // number | callback
+    rootDomain: ({ envs }) => `myproject.${envs.LOCALDEV_DOMAIN}`, // string | callback
+    defaultPackage: 'web', // optional: what the bare rootDomain routes to
+    urlScheme: 'https', // optional, default 'https': scheme of the public URLs
+  },
+  packages: {
+    web: { port: 3000, subdomain: ['web', 'www'] },
+    api: { port: 3001, subdomain: 'api', healthcheck: ({ port }) => `http://localhost:${port}/health` },
+    worker: { port: 3002 }, // a port but no subdomain: simply not routed
+  },
+});
+```
+
+- **The block's presence enables the proxy.** There is no `enabled` flag; remove the block to
+  turn it off.
+- **`port`** and **`rootDomain`** take a literal or a callback over the workspace-scope context
+  `{ envs, tokens }` (the same one the workspace-wide `urls` get), resolved once at load like a
+  package `port`. A callback returning `NaN` or an empty string is an error naming the field
+  and the env files that were loaded.
+- **`defaultPackage`** — the package the bare `rootDomain` routes to. Must declare a `port`.
+  Without it the bare root is a 404.
+- **`urlScheme`** — `'http' | 'https'`, default `'https'`. The scheme of the public URLs devtooie
+  derives (footer links, `PUBLIC_ORIGIN`). `https` means a TLS terminator sits in front, so the
+  URLs carry no port; `http` means the browser hits the proxy directly, so they carry the proxy
+  port — which is how a plain `localhost` setup works with nothing in front (see below).
+- **`urlPort`** — the port of the public URLs, when the rule `urlScheme` implies is wrong for
+  your setup (a plain-HTTP terminator on 80, a TLS one on 8443). A literal or a callback over
+  `{ envs, tokens }`. Omit for no port under `https` and the proxy port under `http`.
+
+**Routable packages** are those declaring both `subdomain` and `port`. A package with a port
+but no subdomain is simply not routed. Validation, when the block is present:
+
+- `rootDomain` is a lowercase hostname (labels of `[a-z0-9-]`, no leading or trailing hyphen).
+- `defaultPackage` names a declared package that has a `port`.
+- A package that declares `subdomain` but no `port` is an error — it can't be routed.
+- The proxy `port` equals no package's port.
+
+Each error names the offender.
+
+### Routing
+
+The proxy strips any `:port` from the `Host` header, then:
+
+| Host                    | Routes to                                                                |
+| ----------------------- | ------------------------------------------------------------------------ |
+| `<rootDomain>`          | `defaultPackage`, or 404 when unset.                                     |
+| `<label>.<rootDomain>`  | The package whose canonical subdomain **or alias** is `<label>`.         |
+| anything else           | 404 — including multi-label prefixes (`a.web.<rootDomain>`) and hosts outside `rootDomain`. |
+
+The 404 is a small page listing every hostname that does exist, as public URLs you can click:
+`<subdomain>.<rootDomain>` for every routable package, aliases included, plus the bare root when
+`defaultPackage` is set.
+
+Requests are forwarded to the package's port on `localhost`, trying both loopback families
+(Vite on a modern Node listens on `[::1]` alone). The `Host` header is kept as received and every other request and response header passes through unchanged, except the
+hop-by-hop ones (`connection`, `keep-alive`, `proxy-*`, `te`, `trailer`, `transfer-encoding`,
+`upgrade`), which Node manages on each side. devtooie adds or rewrites no `X-Forwarded-*` —
+the TLS terminator in front already sets them. Bodies stream both ways; nothing is buffered,
+and the proxy has no request, response, or idle timeouts of its own, so SSE and long-lived
+connections survive.
+
+### Status pages
+
+The proxy asks the process manager before forwarding:
+
+| Package status                                      | Response                                                                                                                                                                 |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `stopped`, `waiting`, `rebuilding`, `restarting`    | **503** immediately: a small HTML page (when the request accepts `text/html`) or JSON otherwise, naming the package and its status and how to start it (`s` hotkey, or `POST /command/restart/<name>` on the [control API](#drive-a-running-session-via-the-control-api)). `Retry-After: 2`, `Cache-Control: no-store`; the HTML page refreshes itself. |
+| `running`, with a `healthcheck` not yet passing     | The request is **held** up to 15 s, re-checking readiness, then proxied. Past 15 s, the same 503 with status `starting`.                                               |
+| `running` and ready (or no `healthcheck`)           | Proxied. If the package refuses or resets the connection, a **502** page naming the package and port, `Retry-After: 1`.                                                 |
+| not part of the running session                     | **503**, saying so.                                                                                                                                                      |
+
+Before the session's process manager is up (during the build phase), every routable host
+answers 503 with status `starting`. If the client disconnects mid-request, the upstream request
+is aborted.
+
+### WebSockets and Vite HMR
+
+The proxy handles the `upgrade` event with the same `Host` routing, opens the upstream with the
+original headers, and once the package answers `101` splices the two sockets both ways. An
+upgrade to a package that is not `running` right now is **dropped** (the socket is destroyed)
+rather than held, and so is one the package fails to accept because it isn't listening yet:
+websocket clients reconnect on their own, and a real answer is there once the package is up.
+
+Vite HMR is the canonical client. Point its client at the TLS terminator's port and let the
+websocket ride the same connection as the page — no separate HMR port:
+
+```ts
+// vite.config.ts
+export default defineConfig({
+  server: {
+    // PUBLIC_ORIGIN is injected by devtooie — see below
+    allowedHosts: [new URL(process.env.PUBLIC_ORIGIN!).hostname],
+    // the public port: the TLS terminator's, or the proxy's own under plain localhost
+    hmr: { clientPort: Number(new URL(process.env.PUBLIC_ORIGIN!).port) || 443 },
+  },
+});
+```
+
+### `PUBLIC_ORIGIN`
+
+Every routable package's process — one declaring both `subdomain` and `port` — gets
+`PUBLIC_ORIGIN` injected next to `PORT`, under the same rule: an explicit `.env` `PUBLIC_ORIGIN`
+wins. It is built from the block as
+
+```
+<urlScheme>://<canonical subdomain>.<rootDomain>[:<urlPort>]
+```
+
+where the canonical subdomain is the package's `subdomain` (the first entry of an array — aliases
+never appear here) and the port follows the [`urlScheme` rule](#config): an explicit `urlPort`,
+else the proxy port under `http`, else none. So `https://web.example.test` behind a TLS
+terminator, and `http://web.localhost:21050` on plain `localhost`. A package with a port but no
+subdomain gets no `PUBLIC_ORIGIN` at all.
+
+Apps use it for things like Vite's `server.allowedHosts` and `server.hmr` without repeating the
+subdomain in their own config. `devtooie cmd` hands the same variable to a one-off command.
+
+### Footer links and the resolved config
+
+For every routable package, `<urlScheme>://<canonical subdomain>.<rootDomain>` is prepended to
+that package's resolved `urls` (and `<urlScheme>://<rootDomain>` for `defaultPackage`), labelled
+with the hostname — so the public URL is the first thing in the footer. This happens in
+`defineConfig`, so the exported config shows it too, as does `config.devReverseProxy`:
+
+```ts
+config.devReverseProxy; // { port: 4000, rootDomain: 'myproject.example.test', defaultPackage: 'web', urlScheme: 'https' } | undefined
+config.packages.web.urls; // [{ label: 'web.myproject.example.test', url: 'https://web.myproject.example.test' }, …]
+```
+
+### Lifecycle
+
+The proxy starts **before any package**, in both the TUI and `--plain` modes, whenever the
+loaded config has `devReverseProxy`. `devtooie cmd`, `logs`, `env`, and `init` never start it.
+On shutdown it closes and destroys every open socket, proxied websockets included, so a
+lingering connection can't hold the exit.
+
+Its port goes through the same conflict handling package ports get: a previous devtooie
+session being handed off releases it as it shuts down; anything still holding it after that is
+a startup error naming the port.
+
+At start, one `[devtooie]` log line lists the proxy port, the root domain, and each route as
+`<host> → <package> :<port>`. The [control API](#drive-a-running-session-via-the-control-api)'s `GET /query/status` reports
+the same table under `devReverseProxy`.
+
+### No terminator: plain `localhost`
+
+With `rootDomain: 'localhost'` and `urlScheme: 'http'` nothing needs to sit in front: browsers
+resolve every `*.localhost` name to the loopback address, so `http://web.localhost:<proxy port>`
+reaches the proxy, which routes it by the `web` label. The public URLs devtooie derives carry
+the proxy port automatically under `http`, so footer links and `PUBLIC_ORIGIN` are right, and
+Vite's HMR client (see above) connects to the same port the page came from.
+
+```ts
+devReverseProxy: {
+  port: ({ envs }) => Number(envs.DEV_REVERSE_PROXY_PORT),
+  rootDomain: 'localhost',
+  urlScheme: 'http',
+  defaultPackage: 'frontend', // http://localhost:<proxy port> is the app
+},
+```
+
+`*.localhost` resolution is a browser feature, not the OS resolver's: `curl` needs an explicit
+`Host` header (`curl -H 'Host: web.localhost' http://127.0.0.1:<proxy port>/`).
+
+### The TLS terminator
+
+Anything that terminates TLS and forwards to a loopback port works. With Caddy, one site block
+per project:
+
+```caddyfile
+*.myproject.example.test, myproject.example.test {
+  tls internal
+  reverse_proxy 127.0.0.1:4000
+}
+```
+
+where `4000` is the project's `devReverseProxy.port`. Caddy sets `X-Forwarded-*` itself, which
+is why devtooie doesn't.
+
 ## Is the app already running?
 
 Start here whenever you need to know whether some app in the repo is up — a dev server, an API,
@@ -778,7 +994,7 @@ defineConfig({
 
 With that, `NODE_OPTIONS=$NODE_OPTIONS --flag` appends to whatever the shell already set.
 
-A package's `port` is also injected as `PORT` (an explicit `.env` `PORT` still overrides it). The reverse direction works too: `port` may be a callback (`port: ({ envs }) => Number(envs.BACKEND_PORT)`) that reads these same resolved files to decide the port, and `healthcheck`/`urls` callbacks get the same `envs` — see [Callbacks instead of interpolation](#callbacks-instead-of-interpolation).
+A package's `port` is also injected as `PORT` (an explicit `.env` `PORT` still overrides it), and under the [dev reverse proxy](#dev-reverse-proxy) a routable package also gets `PUBLIC_ORIGIN` (its public `https://<subdomain>.<rootDomain>`) under the same rule. The reverse direction works too: `port` may be a callback (`port: ({ envs }) => Number(envs.BACKEND_PORT)`) that reads these same resolved files to decide the port, and `healthcheck`/`urls` callbacks get the same `envs` — see [Callbacks instead of interpolation](#callbacks-instead-of-interpolation).
 
 ### Modes (`--mode`)
 
@@ -925,7 +1141,7 @@ removed when a session ends, so it says where a session _would_ answer, not that
 Endpoints (all plain HTTP, no auth — localhost-only):
 
 - `GET /query/status` — a single snapshot of the session,
-  `{ pid, configPath, startedByAgent, logFile, packages, config }`:
+  `{ pid, configPath, startedByAgent, logFile, packages, config, devReverseProxy }`:
   - `pid` / `configPath` — the session's PID and the absolute path to the `devtooie.config.*` it
     was started with; available immediately, even while the session is still building.
   - `startedByAgent` — whether a coding agent started this session rather than a person. Decides
@@ -940,6 +1156,10 @@ Endpoints (all plain HTTP, no auth — localhost-only):
     `{ name, watches, builds, cleans }`), as loaded at startup (restart devtooie to pick up edits);
     `null` until the build finishes. Use it to decide package lifecycle — see
     [Package lifecycle](#package-lifecycle-when-you-change-code).
+  - `devReverseProxy` — `{ port, rootDomain, routes: [{ host, package, port }] }` for the
+    session's [dev reverse proxy](#dev-reverse-proxy), or `null` when the config declares none.
+    Present from the start (the proxy binds before anything else); `routes` lists every public
+    hostname and the package (and loopback port) it forwards to.
 - `POST /command/restart/<name>` — restart one package in place (`202` if accepted, `404` for an
   unknown package).
 - `POST /command/rebuild/<name>` — stop, clean-build, then start. Prefer this over `restart`
@@ -1149,7 +1369,7 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
      `PORT` env var, so the app can read `process.env.PORT` without you duplicating it in a `.env`
      (an explicit `.env` `PORT` still wins).
    - `healthcheck` / `urls` — a URL string, or a **callback** over this package's
-     `{ envs, tokens, port }` (see [Callbacks](#callbacks-instead-of-interpolation)). Write
+     `{ envs, tokens, port, subdomain }` (see [Callbacks](#callbacks-instead-of-interpolation)). Write
      ``healthcheck: ({ port }) => `http://localhost:${port}/health` `` rather than hardcoding the
      port, so it can't drift. **There is no `$port`/`$name` interpolation** — a `$` in a config
      string is a literal `$`. Each `urls` entry is a URL, a `{ label, url }`, or an array of those

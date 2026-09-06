@@ -7,7 +7,8 @@ import { findPackage, getRegisteredPackages, getLoadedConfig } from '../config.j
 import { startCommandServer } from '../command-server.js';
 import { debugLog } from '../debug-log.js';
 import { ACCENT_COLOR, DANGER_COLOR, OK_COLOR, ON_ACCENT_COLOR } from '../colors.js';
-import { acquireDevSession } from '../dev-session.js';
+import { acquireDevSession, startSessionDevReverseProxy } from '../dev-session.js';
+import type { DevReverseProxyServer } from '../dev-reverse-proxy.js';
 import { findConfigPath } from '../load-config.js';
 import { pickRandomPort } from '../running.js';
 import { buildRunnerArgs, getExecArgs, hasScript, resolveDeps } from '../lib.js';
@@ -19,7 +20,12 @@ export type ControlServer = Awaited<ReturnType<typeof startCommandServer>>;
 export type BuildProgressProps = {
   selectedNames: string[];
   logFile?: string;
-  onControlReady: (control: ControlServer) => void;
+  /**
+   * Called once the control server is listening. `devReverseProxy` is the session's dev
+   * reverse proxy, already listening, or `null` when the config declares none — the run
+   * phase attaches it to the process manager and closes it with the session.
+   */
+  onControlReady: (control: ControlServer, devReverseProxy: DevReverseProxyServer | null) => void;
   onComplete: (runnerArgs: RunnerArgs) => void;
 };
 
@@ -57,6 +63,8 @@ export function BuildProgress({
   // onComplete; until then, an unmount (cancelled build, build error) must
   // close it itself so a still-open server doesn't keep the process alive.
   const controlRef = useRef<ControlServer | null>(null);
+  // Same for the dev reverse proxy: bound before the build, owned by the run phase after it.
+  const devReverseProxyRef = useRef<DevReverseProxyServer | null>(null);
   const handedOffRef = useRef(false);
 
   const selectedPackages = selectedNames.map(findPackage);
@@ -107,16 +115,28 @@ export function BuildProgress({
         if (cancelled) {
           return;
         }
+        // If the handoff above failed, fall back to a random port so the server can still bind.
+        const controlPort = port ?? pickRandomPort();
 
-        // 2. Start the control server now (pid + quit) so a yet-newer session
+        // 2. Start the dev reverse proxy (if configured) before anything else. Deliberately
+        //    outside the best-effort block above: a foreign holder of its port is a startup
+        //    error, surfaced through the error phase like a failed build.
+        const devReverseProxy = await startSessionDevReverseProxy({ controlApiPort: controlPort });
+        devReverseProxyRef.current = devReverseProxy;
+        if (cancelled) {
+          void devReverseProxy?.close();
+          return;
+        }
+
+        // 3. Start the control server now (pid + quit) so a yet-newer session
         //    can detect and close this one while it builds. The run phase
-        //    attaches its process manager once building finishes. If the handoff
-        //    above failed, fall back to a random port so the server can still bind.
+        //    attaches its process manager once building finishes.
         debugLog('build: starting control server');
         const control = await startCommandServer({
-          port: port ?? pickRandomPort(),
+          port: controlPort,
           configPath,
           logFile,
+          devReverseProxy,
           onQuit: () => {
             // No process manager yet, so there's nothing to shut down
             // gracefully — just exit. process.exit guarantees this process
@@ -127,12 +147,13 @@ export function BuildProgress({
         });
         if (cancelled) {
           void control.close();
+          void devReverseProxy?.close();
           return;
         }
         controlRef.current = control;
-        onControlReady(control);
+        onControlReady(control, devReverseProxy);
 
-        // 3. Build dependencies.
+        // 4. Build dependencies.
         for (let i = 0; i < buildablePackages.length; i++) {
           if (cancelled) {
             return;
@@ -162,7 +183,7 @@ export function BuildProgress({
           return;
         }
 
-        // 4. Run — the caller now owns the control server's lifecycle.
+        // 5. Run — the caller now owns the control server's lifecycle.
         setState({ phase: 'done' });
         handedOffRef.current = true;
         onComplete({ ...buildRunnerArgs(selectedPackages, deps), logFile });
@@ -182,6 +203,7 @@ export function BuildProgress({
       cancelled = true;
       if (!handedOffRef.current) {
         void controlRef.current?.close();
+        void devReverseProxyRef.current?.close();
       }
     };
     // Intentionally runs once per mount: selectedNames/logFile are fixed for

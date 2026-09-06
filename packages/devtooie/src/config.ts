@@ -39,7 +39,8 @@ export type Command = z.infer<typeof CommandSchema>;
 export interface ConfigContext<T = TokenRecord> {
   /**
    * The package's resolved `.env` files merged **over** `process.env` — the same environment
-   * its dev process will be spawned with, minus the `PORT` devtooie injects. File values win
+   * its dev process will be spawned with, minus the `PORT` (and, under the dev reverse proxy,
+   * `PUBLIC_ORIGIN`) devtooie injects. File values win
    * over ambient ones, and package-scope files win over workspace-scope ones. (For the
    * workspace-wide `urls`, which belong to no package, this is the workspace scope alone.)
    */
@@ -52,7 +53,10 @@ export interface ConfigContext<T = TokenRecord> {
   tokens: T;
 }
 
-/** What a package's `healthcheck`/`urls` callbacks receive: {@link ConfigContext} plus the port. */
+/**
+ * What a package's `healthcheck`/`urls` callbacks receive: {@link ConfigContext} plus the
+ * package's own `port` and `subdomain`.
+ */
 export interface PackageContext<T = TokenRecord> extends ConfigContext<T> {
   /**
    * The package's resolved `port` — a literal, or its `port` callback's result (already
@@ -67,6 +71,16 @@ export interface PackageContext<T = TokenRecord> extends ConfigContext<T> {
    * read `port` is unaffected.
    */
   port: number;
+  /**
+   * The package's canonical `subdomain` — the first entry when it declared several — so a
+   * URL can be built from it without repeating it: `` ({ subdomain, envs }) =>
+   * `https://${subdomain}.${envs.LOCALDEV_DOMAIN}` ``.
+   *
+   * Plain data, unlike `port`: a package that declares no `subdomain` hands its callbacks
+   * `undefined` here, and the optional type says so. Branch on it if a callback has to work
+   * either way.
+   */
+  subdomain?: string;
 }
 
 /** Any `tokens` record: your own string values, keyed however you like. */
@@ -121,7 +135,7 @@ export type HealthcheckInput<C = PackageContext> =
   | {
       /**
        * The URL devtooie polls for readiness — a literal, or a callback over
-       * `{ envs, tokens, port }` invoked once at load time:
+       * `{ envs, tokens, port, subdomain }` invoked once at load time:
        * `url: ({ port }) => \`http://localhost:${port}/health\``.
        */
       url: UrlValue<C>;
@@ -288,20 +302,20 @@ export type PackageConfigInput<Own = unknown, Top = object, N extends string = s
      * `{ label, url }`, or an **array** of those (rendered on one line, space-separated).
      *
      * Any URL — bare or inside `{ label, url }` — may instead be a **callback** receiving
-     * `{ envs, tokens, port }`, so a link can be built from this package's resolved port or
-     * environment rather than hardcoded:
+     * `{ envs, tokens, port, subdomain }`, so a link can be built from this package's resolved
+     * port, subdomain, or environment rather than hardcoded:
      *
      * ```ts
      * urls: [
      *   ({ port }) => `http://localhost:${port}/todos`,
-     *   { label: 'home', url: ({ tokens }) => `https://app.${tokens.domain}` },
+     *   { label: 'home', url: ({ subdomain, tokens }) => `https://${subdomain}.${tokens.domain}` },
      * ]
      * ```
      */
     urls?: UrlEntryInput<PackageContext<PackageTokens<Top, Own>>>[];
     /**
      * A URL polled for readiness; also required by anything that lists this package in its
-     * `waitFor`. Like `urls`, it may be a callback over `{ envs, tokens, port }`:
+     * `waitFor`. Like `urls`, it may be a callback over `{ envs, tokens, port, subdomain }`:
      * `healthcheck: ({ port }) => \`http://localhost:${port}/health\``.
      *
      * Pass an object to give this package's probes a longer deadline than the 1500 ms default —
@@ -335,6 +349,61 @@ export type PackageConfigInput<Own = unknown, Top = object, N extends string = s
   };
 
 /**
+ * The built-in dev reverse proxy, as written in the config. Its presence enables the proxy:
+ * devtooie listens on `port` (loopback only) and routes each request by the first label of its
+ * `Host` to the package declaring that `subdomain`, on that package's resolved `port`. A TLS
+ * terminator in front (Caddy, say) forwards `*.<rootDomain>` here; the proxy does no TLS itself.
+ */
+export interface DevReverseProxyInput<Top = TokenRecord, N extends string = string> {
+  /**
+   * The loopback port the proxy listens on — what the TLS terminator forwards to. A literal, or
+   * a callback over the workspace context `{ envs, tokens }` resolved once at load, like a
+   * package `port`: `port: ({ envs }) => Number(envs.DEV_REVERSE_PROXY_PORT)`. Must differ from
+   * every package's port.
+   */
+  port: number | ((ctx: ConfigContext<Top>) => number);
+  /**
+   * The domain the packages live under: `<subdomain>.<rootDomain>` routes to the package with
+   * that `subdomain`. A lowercase hostname, literal or a callback over `{ envs, tokens }`:
+   * `rootDomain: ({ envs }) => \`myproject.${envs.LOCALDEV_DOMAIN}\``.
+   */
+  rootDomain: string | ((ctx: ConfigContext<Top>) => string);
+  /** The package the bare `rootDomain` routes to. Must declare a `port`. Omit for a 404 there. */
+  defaultPackage?: NoInfer<N>;
+  /**
+   * Scheme of the public URLs devtooie derives (footer links, `PUBLIC_ORIGIN`). `https` (the
+   * default) means a TLS terminator sits in front, so the URLs carry no port; `http` means the
+   * browser hits the proxy directly (`http://web.localhost:4000`), so they carry the proxy's
+   * own `port`. Set `urlPort` to override either.
+   */
+  urlScheme?: 'http' | 'https';
+  /**
+   * Port of the public URLs, when the rule `urlScheme` implies is wrong for your setup — a
+   * plain-HTTP terminator on 80, say, or a TLS one on 8443. A literal, or a callback over
+   * `{ envs, tokens }` like `port`. Omit for no port under `https` and the proxy port under
+   * `http`.
+   */
+  urlPort?: number | ((ctx: ConfigContext<Top>) => number);
+}
+
+/**
+ * The dev reverse proxy after resolution: callbacks invoked, `urlScheme` defaulted, `urlPort`
+ * settled (explicit, else the proxy port under `http`, else none).
+ */
+export interface ResolvedDevReverseProxy {
+  /** The loopback port the proxy listens on. */
+  port: number;
+  /** The domain packages are routed under. */
+  rootDomain: string;
+  /** The package the bare `rootDomain` routes to, if any. */
+  defaultPackage?: string;
+  /** Scheme of the public URLs devtooie derives. */
+  urlScheme: 'http' | 'https';
+  /** Port of the public URLs, or `undefined` for none (a TLS terminator on 443). */
+  urlPort?: number;
+}
+
+/**
  * `defineConfig`'s options. `Top` is the config's own `tokens` and `P` the per-package ones,
  * keyed by package name — `packages` is a mapped type over `P` so each package's callbacks are
  * typed with *its* tokens merged over `Top`, and `K` (the keys) types every name reference.
@@ -343,7 +412,13 @@ export type DefineConfigOptions<
   Top extends TokenRecord,
   P extends Record<string, unknown>,
   K extends string = Extract<keyof P, string>,
-> = Omit<GeneratedDefineConfig, 'packages' | 'urls' | 'tokens'> & {
+> = Omit<GeneratedDefineConfig, 'packages' | 'urls' | 'tokens' | 'devReverseProxy'> & {
+  /**
+   * Run devtooie's own dev reverse proxy: a loopback listener routing `<subdomain>.<rootDomain>`
+   * to the package declaring that `subdomain`. Present = enabled; there is no `enabled` flag.
+   * See {@link DevReverseProxyInput}.
+   */
+  devReverseProxy?: DevReverseProxyInput<Top, K>;
   /**
    * Your package definitions, **keyed by package name**. The key is the package's name —
    * what `-p` takes, what `waitFor`/`deps` reference, and what `relativeDir` defaults from
@@ -419,6 +494,8 @@ export interface Config<
   packages: { [Q in N]: ResolvedPackageConfig<Q, PackageTokens<Top, P[Q]>> };
   /** Workspace-wide URLs, with every callback resolved to a string, or `undefined` if none. */
   urls?: UrlEntry[];
+  /** The dev reverse proxy, resolved, or `undefined` when the config declares none. */
+  devReverseProxy?: ResolvedDevReverseProxy;
   /** Resolved `.env` filenames loaded per package, for the active mode. */
   envFiles: string[];
   /** The active mode (`--mode`, else `DEVTOOIE_MODE`, else `development`). */
@@ -577,8 +654,20 @@ function resolvePort(
   return port;
 }
 
+/** Every subdomain a package declares — canonical first, then aliases — or none. */
+function subdomainsOf(pkg: { subdomain?: string | string[] | undefined }): string[] {
+  return pkg.subdomain === undefined
+    ? []
+    : Array.isArray(pkg.subdomain)
+      ? pkg.subdomain
+      : [pkg.subdomain];
+}
+
 /**
- * Builds the context a package's `healthcheck`/`urls` callbacks get.
+ * Builds the context a package's `healthcheck`/`urls` callbacks get: the base
+ * {@link ConfigContext} plus `port` and `subdomain`.
+ *
+ * `subdomain` is plain data — `undefined` when the package declares none, as its type says.
  *
  * {@link PackageContext.port} is typed `number` so callbacks don't have to unwrap it, which the
  * type system can't verify — a mapped type infers only one type parameter and this config spends
@@ -587,21 +676,155 @@ function resolvePort(
  * never declared fails immediately with its own name in the message rather than quietly producing
  * `…:undefined`. Non-enumerable so a spread or a debug log of the context can't trip it.
  */
-function withPort(
+function packageContext(
   base: ConfigContext,
   port: number | undefined,
-  whyMissing: () => string,
+  subdomain: string | undefined,
+  whyPortMissing: () => string,
 ): PackageContext {
   if (port !== undefined) {
-    return { ...base, port };
+    return { ...base, port, subdomain };
   }
-  return Object.defineProperty({ ...base } as PackageContext, 'port', {
+  return Object.defineProperty({ ...base, subdomain } as PackageContext, 'port', {
     enumerable: false,
     configurable: true,
     get(): never {
-      throw new Error(whyMissing());
+      throw new Error(whyPortMissing());
     },
   });
+}
+
+/** A lowercase hostname: DNS labels of `[a-z0-9-]`, none starting or ending with a hyphen. */
+const HOSTNAME_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/;
+
+/**
+ * Resolves the `devReverseProxy` block: its `port`/`rootDomain` callbacks run once over the
+ * workspace context, and a callback result that can't be used (`NaN`, an empty string) is an
+ * error naming the field and the env files loaded, in the style of a package `port`.
+ */
+function resolveDevReverseProxy(
+  block: NonNullable<z.infer<typeof DefineConfigSchema>['devReverseProxy']>,
+  ctx: () => ConfigContext,
+  envFilesLoaded: () => string[],
+): ResolvedDevReverseProxy {
+  const fail = (field: string, value: unknown): never => {
+    const files = envFilesLoaded();
+    const where = files.length
+      ? `env files loaded: ${files.join(', ')}`
+      : 'no env files were found';
+    throw new Error(
+      `devReverseProxy.${field}: callback returned ${typeof value === 'string' ? JSON.stringify(value) : String(value)} (check the env vars it reads)\n  ${where}`,
+    );
+  };
+  const port = typeof block.port === 'function' ? block.port(ctx()) : block.port;
+  if (typeof port !== 'number' || !Number.isFinite(port)) {
+    fail('port', port);
+  }
+  const rootDomain =
+    typeof block.rootDomain === 'function' ? block.rootDomain(ctx()) : block.rootDomain;
+  if (typeof rootDomain !== 'string' || rootDomain === '') {
+    fail('rootDomain', rootDomain);
+  }
+  if (!HOSTNAME_RE.test(rootDomain)) {
+    throw new Error(
+      `devReverseProxy.rootDomain ${JSON.stringify(rootDomain)} is not a lowercase hostname ` +
+        '(labels of a-z, 0-9 and hyphens, not starting or ending with a hyphen)',
+    );
+  }
+  // The public port: explicit, else the proxy's own under `http` (no terminator in front, the
+  // browser hits the proxy), else none (`https`: a TLS terminator on 443).
+  let urlPort = typeof block.urlPort === 'function' ? block.urlPort(ctx()) : block.urlPort;
+  if (urlPort !== undefined && (typeof urlPort !== 'number' || !Number.isFinite(urlPort))) {
+    fail('urlPort', urlPort);
+  }
+  urlPort ??= block.urlScheme === 'http' ? port : undefined;
+  return {
+    port,
+    rootDomain,
+    defaultPackage: block.defaultPackage,
+    urlScheme: block.urlScheme,
+    urlPort,
+  };
+}
+
+/** A public hostname with the proxy's public port, when it has one: `web.localhost:4000`. */
+function publicHost(proxy: ResolvedDevReverseProxy, host: string): string {
+  return proxy.urlPort === undefined ? host : `${host}:${String(proxy.urlPort)}`;
+}
+
+/**
+ * Checks the proxy against the packages it will route to. Every rule here is a config bug the
+ * proxy would otherwise turn into a runtime surprise: a route to nowhere, or two listeners on
+ * one port.
+ */
+function validateDevReverseProxy(proxy: ResolvedDevReverseProxy, packages: AnyPackageConfig[]) {
+  if (proxy.defaultPackage !== undefined) {
+    const target = packages.find((p) => p.name === proxy.defaultPackage);
+    if (!target) {
+      throw new Error(
+        `devReverseProxy.defaultPackage "${proxy.defaultPackage}" names no declared package`,
+      );
+    }
+    if (target.port === undefined) {
+      throw new Error(
+        `devReverseProxy.defaultPackage "${proxy.defaultPackage}" has no \`port\`, so the proxy ` +
+          "can't route the bare root domain to it. Add `port` to it, or pick another package.",
+      );
+    }
+  }
+  for (const pkg of packages) {
+    const [subdomain] = subdomainsOf(pkg);
+    if (subdomain !== undefined && pkg.port === undefined) {
+      throw new Error(
+        `${pkg.name} declares subdomain "${subdomain}" but no \`port\`, so the dev reverse proxy ` +
+          "can't route to it. Add `port` to it, or drop its `subdomain`.",
+      );
+    }
+    if (pkg.port === proxy.port) {
+      throw new Error(
+        `devReverseProxy.port ${String(proxy.port)} is also ${pkg.name}'s port — the proxy ` +
+          "can't listen where a package does. Give one of them a different port.",
+      );
+    }
+  }
+}
+
+/**
+ * Every hostname the dev reverse proxy routes to `pkg`, canonical subdomain first, then its
+ * aliases, then the bare root domain when `pkg` is the `defaultPackage`. Empty for a package the
+ * proxy doesn't route (no `subdomain` or no `port`), and when the config has no proxy at all.
+ */
+export function proxyHostsFor(
+  config: Pick<Config<string>, 'devReverseProxy'> | null,
+  pkg: Pick<AnyPackageConfig, 'name' | 'port' | 'subdomain'>,
+): string[] {
+  const proxy = config?.devReverseProxy;
+  if (!proxy || pkg.port === undefined) {
+    return [];
+  }
+  const hosts = subdomainsOf(pkg).map((label) => `${label}.${proxy.rootDomain}`);
+  if (proxy.defaultPackage === pkg.name) {
+    hosts.push(proxy.rootDomain);
+  }
+  return hosts;
+}
+
+/**
+ * The public origin the dev reverse proxy gives `pkg` — `<urlScheme>://<canonical subdomain>.
+ * <rootDomain>` — or `undefined` when the proxy doesn't route it. Injected into the package's
+ * process as `PUBLIC_ORIGIN` (an explicit `.env` value still wins), so an app can name its own
+ * public host (Vite's `server.allowedHosts`, `server.hmr`) without repeating the subdomain.
+ */
+export function publicOriginFor(
+  config: Pick<Config<string>, 'devReverseProxy'> | null,
+  pkg: Pick<AnyPackageConfig, 'name' | 'port' | 'subdomain'>,
+): string | undefined {
+  const [subdomain] = subdomainsOf(pkg);
+  if (!config?.devReverseProxy || pkg.port === undefined || subdomain === undefined) {
+    return undefined;
+  }
+  const proxy = config.devReverseProxy;
+  return `${proxy.urlScheme}://${publicHost(proxy, `${subdomain}.${proxy.rootDomain}`)}`;
 }
 
 export function defineConfig<
@@ -663,6 +886,23 @@ export function defineConfig<
     }
   }
 
+  // A subdomain is a route for whatever reverse proxy reads the exported config, so two packages
+  // claiming the same one (canonical or alias) is an ambiguous route — a config bug, not a tie
+  // to break silently.
+  const subdomainOwners = new Map<string, string>();
+  for (const config of parsedPackages) {
+    for (const subdomain of subdomainsOf(config)) {
+      const owner = subdomainOwners.get(subdomain);
+      if (owner !== undefined && owner !== config.name) {
+        throw new Error(
+          `${owner} and ${config.name} both declare the subdomain "${subdomain}" — a reverse ` +
+            'proxy could not tell them apart. Give one of them a different subdomain.',
+        );
+      }
+      subdomainOwners.set(subdomain, config.name);
+    }
+  }
+
   const tokens = parsed.tokens ?? {};
 
   const envFiles = envFileNames();
@@ -689,9 +929,11 @@ export function defineConfig<
     // resolved package so nothing downstream ever encounters a callback.
     const port = resolvePort(config, baseCtx, env.files);
     const ctx = once((): PackageContext =>
-      withPort(
+      packageContext(
         baseCtx(),
         port,
+        // The canonical subdomain is the first one declared; aliases are for the proxy alone.
+        subdomainsOf(config)[0],
         () =>
           `${config.name}: a callback read \`port\`, but this package declares no \`port\`. ` +
           `Add \`port\` to ${config.name} in devtooie.config.ts, or drop \`port\` from the callback.`,
@@ -713,10 +955,14 @@ export function defineConfig<
     };
   });
 
-  // Workspace-wide urls belong to no package: workspace-scope env, and no `port` to offer.
+  // Workspace-wide urls belong to no package: workspace-scope env, no `port` to offer, and no
+  // `subdomain` either (plain `undefined`, as for a package without one).
+  const workspaceEnv = envsFor('.');
+  const workspaceBase = once((): ConfigContext => ({ envs: workspaceEnv.envs(), tokens }));
   const workspaceCtx = once((): PackageContext =>
-    withPort(
-      { envs: envsFor('.').envs(), tokens },
+    packageContext(
+      workspaceBase(),
+      undefined,
       undefined,
       () =>
         'a workspace-wide `urls` callback read `port`, but those links belong to no package, so ' +
@@ -725,6 +971,31 @@ export function defineConfig<
   );
   const urls = parsed.urls?.map((entry) => resolveUrlEntry(entry, workspaceCtx, 'top-level url'));
 
+  // The dev reverse proxy sees the workspace context, like the workspace-wide urls. Validated
+  // after the packages so it can check their *resolved* ports; then each routable package gets
+  // its public hostname(s) ahead of its own footer links, so the resolved config shows them too.
+  const devReverseProxy =
+    parsed.devReverseProxy &&
+    resolveDevReverseProxy(parsed.devReverseProxy, workspaceBase, workspaceEnv.files);
+  if (devReverseProxy) {
+    validateDevReverseProxy(devReverseProxy, packages as unknown as AnyPackageConfig[]);
+    for (const pkg of packages) {
+      const [canonical] = subdomainsOf(pkg);
+      if (canonical === undefined || pkg.port === undefined) {
+        continue;
+      }
+      const hosts = [`${canonical}.${devReverseProxy.rootDomain}`];
+      if (devReverseProxy.defaultPackage === pkg.name) {
+        hosts.push(devReverseProxy.rootDomain);
+      }
+      const links: UrlEntry[] = hosts.map((host) => ({
+        label: publicHost(devReverseProxy, host),
+        url: `${devReverseProxy.urlScheme}://${publicHost(devReverseProxy, host)}`,
+      }));
+      pkg.urls = [...links, ...(pkg.urls ?? [])];
+    }
+  }
+
   const resolved: Config<string> = {
     apiPort: parsed.apiPort,
     // Back to a record, keyed by name, preserving the declaration order of the keys.
@@ -732,6 +1003,7 @@ export function defineConfig<
       packages.map((pkg) => [pkg.name, pkg]),
     ) as unknown as Config<string>['packages'],
     urls,
+    devReverseProxy,
     envFiles,
     envMode: currentMode(),
     envOverride,

@@ -14,6 +14,8 @@ export type GeneratedPackageConfig = {
     shortName?: string | undefined;
     /** Color for this package's log-prefix label, overriding the auto-assigned palette color. Any Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`), `'rgb(175,135,255)'`, or `'ansi256(140)'`. */
     color?: string | undefined;
+    /** The package's dev subdomain(s). With a top-level `devReverseProxy`, devtooie routes `<subdomain>.<rootDomain>` to this package's `port`; without one it is data for tooling that reads the exported config (a reverse proxy of your own, say). Each entry is a DNS label — lowercase letters, digits, and hyphens — that no other package declares. An array's first entry is the canonical subdomain, handed to this package's callbacks as `subdomain`; the rest are aliases that route too. */
+    subdomain?: (string | string[]) | undefined;
     tokens?: {
         [key: string]: string | undefined;
     } | undefined;
@@ -59,6 +61,8 @@ export type GeneratedDefineConfig = {
             shortName?: string | undefined;
             /** Color for this package's log-prefix label, overriding the auto-assigned palette color. Any Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`), `'rgb(175,135,255)'`, or `'ansi256(140)'`. */
             color?: string | undefined;
+            /** The package's dev subdomain(s). With a top-level `devReverseProxy`, devtooie routes `<subdomain>.<rootDomain>` to this package's `port`; without one it is data for tooling that reads the exported config (a reverse proxy of your own, say). Each entry is a DNS label — lowercase letters, digits, and hyphens — that no other package declares. An array's first entry is the canonical subdomain, handed to this package's callbacks as `subdomain`; the rest are aliases that route too. */
+            subdomain?: (string | string[]) | undefined;
             tokens?: {
                 [key: string]: string | undefined;
             } | undefined;
@@ -98,6 +102,15 @@ export type GeneratedDefineConfig = {
         label: string;
         url: string | any;
     })[])[] | undefined;
+    devReverseProxy?: {
+        port: number | any;
+        rootDomain: string | any;
+        /** The package the bare `rootDomain` routes to. Must declare a `port`. Omit for a 404 there. */
+        defaultPackage?: string | undefined;
+        /** Scheme of the public URLs devtooie derives (footer links, `PUBLIC_ORIGIN`). `https` (the default) means a TLS terminator sits in front, so the URLs carry no port; `http` means the browser hits the proxy directly, so they carry the proxy port. */
+        urlScheme: "http" | "https";
+        urlPort?: (number | any) | undefined;
+    } | undefined;
     /** Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`. */
     workspaceDir?: string | undefined;
     /** Arbitrary values handed to every `port`/`healthcheck`/`urls` callback as `tokens`. */

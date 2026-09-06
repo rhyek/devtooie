@@ -8,6 +8,18 @@ export default defineConfig({
   // one for a single run. `override` names the exceptions — here so `.env.development` can
   // *extend* an inherited NODE_OPTIONS (VS Code's terminal sets one) instead of losing to it.
   env: { override: ['NODE_OPTIONS'] },
+  // devtooie runs the dev reverse proxy itself: http://<subdomain>.localhost:21050 reaches the
+  // package declaring that `subdomain`, and a stopped or still-starting package answers with a
+  // status page instead of a connection error. `localhost` needs nothing in front — browsers
+  // resolve every *.localhost name to loopback — and `urlScheme: 'http'` makes the public URLs
+  // (footer links, the PUBLIC_ORIGIN each package gets) carry the proxy port. With a TLS
+  // terminator in front, point `rootDomain` at its domain and drop `urlScheme`.
+  devReverseProxy: {
+    port: ({ envs }) => Number(envs.DEV_REVERSE_PROXY_PORT),
+    rootDomain: 'localhost',
+    urlScheme: 'http',
+    defaultPackage: 'frontend', // the bare http://localhost:21050 is the app
+  },
   // Keyed by package name: the key is the name `-p` takes and what `waitFor`/`deps` reference.
   packages: {
     // @example/db is deliberately not a devtooie package: a source-consumption library with no
@@ -21,6 +33,8 @@ export default defineConfig({
     backend: {
       relativeDir: 'packages/backend',
       shortName: 'api',
+      // Routed by the dev reverse proxy as http://api.localhost:21050.
+      subdomain: 'api',
       tokens: { region: 'us-east' },
       port: ({ envs }) => Number(envs.BACKEND_PORT),
       healthcheck: ({ port }) => `http://localhost:${port}/health`,
@@ -52,6 +66,9 @@ export default defineConfig({
     frontend: {
       relativeDir: 'packages/frontend',
       shortName: 'web',
+      // http://web.localhost:21050, and — as `defaultPackage` — http://localhost:21050 too. Its
+      // Vite HMR websocket rides the same proxied connection as the page (see vite.config.ts).
+      subdomain: 'web',
       port: 3000,
       // The object form raises this package's probe deadline: a dev server compiling on its
       // first request can take longer than the 1500ms default, and aborting that request is

@@ -11,6 +11,7 @@ import {
 } from '../lib.js';
 import type { RunnerArgs } from '../runners/types.js';
 import { BuildProgress, type ControlServer } from './BuildProgress.js';
+import type { DevReverseProxyServer } from '../dev-reverse-proxy.js';
 import { NativeRunner } from './NativeRunner.js';
 import { PackageSelector } from './PackageSelector.js';
 import { setTitleSequence } from '../terminal-title.js';
@@ -83,6 +84,9 @@ export function App({ packages = [], lastAnswers = false, logFile, logFileRef }:
   // identity for the run phase's lifetime (its watchGitBranch/poll effects tear down
   // and restart whenever `server` changes).
   const controlRef = useRef<ControlServer | null>(null);
+  // Same lifetime and same reasoning: the dev reverse proxy (or null), listening since the
+  // build phase, handed to NativeRunner to attach to its process manager and close on exit.
+  const devReverseProxyRef = useRef<DevReverseProxyServer | null>(null);
 
   // Deferred here rather than inside PackageSelector so that a --package/--last-answers
   // run — which never renders the selector — can't overwrite a previously saved selection.
@@ -91,9 +95,13 @@ export function App({ packages = [], lastAnswers = false, logFile, logFileRef }:
     setPhase({ type: 'building', selectedNames: selected });
   }, []);
 
-  const onControlReady = useCallback((control: ControlServer) => {
-    controlRef.current = control;
-  }, []);
+  const onControlReady = useCallback(
+    (control: ControlServer, devReverseProxy: DevReverseProxyServer | null) => {
+      controlRef.current = control;
+      devReverseProxyRef.current = devReverseProxy;
+    },
+    [],
+  );
 
   const onBuildComplete = useCallback((runnerArgs: RunnerArgs) => {
     setPhase({ type: 'running', runnerArgs });
@@ -131,7 +139,14 @@ export function App({ packages = [], lastAnswers = false, logFile, logFileRef }:
       // phase.runnerArgs keeps its identity across re-renders (it only changes via
       // this same setPhase call, which doesn't repeat once in the run phase), so
       // NativeRunner's `args` prop is stable for as long as this phase lasts.
-      return <NativeRunner args={phase.runnerArgs} server={control} logFileRef={logFileRef} />;
+      return (
+        <NativeRunner
+          args={phase.runnerArgs}
+          server={control}
+          devReverseProxy={devReverseProxyRef.current}
+          logFileRef={logFileRef}
+        />
+      );
     }
   }
 }

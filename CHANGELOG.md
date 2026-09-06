@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.0 (unreleased)
+
+### Features
+
+- **Reach each package at its own hostname**, like `http://api.localhost:4000` instead of a bare port per app, through a reverse proxy devtooie now runs itself — with a status page while the package is stopped or still starting. See [docs/dev-reverse-proxy.md](docs/dev-reverse-proxy.md).
+- **Packages can declare a `subdomain` again**, exposed on the resolved config and handed to the package's callbacks. See [docs/configuration.md](docs/configuration.md#callbacks-instead-of-interpolation).
+
+### Fixes
+
+- **Footer hotkeys no longer break across lines when the logfile path is long.**
+
 ## 0.7.1 (2026-08-16)
 
 - **Fixed the installed agent skill being invisible to coding agents.**

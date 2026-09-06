@@ -11,9 +11,10 @@ import {
   findPackage,
   getRegisteredPackages,
   getLoadedConfig,
+  publicOriginFor,
 } from './config.js';
 import { envFileNames, packageEnvLayer, resolveEnv, resolveMode } from './env.js';
-import { acquireDevSession } from './dev-session.js';
+import { acquireDevSession, startSessionDevReverseProxy } from './dev-session.js';
 import { handleShellError } from './errors.js';
 import { runInit } from './init.js';
 import {
@@ -289,18 +290,27 @@ async function resolveCmdTargetOrExit(
   const override = config.envOverride;
 
   const configPackages = Object.values(config.packages);
+  // The same layer the session spawns the package with: `PORT`, `PUBLIC_ORIGIN` under the dev
+  // reverse proxy, then its `.env` files.
+  const layerFor = (pkg: AnyPackageConfig) =>
+    packageEnvLayer(pkg, {
+      cwd: root,
+      files,
+      override,
+      publicOrigin: publicOriginFor(config, pkg),
+    });
   if (explicitName !== undefined) {
     const pkg = configPackages.find((p) => p.name === explicitName);
     if (!pkg) {
       console.error(`Package "${explicitName}" not found in the devtooie config.`);
       process.exit(1);
     }
-    return { dir: pkg.path, envLayer: packageEnvLayer(pkg, { cwd: root, files, override }) };
+    return { dir: pkg.path, envLayer: layerFor(pkg) };
   }
 
   const pkg = findAncestorPackage(invocationCwd, configPackages, root);
   if (pkg) {
-    return { dir: pkg.path, envLayer: packageEnvLayer(pkg, { cwd: root, files, override }) };
+    return { dir: pkg.path, envLayer: layerFor(pkg) };
   }
   return { dir: root, envLayer: resolveEnv({ cwd: root, relativeDir: '.', files, override }).env };
 }
@@ -628,17 +638,21 @@ program.action(async () => {
         logFile,
         onStatus: (msg) => statusReporter.update(msg),
       });
+      // The dev reverse proxy (if configured) binds before anything else starts, so a foreign
+      // holder of its port fails the run here rather than after the packages are up.
+      const devReverseProxy = await startSessionDevReverseProxy({ controlApiPort: port });
       statusReporter.done();
       const server = await startCommandServer({
         onQuit: () => process.exit(0),
         port,
         configPath,
         logFile,
+        devReverseProxy,
       });
       const packages = names.map((n) => findPackage(n));
       const deps = resolveDeps(packages);
       await buildDeps(deps);
-      await runPlain({ ...buildRunnerArgs(packages, deps), logFile }, server);
+      await runPlain({ ...buildRunnerArgs(packages, deps), logFile }, server, devReverseProxy);
     } catch (err) {
       handleShellError(err);
     }

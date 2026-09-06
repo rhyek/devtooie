@@ -68,7 +68,7 @@ A session's own answer is published as `startedByAgent` on
 
 Run a **single one-off command with a package's exact environment** — without starting a whole
 session. Think migrations, seed scripts, scrapers, or a REPL. The command runs in the package's
-directory with that package's resolved `.env` injected and its configured `port` as `PORT` —
+directory with that package's resolved `.env` injected and its configured `port` as `PORT` (plus `PUBLIC_ORIGIN` under the [dev reverse proxy](./dev-reverse-proxy.md)) —
 exactly the environment the TUI would give it (its `.env` files per
 [Environment loading](../README.md#environment-env-loading)).
 

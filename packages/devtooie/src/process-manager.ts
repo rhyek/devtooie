@@ -6,7 +6,7 @@ import stringWidth from 'string-width';
 import wrapAnsi from 'wrap-ansi';
 import sliceAnsi from 'slice-ansi';
 import type { AnyPackageConfig, ResolvedHealthcheck } from './config.js';
-import { getDevScript, getLoadedConfig } from './config.js';
+import { getDevScript, getLoadedConfig, publicOriginFor } from './config.js';
 import { defaultFormatter } from './log-formatter.js';
 import type { ControlManager } from './command-server.js';
 import { debugLog } from './debug-log.js';
@@ -250,6 +250,8 @@ export class ProcessManager implements ControlManager {
   private footerHeight = 3;
   /** Skip terminal clearing/scrollback tricks when there's no interactive UI on top. */
   private plain: boolean;
+  /** Probe every running package's healthcheck regardless of `plain` (see the constructor). */
+  private probeReadiness: boolean;
   /** devtooie's own lifecycle events; rendered under the gold `[devtooie]` prefix. */
   readonly systemLog: Logger;
   /** Control-API command notices; rendered under the gold `[dt:control]` prefix. */
@@ -298,9 +300,21 @@ export class ProcessManager implements ControlManager {
       cwd,
       logTimestamps = false,
     }: RunnerArgs,
-    { plain = false }: { plain?: boolean } = {},
+    {
+      plain = false,
+      probeReadiness = false,
+    }: {
+      plain?: boolean;
+      /**
+       * Probe every running package's healthcheck even in plain mode, where nothing on screen
+       * shows readiness — for a consumer of {@link isReady} outside the UI (the dev reverse
+       * proxy, which holds requests until a package's healthcheck passes).
+       */
+      probeReadiness?: boolean;
+    } = {},
   ) {
     this.plain = plain;
+    this.probeReadiness = probeReadiness;
     this.defaultShowTimestamps = logTimestamps;
     this.rebuildableSet = rebuildableSet;
     this.waitForMap = waitForMap;
@@ -478,7 +492,7 @@ export class ProcessManager implements ControlManager {
     if (!this.healthchecks[name]) {
       return false;
     }
-    if (!this.plain && this.processes.get(name)?.status === 'running') {
+    if ((!this.plain || this.probeReadiness) && this.processes.get(name)?.status === 'running') {
       return true;
     }
     return [...this.processes].some(
@@ -641,16 +655,21 @@ export class ProcessManager implements ControlManager {
 
   /**
    * Environment for a package's child processes: the current `process.env`, then the
-   * package's configured `run.port` as `PORT`, then its resolved `.env` files (later files /
-   * package scope win). So `PORT` defaults to the config port but an explicit `.env` `PORT`
-   * still wins. Re-resolved on every spawn so a restart picks up edited `.env` values. Never
-   * mutates `process.env`.
+   * package's configured `port` as `PORT` (and, under the dev reverse proxy, its public origin
+   * as `PUBLIC_ORIGIN`), then its resolved `.env` files (later files / package scope win). So
+   * `PORT` defaults to the config port but an explicit `.env` `PORT` still wins. Re-resolved on
+   * every spawn so a restart picks up edited `.env` values. Never mutates `process.env`.
    */
   private packageEnv(pkg: AnyPackageConfig): NodeJS.ProcessEnv {
     return Object.assign(
       {},
       process.env,
-      packageEnvLayer(pkg, { cwd: this.cwd, files: this.envFiles, override: this.envOverride }),
+      packageEnvLayer(pkg, {
+        cwd: this.cwd,
+        files: this.envFiles,
+        override: this.envOverride,
+        publicOrigin: publicOriginFor(getLoadedConfig(), pkg),
+      }),
     );
   }
 

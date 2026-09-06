@@ -215,13 +215,23 @@ export function resolveEnv(opts: ResolveEnvOptions): EnvResolution {
 
 /**
  * The `.env`-derived environment layer for a package's child process: the package's configured
- * `port` as `PORT` (an explicit `.env` `PORT` still wins), then its resolved `.env` files.
+ * `port` as `PORT` and, under the dev reverse proxy, its public origin as `PUBLIC_ORIGIN` (an
+ * explicit `.env` value for either still wins), then its resolved `.env` files.
  * Excludes `process.env` — merge this over it at spawn time (`Object.assign({}, process.env,
  * layer)`). Shared by the TUI/plain session and `devtooie cmd` so both build the same env.
  */
 export function packageEnvLayer(
   pkg: AnyPackageConfig,
-  opts: { cwd: string; files?: string[]; override?: EnvOverride },
+  opts: {
+    cwd: string;
+    files?: string[];
+    override?: EnvOverride;
+    /**
+     * The package's public origin under the dev reverse proxy (`publicOriginFor`), injected as
+     * `PUBLIC_ORIGIN` under the same rule as `PORT`: an explicit `.env` value still wins.
+     */
+    publicOrigin?: string;
+  },
 ): Record<string, string> {
   const { env } = resolveEnv({
     cwd: opts.cwd,
@@ -229,5 +239,12 @@ export function packageEnvLayer(
     files: opts.files,
     override: opts.override,
   });
-  return pkg.port !== undefined ? Object.assign({ PORT: String(pkg.port) }, env) : env;
+  const injected: Record<string, string> = {};
+  if (pkg.port !== undefined) {
+    injected.PORT = String(pkg.port);
+  }
+  if (opts.publicOrigin !== undefined) {
+    injected.PUBLIC_ORIGIN = opts.publicOrigin;
+  }
+  return Object.assign(injected, env);
 }

@@ -1,4 +1,5 @@
 import type { startCommandServer } from '../command-server.js';
+import type { DevReverseProxyServer } from '../dev-reverse-proxy.js';
 import { watchGitBranch } from '../git-watch.js';
 import { ProcessManager } from '../process-manager.js';
 import { SHUTDOWN_TIMEOUT_MS } from '../shutdown-timing.js';
@@ -11,12 +12,22 @@ import type { RunnerArgs } from './types.js';
  * ends on SIGINT/SIGTERM, a `/command/quit` request against the control
  * server, or a detected git branch change — all funnelled through the same
  * graceful shutdown path, with a second signal forcing an immediate exit.
+ *
+ * `devReverseProxy` is the session's dev reverse proxy when the config declares one, already
+ * listening; it's attached to the process manager here (so it can answer by package status)
+ * and closed with the session.
  */
 export async function runPlain(
   args: RunnerArgs,
   server: Awaited<ReturnType<typeof startCommandServer>>,
+  devReverseProxy: DevReverseProxyServer | null = null,
 ): Promise<void> {
-  const manager = new ProcessManager(args, { plain: true });
+  // The proxy holds requests until a package's healthcheck passes, so it needs readiness
+  // probed even though a plain session shows none on screen.
+  const manager = new ProcessManager(args, {
+    plain: true,
+    probeReadiness: devReverseProxy !== null,
+  });
 
   let shuttingDown = false;
   const shutdown = async (): Promise<void> => {
@@ -31,6 +42,9 @@ export async function runPlain(
       manager.shutdownAll(),
       new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_TIMEOUT_MS)),
     ]);
+    // The proxy first: it destroys every open socket (proxied websockets included), so a
+    // lingering connection can't hold the exit.
+    await devReverseProxy?.close();
     // Packages are down and their ports freed — ack any blocking `/command/quit`
     // (e.g. a newer session handing off) before closing the server below.
     server.ackQuit();
@@ -47,6 +61,7 @@ export async function runPlain(
   // shutdown above instead.
   server.attach(manager);
   server.setOnQuit(() => void shutdown());
+  devReverseProxy?.attach(manager);
   manager.startAll();
 
   const stopBranchWatch = watchGitBranch({

@@ -1,4 +1,10 @@
-export { defineConfig, PackageType, findPackage } from './config.js';
+export {
+  defineConfig,
+  PackageType,
+  findPackage,
+  publicOriginFor,
+  proxyHostsFor,
+} from './config.js';
 // devtooie's log utilities: `logging.formatter(config)` builds a structured-log formatter for a
 // package's `logs.formatter` (and is the default applied to every package); the ecosystem helpers
 // `logging.nodejs.{pino,winston}.formatter` are the same with adjusted defaults.
@@ -19,6 +25,8 @@ export type {
   ResolvedPackageConfig,
   AnyPackageConfig,
   Config,
+  DevReverseProxyInput,
+  ResolvedDevReverseProxy,
   PackageTypeValue,
   ConfigContext,
   PackageContext,

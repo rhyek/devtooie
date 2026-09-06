@@ -11,6 +11,7 @@ import {
   useWindowSize,
 } from 'ink';
 import type { startCommandServer } from '../command-server.js';
+import type { DevReverseProxyServer } from '../dev-reverse-proxy.js';
 import { normalizeUrlEntry, type UrlLine } from '../config.js';
 import {
   ACCENT_COLOR,
@@ -43,6 +44,12 @@ export type NativeRunnerProps = {
   args: RunnerArgs;
   /** Control API server, already listening, started by the caller before this component mounts. */
   server: Awaited<ReturnType<typeof startCommandServer>>;
+  /**
+   * The session's dev reverse proxy, already listening, or `null` when the config declares
+   * none. Attached to the process manager here so it can answer by package status, and closed
+   * with the session.
+   */
+  devReverseProxy?: DevReverseProxyServer | null;
   /** Kept in sync with the active logfile path so `renderApp`'s exit line can print it. */
   logFileRef?: { current: string | undefined };
 };
@@ -348,7 +355,12 @@ function usePackageStatuses(args: RunnerArgs, manager: ProcessManager) {
  * back into the manager so its scrollback-clearing logic never clears rows
  * the footer itself occupies.
  */
-export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
+export function NativeRunner({
+  args,
+  server,
+  devReverseProxy = null,
+  logFileRef,
+}: NativeRunnerProps) {
   const { exit } = useApp();
 
   const [gitBranch] = useState(getGitBranch);
@@ -382,6 +394,9 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
   const topLevelUrls = useMemo<UrlLine[]>(() => args.topLevelUrls ?? [], [args.topLevelUrls]);
 
   const [manager] = useState(() => new ProcessManager(args));
+  useEffect(() => {
+    devReverseProxy?.attach(manager);
+  }, [devReverseProxy, manager]);
   // Current logfile path shown in the footer; updated when the log is rotated (`t`).
   const [logFilePath, setLogFilePath] = useState(args.logFile);
   // Mirror the active logfile into the shared holder so `renderApp`'s exit line —
@@ -456,6 +471,9 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
       manager.shutdownAll(),
       new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_TIMEOUT_MS)),
     ]);
+    // The proxy first: it destroys every open socket (proxied websockets included), so a
+    // lingering connection can't hold the exit.
+    await devReverseProxy?.close();
     // Packages are down and their ports freed — ack any blocking `/command/quit`
     // now (e.g. a newer session handing off), before we close the server below.
     server.ackQuit();
@@ -469,7 +487,7 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
     // session (every child already killed above) can't leave a lingering parent
     // process. In the normal path renderApp exits first and this never fires.
     setTimeout(() => process.exit(0), 1500);
-  }, [manager, server, exit, markAllStopped]);
+  }, [manager, server, devReverseProxy, exit, markAllStopped]);
 
   // Terminal-delivered signals route to the same graceful shutdown as Ctrl+C. Ctrl+C itself
   // arrives as a keystroke (the TUI runs the terminal in raw mode, so ISIG is off) and is handled
