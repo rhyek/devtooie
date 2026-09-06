@@ -12,6 +12,10 @@
 
 ### Fixes
 
+- **A saved selection naming a package that no longer exists no longer crashes the picker.**
+
+### Fixes
+
 - **Footer hotkeys no longer break across lines when the logfile path is long.**
 
 ## 0.7.1 (2026-08-16)

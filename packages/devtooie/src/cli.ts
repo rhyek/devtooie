@@ -31,10 +31,10 @@ import {
   getExecArgs,
   getLogDir,
   hasScript,
-  loadSelection,
   logTimestamp,
   resetSelection,
   resolveDeps,
+  resolveSelectedNames,
   resolveLogFile,
   saveSelection,
   stripAnsi,
@@ -165,28 +165,20 @@ function validatePackageNames(names: string[]): void {
 }
 
 /**
- * Resolves the package names for a non-interactive phase (build/plain), which — unlike
- * the UI — has no selector to fall back on: an explicit `--package` wins, then a saved
- * `--last-answers` selection, otherwise this exits with a hint naming `usage`.
+ * The package names for a non-interactive phase (see `resolveSelectedNames` in lib), exiting
+ * with the hint when there are none. An explicit `--package` was validated by the caller; a
+ * saved selection is already pruned of names that are no longer packages.
  */
-function resolveSelectedNames(
+function resolveSelectedNamesOrExit(
   opts: { package: string[]; lastAnswers: boolean },
   usage: string,
 ): string[] {
-  if (opts.package.length > 0) {
-    return opts.package;
+  const result = resolveSelectedNames(opts, usage);
+  if ('error' in result) {
+    console.error(result.error);
+    process.exit(1);
   }
-  if (opts.lastAnswers) {
-    const saved = loadSelection() ?? [];
-    if (saved.length === 0) {
-      console.error('No saved selection found — run once without --last-answers first.');
-      process.exit(1);
-    }
-    validatePackageNames(saved);
-    return saved;
-  }
-  console.error(`${usage} requires --package or --last-answers.`);
-  process.exit(1);
+  return result.names;
 }
 
 async function clearDist(pkg: AnyPackageConfig): Promise<void> {
@@ -615,7 +607,7 @@ program.action(async () => {
     opts.rebuild || opts.build ? 'build' : (opts.phase as 'dev' | 'build');
 
   if (phase === 'build') {
-    const names = resolveSelectedNames(opts, 'the build phase');
+    const names = resolveSelectedNamesOrExit(opts, 'the build phase');
     try {
       await runBuildPhase(names, opts.rebuild);
     } catch (err) {
@@ -631,7 +623,7 @@ program.action(async () => {
   // Resolved before the preflight below, so a `--plain` invocation that can't name its
   // packages fails with that usage error instead of first asking whether to quit a session
   // it was never going to start.
-  const plainNames = opts.plain ? resolveSelectedNames(opts, '--plain') : null;
+  const plainNames = opts.plain ? resolveSelectedNamesOrExit(opts, '--plain') : null;
 
   // Settle what happens to a session already running for this project *before* anything
   // starts. Acquisition frees the dev ports by killing whatever in this workspace holds

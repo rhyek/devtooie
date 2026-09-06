@@ -6,7 +6,7 @@ import {
   displayLogFile,
   getRuntimeDepsMap,
   getSelectablePackages,
-  loadSelection,
+  initialPhaseFor,
   saveSelection,
 } from '../lib.js';
 import type { RunnerArgs } from '../runners/types.js';
@@ -40,25 +40,6 @@ export type AppProps = {
 };
 
 /**
- * Picks where the phase machine starts: an explicit CLI selection or a
- * `--last-answers` replay both skip straight past the interactive selector
- * into the build phase; otherwise the selector is shown first.
- */
-function getInitialPhase(
-  packages: string[],
-  lastAnswers: boolean,
-  savedSelection: string[],
-): Phase {
-  if (packages.length > 0) {
-    return { type: 'building', selectedNames: packages };
-  }
-  if (lastAnswers && savedSelection.length > 0) {
-    return { type: 'building', selectedNames: savedSelection };
-  }
-  return { type: 'package-select' };
-}
-
-/**
  * Root component: a phase state machine (`package-select` -> `building` -> `running`)
  * that owns the one thing shared across those phases — the control server, received
  * from `BuildProgress` via `onControlReady` and handed to `NativeRunner` once the
@@ -72,11 +53,10 @@ export function App({ packages = [], lastAnswers = false, logFile, logFileRef }:
   // its own memoized derivations.
   const [items] = useState(getSelectablePackages);
   const [runtimeDeps] = useState(getRuntimeDepsMap);
-  const [savedSelection] = useState(() => loadSelection() ?? []);
-
-  const [phase, setPhase] = useState<Phase>(() =>
-    getInitialPhase(packages, lastAnswers, savedSelection),
-  );
+  // The saved selection decides the starting phase once (see `initialPhaseFor`): a stale name
+  // in it means the picker, with whatever survived preselected.
+  const [initial] = useState(() => initialPhaseFor({ packages, lastAnswers }));
+  const [phase, setPhase] = useState<Phase>(initial);
 
   // Received from BuildProgress once its control server is listening, then handed to
   // NativeRunner for the rest of the run phase. A ref rather than state: receiving it
@@ -113,7 +93,7 @@ export function App({ packages = [], lastAnswers = false, logFile, logFileRef }:
         <PackageSelector
           items={items}
           runtimeDeps={runtimeDeps}
-          initialSelected={savedSelection}
+          initialSelected={initial.type === 'package-select' ? initial.initialSelected : []}
           onSubmit={onPackagesSubmit}
         />
       );

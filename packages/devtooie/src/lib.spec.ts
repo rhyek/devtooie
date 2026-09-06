@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, test, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +14,9 @@ import {
   saveSelection,
   loadSelection,
   resetSelection,
+  resolveSelectedNames,
+  readSelection,
+  initialPhaseFor,
   sortPackages,
   depScore,
   buildRunnerArgs,
@@ -239,12 +242,100 @@ describe('make targets', () => {
 
 describe('state + persistence', () => {
   it('round-trips the saved selection', () => {
+    defineConfig({ packages: { web: {}, 'core-svc': {} } });
     resetSelection();
     expect(loadSelection()).toBeNull();
     saveSelection(['web', 'core-svc']);
     expect(loadSelection()).toEqual(['web', 'core-svc']);
     resetSelection();
     expect(loadSelection()).toBeNull();
+  });
+
+  // A saved selection outlives package renames. A name that no longer exists must never reach
+  // the picker or `findPackage` (which throws), and must never be written back.
+  test('drops saved names that are not current packages, keeping the valid ones', () => {
+    defineConfig({ packages: { web: {}, api: {} } });
+    fs.writeFileSync(
+      path.join(getStateDir(), 'selection.json'),
+      JSON.stringify(['@old/name', 'web']),
+    );
+    expect(loadSelection()).toEqual(['web']);
+    // and the file itself is pruned, so the stale name doesn't linger until the next save
+    expect(JSON.parse(fs.readFileSync(path.join(getStateDir(), 'selection.json'), 'utf8'))).toEqual(
+      ['web'],
+    );
+    resetSelection();
+  });
+
+  test('never saves a name that is not a current package', () => {
+    defineConfig({ packages: { web: {}, api: {} } });
+    saveSelection(['web', 'api']);
+    // The config renames `api` → `backend`; the next run saves what it ran with.
+    defineConfig({ packages: { web: {}, backend: {} } });
+    saveSelection(loadSelection() ?? []);
+    expect(JSON.parse(fs.readFileSync(path.join(getStateDir(), 'selection.json'), 'utf8'))).toEqual(['web']); // prettier-ignore
+    saveSelection(['web', 'api']);
+    expect(loadSelection()).toEqual(['web']);
+    resetSelection();
+  });
+
+  test('readSelection separates current names from stale ones, pruning the file', () => {
+    defineConfig({ packages: { web: {}, api: {} } });
+    fs.writeFileSync(
+      path.join(getStateDir(), 'selection.json'),
+      JSON.stringify(['@old/name', 'web', '@gone/too']),
+    );
+    expect(readSelection()).toEqual({ names: ['web'], stale: ['@old/name', '@gone/too'] });
+    expect(loadSelection()).toEqual(['web']);
+    resetSelection();
+    expect(readSelection()).toBeNull();
+  });
+
+  // Renamed package keys must never stop devtooie from running: a stale saved name sends the
+  // TUI back to the picker (known names preselected) instead of skipping it on --last-answers.
+  test('a stale saved name forces the picker even with --last-answers, preselecting the rest', () => {
+    defineConfig({ packages: { web: {}, api: {} } });
+    fs.writeFileSync(path.join(getStateDir(), 'selection.json'), JSON.stringify(['@old/name', 'web'])); // prettier-ignore
+    expect(initialPhaseFor({ packages: [], lastAnswers: true })).toEqual({
+      type: 'package-select',
+      initialSelected: ['web'],
+    });
+    fs.writeFileSync(path.join(getStateDir(), 'selection.json'), JSON.stringify(['web']));
+    expect(initialPhaseFor({ packages: [], lastAnswers: true })).toEqual({
+      type: 'building',
+      selectedNames: ['web'],
+    });
+    expect(initialPhaseFor({ packages: ['api'], lastAnswers: true })).toEqual({
+      type: 'building',
+      selectedNames: ['api'],
+    });
+    resetSelection();
+    expect(initialPhaseFor({ packages: [], lastAnswers: true })).toEqual({
+      type: 'package-select',
+      initialSelected: [],
+    });
+  });
+
+  test('--last-answers without a picker refuses a selection with stale names, naming them', () => {
+    defineConfig({ packages: { web: {} } });
+    fs.writeFileSync(path.join(getStateDir(), 'selection.json'), JSON.stringify(['@old/name', 'web'])); // prettier-ignore
+    expect(resolveSelectedNames({ package: [], lastAnswers: true }, '--plain')).toEqual({
+      error:
+        'The saved selection names packages that no longer exist (@old/name) — run once without --last-answers to pick again.',
+    });
+    fs.writeFileSync(path.join(getStateDir(), 'selection.json'), JSON.stringify(['@old/name']));
+    expect(resolveSelectedNames({ package: [], lastAnswers: true }, '--plain')).toEqual({
+      error:
+        'The saved selection names packages that no longer exist (@old/name) — run once without --last-answers to pick again.',
+    });
+    fs.writeFileSync(path.join(getStateDir(), 'selection.json'), JSON.stringify(['web']));
+    expect(resolveSelectedNames({ package: [], lastAnswers: true }, '--plain')).toEqual({
+      names: ['web'],
+    });
+    resetSelection();
+    expect(resolveSelectedNames({ package: [], lastAnswers: true }, '--plain')).toEqual({
+      error: 'No saved selection found — run once without --last-answers first.',
+    });
   });
 
   it('getStateDir lives under node_modules/.devtooie', () => {
