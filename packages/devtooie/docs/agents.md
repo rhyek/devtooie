@@ -77,7 +77,7 @@ reports as `config` on `GET /query/status`. For each package you get, among the 
       "port": 3001, // what the package binds on localhost (injected as PORT)
       "publicOrigin": "https://api.myproject.example.test", // where it is served (injected as PUBLIC_ORIGIN)
       "healthcheck": { "url": "http://localhost:3001/health", "timeout": 1500 },
-      "urls": [{ "label": "api.myproject.example.test", "url": "https://api.myproject.example.test" }],
+      "urls": ["https://api.myproject.example.test/todos"], // from `urls: ['/todos']` in the config
       "path": "/abs/packages/api"
     }
   }
@@ -294,9 +294,10 @@ lib):
   and no two packages may declare the same one, canonical or alias.
 - **`urls`** — links shown in the running footer, one entry per line. Each entry is a URL, a
   `{ label, url }`, or an **array** of those (rendered on the same line, space-separated). Any
-  URL may be a callback, and any may be a **path** (`'/todos'`, or `'todos'`), based on the package's public
-  origin under the [dev reverse proxy](#dev-reverse-proxy) — one link, not a localhost one too —
-  or on `http://localhost:<port>` without one. A path on a package with no `port` is an error.
+  URL may be a callback, and any may be a **path** (`'/todos'`, or `'todos'`; `''` is the origin
+  itself), based on the package's public origin under the [dev reverse proxy](#dev-reverse-proxy)
+  — one link, not a localhost one too — or on `http://localhost:<port>` without one. A path on a
+  package with no `port` is an error. devtooie adds no links of its own.
 - **`healthcheck`** — a URL polled for readiness; also required by anything that lists this
   package in its `waitFor`. A **path** (`'/health'`, or `'health'`) is probed at `http://localhost:<port>/health`
   — always the package itself, never through the dev reverse proxy. May be a callback, or
@@ -771,16 +772,17 @@ subdomain in their own config. `devtooie cmd` hands the same variable to a one-o
 
 ### Footer links and the resolved config
 
-For every routable package, `<urlScheme>://<canonical subdomain>.<rootDomain>` is prepended to
-that package's resolved `urls` — one link, even for a package with aliases or the
-`defaultPackage` (whose bare root routes too but isn't listed again) — labelled
-with the hostname — so the public URL is the first thing in the footer. This happens in
-`defineConfig`, so the exported config shows it too, as does `config.devReverseProxy`:
+devtooie adds no footer link of its own: `urls` holds exactly what the config lists. To show a
+package's public origin, list it — `''` is the origin itself, `'/'` or any other path is
+resolved against it (see [Configuration options](#configuration-options)). The origin is on the resolved
+config as `publicOrigin` (the same value injected as `PUBLIC_ORIGIN`), next to
+`config.devReverseProxy`:
 
 ```ts
+// with `urls: ['', '/todos']` on web
 config.devReverseProxy; // { port: 4000, rootDomain: 'myproject.example.test', defaultPackage: 'web', urlScheme: 'https' } | undefined
-config.packages.web.publicOrigin; // 'https://web.myproject.example.test' — the same value injected as PUBLIC_ORIGIN
-config.packages.web.urls; // [{ label: 'web.myproject.example.test', url: 'https://web.myproject.example.test' }, …]
+config.packages.web.publicOrigin; // 'https://web.myproject.example.test'
+config.packages.web.urls; // ['https://web.myproject.example.test', 'https://web.myproject.example.test/todos']
 ```
 
 `devtooie show-config` prints all of this as JSON without starting a session.

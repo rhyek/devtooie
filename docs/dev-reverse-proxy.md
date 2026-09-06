@@ -138,16 +138,17 @@ subdomain in their own config. `devtooie cmd` hands the same variable to a one-o
 
 ## Footer links and the resolved config
 
-For every routable package, `<urlScheme>://<canonical subdomain>.<rootDomain>` is prepended to
-that package's resolved `urls` — one link, even for a package with aliases or the
-`defaultPackage` (whose bare root routes too but isn't listed again) — labelled
-with the hostname — so the public URL is the first thing in the footer. This happens in
-`defineConfig`, so the exported config shows it too, as does `config.devReverseProxy`:
+devtooie adds no footer link of its own: `urls` holds exactly what the config lists. To show a
+package's public origin, list it — `''` is the origin itself, `'/'` or any other path is
+resolved against it (see [Configuration](./configuration.md)). The origin is on the resolved
+config as `publicOrigin` (the same value injected as `PUBLIC_ORIGIN`), next to
+`config.devReverseProxy`:
 
 ```ts
+// with `urls: ['', '/todos']` on web
 config.devReverseProxy; // { port: 4000, rootDomain: 'myproject.example.test', defaultPackage: 'web', urlScheme: 'https' } | undefined
-config.packages.web.publicOrigin; // 'https://web.myproject.example.test' — the same value injected as PUBLIC_ORIGIN
-config.packages.web.urls; // [{ label: 'web.myproject.example.test', url: 'https://web.myproject.example.test' }, …]
+config.packages.web.publicOrigin; // 'https://web.myproject.example.test'
+config.packages.web.urls; // ['https://web.myproject.example.test', 'https://web.myproject.example.test/todos']
 ```
 
 `devtooie show-config` prints all of this as JSON without starting a session.

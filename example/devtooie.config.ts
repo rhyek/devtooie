@@ -58,6 +58,7 @@ export default defineConfig({
       port: 3000,
       // A longer probe deadline: a dev server compiling on first request can exceed the 1500ms default.
       healthcheck: { url: '/', timeout: 5000 },
+      urls: [''], // '' is the public origin itself: http://web.localhost:21050
       // Runs `backend` too, and waits for its healthcheck.
       deps: { runtime: ['backend'] },
       waitFor: ['backend'],

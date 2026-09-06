@@ -1126,7 +1126,7 @@ describe('devReverseProxy', () => {
     );
   });
 
-  test('prepends the public hostname link to every routable package urls', () => {
+  test('adds no footer link of its own: urls hold only what the config lists', () => {
     const cfg = defineConfig({
       devReverseProxy: { port: 4000, rootDomain: 'example.test', defaultPackage: 'web' },
       packages: {
@@ -1136,26 +1136,21 @@ describe('devReverseProxy', () => {
         lib: {},
       },
     });
-    // Only the canonical hostname — not a second link for the bare root `defaultPackage` serves.
-    expect(cfg.packages.web.urls).toEqual([
-      { label: 'web.example.test', url: 'https://web.example.test' },
-      'http://localhost:3000',
-    ]);
-    expect(cfg.packages.api.urls).toEqual([
-      { label: 'api.example.test', url: 'https://api.example.test' },
-    ]);
+    expect(cfg.packages.web.urls).toEqual(['http://localhost:3000']);
+    expect(cfg.packages.api.urls).toBeUndefined();
     expect(cfg.packages.worker.urls).toBeUndefined();
     expect(cfg.packages.lib.urls).toBeUndefined();
+    // The public origin is still there for a `'/'` entry (and PUBLIC_ORIGIN) to build on.
+    expect(cfg.packages.web.publicOrigin).toBe('https://web.example.test');
   });
 
-  test('uses urlScheme for the prepended links (http carries the proxy port)', () => {
+  test('uses urlScheme for the public origin (http carries the proxy port)', () => {
     const cfg = defineConfig({
       devReverseProxy: { port: 4000, rootDomain: 'example.test', urlScheme: 'http' },
-      packages: { web: { port: 3000, subdomain: 'web' } },
+      packages: { web: { port: 3000, subdomain: 'web', urls: ['/'] } },
     });
-    expect(cfg.packages.web.urls).toEqual([
-      { label: 'web.example.test:4000', url: 'http://web.example.test:4000' },
-    ]);
+    expect(cfg.packages.web.publicOrigin).toBe('http://web.example.test:4000');
+    expect(cfg.packages.web.urls).toEqual(['http://web.example.test:4000/']);
   });
 
   test('exposes the public origin of a routable package on the resolved config, and nothing for the rest', () => {
@@ -1205,9 +1200,7 @@ describe('public URL port', () => {
       packages: { web: { port: 3000, subdomain: 'web' } },
     });
     expect(cfg.packages.web.publicOrigin).toBe('http://web.localhost:4000');
-    expect(cfg.packages.web.urls).toEqual([
-      { label: 'web.localhost:4000', url: 'http://web.localhost:4000' },
-    ]);
+    expect(cfg.packages.web.urls).toBeUndefined();
   });
 
   test('is absent under https', () => {
@@ -1284,7 +1277,6 @@ describe('path urls', () => {
       },
     });
     expect(cfg.packages.api.urls).toEqual([
-      { label: 'api.myproject.example.test', url: 'https://api.myproject.example.test' },
       'https://api.myproject.example.test/todos',
       [
         { label: 'a', url: 'https://api.myproject.example.test/a' },
@@ -1313,7 +1305,7 @@ describe('path urls', () => {
       devReverseProxy: { port: 4000 },
       packages: { api: { port: 3001, subdomain: 'api', urls: ['https://status.example.test'] } },
     });
-    expect(cfg.packages.api.urls?.[1]).toBe('https://status.example.test');
+    expect(cfg.packages.api.urls).toEqual(['https://status.example.test']);
   });
 
   test('reject a path on a package with no port to base it on, naming both', () => {
@@ -1377,11 +1369,24 @@ describe('paths without a leading slash', () => {
         worker: { port: 3002, urls: ['metrics'] },
       },
     });
-    expect(cfg.packages.api.urls?.slice(1)).toEqual([
+    expect(cfg.packages.api.urls).toEqual([
       'https://api.myproject.example.test/todos',
       { label: 'x', url: 'https://api.myproject.example.test/a/b?c=1' },
     ]);
     expect(cfg.packages.worker.urls).toEqual(['http://localhost:3002/metrics']);
+  });
+
+  test("'' is the origin itself, with no trailing slash", () => {
+    const cfg = defineConfig({
+      devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
+      packages: {
+        api: { port: 3001, subdomain: 'api', urls: [''], healthcheck: '' },
+        worker: { port: 3002, urls: [{ label: 'root', url: '' }] },
+      },
+    });
+    expect(cfg.packages.api.urls).toEqual(['https://api.myproject.example.test']);
+    expect(cfg.packages.api.healthcheck?.url).toBe('http://localhost:3001');
+    expect(cfg.packages.worker.urls).toEqual([{ label: 'root', url: 'http://localhost:3002' }]);
   });
 
   test('healthcheck: `health` is `/health`', () => {

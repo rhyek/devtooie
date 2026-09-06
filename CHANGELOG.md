@@ -7,7 +7,7 @@
 - **Reach each package at its own hostname**, like `http://api.localhost:4000` instead of a bare port per app, through a reverse proxy devtooie now runs itself — with a status page while the package is stopped or still starting. See [docs/dev-reverse-proxy.md](docs/dev-reverse-proxy.md).
 - **Installing devtooie sets the project up**: its `postinstall` runs `devtooie init` for a project with no config and (re)writes the agent skill for one that has it, so a fresh clone carries the guide for the installed version. pnpm 10+ needs `pnpm approve-builds` first. See [Install](README.md#install).
 - **New `devtooie show-config` prints the fully resolved config as JSON**, no session needed — including each package's public origin under the dev reverse proxy. See [docs/cli.md](docs/cli.md#devtooie-show-config).
-- **A `urls` entry or `healthcheck` can be a path** like `'/todos'`: a link is based on the package's public origin under the dev reverse proxy, else on `http://localhost:<port>`; a healthcheck always on `http://localhost:<port>`. See [docs/configuration.md](docs/configuration.md).
+- **A `urls` entry or `healthcheck` can be a path** like `'/todos'` (or `''` for the origin itself): a link is based on the package's public origin under the dev reverse proxy, else on `http://localhost:<port>`; a healthcheck always on `http://localhost:<port>`. See [docs/configuration.md](docs/configuration.md).
 - **Packages can declare a `subdomain` again**, exposed on the resolved config and handed to the package's callbacks. See [docs/configuration.md](docs/configuration.md#callbacks-instead-of-interpolation).
 
 ### Fixes

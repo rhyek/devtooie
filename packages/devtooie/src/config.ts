@@ -595,7 +595,7 @@ const ABSOLUTE_URL_RE = /^[a-z][a-z0-9+.-]*:/i;
 /**
  * A URL as written in the config, resolved into its {@link ResolvedUrlForms}: a literal or a
  * callback's return value, absolute as-is, or a relative path — with or without the leading
- * slash (`/todos` and `todos` alike) — based on the package.
+ * slash (`/todos` and `todos` alike), or `''` for the origin itself — based on the package.
  */
 function resolveUrlForms(value: UrlValue, scope: UrlScope): ResolvedUrlForms {
   let url: unknown = value;
@@ -609,7 +609,8 @@ function resolveUrlForms(value: UrlValue, scope: UrlScope): ResolvedUrlForms {
   if (ABSOLUTE_URL_RE.test(text)) {
     return { public: text, private: text };
   }
-  const path = text.startsWith('/') ? text : `/${text}`;
+  // `''` is the origin itself; anything else is a path, leading slash optional.
+  const path = text === '' || text.startsWith('/') ? text : `/${text}`;
   if (scope.port === undefined) {
     throw new Error(
       scope.publicOrigin === undefined && scope.where === 'top-level url'
@@ -1024,21 +1025,11 @@ export function defineConfig<
     }),
   );
 
-  // Now that every package's port is known: check the proxy against them, then put each routable
-  // package's public hostname(s) ahead of its own footer links, so the resolved config shows them.
+  // Now that every package's port is known, check the proxy against them. (devtooie adds no
+  // footer link of its own: `urls` holds exactly what the config lists — `'/'` or `''` there is
+  // how a package shows its public origin.)
   if (devReverseProxy) {
     validateDevReverseProxy(devReverseProxy, packages as unknown as AnyPackageConfig[]);
-    for (const pkg of packages) {
-      const [canonical] = subdomainsOf(pkg);
-      if (canonical === undefined || pkg.port === undefined) {
-        continue;
-      }
-      // One link, the canonical hostname — not one per alias, and not the bare root for
-      // `defaultPackage` either; those route too, but the footer needn't repeat the app.
-      const host = publicHost(devReverseProxy, `${canonical}.${devReverseProxy.rootDomain}`);
-      const link = { label: host, url: `${devReverseProxy.urlScheme}://${host}` };
-      pkg.urls = [link, ...(pkg.urls ?? [])];
-    }
   }
 
   const resolved: Config<string> = {

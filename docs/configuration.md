@@ -71,9 +71,10 @@ lib):
 - **`urls`** — links shown in the running footer, one entry per line. Each entry is a
   URL, a `{ label, url }`, or an **array** of those (rendered on the same line,
   space-separated). Any URL may be a callback, and any may be a **path** (`'/todos'`, or
-  `'todos'`), based on the package's public origin under the
+  `'todos'`; `''` is the origin itself), based on the package's public origin under the
   [dev reverse proxy](./dev-reverse-proxy.md) — one link, not a localhost one too — or on
   `http://localhost:<port>` without one. A path on a package with no `port` is an error.
+  devtooie adds no links of its own.
 - **`healthcheck`** — a URL polled for readiness; also required by anything
   that lists this package in its `waitFor`. A **path** (`'/health'`, or `'health'`) is probed
   at `http://localhost:<port>/health` — always the package itself, never through the dev
