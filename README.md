@@ -72,6 +72,17 @@ loading, healthchecks, and `waitFor` readiness ordering.
 pnpm add -D devtooie
 ```
 
+devtooie's `postinstall` sets the project up as it installs. A project with no
+`devtooie.config.ts` yet gets `devtooie init --yes` — the config scaffold, the tsconfig
+reconcile, and the [agent skill](#agent-skill); one that already has a config gets the agent
+skill (re)written, so a fresh clone or an upgrade always carries the guide matching the installed
+version. It acts only for the project that installed devtooie, is skipped in CI, and never fails
+an install. Package managers run it when devtooie is installed or upgraded — not on an `install`
+that changes nothing — and `devtooie init` does the same by hand at any time.
+
+pnpm 10+ runs a dependency's scripts only once you allow it: run `pnpm approve-builds`, or add
+`"pnpm": { "onlyBuiltDependencies": ["devtooie"] }` to the root `package.json`.
+
 ## Getting started: `devtooie init`
 
 ```bash

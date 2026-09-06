@@ -123,6 +123,17 @@ mode's `.env` files, so pass the same `--mode` the session runs with.
 pnpm add -D devtooie
 ```
 
+devtooie's `postinstall` sets the project up as it installs. A project with no
+`devtooie.config.ts` yet gets `devtooie init --yes` — the config scaffold, the tsconfig
+reconcile, and the [agent skill](#agent-skill); one that already has a config gets the agent
+skill (re)written, so a fresh clone or an upgrade always carries the guide matching the installed
+version. It acts only for the project that installed devtooie, is skipped in CI, and never fails
+an install. Package managers run it when devtooie is installed or upgraded — not on an `install`
+that changes nothing — and `devtooie init` does the same by hand at any time.
+
+pnpm 10+ runs a dependency's scripts only once you allow it: run `pnpm approve-builds`, or add
+`"pnpm": { "onlyBuiltDependencies": ["devtooie"] }` to the root `package.json`.
+
 ## Getting started: `devtooie init`
 
 ```bash
@@ -1529,8 +1540,8 @@ If you opt in during `devtooie init`, devtooie installs an agent-facing skill fi
 directories already exist). It teaches a coding agent how to check whether an app in the repo is
 already running, run devtooie headlessly (`--plain -p <package>`), drive a running session through
 the control API, read the logfile for debugging, and onboard a new package. The installed file is **managed** — treat it as generated,
-not something to hand-edit. `devtooie init` and every `devtooie` run refresh it to the installed
-version. The skill points at this guide.
+not something to hand-edit. devtooie's `postinstall` (see [Install](#install)), `devtooie init`,
+and every `devtooie` run refresh it to the installed version. The skill points at this guide.
 
 ## Typed package names (advanced)
 
