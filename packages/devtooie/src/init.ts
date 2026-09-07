@@ -10,6 +10,9 @@ function configTemplate(): string {
   return `import { defineConfig } from 'devtooie';
 
 export default defineConfig({
+  // Where the packages live: each one's directory is \`<packageRootDir>/<key>\` unless it sets
+  // \`relativeDir\` itself.
+  packageRootDir: 'packages',
   // Keyed by package name — the key is the name, so there's no \`name\` field.
   packages: {
     // 'my-pkg': { port: 3001 },

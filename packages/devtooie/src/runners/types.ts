@@ -20,7 +20,7 @@ export interface RunnerArgs {
   envFiles?: string[];
   /** Variables whose `.env` value may beat the ambient environment. */
   envOverride?: EnvOverride;
-  /** Prefix each on-screen log line with a `YYYY-MM-DD HH:MM:SS` timestamp (default `false`). */
+  /** Prefix each on-screen log line with a timestamp (default `true`). */
   logTimestamps?: boolean;
   /** Workspace root that package `relativeDir`s resolve against (defaults to `process.cwd()`). */
   cwd?: string;

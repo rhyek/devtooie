@@ -2,8 +2,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execa } from 'execa';
-import { getRegisteredPackages, getWorkspaceDir } from './config.js';
+import { getLoadedConfig, getRegisteredPackages, getWorkspaceDir } from './config.js';
 import { createControlClient, probeInstance } from './control-client.js';
+import {
+  routesFromConfig,
+  startDevReverseProxy,
+  type DevReverseProxyServer,
+} from './dev-reverse-proxy.js';
 import { decideControlPort, isPortListening, readRunning, type RunningState } from './running.js';
 import { HANDOFF_FORCE_KILL_MS } from './shutdown-timing.js';
 
@@ -310,6 +315,41 @@ export async function shutdownInstance(port: number, pid: number): Promise<void>
   } catch {
     /* already gone */
   }
+}
+
+/**
+ * Starts the dev reverse proxy for this session, if the loaded config declares one — before any
+ * package starts, so the listener is bound and its port settled up front. Returns `null` when
+ * the config has no `devReverseProxy`.
+ *
+ * Call it **after** {@link acquireDevSession}: a previous session being handed off releases the
+ * proxy port as it shuts down, so whatever still holds it now is foreign — and that is a startup
+ * error naming the port, never something to kill. (The proxy port is deliberately not part of
+ * the dev-port sweep: its holder is a devtooie process, and a live session that merely relocated
+ * would be killed outright.)
+ */
+export async function startSessionDevReverseProxy(opts: {
+  /** The control API's port, so a "package stopped" page can spell out the restart URL. */
+  controlApiPort?: number;
+}): Promise<DevReverseProxyServer | null> {
+  const config = getLoadedConfig();
+  const proxy = config?.devReverseProxy;
+  if (!config || !proxy) {
+    return null;
+  }
+  if (await isPortListening(proxy.port)) {
+    throw new Error(
+      `dev reverse proxy port ${String(proxy.port)} is already in use by another program. ` +
+        'Free it, or change `devReverseProxy.port` in devtooie.config.ts.',
+    );
+  }
+  return startDevReverseProxy({
+    port: proxy.port,
+    rootDomain: proxy.rootDomain,
+    routes: routesFromConfig(config),
+    controlApiPort: opts.controlApiPort,
+    urlScheme: proxy.urlScheme,
+  });
 }
 
 /**

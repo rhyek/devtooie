@@ -13,7 +13,7 @@ import {
   getLoadedConfig,
 } from './config.js';
 import { envFileNames, packageEnvLayer, resolveEnv, resolveMode } from './env.js';
-import { acquireDevSession } from './dev-session.js';
+import { acquireDevSession, startSessionDevReverseProxy } from './dev-session.js';
 import { handleShellError } from './errors.js';
 import { runInit } from './init.js';
 import {
@@ -31,10 +31,10 @@ import {
   getExecArgs,
   getLogDir,
   hasScript,
-  loadSelection,
   logTimestamp,
   resetSelection,
   resolveDeps,
+  resolveSelectedNames,
   resolveLogFile,
   saveSelection,
   stripAnsi,
@@ -165,34 +165,26 @@ function validatePackageNames(names: string[]): void {
 }
 
 /**
- * Resolves the package names for a non-interactive phase (build/plain), which — unlike
- * the UI — has no selector to fall back on: an explicit `--package` wins, then a saved
- * `--last-answers` selection, otherwise this exits with a hint naming `usage`.
+ * The package names for a non-interactive phase (see `resolveSelectedNames` in lib), exiting
+ * with the hint when there are none. An explicit `--package` was validated by the caller; a
+ * saved selection is already pruned of names that are no longer packages.
  */
-function resolveSelectedNames(
+function resolveSelectedNamesOrExit(
   opts: { package: string[]; lastAnswers: boolean },
   usage: string,
 ): string[] {
-  if (opts.package.length > 0) {
-    return opts.package;
+  const result = resolveSelectedNames(opts, usage);
+  if ('error' in result) {
+    console.error(result.error);
+    process.exit(1);
   }
-  if (opts.lastAnswers) {
-    const saved = loadSelection() ?? [];
-    if (saved.length === 0) {
-      console.error('No saved selection found — run once without --last-answers first.');
-      process.exit(1);
-    }
-    validatePackageNames(saved);
-    return saved;
-  }
-  console.error(`${usage} requires --package or --last-answers.`);
-  process.exit(1);
+  return result.names;
 }
 
 async function clearDist(pkg: AnyPackageConfig): Promise<void> {
-  const result = await execa('rm', ['-rf', path.join(pkg.path, 'dist')], { reject: false });
+  const result = await execa('rm', ['-rf', path.join(pkg.absoluteDir, 'dist')], { reject: false });
   if (result.exitCode !== 0) {
-    console.error(`warning: could not clear ${path.join(pkg.path, 'dist')}`);
+    console.error(`warning: could not clear ${path.join(pkg.absoluteDir, 'dist')}`);
   }
 }
 
@@ -289,25 +281,28 @@ async function resolveCmdTargetOrExit(
   const override = config.envOverride;
 
   const configPackages = Object.values(config.packages);
+  // The same layer the session spawns the package with: `PORT`, `PUBLIC_ORIGIN` under the dev
+  // reverse proxy, then its `.env` files.
+  const layerFor = (pkg: AnyPackageConfig) => packageEnvLayer(pkg, { cwd: root, files, override });
   if (explicitName !== undefined) {
     const pkg = configPackages.find((p) => p.name === explicitName);
     if (!pkg) {
       console.error(`Package "${explicitName}" not found in the devtooie config.`);
       process.exit(1);
     }
-    return { dir: pkg.path, envLayer: packageEnvLayer(pkg, { cwd: root, files, override }) };
+    return { dir: pkg.absoluteDir, envLayer: layerFor(pkg) };
   }
 
   const pkg = findAncestorPackage(invocationCwd, configPackages, root);
   if (pkg) {
-    return { dir: pkg.path, envLayer: packageEnvLayer(pkg, { cwd: root, files, override }) };
+    return { dir: pkg.absoluteDir, envLayer: layerFor(pkg) };
   }
   return { dir: root, envLayer: resolveEnv({ cwd: root, relativeDir: '.', files, override }).env };
 }
 
 async function buildOne(pkg: AnyPackageConfig, script: string): Promise<void> {
   const [cmd, args] = getExecArgs(pkg, script);
-  await execa(cmd, args, { stdio: 'inherit', cwd: pkg.path });
+  await execa(cmd, args, { stdio: 'inherit', cwd: pkg.absoluteDir });
 }
 
 /** Builds every buildable dep in `deps.buildSet`, in dependency order, with console output. */
@@ -446,6 +441,34 @@ program
   });
 
 program
+  .command('show-config')
+  .description(
+    'print the fully resolved config as JSON (what a running session reports on GET /query/status) — no session needed',
+  )
+  // Declared here too so `devtooie show-config --mode test` works (see `cmd`); the config
+  // resolves against that mode's `.env` files, which is what a callback `port` reads.
+  .option(
+    '-m, --mode <name>',
+    'environment mode selecting the .env.<mode> files to load (default: "development")',
+  )
+  .action(async () => {
+    await loadConfigOrExit();
+    const config = getLoadedConfig();
+    if (!config) {
+      console.error(
+        `${findConfigPath(process.cwd()) ?? 'devtooie.config.ts'} loaded but registered no config — ` +
+          'it must export a `defineConfig(...)` call as its default.',
+      );
+      process.exit(1);
+    }
+    // The config is resolved exactly once, when the file loads (callbacks run, defaults applied,
+    // `command` normalized); this is that object, serialized the way the control API serves it.
+    // Function-valued fields (`logs.formatter`) have no JSON form and are omitted, there too.
+    console.log(JSON.stringify(config, null, 2));
+    process.exit(0);
+  });
+
+program
   .command('cmd')
   .description(
     "run a one-off command with a package's environment (its dir + resolved .env); package inferred from the cwd or named with -p/--package",
@@ -480,9 +503,9 @@ program
     let cmdArgs: string[];
     if (opts.cmd !== undefined) {
       // `-c` names a package script / make target: resolve how to invoke it in this dir, then
-      // forward the operands as its args. getExecArgs/hasScript key off `.path` only, so a
+      // forward the operands as its args. getExecArgs/hasScript key off `.absoluteDir` only, so a
       // minimal package view over the resolved dir suffices.
-      const pkgAtDir = { path: dir } as AnyPackageConfig;
+      const pkgAtDir = { absoluteDir: dir } as AnyPackageConfig;
       if (!hasScript(pkgAtDir, opts.cmd)) {
         console.error(`No "${opts.cmd}" script or make target found in ${dir}.`);
         process.exit(1);
@@ -584,7 +607,7 @@ program.action(async () => {
     opts.rebuild || opts.build ? 'build' : (opts.phase as 'dev' | 'build');
 
   if (phase === 'build') {
-    const names = resolveSelectedNames(opts, 'the build phase');
+    const names = resolveSelectedNamesOrExit(opts, 'the build phase');
     try {
       await runBuildPhase(names, opts.rebuild);
     } catch (err) {
@@ -600,7 +623,7 @@ program.action(async () => {
   // Resolved before the preflight below, so a `--plain` invocation that can't name its
   // packages fails with that usage error instead of first asking whether to quit a session
   // it was never going to start.
-  const plainNames = opts.plain ? resolveSelectedNames(opts, '--plain') : null;
+  const plainNames = opts.plain ? resolveSelectedNamesOrExit(opts, '--plain') : null;
 
   // Settle what happens to a session already running for this project *before* anything
   // starts. Acquisition frees the dev ports by killing whatever in this workspace holds
@@ -628,17 +651,21 @@ program.action(async () => {
         logFile,
         onStatus: (msg) => statusReporter.update(msg),
       });
+      // The dev reverse proxy (if configured) binds before anything else starts, so a foreign
+      // holder of its port fails the run here rather than after the packages are up.
+      const devReverseProxy = await startSessionDevReverseProxy({ controlApiPort: port });
       statusReporter.done();
       const server = await startCommandServer({
         onQuit: () => process.exit(0),
         port,
         configPath,
         logFile,
+        devReverseProxy,
       });
       const packages = names.map((n) => findPackage(n));
       const deps = resolveDeps(packages);
       await buildDeps(deps);
-      await runPlain({ ...buildRunnerArgs(packages, deps), logFile }, server);
+      await runPlain({ ...buildRunnerArgs(packages, deps), logFile }, server, devReverseProxy);
     } catch (err) {
       handleShellError(err);
     }

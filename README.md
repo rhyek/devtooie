@@ -36,6 +36,11 @@ picked.
   live-reloaded, restarting the affected package when a file changes.
 - **Readiness ordering.** `healthcheck` + `waitFor` hold a package until the
   services it needs are actually up.
+- **One hostname per package.** Optionally, devtooie runs the dev reverse proxy itself:
+  give a package a `subdomain` and reach it at `http://api.localhost:4000` — or
+  `https://api.myproject.test` behind a TLS terminator — instead of a bare port, with a
+  status page while the package is stopped or still starting. Vite HMR works through it.
+  See [Dev reverse proxy](docs/dev-reverse-proxy.md).
 - **Lifecycle-aware.** Each package declares whether its dev process watches or
   just builds, so you (or an agent) know exactly what to do after a code edit.
 - **Control API + agent skill.** A localhost HTTP API drives a running session
@@ -67,6 +72,17 @@ loading, healthchecks, and `waitFor` readiness ordering.
 pnpm add -D devtooie
 ```
 
+devtooie's `postinstall` sets the project up as it installs. A project with no
+`devtooie.config.ts` yet gets `devtooie init --yes` — the config scaffold, the tsconfig
+reconcile, and the [agent skill](#agent-skill); one that already has a config gets the agent
+skill (re)written, so a fresh clone or an upgrade always carries the guide matching the installed
+version. It acts only for the project that installed devtooie, is skipped in CI, and never fails
+an install. Package managers run it when devtooie is installed or upgraded — not on an `install`
+that changes nothing — and `devtooie init` does the same by hand at any time.
+
+pnpm 10+ runs a dependency's scripts only once you allow it: run `pnpm approve-builds`, or add
+`"pnpm": { "onlyBuiltDependencies": ["devtooie"] }` to the root `package.json`.
+
 ## Getting started: `devtooie init`
 
 ```bash
@@ -96,13 +112,15 @@ on every run.
 import { defineConfig } from 'devtooie';
 
 export default defineConfig({
+  packageRootDir: 'packages',
   // keyed by package name — the key is the name, so there's no `name` field
   packages: {
     'core-api': {
       port: 3001, // is provided as PORT environment variable to the process
-      // `healthcheck` and `urls` take a string or a callback over this package's
-      // `{ envs, tokens, port }` — devtooie does no string interpolation of its own.
-      healthcheck: ({ port }) => `http://localhost:${port}/health`,
+      // A relative path is resolved against this package's port (or its public origin under
+      // the dev reverse proxy); `healthcheck` and `urls` also take a full URL or a callback over
+      // `{ envs, tokens, port, subdomain }` — devtooie does no string interpolation of its own.
+      healthcheck: '/health',
     },
     worker: {
       // a dev process that doesn't watch files: it builds once, then runs. devtooie
@@ -208,9 +226,9 @@ TypeScript project references, and typed package names — lives in
 ## Logging
 
 devtooie **auto-formats structured (JSON) logs** — from Go `slog`, pino, winston, … — into a
-colored `[LEVEL] message` for local dev, with no `NODE_ENV` branching and nothing to configure. You
-can add on-screen timestamps, and customize that JSON rendering per package with the `logging`
-helpers — or, for output that **isn't** JSON, write a `logs.formatter` over the raw line yourself.
+colored `[LEVEL] message` for local dev, with no `NODE_ENV` branching and nothing to configure.
+Every line carries a timestamp (just the time, until two days share the screen), and you can
+customize that JSON rendering per package with the `logging` helpers — or, for output that **isn't** JSON, write a `logs.formatter` over the raw line yourself.
 See **[docs/logging.md](docs/logging.md)**.
 
 Every session is also teed to a timestamped logfile. Read the current one from another terminal
@@ -264,6 +282,7 @@ exceptions with `env.override` when a file needs to *extend* an inherited value:
 
 ```ts
 defineConfig({
+  packageRootDir: 'packages',
   env: { override: ['NODE_OPTIONS'] },   // or `true` for every variable
   packages: {/* … */},
 });
@@ -291,6 +310,10 @@ load `.env.development` — so values shared across modes belong in `.env` and
 `NODE_ENV` isn't). Set it from the mode's own file if you want it:
 `NODE_ENV=test` in `.env.test`.
 
+With a [dev reverse proxy](docs/dev-reverse-proxy.md) configured, a routable package also gets
+`PUBLIC_ORIGIN` (its public `<urlScheme>://<subdomain>.<rootDomain>[:<port>]`), under the same
+rule.
+
 A package's `port` is also injected as `PORT` (an explicit `.env` `PORT`
 still overrides it). The reverse direction works too — `port` may be a callback
 that reads these same resolved files to decide the port:
@@ -317,7 +340,8 @@ env (or invoke one of its scripts/targets with `-c`) — see
 ## Advanced CLI usage
 
 Every flag and subcommand — plus `devtooie cmd` for running a command in a package's
-environment on demand — is documented in **[docs/cli.md](docs/cli.md)**.
+environment on demand, and `devtooie show-config` for printing the fully resolved config as JSON
+without a session — is documented in **[docs/cli.md](docs/cli.md)**.
 
 ## Agent skill
 
@@ -335,6 +359,14 @@ The skill points the agent at a single consolidated guide,
 material as this README plus how to drive devtooie headlessly, in one self-contained
 file. It's the one doc that ships inside the package (so the skill can load it from
 `node_modules`); the topic docs above live at the repo root.
+
+## Dev reverse proxy
+
+devtooie can run the project's dev reverse proxy itself: a loopback listener that routes
+`<subdomain>.<rootDomain>` to the package declaring that `subdomain`, answering with a status
+page for a package that is stopped or still starting. A TLS terminator (Caddy, say) forwards
+`*.<rootDomain>` to it. Enable it with a top-level `devReverseProxy` block — see
+**[docs/dev-reverse-proxy.md](docs/dev-reverse-proxy.md)**.
 
 ## Control API
 

@@ -30,6 +30,15 @@ export async function startCommandServer(opts: {
    * attaches. Once attached, the manager's rotation-aware `getLogFile()` supersedes it.
    */
   logFile?: string;
+  /**
+   * The session's dev reverse proxy, if the config declares one — surfaced on `/query/status`
+   * so a client can learn the public hostnames without parsing the config.
+   */
+  devReverseProxy?: {
+    port: number;
+    rootDomain: string;
+    routes: { host: string; package: string; port: number }[];
+  } | null;
 }): Promise<{
   attach(m: ControlManager): void;
   /**
@@ -88,6 +97,17 @@ export async function startCommandServer(opts: {
         logFile: manager ? manager.getLogFile() : (opts.logFile ?? null),
         packages: manager ? manager.getAllStatuses() : null,
         config: manager ? manager.getConfig() : null,
+        devReverseProxy: opts.devReverseProxy
+          ? {
+              port: opts.devReverseProxy.port,
+              rootDomain: opts.devReverseProxy.rootDomain,
+              routes: opts.devReverseProxy.routes.map(({ host, package: pkg, port }) => ({
+                host,
+                package: pkg,
+                port,
+              })),
+            }
+          : null,
       });
     }
     if (pathname === '/command/quit') {

@@ -24,6 +24,7 @@ import { updateRunning } from './running.js';
 import type { RunnerArgs } from './runners/types.js';
 import { SHUTDOWN_GRACE_MS } from './shutdown-timing.js';
 import { stripTitleSequences } from './terminal-title.js';
+import { displayTimestamp, timestampGutterWidth, type TsMode } from './timestamp-mode.js';
 import { DEVTOOIE_LABEL_COLOR, PACKAGE_PALETTE } from './colors.js';
 import { createInternalLogger, formatInternalRecord } from './internal-logger.js';
 import type { Logger } from 'pino';
@@ -64,9 +65,14 @@ export interface BufferedLine {
   groupId: number;
   /** Whether this line has already been written to the terminal (plain mode). */
   rendered: boolean;
-  /** Memoized rendered-row count for the fullscreen viewport, and the width it was computed at. */
-  rowCount?: number;
+  /**
+   * Memoized rendered-row counts for the fullscreen viewport at `rowCountWidth` columns, one per
+   * timestamp layout ({@link TsMode}): the viewport measures both every render, so they must sit
+   * side by side rather than evict each other.
+   */
   rowCountWidth?: number;
+  rowCountDate?: number;
+  rowCountTime?: number;
 }
 
 /**
@@ -141,8 +147,6 @@ const MAX_BUFFER_LINES = 50_000;
  * one entry per spawn forever.
  */
 const MAX_CHILD_RECORDS = 200;
-/** Rendered width of a displayed timestamp gutter: `"YYYY-MM-DD HH:MM:SS "` (19 chars + a space). */
-const TIMESTAMP_GUTTER_WIDTH = 20;
 const WAIT_FOR_POLL_MS = 2000;
 /**
  * Floor on a package's healthcheck cadence, measured from the **start** of the previous probe:
@@ -250,6 +254,8 @@ export class ProcessManager implements ControlManager {
   private footerHeight = 3;
   /** Skip terminal clearing/scrollback tricks when there's no interactive UI on top. */
   private plain: boolean;
+  /** Probe every running package's healthcheck regardless of `plain` (see the constructor). */
+  private probeReadiness: boolean;
   /** devtooie's own lifecycle events; rendered under the gold `[devtooie]` prefix. */
   readonly systemLog: Logger;
   /** Control-API command notices; rendered under the gold `[dt:control]` prefix. */
@@ -296,11 +302,23 @@ export class ProcessManager implements ControlManager {
       envFiles,
       envOverride,
       cwd,
-      logTimestamps = false,
+      logTimestamps = true,
     }: RunnerArgs,
-    { plain = false }: { plain?: boolean } = {},
+    {
+      plain = false,
+      probeReadiness = false,
+    }: {
+      plain?: boolean;
+      /**
+       * Probe every running package's healthcheck even in plain mode, where nothing on screen
+       * shows readiness — for a consumer of {@link isReady} outside the UI (the dev reverse
+       * proxy, which holds requests until a package's healthcheck passes).
+       */
+      probeReadiness?: boolean;
+    } = {},
   ) {
     this.plain = plain;
+    this.probeReadiness = probeReadiness;
     this.defaultShowTimestamps = logTimestamps;
     this.rebuildableSet = rebuildableSet;
     this.waitForMap = waitForMap;
@@ -478,7 +496,7 @@ export class ProcessManager implements ControlManager {
     if (!this.healthchecks[name]) {
       return false;
     }
-    if (!this.plain && this.processes.get(name)?.status === 'running') {
+    if ((!this.plain || this.probeReadiness) && this.processes.get(name)?.status === 'running') {
       return true;
     }
     return [...this.processes].some(
@@ -589,7 +607,7 @@ export class ProcessManager implements ControlManager {
     const pfx = managed.prefix;
     const [cmd, args] = getExecArgs(managed.pkg, getDevScript(managed.pkg));
     const proc = execa(cmd, args, {
-      cwd: managed.pkg.path,
+      cwd: managed.pkg.absoluteDir,
       env: this.packageEnv(managed.pkg),
       stdin: 'ignore',
       stdout: 'pipe',
@@ -601,7 +619,7 @@ export class ProcessManager implements ControlManager {
 
     managed.proc = proc;
     managed.status = 'running';
-    this.trackChild(proc, managed.pkg.path);
+    this.trackChild(proc, managed.pkg.absoluteDir);
 
     const { searchName } = managed;
 
@@ -641,10 +659,10 @@ export class ProcessManager implements ControlManager {
 
   /**
    * Environment for a package's child processes: the current `process.env`, then the
-   * package's configured `run.port` as `PORT`, then its resolved `.env` files (later files /
-   * package scope win). So `PORT` defaults to the config port but an explicit `.env` `PORT`
-   * still wins. Re-resolved on every spawn so a restart picks up edited `.env` values. Never
-   * mutates `process.env`.
+   * package's configured `port` as `PORT` (and, under the dev reverse proxy, its public origin
+   * as `PUBLIC_ORIGIN`), then its resolved `.env` files (later files / package scope win). So
+   * `PORT` defaults to the config port but an explicit `.env` `PORT` still wins. Re-resolved on
+   * every spawn so a restart picks up edited `.env` values. Never mutates `process.env`.
    */
   private packageEnv(pkg: AnyPackageConfig): NodeJS.ProcessEnv {
     return Object.assign(
@@ -799,7 +817,7 @@ export class ProcessManager implements ControlManager {
       // package has no combined script/target — resolved identically for pnpm and make.
       for (const [cmd, args] of getRebuildCommands(managed.pkg)) {
         const buildProc = execa(cmd, args, {
-          cwd: managed.pkg.path,
+          cwd: managed.pkg.absoluteDir,
           env: this.packageEnv(managed.pkg),
           stdin: 'ignore',
           reject: false,
@@ -809,7 +827,7 @@ export class ProcessManager implements ControlManager {
         // shutdownAll / forceKillAll can reach (and kill the group of) this
         // child even though it isn't the package's own long-running `proc`.
         managed.extraProcs.add(buildProc);
-        this.trackChild(buildProc, managed.pkg.path);
+        this.trackChild(buildProc, managed.pkg.absoluteDir);
         let result;
         try {
           result = await buildProc;
@@ -885,7 +903,7 @@ export class ProcessManager implements ControlManager {
     this.addLine(pfx, chalk.cyan(`▶ running: ${displayLabel}`), searchName, false);
 
     const proc = execa(cmd, args, {
-      cwd: managed.pkg.path,
+      cwd: managed.pkg.absoluteDir,
       env: this.packageEnv(managed.pkg),
       stdin: 'ignore',
       stdout: 'pipe',
@@ -897,7 +915,7 @@ export class ProcessManager implements ControlManager {
     });
 
     managed.extraProcs.add(proc);
-    this.trackChild(proc, managed.pkg.path);
+    this.trackChild(proc, managed.pkg.absoluteDir);
 
     if (proc.stdout) {
       proc.stdout.on('data', (data: Buffer) => {
@@ -1274,20 +1292,28 @@ export class ProcessManager implements ControlManager {
     return lines;
   }
 
-  /** Rendered-row count of a line at the given terminal width (memoized on the line). */
-  countRows(line: BufferedLine, cols: number): number {
-    if (line.rowCountWidth === cols && line.rowCount !== undefined) {
-      return line.rowCount;
+  /**
+   * Rendered-row count of a line at the given terminal width and timestamp layout (memoized on
+   * the line). A line whose timestamp is hidden lays out the same in either mode and shares one
+   * slot.
+   */
+  countRows(line: BufferedLine, cols: number, mode: TsMode = 'date'): number {
+    if (line.rowCountWidth !== cols) {
+      line.rowCountWidth = cols;
+      line.rowCountDate = undefined;
+      line.rowCountTime = undefined;
     }
-    const rows = this.wrapLine(line, cols).length;
-    line.rowCount = rows;
-    line.rowCountWidth = cols;
-    return rows;
+    const slot = mode === 'time' && line.showTs ? 'rowCountTime' : 'rowCountDate';
+    line[slot] ??= this.wrapLine(line, cols, mode).length;
+    return line[slot];
   }
 
-  /** Dimmed `"YYYY-MM-DD HH:MM:SS "` gutter for a line, or `''` when its timestamp is hidden. */
-  private tsPrefix(line: BufferedLine): string {
-    return line.showTs ? `${chalk.dim(line.ts)} ` : '';
+  /**
+   * Dimmed timestamp gutter for a line — `"YYYY-MM-DD HH:MM:SS "`, or just `"HH:MM:SS "` in the
+   * `time` layout — or `''` when its timestamp is hidden.
+   */
+  private tsPrefix(line: BufferedLine, mode: TsMode): string {
+    return line.showTs ? `${chalk.dim(displayTimestamp(line.ts, mode))} ` : '';
   }
 
   /**
@@ -1298,8 +1324,8 @@ export class ProcessManager implements ControlManager {
    * nominal width there under-counts the gutter, and the wrapped rows overflow the terminal (and
    * are then truncated, losing text).
    */
-  private gutterWidth(line: BufferedLine): number {
-    return stringWidth(line.prefix) + (line.showTs ? TIMESTAMP_GUTTER_WIDTH : 0);
+  private gutterWidth(line: BufferedLine, mode: TsMode): number {
+    return stringWidth(line.prefix) + (line.showTs ? timestampGutterWidth(mode) : 0);
   }
 
   /**
@@ -1307,10 +1333,11 @@ export class ProcessManager implements ControlManager {
    * the `[name]` prefix, so a line that wraps keeps an unbroken left gutter instead of leaving
    * blank space beside its continuations. Wrapped rows are additionally indented to line up under
    * the value of a `key: value` property (see {@link hangingIndent}), matching how the formatter
-   * aligns a value that contains newlines.
+   * aligns a value that contains newlines. `mode` picks the timestamp layout (see
+   * {@link TsMode}); plain mode and the specs take the full-date default.
    */
-  wrapLine(line: BufferedLine, cols: number): string[] {
-    return this.wrapLineRows(line, cols).map((row) => row.text);
+  wrapLine(line: BufferedLine, cols: number, mode: TsMode = 'date'): string[] {
+    return this.wrapLineRows(line, cols, mode).map((row) => row.text);
   }
 
   /**
@@ -1319,9 +1346,13 @@ export class ProcessManager implements ControlManager {
    * between presentation and text, which value-scoped selection needs to know to keep the gutter
    * off the clipboard.
    */
-  wrapLineRows(line: BufferedLine, cols: number): { text: string; contentStart: number }[] {
-    const gutter = this.gutterWidth(line);
-    const head = `${this.tsPrefix(line)}${line.prefix}`;
+  wrapLineRows(
+    line: BufferedLine,
+    cols: number,
+    mode: TsMode = 'date',
+  ): { text: string; contentStart: number }[] {
+    const gutter = this.gutterWidth(line, mode);
+    const head = `${this.tsPrefix(line, mode)}${line.prefix}`;
     const contentWidth = cols - gutter;
     if (contentWidth <= MIN_CONTENT_WIDTH || stringWidth(line.text) <= contentWidth) {
       return [{ text: `${head}${line.text}`, contentStart: gutter }];

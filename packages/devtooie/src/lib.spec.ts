@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, test, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +14,9 @@ import {
   saveSelection,
   loadSelection,
   resetSelection,
+  resolveSelectedNames,
+  readSelection,
+  initialPhaseFor,
   sortPackages,
   depScore,
   buildRunnerArgs,
@@ -30,7 +33,7 @@ import type { AnyPackageConfig } from './config.js';
 import { defineConfig } from './config.js';
 
 let dir: string;
-function pkg(over: Partial<AnyPackageConfig> & { path: string }): AnyPackageConfig {
+function pkg(over: Partial<AnyPackageConfig> & { absoluteDir: string }): AnyPackageConfig {
   return { name: 'x', relativeDir: 'x', ...over } as AnyPackageConfig;
 }
 
@@ -46,8 +49,8 @@ afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
 describe('findAncestorPackage', () => {
   const root = '/repo';
   const packages = [
-    pkg({ name: 'api', path: '/repo/packages/api' }),
-    pkg({ name: 'web', path: '/repo/packages/web' }),
+    pkg({ name: 'api', absoluteDir: '/repo/packages/api' }),
+    pkg({ name: 'web', absoluteDir: '/repo/packages/web' }),
   ];
 
   it('matches the package dir itself', () => {
@@ -62,42 +65,42 @@ describe('findAncestorPackage', () => {
   });
   it('picks the deepest package when packages nest', () => {
     const nested = [
-      pkg({ name: 'outer', path: '/repo/a' }),
-      pkg({ name: 'inner', path: '/repo/a/b' }),
+      pkg({ name: 'outer', absoluteDir: '/repo/a' }),
+      pkg({ name: 'inner', absoluteDir: '/repo/a/b' }),
     ];
     expect(findAncestorPackage('/repo/a/b/c', nested, root)?.name).toBe('inner');
     expect(findAncestorPackage('/repo/a/x', nested, root)?.name).toBe('outer');
   });
   it('matches a package rooted at the config root', () => {
-    const atRoot = [pkg({ name: 'mono', path: '/repo' })];
+    const atRoot = [pkg({ name: 'mono', absoluteDir: '/repo' })];
     expect(findAncestorPackage('/repo/anywhere', atRoot, root)?.name).toBe('mono');
   });
 });
 
 describe('runner detection', () => {
   it('detects pnpm for a package.json pkg', () => {
-    expect(getCommandRunner(pkg({ path: dir }))).toBe('pnpm');
-    expect(getExecArgs(pkg({ path: dir }), 'dev')).toEqual(['pnpm', ['run', 'dev']]);
+    expect(getCommandRunner(pkg({ absoluteDir: dir }))).toBe('pnpm');
+    expect(getExecArgs(pkg({ absoluteDir: dir }), 'dev')).toEqual(['pnpm', ['run', 'dev']]);
   });
   it('forwards extra args after the script/target name (no `--` separator)', () => {
-    expect(getExecArgs(pkg({ path: dir }), 'start', ['--bank-key=x', 'foo'])).toEqual([
+    expect(getExecArgs(pkg({ absoluteDir: dir }), 'start', ['--bank-key=x', 'foo'])).toEqual([
       'pnpm',
       ['run', 'start', '--bank-key=x', 'foo'],
     ]);
   });
   it('reads scripts', () => {
-    expect(hasScript(pkg({ path: dir }), 'build')).toBe(true);
-    expect(hasDevScript(pkg({ path: dir }))).toBe(true);
+    expect(hasScript(pkg({ absoluteDir: dir }), 'build')).toBe(true);
+    expect(hasDevScript(pkg({ absoluteDir: dir }))).toBe(true);
   });
   it('hasDevScript is false for `command: null` even when a dev script exists', () => {
-    expect(hasDevScript(pkg({ path: dir, command: null }))).toBe(false);
+    expect(hasDevScript(pkg({ absoluteDir: dir, command: null }))).toBe(false);
   });
   it('excludes runner-managed scripts from extra commands', () => {
-    expect(getExtraCommands(pkg({ path: dir }))).toEqual(['codegen']);
+    expect(getExtraCommands(pkg({ absoluteDir: dir }))).toEqual(['codegen']);
   });
   it('falls back to pnpm when nothing present', () => {
     const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-empty-'));
-    expect(getCommandRunner(pkg({ path: empty }))).toBe('pnpm');
+    expect(getCommandRunner(pkg({ absoluteDir: empty }))).toBe('pnpm');
     fs.rmSync(empty, { recursive: true, force: true });
   });
 });
@@ -106,6 +109,7 @@ describe('resolveDeps (§8)', () => {
   function setup() {
     return Object.values(
       defineConfig({
+        packageRootDir: 'packages',
         workspaceDir: '/repo',
         packages: {
           'reverse-proxy': { selectable: false },
@@ -173,6 +177,7 @@ describe('tsconfig project-reference inference', () => {
   it('falls back to tsconfig.json when no tsconfig.build.json exists', () => {
     const packages = Object.values(
       defineConfig({
+        packageRootDir: 'packages',
         workspaceDir: ws,
         packages: { 'lib-a': {}, 'lib-b': {}, 'app-json': {} },
       }).packages,
@@ -184,6 +189,7 @@ describe('tsconfig project-reference inference', () => {
   it('prefers tsconfig.build.json over tsconfig.json', () => {
     const packages = Object.values(
       defineConfig({
+        packageRootDir: 'packages',
         workspaceDir: ws,
         packages: { 'lib-a': {}, 'lib-b': {}, 'app-both': {} },
       }).packages,
@@ -195,6 +201,7 @@ describe('tsconfig project-reference inference', () => {
   it('prefers run.tsconfig over tsconfig.build.json', () => {
     const packages = Object.values(
       defineConfig({
+        packageRootDir: 'packages',
         workspaceDir: ws,
         packages: {
           'lib-a': {},
@@ -217,12 +224,12 @@ describe('make targets', () => {
   afterAll(() => fs.rmSync(mkdir, { recursive: true, force: true }));
 
   it('excludes make special targets like .PHONY', () => {
-    expect(getMakeTargets(pkg({ path: mkdir }))).toEqual(['start']);
+    expect(getMakeTargets(pkg({ absoluteDir: mkdir }))).toEqual(['start']);
   });
 
   it('getExecArgs uses `make <target>` and forwards extra args', () => {
-    expect(getExecArgs(pkg({ path: mkdir }), 'start')).toEqual(['make', ['start']]);
-    expect(getExecArgs(pkg({ path: mkdir }), 'start', ['--bank-key=x'])).toEqual([
+    expect(getExecArgs(pkg({ absoluteDir: mkdir }), 'start')).toEqual(['make', ['start']]);
+    expect(getExecArgs(pkg({ absoluteDir: mkdir }), 'start', ['--bank-key=x'])).toEqual([
       'make',
       ['start', '--bank-key=x'],
     ]);
@@ -230,7 +237,7 @@ describe('make targets', () => {
 
   it('getExtraCommands does not surface .PHONY (nor the configured dev target)', () => {
     const p = pkg({
-      path: mkdir,
+      absoluteDir: mkdir,
       command: { name: 'start', watches: false, builds: true, cleans: true },
     });
     expect(getExtraCommands(p)).toEqual([]);
@@ -239,12 +246,100 @@ describe('make targets', () => {
 
 describe('state + persistence', () => {
   it('round-trips the saved selection', () => {
+    defineConfig({ packageRootDir: 'packages', packages: { web: {}, 'core-svc': {} } });
     resetSelection();
     expect(loadSelection()).toBeNull();
     saveSelection(['web', 'core-svc']);
     expect(loadSelection()).toEqual(['web', 'core-svc']);
     resetSelection();
     expect(loadSelection()).toBeNull();
+  });
+
+  // A saved selection outlives package renames. A name that no longer exists must never reach
+  // the picker or `findPackage` (which throws), and must never be written back.
+  test('drops saved names that are not current packages, keeping the valid ones', () => {
+    defineConfig({ packageRootDir: 'packages', packages: { web: {}, api: {} } });
+    fs.writeFileSync(
+      path.join(getStateDir(), 'selection.json'),
+      JSON.stringify(['@old/name', 'web']),
+    );
+    expect(loadSelection()).toEqual(['web']);
+    // and the file itself is pruned, so the stale name doesn't linger until the next save
+    expect(JSON.parse(fs.readFileSync(path.join(getStateDir(), 'selection.json'), 'utf8'))).toEqual(
+      ['web'],
+    );
+    resetSelection();
+  });
+
+  test('never saves a name that is not a current package', () => {
+    defineConfig({ packageRootDir: 'packages', packages: { web: {}, api: {} } });
+    saveSelection(['web', 'api']);
+    // The config renames `api` → `backend`; the next run saves what it ran with.
+    defineConfig({ packageRootDir: 'packages', packages: { web: {}, backend: {} } });
+    saveSelection(loadSelection() ?? []);
+    expect(JSON.parse(fs.readFileSync(path.join(getStateDir(), 'selection.json'), 'utf8'))).toEqual(['web']); // prettier-ignore
+    saveSelection(['web', 'api']);
+    expect(loadSelection()).toEqual(['web']);
+    resetSelection();
+  });
+
+  test('readSelection separates current names from stale ones, pruning the file', () => {
+    defineConfig({ packageRootDir: 'packages', packages: { web: {}, api: {} } });
+    fs.writeFileSync(
+      path.join(getStateDir(), 'selection.json'),
+      JSON.stringify(['@old/name', 'web', '@gone/too']),
+    );
+    expect(readSelection()).toEqual({ names: ['web'], stale: ['@old/name', '@gone/too'] });
+    expect(loadSelection()).toEqual(['web']);
+    resetSelection();
+    expect(readSelection()).toBeNull();
+  });
+
+  // Renamed package keys must never stop devtooie from running: a stale saved name sends the
+  // TUI back to the picker (known names preselected) instead of skipping it on --last-answers.
+  test('a stale saved name forces the picker even with --last-answers, preselecting the rest', () => {
+    defineConfig({ packageRootDir: 'packages', packages: { web: {}, api: {} } });
+    fs.writeFileSync(path.join(getStateDir(), 'selection.json'), JSON.stringify(['@old/name', 'web'])); // prettier-ignore
+    expect(initialPhaseFor({ packages: [], lastAnswers: true })).toEqual({
+      type: 'package-select',
+      initialSelected: ['web'],
+    });
+    fs.writeFileSync(path.join(getStateDir(), 'selection.json'), JSON.stringify(['web']));
+    expect(initialPhaseFor({ packages: [], lastAnswers: true })).toEqual({
+      type: 'building',
+      selectedNames: ['web'],
+    });
+    expect(initialPhaseFor({ packages: ['api'], lastAnswers: true })).toEqual({
+      type: 'building',
+      selectedNames: ['api'],
+    });
+    resetSelection();
+    expect(initialPhaseFor({ packages: [], lastAnswers: true })).toEqual({
+      type: 'package-select',
+      initialSelected: [],
+    });
+  });
+
+  test('--last-answers without a picker refuses a selection with stale names, naming them', () => {
+    defineConfig({ packageRootDir: 'packages', packages: { web: {} } });
+    fs.writeFileSync(path.join(getStateDir(), 'selection.json'), JSON.stringify(['@old/name', 'web'])); // prettier-ignore
+    expect(resolveSelectedNames({ package: [], lastAnswers: true }, '--plain')).toEqual({
+      error:
+        'The saved selection names packages that no longer exist (@old/name) — run once without --last-answers to pick again.',
+    });
+    fs.writeFileSync(path.join(getStateDir(), 'selection.json'), JSON.stringify(['@old/name']));
+    expect(resolveSelectedNames({ package: [], lastAnswers: true }, '--plain')).toEqual({
+      error:
+        'The saved selection names packages that no longer exist (@old/name) — run once without --last-answers to pick again.',
+    });
+    fs.writeFileSync(path.join(getStateDir(), 'selection.json'), JSON.stringify(['web']));
+    expect(resolveSelectedNames({ package: [], lastAnswers: true }, '--plain')).toEqual({
+      names: ['web'],
+    });
+    resetSelection();
+    expect(resolveSelectedNames({ package: [], lastAnswers: true }, '--plain')).toEqual({
+      error: 'No saved selection found — run once without --last-answers first.',
+    });
   });
 
   it('getStateDir lives under node_modules/.devtooie', () => {
@@ -256,6 +351,7 @@ describe('display sort + runner args', () => {
   function packages() {
     return Object.values(
       defineConfig({
+        packageRootDir: 'packages',
         workspaceDir: '/repo',
         packages: {
           proxy: { selectable: false },
@@ -278,6 +374,7 @@ describe('display sort + runner args', () => {
   it('depScore counts a dep reached via two kinds once per kind', () => {
     const [both] = Object.values(
       defineConfig({
+        packageRootDir: 'packages',
         workspaceDir: '/repo',
         packages: { both: { deps: { build: ['leaf'], runtime: ['leaf'] } }, leaf: {} },
       }).packages,
@@ -315,6 +412,7 @@ describe('display sort + runner args', () => {
   it('buildRunnerArgs surfaces top-level urls as normalized lines from the loaded config', () => {
     const all = Object.values(
       defineConfig({
+        packageRootDir: 'packages',
         workspaceDir: '/repo',
         urls: [
           'https://dashboard.internal',
@@ -341,22 +439,24 @@ describe('display sort + runner args', () => {
     expect(args.topLevelUrls).toBeUndefined();
   });
 
-  it('buildRunnerArgs carries logTimestamps from the loaded config (default false)', () => {
-    const off = Object.values(
-      defineConfig({ workspaceDir: '/repo', packages: { web: {} } }).packages,
-    );
-    const web = off.find((a) => a.name === 'web')!;
-    expect(buildRunnerArgs([web], resolveDeps([web])).logTimestamps).toBe(false);
-
+  it('buildRunnerArgs carries logTimestamps from the loaded config (default true)', () => {
     const on = Object.values(
+      defineConfig({ packageRootDir: 'packages', workspaceDir: '/repo', packages: { web: {} } })
+        .packages,
+    );
+    const web = on.find((a) => a.name === 'web')!;
+    expect(buildRunnerArgs([web], resolveDeps([web])).logTimestamps).toBe(true);
+
+    const off = Object.values(
       defineConfig({
+        packageRootDir: 'packages',
         workspaceDir: '/repo',
-        logs: { timestamps: true },
+        logs: { timestamps: false },
         packages: { web: {} },
       }).packages,
     );
-    const web2 = on.find((a) => a.name === 'web')!;
-    expect(buildRunnerArgs([web2], resolveDeps([web2])).logTimestamps).toBe(true);
+    const web2 = off.find((a) => a.name === 'web')!;
+    expect(buildRunnerArgs([web2], resolveDeps([web2])).logTimestamps).toBe(false);
   });
 });
 
@@ -401,7 +501,7 @@ describe('rebuild resolution', () => {
 
   it('canRebuild: true when the command cleans on start, even without clean/build scripts', () => {
     const p = pkg({
-      path: startonly,
+      absoluteDir: startonly,
       command: { name: 'start', watches: false, builds: true, cleans: true },
     });
     expect(canRebuild(p)).toBe(true);
@@ -411,36 +511,38 @@ describe('rebuild resolution', () => {
 
   it('canRebuild: false for cleans:false with no clean/build scripts', () => {
     const p = pkg({
-      path: startonly,
+      absoluteDir: startonly,
       command: { name: 'start', watches: false, builds: true, cleans: false },
     });
     expect(canRebuild(p)).toBe(false);
   });
 
   it('canRebuild: build:clean OR (clean AND build); false otherwise', () => {
-    expect(canRebuild(pkg({ path: bc }))).toBe(true);
-    expect(canRebuild(pkg({ path: cb }))).toBe(true);
-    expect(canRebuild(pkg({ path: bonly }))).toBe(false);
+    expect(canRebuild(pkg({ absoluteDir: bc }))).toBe(true);
+    expect(canRebuild(pkg({ absoluteDir: cb }))).toBe(true);
+    expect(canRebuild(pkg({ absoluteDir: bonly }))).toBe(false);
   });
 
   it('getRebuildCommands: a single build:clean when the package defines it', () => {
-    expect(getRebuildCommands(pkg({ path: bc }))).toEqual([['pnpm', ['run', 'build:clean']]]);
+    expect(getRebuildCommands(pkg({ absoluteDir: bc }))).toEqual([
+      ['pnpm', ['run', 'build:clean']],
+    ]);
   });
 
   it('getRebuildCommands: clean then build when there is no build:clean', () => {
-    expect(getRebuildCommands(pkg({ path: cb }))).toEqual([
+    expect(getRebuildCommands(pkg({ absoluteDir: cb }))).toEqual([
       ['pnpm', ['run', 'clean']],
       ['pnpm', ['run', 'build']],
     ]);
   });
 
   it('getRebuildCommands: empty when the package cannot rebuild', () => {
-    expect(getRebuildCommands(pkg({ path: bonly }))).toEqual([]);
+    expect(getRebuildCommands(pkg({ absoluteDir: bonly }))).toEqual([]);
   });
 
   it('getRebuildCommands: make clean then make build for a Makefile package', () => {
-    expect(canRebuild(pkg({ path: mk }))).toBe(true);
-    expect(getRebuildCommands(pkg({ path: mk }))).toEqual([
+    expect(canRebuild(pkg({ absoluteDir: mk }))).toBe(true);
+    expect(getRebuildCommands(pkg({ absoluteDir: mk }))).toEqual([
       ['make', ['clean']],
       ['make', ['build']],
     ]);

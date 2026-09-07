@@ -20,6 +20,12 @@ it says where a session _would_ answer, not that one is running — query the po
     "logFile": "/abs/.../node_modules/.devtooie/logs/1784784120727.log", // current logfile (rotation-aware)
     "packages": { "web": "running", "api": "waiting" }, // running | stopped | waiting | restarting | rebuilding; null until the build finishes
     "config": {/* … */}, // the resolved config; null until the build finishes
+    "devReverseProxy": {
+      // the session's dev reverse proxy, or null when the config declares none
+      "port": 4000,
+      "rootDomain": "myproject.example.test",
+      "routes": [{ "host": "web.myproject.example.test", "package": "web", "port": 3000 }],
+    },
   }
   ```
 
@@ -33,7 +39,11 @@ it says where a session _would_ answer, not that one is running — query the po
   are `null` until the process manager attaches, then populated. `config` is fully
   **resolved** (defaults applied, `command` normalized to `{ name, watches, builds, cleans }`)
   as loaded at startup — restart devtooie to pick up edits. `logFile` tracks in-session
-  log rotation, so it's always the file currently being written.
+  log rotation, so it's always the file currently being written. The same resolved `config`,
+  without a session, is what [`devtooie show-config`](./cli.md#devtooie-show-config) prints.
+  `devReverseProxy` is present
+  from the start (the proxy binds before anything else) and lists every hostname it routes —
+  see [Dev reverse proxy](./dev-reverse-proxy.md).
 
 - `POST /command/restart/<name>` / `POST /command/rebuild/<name>` — restart
   or rebuild-then-restart a package (`202` if accepted, `404` for an unknown package).

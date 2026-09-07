@@ -91,3 +91,57 @@ export function windowRows<T, R = string>(
   }
   return out;
 }
+
+/**
+ * The viewport's bottom edge as a position in the *lines* rather than in rendered rows: the line
+ * the edge falls in, and how many of that line's rows are hidden below it. Unlike a row offset
+ * this survives a change of layout — when the timestamp gutter narrows and wrapped lines take
+ * fewer rows, the same anchor names the same content.
+ */
+export type BottomAnchor = {
+  /** Index of the line at the bottom edge (`-1` for an empty buffer). */
+  line: number;
+  /** Rows of that line hidden below the edge (`0` = its last row is the last visible row). */
+  clip: number;
+};
+
+/** Locate the bottom edge for `scrollOffset` (rows from the bottom) in a layout. */
+export function bottomAnchor(rowCounts: readonly number[], scrollOffset: number): BottomAnchor {
+  let remaining = Math.max(0, scrollOffset);
+  for (let i = rowCounts.length - 1; i >= 0; i--) {
+    const count = rowCounts[i]!;
+    if (remaining < count) {
+      return { line: i, clip: remaining };
+    }
+    remaining -= count;
+  }
+  // Past the top (or nothing buffered): the oldest row, as computeWindow would clamp to.
+  for (let i = 0; i < rowCounts.length; i++) {
+    if (rowCounts[i]! > 0) {
+      return { line: i, clip: 0 };
+    }
+  }
+  return { line: -1, clip: 0 };
+}
+
+/** The row offset that puts `anchor` at the bottom edge in a layout (the inverse of {@link bottomAnchor}). */
+export function anchorOffset(rowCounts: readonly number[], anchor: BottomAnchor): number {
+  if (anchor.line < 0 || anchor.line >= rowCounts.length) {
+    return 0;
+  }
+  let offset = 0;
+  for (let i = anchor.line + 1; i < rowCounts.length; i++) {
+    offset += rowCounts[i]!;
+  }
+  // The line may have fewer rows in this layout than where the anchor was taken.
+  return offset + Math.min(anchor.clip, Math.max(0, rowCounts[anchor.line]! - 1));
+}
+
+/** Re-express a row offset taken in layout `from` in layout `to`, keeping the same bottom edge. */
+export function convertOffset(
+  from: readonly number[],
+  to: readonly number[],
+  scrollOffset: number,
+): number {
+  return anchorOffset(to, bottomAnchor(from, scrollOffset));
+}

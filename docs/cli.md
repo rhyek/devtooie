@@ -17,17 +17,17 @@ nearest `devtooie.config.*`, switches to that directory, and loads its workspace
 
 Common options:
 
-| Option                 | Description                                                                                                  |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `-p, --package <name>` | Repeatable. Package(s) to run, bypassing the interactive selector.                                           |
-| `-m, --mode <name>`    | Environment mode selecting the `.env.<mode>` files to load. Defaults to `development`. Also accepted after a subcommand (`devtooie cmd --mode test`). See [Environment loading](../README.md#environment-env-loading). |
-| `--ui`                 | Interactive terminal UI (default). Mutually exclusive with `--plain`.                                        |
-| `--plain`              | No TUI — stream logs to stdout with colored name prefixes. Requires `-p` or `--last-answers`.                |
-| `--last-answers`       | Skip selection; reuse the last saved selection.                                                              |
-| `--build`              | Build the selected packages and their build-time deps, then exit (no run phase).                             |
-| `--rebuild`            | Like `--build`, but first clears `dist/` for every build target.                                             |
-| `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/`. Each run gets a fresh `<timestamp>.log`; previous sessions' logs are kept. Also used by [`devtooie cmd`](#devtooie-cmd). |
-| `--kill-others`        | Quit a devtooie session already running for this project instead of asking. See [Taking over a running session](#taking-over-a-running-session). |
+| Option                 | Description                                                                                                                                                                                                                             |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-p, --package <name>` | Repeatable. Package(s) to run, bypassing the interactive selector.                                                                                                                                                                      |
+| `-m, --mode <name>`    | Environment mode selecting the `.env.<mode>` files to load. Defaults to `development`. Also accepted after a subcommand (`devtooie cmd --mode test`). See [Environment loading](../README.md#environment-env-loading).                  |
+| `--ui`                 | Interactive terminal UI (default). Mutually exclusive with `--plain`.                                                                                                                                                                   |
+| `--plain`              | No TUI — stream logs to stdout with colored name prefixes. Requires `-p` or `--last-answers`.                                                                                                                                           |
+| `--last-answers`       | Skip selection; reuse the last saved selection. If a saved name is no longer a package (a renamed key), the picker opens instead with the surviving names preselected; `--plain`/`--build` refuse with a message naming the stale ones. |
+| `--build`              | Build the selected packages and their build-time deps, then exit (no run phase).                                                                                                                                                        |
+| `--rebuild`            | Like `--build`, but first clears `dist/` for every build target.                                                                                                                                                                        |
+| `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/`. Each run gets a fresh `<timestamp>.log`; previous sessions' logs are kept. Also used by [`devtooie cmd`](#devtooie-cmd).             |
+| `--kill-others`        | Quit a devtooie session already running for this project instead of asking. See [Taking over a running session](#taking-over-a-running-session).                                                                                        |
 
 Subcommands:
 
@@ -46,12 +46,12 @@ Only one devtooie session can run a project at a time, so starting a second one 
 quit the first — along with every dev process under it. Since 0.7.0 devtooie asks before
 doing that:
 
-| Situation                                             | What happens                          |
-| ----------------------------------------------------- | ------------------------------------- |
-| `--kill-others` passed                                | Quits the running session, no question |
-| Both sessions were started by a coding agent          | Quits it, no question                  |
-| A terminal is attached                                | Asks you to confirm (default **yes**)  |
-| No terminal to ask in                                 | Refuses, exits `1`, leaves it running  |
+| Situation                                    | What happens                           |
+| -------------------------------------------- | -------------------------------------- |
+| `--kill-others` passed                       | Quits the running session, no question |
+| Both sessions were started by a coding agent | Quits it, no question                  |
+| A terminal is attached                       | Asks you to confirm (default **yes**)  |
+| No terminal to ask in                        | Refuses, exits `1`, leaves it running  |
 
 The agent rule keeps agents unblocked without letting one interrupt you: an agent may
 replace a session another agent started, but a session **you** started is never taken over
@@ -64,11 +64,33 @@ shell where it guesses wrong.
 A session's own answer is published as `startedByAgent` on
 [`GET /query/status`](./control-api.md).
 
+## `devtooie show-config`
+
+Print the **fully resolved config** as prettified JSON — the same object a running session serves
+as `config` on [`GET /query/status`](./control-api.md) — **without a session**. Callbacks have run,
+defaults are applied, `command` is normalized, and every package carries its `relativeDir`
+(as written, or inferred from `packageRootDir`) and `absoluteDir`, its resolved `port`,
+`urls`, `healthcheck`, and — under the [dev reverse proxy](./dev-reverse-proxy.md) — its
+`publicOrigin` (`<urlScheme>://<subdomain>.<rootDomain>[:<port>]`). The `devReverseProxy` block
+itself, port included, is there too.
+
+```bash
+devtooie show-config                          # the whole resolved config
+devtooie show-config --mode test              # resolved against that mode's .env files
+devtooie show-config | jq '.packages.api.publicOrigin'
+devtooie show-config | jq '.packages | map_values(.port)'
+```
+
+`--mode` selects the `.env.<mode>` files the config resolves against, exactly as for a session or
+`devtooie cmd`; it defaults to `development`. The config is resolved exactly once per devtooie
+process, when the file loads, so this prints what a session started with the same mode runs with.
+Function-valued fields (`logs.formatter`) have no JSON form and are omitted, as on the control API.
+
 ## `devtooie cmd`
 
 Run a **single one-off command with a package's exact environment** — without starting a whole
 session. Think migrations, seed scripts, scrapers, or a REPL. The command runs in the package's
-directory with that package's resolved `.env` injected and its configured `port` as `PORT` —
+directory with that package's resolved `.env` injected and its configured `port` as `PORT` (plus `PUBLIC_ORIGIN` under the [dev reverse proxy](./dev-reverse-proxy.md)) —
 exactly the environment the TUI would give it (its `.env` files per
 [Environment loading](../README.md#environment-env-loading)).
 

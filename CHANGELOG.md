@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.0 (2026-09-06)
+
+### Features
+
+- **Reach each package at its own hostname**, like `http://api.localhost:4000` instead of a bare port per app, through a reverse proxy devtooie now runs itself — with a status page while the package is stopped or still starting. See [docs/dev-reverse-proxy.md](docs/dev-reverse-proxy.md).
+- **Installing devtooie sets the project up**: its `postinstall` runs `devtooie init` for a project with no config and (re)writes the agent skill for one that has it, so a fresh clone carries the guide for the installed version. pnpm 10+ needs `pnpm approve-builds` first. See [Install](README.md#install).
+- **New top-level `packageRootDir` infers each package's directory from its key**, so `relativeDir` is only ever an override. See [docs/configuration.md](docs/configuration.md).
+- **New `devtooie show-config` prints the fully resolved config as JSON**, no session needed — including each package's public origin under the dev reverse proxy. See [docs/cli.md](docs/cli.md#devtooie-show-config).
+- **A `urls` entry or `healthcheck` can be a path** like `'/todos'` (or `''` for the origin itself): a link is based on the package's public origin under the dev reverse proxy, else on `http://localhost:<port>`; a healthcheck always on `http://localhost:<port>`. See [docs/configuration.md](docs/configuration.md).
+- **Packages can declare a `subdomain` again**, exposed on the resolved config and handed to the package's callbacks. See [docs/configuration.md](docs/configuration.md#callbacks-instead-of-interpolation).
+- **Log lines carry a timestamp by default — just the time while everything on screen is from the same day**, the full date once two days are visible together. Set `logs.timestamps: false` to hide them. See [docs/logging.md](docs/logging.md#timestamps).
+
+### Fixes
+
+- **A saved selection naming a package that no longer exists no longer crashes the picker.**
+
+### Breaking changes
+
+- **`relativeDir` is required unless the config sets `packageRootDir`** — the implicit `packages/<key>` default is gone; add `packageRootDir: 'packages'` to keep it.
+- **The resolved package's `path` is now `absoluteDir`**, next to `relativeDir`.
+
 ## 0.7.1 (2026-08-16)
 
 - **Fixed the installed agent skill being invisible to coding agents.**

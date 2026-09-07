@@ -6,11 +6,12 @@ import {
   displayLogFile,
   getRuntimeDepsMap,
   getSelectablePackages,
-  loadSelection,
+  initialPhaseFor,
   saveSelection,
 } from '../lib.js';
 import type { RunnerArgs } from '../runners/types.js';
 import { BuildProgress, type ControlServer } from './BuildProgress.js';
+import type { DevReverseProxyServer } from '../dev-reverse-proxy.js';
 import { NativeRunner } from './NativeRunner.js';
 import { PackageSelector } from './PackageSelector.js';
 import { setTitleSequence } from '../terminal-title.js';
@@ -39,25 +40,6 @@ export type AppProps = {
 };
 
 /**
- * Picks where the phase machine starts: an explicit CLI selection or a
- * `--last-answers` replay both skip straight past the interactive selector
- * into the build phase; otherwise the selector is shown first.
- */
-function getInitialPhase(
-  packages: string[],
-  lastAnswers: boolean,
-  savedSelection: string[],
-): Phase {
-  if (packages.length > 0) {
-    return { type: 'building', selectedNames: packages };
-  }
-  if (lastAnswers && savedSelection.length > 0) {
-    return { type: 'building', selectedNames: savedSelection };
-  }
-  return { type: 'package-select' };
-}
-
-/**
  * Root component: a phase state machine (`package-select` -> `building` -> `running`)
  * that owns the one thing shared across those phases — the control server, received
  * from `BuildProgress` via `onControlReady` and handed to `NativeRunner` once the
@@ -71,11 +53,10 @@ export function App({ packages = [], lastAnswers = false, logFile, logFileRef }:
   // its own memoized derivations.
   const [items] = useState(getSelectablePackages);
   const [runtimeDeps] = useState(getRuntimeDepsMap);
-  const [savedSelection] = useState(() => loadSelection() ?? []);
-
-  const [phase, setPhase] = useState<Phase>(() =>
-    getInitialPhase(packages, lastAnswers, savedSelection),
-  );
+  // The saved selection decides the starting phase once (see `initialPhaseFor`): a stale name
+  // in it means the picker, with whatever survived preselected.
+  const [initial] = useState(() => initialPhaseFor({ packages, lastAnswers }));
+  const [phase, setPhase] = useState<Phase>(initial);
 
   // Received from BuildProgress once its control server is listening, then handed to
   // NativeRunner for the rest of the run phase. A ref rather than state: receiving it
@@ -83,6 +64,9 @@ export function App({ packages = [], lastAnswers = false, logFile, logFileRef }:
   // identity for the run phase's lifetime (its watchGitBranch/poll effects tear down
   // and restart whenever `server` changes).
   const controlRef = useRef<ControlServer | null>(null);
+  // Same lifetime and same reasoning: the dev reverse proxy (or null), listening since the
+  // build phase, handed to NativeRunner to attach to its process manager and close on exit.
+  const devReverseProxyRef = useRef<DevReverseProxyServer | null>(null);
 
   // Deferred here rather than inside PackageSelector so that a --package/--last-answers
   // run — which never renders the selector — can't overwrite a previously saved selection.
@@ -91,9 +75,13 @@ export function App({ packages = [], lastAnswers = false, logFile, logFileRef }:
     setPhase({ type: 'building', selectedNames: selected });
   }, []);
 
-  const onControlReady = useCallback((control: ControlServer) => {
-    controlRef.current = control;
-  }, []);
+  const onControlReady = useCallback(
+    (control: ControlServer, devReverseProxy: DevReverseProxyServer | null) => {
+      controlRef.current = control;
+      devReverseProxyRef.current = devReverseProxy;
+    },
+    [],
+  );
 
   const onBuildComplete = useCallback((runnerArgs: RunnerArgs) => {
     setPhase({ type: 'running', runnerArgs });
@@ -105,7 +93,7 @@ export function App({ packages = [], lastAnswers = false, logFile, logFileRef }:
         <PackageSelector
           items={items}
           runtimeDeps={runtimeDeps}
-          initialSelected={savedSelection}
+          initialSelected={initial.type === 'package-select' ? initial.initialSelected : []}
           onSubmit={onPackagesSubmit}
         />
       );
@@ -131,7 +119,14 @@ export function App({ packages = [], lastAnswers = false, logFile, logFileRef }:
       // phase.runnerArgs keeps its identity across re-renders (it only changes via
       // this same setPhase call, which doesn't repeat once in the run phase), so
       // NativeRunner's `args` prop is stable for as long as this phase lasts.
-      return <NativeRunner args={phase.runnerArgs} server={control} logFileRef={logFileRef} />;
+      return (
+        <NativeRunner
+          args={phase.runnerArgs}
+          server={control}
+          devReverseProxy={devReverseProxyRef.current}
+          logFileRef={logFileRef}
+        />
+      );
     }
   }
 }

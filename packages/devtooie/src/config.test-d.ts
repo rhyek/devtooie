@@ -10,12 +10,14 @@
  * type-only form `expectTypeOf<(typeof ctx)['port']>()` for a package with no `port` — the
  * value form would *read* `port` and throw at load time by design.
  */
-import { describe, it, expectTypeOf } from 'vitest';
-import { defineConfig } from './config.js';
+import { describe, it, test, expectTypeOf } from 'vitest';
+import { defineConfig, type ResolvedDevReverseProxy } from './config.js';
+import type { PackageConfig } from './register.js';
 
 describe('per-package tokens', () => {
   it('gives each package the config tokens plus its own, and nothing from a sibling', () => {
     defineConfig({
+      packageRootDir: 'packages',
       tokens: { domain: 'example.test', proto: 'https' },
       packages: {
         api: {
@@ -46,6 +48,7 @@ describe('per-package tokens', () => {
 
   it('exposes each package resolved tokens on the returned config', () => {
     const config = defineConfig({
+      packageRootDir: 'packages',
       tokens: { domain: 'example.test' },
       packages: { api: { tokens: { region: 'us-east' } }, web: {} },
     });
@@ -79,7 +82,7 @@ describe('package names', () => {
   });
 
   it('types the resolved package name as its own key', () => {
-    const config = defineConfig({ packages: { api: {}, web: {} } });
+    const config = defineConfig({ packageRootDir: 'packages', packages: { api: {}, web: {} } });
     expectTypeOf(config.packages.api.name).toEqualTypeOf<'api'>();
     expectTypeOf(config.packages.web.name).toEqualTypeOf<'web'>();
   });
@@ -88,6 +91,7 @@ describe('package names', () => {
 describe('port', () => {
   it('hands callbacks a plain `number`, never `number | undefined`', () => {
     defineConfig({
+      packageRootDir: 'packages',
       packages: {
         literal: {
           port: 3000,
@@ -124,6 +128,7 @@ describe('port', () => {
 
   it('offers no port to a `port` callback or to workspace-wide urls', () => {
     defineConfig({
+      packageRootDir: 'packages',
       tokens: { domain: 'example.test' },
       urls: [
         (ctx) => {
@@ -146,7 +151,10 @@ describe('port', () => {
   });
 
   it('keeps the resolved port optional on the config, where it really can be absent', () => {
-    const config = defineConfig({ packages: { api: { port: 3001 }, lib: {} } });
+    const config = defineConfig({
+      packageRootDir: 'packages',
+      packages: { api: { port: 3001 }, lib: {} },
+    });
     expectTypeOf(config.packages.api.port).toEqualTypeOf<number | undefined>();
     expectTypeOf(config.packages.lib.port).toEqualTypeOf<number | undefined>();
   });
@@ -155,6 +163,7 @@ describe('port', () => {
 describe('envs', () => {
   it('is a plain string record in every callback', () => {
     defineConfig({
+      packageRootDir: 'packages',
       packages: {
         api: {
           port: ({ envs }) => {
@@ -177,6 +186,7 @@ describe('key narrowing survives a config of nothing but callbacks', () => {
 
   it('a single package with only a port callback and a healthcheck callback', () => {
     const c = defineConfig({
+      packageRootDir: 'packages',
       packages: {
         api: {
           port: ({ envs }) => Number(envs.API_PORT),
@@ -189,6 +199,7 @@ describe('key narrowing survives a config of nothing but callbacks', () => {
 
   it('a urls-only package', () => {
     const c = defineConfig({
+      packageRootDir: 'packages',
       packages: { api: { urls: [({ port }) => `http://localhost:${port}`] } },
     });
     expectTypeOf(c.packages.api.name).toEqualTypeOf<'api'>();
@@ -196,6 +207,7 @@ describe('key narrowing survives a config of nothing but callbacks', () => {
 
   it('several packages, every one of them callbacks only', () => {
     const c = defineConfig({
+      packageRootDir: 'packages',
       packages: {
         api: { healthcheck: ({ port }) => `http://localhost:${port}/health` },
         web: { healthcheck: ({ port }) => `http://localhost:${port}/` },
@@ -215,6 +227,7 @@ describe('key narrowing survives a config of nothing but callbacks', () => {
 
   it('still narrows when only some packages are callbacks only', () => {
     const c = defineConfig({
+      packageRootDir: 'packages',
       packages: {
         api: { healthcheck: ({ port }) => `http://localhost:${port}/health` },
         lib: { selectable: false },
@@ -222,5 +235,135 @@ describe('key narrowing survives a config of nothing but callbacks', () => {
     });
     expectTypeOf(c.packages.api.name).toEqualTypeOf<'api'>();
     expectTypeOf(c.packages.lib.name).toEqualTypeOf<'lib'>();
+  });
+});
+
+describe('subdomain', () => {
+  test('is typed on the resolved package, and on `PackageConfig<name>`', () => {
+    const config = defineConfig({
+      packageRootDir: 'packages',
+      packages: { api: { subdomain: 'api' }, web: { subdomain: ['web', 'www'] }, lib: {} },
+    });
+    expectTypeOf(config.packages.api.subdomain).toEqualTypeOf<string | string[] | undefined>();
+    expectTypeOf(config.packages.web.subdomain).toEqualTypeOf<string | string[] | undefined>();
+    expectTypeOf(config.packages.lib.subdomain).toEqualTypeOf<string | string[] | undefined>();
+    // Unaugmented, `PackageConfig<'api'>` is the generic resolved package — the field is there.
+    expectTypeOf<PackageConfig<'api'>['subdomain']>().toEqualTypeOf<
+      string | string[] | undefined
+    >();
+  });
+
+  test('hands the canonical subdomain to a package callback, but not to workspace-wide urls', () => {
+    defineConfig({
+      packageRootDir: 'packages',
+      urls: [
+        (ctx) => {
+          expectTypeOf(ctx).not.toHaveProperty('subdomain');
+          return 'https://example.test';
+        },
+      ],
+      packages: {
+        api: {
+          subdomain: ['api', 'api-legacy'],
+          healthcheck: (ctx) => {
+            expectTypeOf(ctx.subdomain).toEqualTypeOf<string | undefined>();
+            return `https://${ctx.subdomain}.example.test/health`;
+          },
+          urls: [
+            (ctx) => {
+              expectTypeOf(ctx.subdomain).toEqualTypeOf<string | undefined>();
+              return `https://${ctx.subdomain}.example.test`;
+            },
+          ],
+          // a port callback can't see it either — it gets the base context
+          port: (ctx) => {
+            expectTypeOf(ctx).not.toHaveProperty('subdomain');
+            return 3000;
+          },
+        },
+        // no `subdomain` declared: unlike `port`, the value really is `undefined` (no throwing
+        // getter), so the optional type is honest and the value form is safe to read
+        bare: {
+          healthcheck: (ctx) => {
+            expectTypeOf(ctx.subdomain).toEqualTypeOf<string | undefined>();
+            return ctx.subdomain === undefined
+              ? 'http://localhost/health'
+              : `https://${ctx.subdomain}/health`;
+          },
+        },
+      },
+    });
+  });
+});
+
+describe('devReverseProxy', () => {
+  test('types the block on the options, with callbacks over the workspace context', () => {
+    defineConfig({
+      packageRootDir: 'packages',
+      tokens: { tld: 'test' },
+      devReverseProxy: {
+        port: (ctx) => {
+          expectTypeOf(ctx.envs).toEqualTypeOf<Record<string, string>>();
+          expectTypeOf(ctx.tokens.tld).toEqualTypeOf<'test'>();
+          expectTypeOf(ctx).not.toHaveProperty('port');
+          expectTypeOf(ctx).not.toHaveProperty('subdomain');
+          return Number(ctx.envs.DEV_REVERSE_PROXY_PORT);
+        },
+        rootDomain: (ctx) => `example.${ctx.tokens.tld}`,
+        defaultPackage: 'web',
+        urlScheme: 'http',
+      },
+      packages: { web: { port: 3000, subdomain: 'web' } },
+    });
+    type Opts = Parameters<
+      typeof defineConfig<Record<never, never>, { web: unknown; api: unknown }, 'web' | 'api'>
+    >[0];
+    type Proxy = NonNullable<Opts['devReverseProxy']>;
+    expectTypeOf<Proxy['defaultPackage']>().toEqualTypeOf<'web' | 'api' | undefined>();
+    expectTypeOf<Proxy['urlScheme']>().toEqualTypeOf<'http' | 'https' | undefined>();
+  });
+
+  test('exposes the resolved block on the returned config', () => {
+    const config = defineConfig({
+      packageRootDir: 'packages',
+      devReverseProxy: { port: 4000, rootDomain: 'example.test' },
+      packages: { web: { port: 3000, subdomain: 'web' } },
+    });
+    expectTypeOf(config.devReverseProxy).toEqualTypeOf<ResolvedDevReverseProxy | undefined>();
+    expectTypeOf(config.devReverseProxy!.port).toEqualTypeOf<number>();
+    expectTypeOf(config.devReverseProxy!.rootDomain).toEqualTypeOf<string>();
+    expectTypeOf(config.devReverseProxy!.urlScheme).toEqualTypeOf<'http' | 'https'>();
+    expectTypeOf(config.devReverseProxy!.defaultPackage).toEqualTypeOf<string | undefined>();
+    expectTypeOf(config.packages.web.publicOrigin).toEqualTypeOf<string | undefined>();
+  });
+});
+
+describe('devReverseProxy rootDomain', () => {
+  test('is optional on the options and a plain string on the resolved config', () => {
+    const config = defineConfig({
+      packageRootDir: 'packages',
+      devReverseProxy: { port: 4000 },
+      packages: { web: { port: 3000, subdomain: 'web' } },
+    });
+    expectTypeOf(config.devReverseProxy!.rootDomain).toEqualTypeOf<string>();
+  });
+});
+
+describe('packageRootDir', () => {
+  test('makes relativeDir optional when set, required otherwise', () => {
+    type WithRoot = Parameters<
+      typeof defineConfig<Record<never, never>, { api: unknown }, 'api', 'packages'>
+    >[0]['packages']['api'];
+    type WithoutRoot = Parameters<
+      typeof defineConfig<Record<never, never>, { api: unknown }, 'api'>
+    >[0]['packages']['api'];
+    expectTypeOf<Pick<WithRoot, 'relativeDir'>>().toEqualTypeOf<{ relativeDir?: string }>();
+    expectTypeOf<Pick<WithoutRoot, 'relativeDir'>>().toEqualTypeOf<{ relativeDir: string }>();
+  });
+
+  test('infers from a literal packageRootDir, and the resolved relativeDir is always a string', () => {
+    const config = defineConfig({ packageRootDir: 'packages', packages: { api: {} } });
+    expectTypeOf(config.packages.api.relativeDir).toEqualTypeOf<string>();
+    expectTypeOf(config.packageRootDir).toEqualTypeOf<string | undefined>();
   });
 });

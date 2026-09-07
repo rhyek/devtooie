@@ -176,6 +176,22 @@ line buffer (capped at `MAX_BUFFER_LINES`). What changed:
   stamped onto each `BufferedLine` as `showTs`, so `tsPrefix`/`gutterWidth` render
   (and align) each line by its own package's setting. The logfile is always
   timestamped regardless.
+- **Timestamp layout (`timestamp-mode.ts`)**: a shown stamp is rendered in one of two
+  layouts — `time` (`HH:MM:SS`, 9 columns of gutter) while every timestamped line **on
+  screen** falls on one day, `date` (the full stamp, 20 columns) once two days are visible
+  together. `useLogViewport` decides per render: it lays the buffer out in **both** modes
+  (`countRows(line, cols, mode)` keeps one memo slot per mode, since evicting would thrash),
+  tries the `time` window first and keeps it if `spansOneDay` holds over its visible range,
+  else renders the `date` window. The choice is a pure function of the stored scroll
+  position, so it can't oscillate. Because the narrower gutter reflows wrapped lines, the
+  scroll offset is **stored in the `date` layout's row space** (the reference layout, where
+  no line takes fewer rows) and translated into the rendered layout through a bottom
+  **anchor** — the line at the bottom edge plus its rows clipped below (`bottomAnchor` /
+  `anchorOffset` / `convertOffset` in `log-window.ts`). `scrollLines`/`scrollPages` move in
+  rendered rows and translate back; `onContentResized` measures the buffer's growth in the
+  `date` layout so a layout flip contributes no delta. A flip is a re-flow, so `NativeRunner`
+  clears the selection on `viewport.tsMode` like it does on resize. Plain mode and the
+  logfile always use the full stamp.
 
 ## Scrolling & input
 

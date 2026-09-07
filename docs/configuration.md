@@ -8,17 +8,19 @@
 | -------------- | ------------------------------------------------------------------------------------------- |
 | `packages`     | Your package definitions, **keyed by package name** (see below).                            |
 | `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.            |
+| `packageRootDir` | The directory the packages live under, e.g. `'packages'`: each package's directory is inferred as `<packageRootDir>/<key>`, and `relativeDir` becomes an optional override. Without it, every package must set `relativeDir`. **Recommended.** |
 | `env`          | Environment-loading options — currently just `override`, below. Which files load is chosen with `--mode`; see [Environment loading](../README.md#environment-env-loading). |
 | `logs`         | Top-level log options (`{ timestamps? }`); timestamps + structured-log formatting — see [Logging](./logging.md). |
 | `apiPort`      | Pin the [control API](./control-api.md) port (otherwise chosen automatically).              |
 | `urls`         | Workspace-wide footer links, not tied to a package. Same shape as a package's `urls`, but a callback here gets only `{ envs, tokens }`. |
 | `tokens`       | Values of your own, handed to every callback as `tokens` (a package's own `tokens` are merged on top) — see [Callbacks](#callbacks-instead-of-interpolation). |
+| `devReverseProxy` | Run devtooie's own dev reverse proxy, routing `<subdomain>.<rootDomain>` to packages by their `subdomain`. `{ port, rootDomain?, defaultPackage?, urlScheme? }`; present = enabled. See [Dev reverse proxy](./dev-reverse-proxy.md). |
 
 `packages` is an object keyed by package name:
 
 ```ts
 packages: {
-  api: { port: 3001, healthcheck: ({ port }) => `http://localhost:${port}/health` },
+  api: { port: 3001, healthcheck: '/health' }, // a path: probed at http://localhost:3001/health
   web: { port: 3000, waitFor: ['api'] },
   // a build-only lib needs no fields at all
   isomorphic: { selectable: false },
@@ -26,14 +28,17 @@ packages: {
 ```
 
 The **key is the package's name** — what `-p <name>` takes, what `waitFor`/`deps` reference,
-and what `relativeDir` defaults from. So names can't be duplicated or drift out of sync, and
+and what its directory is inferred from under `packageRootDir`. So names can't be duplicated or drift out of sync, and
 TypeScript checks every name reference against them. There is no `name` field.
 
 Each package's value has a flat set of fields, all optional (omit them all for a build-only
 lib):
 
-- **`relativeDir`** — directory containing the package, relative to
-  `workspaceDir`. Defaults to `packages/<key>`.
+- **`relativeDir`** — directory containing the package, relative to `workspaceDir`. Optional
+  when the config sets `packageRootDir` — then it's inferred as `<packageRootDir>/<key>`, the
+  recommended setup — and required otherwise; TypeScript enforces both. Set it to override the
+  inferred one (a scoped key like `@scope/web-api` would otherwise land at
+  `packages/@scope/web-api`).
 - **`selectable`** (default `true`) — show in the interactive picker.
 - **`color`** — override the auto-assigned color of this package's log-prefix label. Any
   Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`),
@@ -56,13 +61,29 @@ lib):
   of a missing variable — is an error naming the package and the env files that were loaded.
   Declaring a `port` is what lets this package's other callbacks use `port` — see
   [The `port` in a callback](#the-port-in-a-callback).
+- **`subdomain`** — the package's dev subdomain, a string or an array of them (the first is
+  the canonical subdomain, the rest are aliases). With a top-level
+  [`devReverseProxy`](./dev-reverse-proxy.md), devtooie routes `<subdomain>.<rootDomain>` to
+  this package's `port` (aliases too) and injects `PUBLIC_ORIGIN` into its process (also
+  exposed as `publicOrigin` on the resolved package). Without
+  one, devtooie doesn't use it: it's data for tooling that reads the exported config
+  (`config.packages.api.subdomain`), such as a reverse proxy of your own. Either way the
+  canonical entry is handed to this package's callbacks as `subdomain` — see
+  [Callbacks](#callbacks-instead-of-interpolation). Each entry must be a DNS label — lowercase
+  letters, digits, and hyphens, not starting or ending with a hyphen, at most 63 characters —
+  and no two packages may declare the same one, canonical or alias.
 - **`urls`** — links shown in the running footer, one entry per line. Each entry is a
   URL, a `{ label, url }`, or an **array** of those (rendered on the same line,
-  space-separated). Any URL may be a callback.
+  space-separated). Any URL may be a callback, and any may be a **path** (`'/todos'`, or
+  `'todos'`; `''` is the origin itself), based on the package's public origin under the
+  [dev reverse proxy](./dev-reverse-proxy.md) — one link, not a localhost one too — or on
+  `http://localhost:<port>` without one. A path on a package with no `port` is an error.
+  devtooie adds no links of its own.
 - **`healthcheck`** — a URL polled for readiness; also required by anything
-  that lists this package in its `waitFor`. May be a callback, or
-  `{ url, timeout }` to give this package's probes longer than the 1500 ms
-  default. See [Readiness probing](#readiness-probing).
+  that lists this package in its `waitFor`. A **path** (`'/health'`, or `'health'`) is probed
+  at `http://localhost:<port>/health` — always the package itself, never through the dev
+  reverse proxy. May be a callback, or `{ url, timeout }` to give this package's probes longer
+  than the 1500 ms default. See [Readiness probing](#readiness-probing).
 - **`tokens`** — values of your own for this package's callbacks, merged **over** the
   top-level `tokens`. Only declare it where the package has tokens — never `tokens: {}`. See
   [Typed tokens](#typed-tokens).
@@ -85,6 +106,7 @@ file is allowed to win instead:
 
 ```ts
 defineConfig({
+  packageRootDir: 'packages',
   env: { override: ['NODE_OPTIONS'] },   // or `true` for every variable
   packages: {/* … */},
 });
@@ -104,18 +126,22 @@ anything else is written as a plain function of it, so it's ordinary TypeScript 
 checks — nothing to learn, nothing to escape, and a `$` in a string is just a `$`.
 
 `port`, `healthcheck`, and every `urls` entry (including the `url` inside a `{ label, url }`)
-accept either a literal or a callback:
+accept either a literal or a callback — as do the top-level `devReverseProxy.port` and
+`rootDomain`, over the workspace context `{ envs, tokens }`. For a URL of this package's own,
+a **relative path** is the literal to reach for first: it needs no callback at all, since devtooie
+resolves it against the package's port (or its public origin under the dev reverse proxy).
 
 ```ts
 export default defineConfig({
+  packageRootDir: 'packages',
   tokens: { domain: 'example.test' },
   packages: {
     backend: {
       tokens: { region: 'us-east' },
       port: ({ envs }) => Number(envs.BACKEND_PORT),
-      healthcheck: ({ port }) => `http://localhost:${port}/health`,
+      healthcheck: '/health', // a path: resolved against this package's port, no callback needed
       urls: [
-        ({ port }) => `http://localhost:${port}/todos`,
+        '/todos',
         // `tokens` here is { domain, region } — both typed
         { label: 'public', url: ({ tokens }) => `https://${tokens.region}.${tokens.domain}` },
       ],
@@ -131,6 +157,7 @@ Each callback receives one object:
 | `envs`   | The package's `.env` files resolved and merged with `process.env` (which wins by default) — the same environment the dev process gets. See [Environment loading](../README.md#environment-env-loading). |
 | `tokens` | The top-level `tokens` with this package's own `tokens` merged **over** them. Typed from what you declared, so a typo is a compile error. |
 | `port`   | The package's resolved `port`, typed **`number`** (not `number \| undefined`) so it drops straight into a URL. A package that declares no `port` has nothing to give, which types can't express here — so reading `port` in that case throws when the config loads, naming the package. Not offered to `port` itself, nor to the workspace-wide `urls`. |
+| `subdomain` | The package's canonical `subdomain` — the first entry when it declared several — so a URL can be built from it without repeating it: `` urls: [({ subdomain, envs }) => `https://${subdomain}.${envs.LOCALDEV_DOMAIN}`] ``. Plain data, unlike `port`: `undefined` (in type and in value) for a package that declares none, so branch on it if a callback has to work either way. Not offered to `port`, nor to the workspace-wide `urls`. |
 
 Callbacks run **once**, while the config is being defined, and must be synchronous. A `port`
 callback returns a number (or `undefined`); the rest return a string.
@@ -145,6 +172,7 @@ Declare them only where you have them. A package with no tokens of its own write
 
 ```ts
 export default defineConfig({
+  packageRootDir: 'packages',
   tokens: { domain: 'example.test', proto: 'https' },
   packages: {
     api: {
@@ -203,7 +231,7 @@ packages: {
   api: {
     port: 3001,
     healthcheck: {
-      url: ({ port }) => `http://localhost:${port}/health`,
+      url: '/health', // a path: probed at http://localhost:<port>/health
       timeout: 10_000,
     },
   },
@@ -287,6 +315,7 @@ augment the `'devtooie'` module with it:
 import { defineConfig } from 'devtooie';
 
 const config = defineConfig({
+  packageRootDir: 'packages',
   packages: {/* … */},
 });
 export default config;

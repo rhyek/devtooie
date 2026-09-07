@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { describe, it, test, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import chalk from 'chalk';
+import stringWidth from 'string-width';
 import { ProcessManager, resolveColorSpec, packagePrefixColor } from './process-manager.js';
 import { createFormatter } from './log-formatter.js';
 import {
@@ -40,6 +41,22 @@ afterEach(() => {
   disposeManager(manager);
   manager = undefined;
 });
+
+/**
+ * Wait until a line in `file` matches `needle` (or `timeoutMs` passes). The spawn-based tests used
+ * to sleep a fixed 1.5s before stopping the child, which is not enough for `pnpm run` + node to
+ * start when the whole suite is loading the machine. Match the child's *output* — text right
+ * after the `[name] ` prefix — not the echoed command line, which contains the same script source.
+ */
+async function waitForLog(file: string, needle: RegExp, timeoutMs = 8000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(file) && needle.test(fs.readFileSync(file, 'utf8'))) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
 
 beforeAll(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-process-manager-'));
@@ -101,7 +118,7 @@ describe('package prefix colors', () => {
 });
 
 function pkg(): AnyPackageConfig {
-  return { name: 'fixture', relativeDir: '.', path: dir };
+  return { name: 'fixture', relativeDir: '.', absoluteDir: dir };
 }
 
 function runnerArgs(a: AnyPackageConfig): RunnerArgs {
@@ -134,8 +151,16 @@ describe('on-screen log timestamps', () => {
     expect(row).toContain('hello world');
   });
 
-  it('leaves rows un-timestamped by default', () => {
+  it('timestamps rows by default', () => {
     manager = new ProcessManager(runnerArgs(pkg()));
+    manager.logSystem('hello world');
+    const row = lastRow(manager);
+    expect(row).toMatch(TS);
+    expect(row).toContain('hello world');
+  });
+
+  it('leaves rows un-timestamped with logs.timestamps: false', () => {
+    manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: false });
     manager.logSystem('hello world');
     const row = lastRow(manager);
     expect(row).not.toMatch(TS);
@@ -151,14 +176,14 @@ describe('on-screen log timestamps', () => {
   // A control line tagged with a package's name shares that package's timestamp resolution,
   // so it's a spawn-free way to observe the per-package override.
   it("a package's logs.timestamps: true overrides a top-level default of false", () => {
-    const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', path: dir, logs: { timestamps: true } }; // prettier-ignore
+    const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', absoluteDir: dir, logs: { timestamps: true } }; // prettier-ignore
     manager = new ProcessManager({ ...runnerArgs(p), logTimestamps: false });
     manager.logControl('hi', { package: 'fixture' });
     expect(lastRow(manager)).toMatch(TS);
   });
 
   it("a package's logs.timestamps: false overrides a top-level default of true", () => {
-    const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', path: dir, logs: { timestamps: false } }; // prettier-ignore
+    const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', absoluteDir: dir, logs: { timestamps: false } }; // prettier-ignore
     manager = new ProcessManager({ ...runnerArgs(p), logTimestamps: true });
     manager.logControl('hi', { package: 'fixture' });
     expect(lastRow(manager)).not.toMatch(TS);
@@ -168,6 +193,40 @@ describe('on-screen log timestamps', () => {
     manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: true });
     manager.logControl('hi', { package: 'fixture' });
     expect(lastRow(manager)).toMatch(TS);
+  });
+
+  // The viewport asks for the `time` layout while every stamp on screen is from the same day.
+  test("renders only `HH:MM:SS` in the 'time' layout", () => {
+    manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: true });
+    manager.logSystem('hello world');
+    const lines = manager.getVisibleLines();
+    const row = stripAnsi(manager.wrapLine(lines[lines.length - 1]!, 200, 'time')[0]!);
+    expect(row).toMatch(/^\d{2}:\d{2}:\d{2} \[/);
+    expect(row).not.toMatch(TS);
+  });
+
+  test('the time layout reclaims the date column, so a long line wraps into fewer rows', () => {
+    manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: true });
+    manager.logSystem('x'.repeat(150));
+    const lines = manager.getVisibleLines();
+    const line = lines[lines.length - 1]!;
+    // 90 columns: 20 of gutter leave 70 → 3 rows; 9 of gutter leave 81 → 2 rows.
+    const cols = 90 + stringWidth(line.prefix);
+    expect(manager.countRows(line, cols, 'date')).toBe(3);
+    expect(manager.countRows(line, cols, 'time')).toBe(2);
+    expect(manager.wrapLine(line, cols, 'time')).toHaveLength(2);
+    // Both counts stay memoized side by side rather than evicting each other.
+    expect(manager.countRows(line, cols, 'date')).toBe(3);
+    expect(manager.countRows(line, cols, 'time')).toBe(2);
+  });
+
+  test('a line with its timestamp hidden lays out the same in either mode', () => {
+    manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: false });
+    manager.logSystem('x'.repeat(150));
+    const lines = manager.getVisibleLines();
+    const line = lines[lines.length - 1]!;
+    expect(manager.countRows(line, 100, 'time')).toBe(manager.countRows(line, 100, 'date'));
+    expect(manager.wrapLine(line, 100, 'time')).toEqual(manager.wrapLine(line, 100, 'date'));
   });
 });
 
@@ -301,7 +360,7 @@ describe('wrapping a line too wide for the terminal', () => {
   });
 
   it('still wraps a plain line with no property key, aligned at the gutter', () => {
-    manager = new ProcessManager(runnerArgs(pkg()));
+    manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: false });
     manager.logSystem('x'.repeat(300));
     const wrapped = rows(manager);
     expect(wrapped.length).toBeGreaterThan(1);
@@ -364,7 +423,7 @@ describe('ProcessManager', () => {
     const wide: AnyPackageConfig = {
       name: 'payments-worker',
       relativeDir: '.',
-      path: dir,
+      absoluteDir: dir,
     };
     manager = new ProcessManager(runnerArgs(wide), { plain: true });
     manager.logControl('restart', { package: 'payments-worker' });
@@ -531,7 +590,7 @@ describe('ProcessManager env injection', () => {
   });
 
   it('injects resolved .env vars into the spawned dev process', async () => {
-    const a: AnyPackageConfig = { name: 'envfixture', relativeDir: '.', path: envDir };
+    const a: AnyPackageConfig = { name: 'envfixture', relativeDir: '.', absoluteDir: envDir };
     mgr = new ProcessManager(
       {
         sortedPackages: [a],
@@ -549,7 +608,7 @@ describe('ProcessManager env injection', () => {
     );
 
     mgr.start('envfixture');
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await waitForLog(envLog, /\]\s+VAL=/);
     await mgr.stop('envfixture');
 
     expect(fs.readFileSync(envLog, 'utf8')).toContain('VAL=injected123');
@@ -584,7 +643,7 @@ describe('ProcessManager PORT injection', () => {
     const a: AnyPackageConfig = {
       name: 'portfix',
       relativeDir: '.',
-      path: portDir,
+      absoluteDir: portDir,
       port: 4321,
       command: { name: 'dev', watches: true, builds: true },
     };
@@ -604,7 +663,7 @@ describe('ProcessManager PORT injection', () => {
     );
 
     mgr.start('portfix');
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await waitForLog(portLog, /\]\s+PORT=/);
     await mgr.stop('portfix');
 
     expect(fs.readFileSync(portLog, 'utf8')).toContain('PORT=4321');
@@ -654,7 +713,7 @@ describe('ProcessManager child NODE_ENV inheritance', () => {
   });
 
   function makeManager(): ProcessManager {
-    const a: AnyPackageConfig = { name: 'nodeenvfix', relativeDir: '.', path: dir };
+    const a: AnyPackageConfig = { name: 'nodeenvfix', relativeDir: '.', absoluteDir: dir };
     return new ProcessManager(
       {
         sortedPackages: [a],
@@ -675,7 +734,7 @@ describe('ProcessManager child NODE_ENV inheritance', () => {
     fs.writeFileSync(log, '');
     mgr = makeManager();
     mgr.start('nodeenvfix');
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await waitForLog(log, /\]\s+NODE_ENV=\[/);
     await mgr.stop('nodeenvfix');
     return fs.readFileSync(log, 'utf8');
   }
@@ -733,7 +792,7 @@ describe('ProcessManager NODE_ENV from a .env file', () => {
 
   it("uses the package's .env.development NODE_ENV even when the shell leaves it unset", async () => {
     delete process.env.NODE_ENV; // shell has no NODE_ENV
-    const a: AnyPackageConfig = { name: 'nodeenvdotenv', relativeDir: '.', path: dir };
+    const a: AnyPackageConfig = { name: 'nodeenvdotenv', relativeDir: '.', absoluteDir: dir };
     mgr = new ProcessManager(
       {
         sortedPackages: [a],
@@ -785,7 +844,7 @@ describe('ProcessManager env-change restart', () => {
   });
 
   it('restarts a running package when its .env changes, picking up the new value', async () => {
-    const a: AnyPackageConfig = { name: 'wfixture', relativeDir: '.', path: d };
+    const a: AnyPackageConfig = { name: 'wfixture', relativeDir: '.', absoluteDir: d };
     m = new ProcessManager(
       {
         sortedPackages: [a],
@@ -844,7 +903,7 @@ describe('ProcessManager logs.formatter', () => {
     const a: AnyPackageConfig = {
       name: 'fmtfix',
       relativeDir: '.',
-      path: fmtDir,
+      absoluteDir: fmtDir,
       ...(formatter ? { logs: { formatter } } : {}),
     };
     return {
@@ -1001,7 +1060,7 @@ describe('ProcessManager stderr color through a formatter', () => {
     const a: AnyPackageConfig = {
       name: 'errfix',
       relativeDir: '.',
-      path: errDir,
+      absoluteDir: errDir,
       ...(formatter ? { logs: { formatter } } : {}),
     };
     return {
@@ -1083,7 +1142,7 @@ describe('ProcessManager healthcheck probing', () => {
     const packages: AnyPackageConfig[] = names.map((name) => ({
       name,
       relativeDir: '.',
-      path: hcDir,
+      absoluteDir: hcDir,
     }));
     return new ProcessManager(
       {
@@ -1239,7 +1298,7 @@ describe('ProcessManager rebuild (clean + build)', () => {
   });
 
   it('runs clean then build (in order) and restarts when there is no build:clean', async () => {
-    const a: AnyPackageConfig = { name: 'rbfix', relativeDir: '.', path: rbDir };
+    const a: AnyPackageConfig = { name: 'rbfix', relativeDir: '.', absoluteDir: rbDir };
     mgr = new ProcessManager(
       {
         sortedPackages: [a],

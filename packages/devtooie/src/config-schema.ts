@@ -1,7 +1,7 @@
 import { z } from 'zod';
 // Type-only — erased at compile time, so `config-schema.ts` still imports nothing but `zod`
 // at runtime and `scripts/gen-config-types.ts` can keep executing it without a build.
-import type { PortResolver, UrlResolver } from './config.js';
+import type { ConfigContext, PortResolver, UrlResolver } from './config.js';
 
 // The Zod schemas — the single source of the config's shape, defaults, validation, AND field
 // docs (via `.describe()`). `scripts/gen-config-types.ts` reads this file (it imports only
@@ -13,8 +13,8 @@ import type { PortResolver, UrlResolver } from './config.js';
 // fields are documented in `config.ts` and need no `.describe()` here.
 
 // A URL anywhere in the config: a literal string, or a callback devtooie invokes once at load
-// time with the package's context (`{ envs, tokens, port }`). Overridden in config.ts, since
-// `z.custom` erases the callback to `any`; `defineConfig` resolves every callback to a string
+// time with the package's context (`{ envs, tokens, port, subdomain }`). Overridden in config.ts,
+// since `z.custom` erases the callback to `any`; `defineConfig` resolves every callback to a string
 // before anything downstream sees it.
 export const UrlValueSchema = z.union([
   z.string(),
@@ -75,6 +75,18 @@ export const CommandSchema = z
           },
   );
 
+// One `subdomain` entry: a DNS label, since a reverse proxy routes on it. Lowercase only (two
+// casings of one label would be two spellings of one route), no dots (a label, not a domain), and
+// non-empty — an empty one would silently route the bare root domain. Sixty-three characters is the
+// DNS limit.
+export const SubdomainLabelSchema = z
+  .string()
+  .max(63, 'a subdomain is at most 63 characters')
+  .regex(
+    /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/,
+    'a subdomain is a DNS label: lowercase letters, digits, and hyphens, not starting or ending with a hyphen',
+  );
+
 // All per-package config is flat (no `run` nesting). The package's *name* is the key it's
 // declared under in `packages` (injected by `defineConfig` after parsing), so it isn't a field
 // here; the rest describe how to run/select/link it (omit them all for a build-only lib).
@@ -83,7 +95,7 @@ export const PackageConfigSchema = z.object({
     .string()
     .optional()
     .describe(
-      'Directory holding the package, relative to `workspaceDir`. Defaults to `packages/<name>`, where `<name>` is the key this package is declared under.',
+      'Directory holding the package, relative to `workspaceDir`. Inferred as `<packageRootDir>/<key>` when the config sets `packageRootDir`; required otherwise. Set it to override the inferred one.',
     ),
   selectable: z.boolean().optional().describe('Show in the interactive picker (default `true`).'),
   shortName: z.string().optional().describe('Shorter label used in the TUI in place of `name`.'),
@@ -92,6 +104,12 @@ export const PackageConfigSchema = z.object({
     .optional()
     .describe(
       "Color for this package's log-prefix label, overriding the auto-assigned palette color. Any Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`), `'rgb(175,135,255)'`, or `'ansi256(140)'`.",
+    ),
+  subdomain: z
+    .union([SubdomainLabelSchema, z.array(SubdomainLabelSchema)])
+    .optional()
+    .describe(
+      "The package's dev subdomain(s). With a top-level `devReverseProxy`, devtooie routes `<subdomain>.<rootDomain>` to this package's `port`; without one it is data for tooling that reads the exported config (a reverse proxy of your own, say). Each entry is a DNS label — lowercase letters, digits, and hyphens — that no other package declares. An array's first entry is the canonical subdomain, handed to this package's callbacks as `subdomain`; the rest are aliases that route too.",
     ),
   // Overridden in config.ts (pinned to the keys the package declares); documented there.
   // Must be parsed, not stripped — it's what a callback's `tokens` is built from.
@@ -150,6 +168,39 @@ export const PackageConfigSchema = z.object({
     .optional(),
 });
 
+// The built-in dev reverse proxy. Strict, so a misspelled field (or an `enabled` flag — the
+// block's presence is what enables it) fails at load. `port`/`rootDomain` callbacks erase to
+// `any` here and are re-typed in config.ts; `defineConfig` resolves both before anything
+// downstream sees them.
+export const DevReverseProxySchema = z.strictObject({
+  port: z.union([
+    z.number(),
+    z.custom<(ctx: ConfigContext) => number>((v) => typeof v === 'function', {
+      message: 'devReverseProxy.port must be a number or a function',
+    }),
+  ]),
+  rootDomain: z
+    .union([
+      z.string(),
+      z.custom<(ctx: ConfigContext) => string>((v) => typeof v === 'function', {
+        message: 'devReverseProxy.rootDomain must be a string or a function',
+      }),
+    ])
+    .optional(),
+  defaultPackage: z
+    .string()
+    .optional()
+    .describe(
+      'The package the bare `rootDomain` routes to. Must declare a `port`. Omit for a 404 there.',
+    ),
+  urlScheme: z
+    .enum(['http', 'https'])
+    .optional()
+    .describe(
+      'Scheme of the public URLs devtooie derives (footer links, `PUBLIC_ORIGIN`). Defaults from `rootDomain`: `http` on `localhost` (the browser hits the proxy directly, so the URLs carry its `port`), `https` on any other root (a TLS terminator in front, so no port).',
+    ),
+});
+
 export const DefineConfigSchema = z.object({
   apiPort: z
     .number()
@@ -160,8 +211,13 @@ export const DefineConfigSchema = z.object({
   // Keyed by package name; the key becomes the package's `name`. Overridden in config.ts (a
   // mapped type carrying each package's own token types); documented there.
   packages: z.record(z.string().min(1), PackageConfigSchema),
+  // Overridden in config.ts (its presence is what makes each package's `relativeDir` optional
+  // at the type level); documented there.
+  packageRootDir: z.string().optional(),
   // Overridden in config.ts (callbacks `z.custom` erases to `any`); documented there.
   urls: z.array(UrlEntrySchema).optional(),
+  // Overridden in config.ts (callbacks erase to `any`); documented there.
+  devReverseProxy: DevReverseProxySchema.optional(),
   workspaceDir: z
     .string()
     .optional()
@@ -189,7 +245,7 @@ export const DefineConfigSchema = z.object({
         .boolean()
         .optional()
         .describe(
-          'Prefix each on-screen log line with a `YYYY-MM-DD HH:MM:SS` (24-hour) timestamp. Defaults to `false`. The on-disk log file always includes timestamps regardless of this setting.',
+          'Prefix each on-screen log line with a local-time (24-hour) timestamp — `HH:MM:SS` while everything on screen is from one day, `YYYY-MM-DD HH:MM:SS` once two days are visible. Defaults to `true`. The on-disk log file always includes timestamps regardless of this setting.',
         ),
     })
     .optional()

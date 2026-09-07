@@ -140,7 +140,7 @@ export function findAncestorPackage(
   packages: AnyPackageConfig[],
   root: string,
 ): AnyPackageConfig | null {
-  const byPath = new Map(packages.map((p) => [path.resolve(p.path), p]));
+  const byPath = new Map(packages.map((p) => [path.resolve(p.absoluteDir), p]));
   const stop = path.resolve(root);
   let dir = path.resolve(startDir);
   for (;;) {
@@ -161,7 +161,7 @@ export function findAncestorPackage(
 
 function readPackageJson(pkg: AnyPackageConfig): { scripts?: Record<string, string> } | null {
   try {
-    return JSON.parse(fs.readFileSync(path.join(pkg.path, 'package.json'), 'utf8'));
+    return JSON.parse(fs.readFileSync(path.join(pkg.absoluteDir, 'package.json'), 'utf8'));
   } catch {
     return null;
   }
@@ -176,10 +176,10 @@ export function getScriptText(pkg: AnyPackageConfig, script: string): string | n
 }
 
 export function getCommandRunner(pkg: AnyPackageConfig): 'pnpm' | 'make' {
-  if (fs.existsSync(path.join(pkg.path, 'package.json'))) {
+  if (fs.existsSync(path.join(pkg.absoluteDir, 'package.json'))) {
     return 'pnpm';
   }
-  if (fs.existsSync(path.join(pkg.path, 'Makefile'))) {
+  if (fs.existsSync(path.join(pkg.absoluteDir, 'Makefile'))) {
     return 'make';
   }
   return 'pnpm';
@@ -245,7 +245,7 @@ export function hasDevScript(pkg: AnyPackageConfig): boolean {
 
 export function getMakeTargets(pkg: AnyPackageConfig): string[] {
   try {
-    const mk = fs.readFileSync(path.join(pkg.path, 'Makefile'), 'utf8');
+    const mk = fs.readFileSync(path.join(pkg.absoluteDir, 'Makefile'), 'utf8');
     // Exclude make's special targets (`.PHONY`, `.DEFAULT`, …) — they start with `.` and aren't
     // runnable targets, so they must not surface as commands.
     return [...mk.matchAll(/^([a-zA-Z0-9_.-]+):/gm)]
@@ -300,7 +300,7 @@ export function getTsconfigBuildPackages(pkg: AnyPackageConfig): AnyPackageConfi
     return [];
   }
   const registered = getRegisteredPackages();
-  const byPath = new Map(registered.map((a) => [path.resolve(a.path), a]));
+  const byPath = new Map(registered.map((a) => [path.resolve(a.absoluteDir), a]));
   const seen = new Set<string>();
   const result: AnyPackageConfig[] = [];
   const visit = (dir: string) => {
@@ -324,7 +324,7 @@ export function getTsconfigBuildPackages(pkg: AnyPackageConfig): AnyPackageConfi
       visit(refDir);
     }
   };
-  visit(pkg.path);
+  visit(pkg.absoluteDir);
   return result;
 }
 
@@ -391,16 +391,107 @@ export function resolveDeps(
 
 const selectionFile = () => path.join(getStateDir(), 'selection.json');
 
-export function saveSelection(names: string[]): void {
-  fs.writeFileSync(selectionFile(), JSON.stringify(names));
+/**
+ * Keeps only the names that are packages of the loaded config. A saved selection outlives
+ * package renames, and a stale name must never reach the picker or `findPackage` (which throws
+ * — inside a React render, that took the whole TUI down), nor be written back to recur on every
+ * run. With no config loaded there is nothing to check against, so the names pass through.
+ */
+function onlyCurrentPackages(names: string[]): string[] {
+  if (!getLoadedConfig()) {
+    return names;
+  }
+  const known = new Set(getRegisteredPackages().map((p) => p.name));
+  return names.filter((name) => known.has(name));
 }
 
-export function loadSelection(): string[] | null {
+/** Persists the selection for `--last-answers`; a name that isn't a current package is dropped. */
+export function saveSelection(names: string[]): void {
+  fs.writeFileSync(selectionFile(), JSON.stringify(onlyCurrentPackages(names)));
+}
+
+/**
+ * The saved selection split into the names that are still packages of the loaded config and
+ * the ones that aren't (a package key was renamed or removed since); `null` when nothing was
+ * ever saved. The pruned list is written back, so a stale name is gone after the first run that
+ * reads it — but the caller still learns it was there, since a stale name is what sends the TUI
+ * back to the picker instead of replaying the selection.
+ */
+export function readSelection(): { names: string[]; stale: string[] } | null {
+  let saved: string[];
   try {
-    return JSON.parse(fs.readFileSync(selectionFile(), 'utf8')) as string[];
+    saved = JSON.parse(fs.readFileSync(selectionFile(), 'utf8')) as string[];
   } catch {
     return null;
   }
+  const names = onlyCurrentPackages(saved);
+  const stale = saved.filter((name) => !names.includes(name));
+  if (stale.length) {
+    try {
+      fs.writeFileSync(selectionFile(), JSON.stringify(names));
+    } catch {
+      // best-effort: the pruned list is still what the caller gets
+    }
+  }
+  return { names, stale };
+}
+
+/** The saved selection's current package names (see {@link readSelection}), or `null`. */
+export function loadSelection(): string[] | null {
+  return readSelection()?.names ?? null;
+}
+
+/** Where the interactive session starts, from the CLI flags and the saved selection. */
+export type InitialPhase =
+  | { type: 'package-select'; initialSelected: string[] }
+  | { type: 'building'; selectedNames: string[] };
+
+/**
+ * Picks where the TUI's phase machine starts: an explicit `--package` list goes straight to the
+ * build; so does `--last-answers` with a saved selection whose every name is still a package.
+ * A saved selection naming a package that no longer exists shows the picker instead, with the
+ * names that survived preselected — renamed package keys must never stop devtooie from running.
+ */
+export function initialPhaseFor(opts: { packages: string[]; lastAnswers: boolean }): InitialPhase {
+  if (opts.packages.length > 0) {
+    return { type: 'building', selectedNames: opts.packages };
+  }
+  const saved = readSelection();
+  if (opts.lastAnswers && saved && saved.names.length > 0 && saved.stale.length === 0) {
+    return { type: 'building', selectedNames: saved.names };
+  }
+  return { type: 'package-select', initialSelected: saved?.names ?? [] };
+}
+
+/**
+ * The package names for a non-interactive phase (build/plain), which — unlike the UI — has no
+ * selector to fall back on: an explicit `--package` wins, then a saved `--last-answers`
+ * selection, otherwise an error naming `usage`. Unknown `--package` names are the caller's to
+ * validate.
+ */
+export function resolveSelectedNames(
+  opts: { package: string[]; lastAnswers: boolean },
+  usage: string,
+): { names: string[] } | { error: string } {
+  if (opts.package.length > 0) {
+    return { names: opts.package };
+  }
+  if (opts.lastAnswers) {
+    const saved = readSelection();
+    // No picker to fall back on here, so a selection with stale names is refused outright
+    // rather than run on whatever survived.
+    if (saved?.stale.length) {
+      return {
+        error:
+          `The saved selection names packages that no longer exist (${saved.stale.join(', ')}) — ` +
+          'run once without --last-answers to pick again.',
+      };
+    }
+    return !saved || saved.names.length === 0
+      ? { error: 'No saved selection found — run once without --last-answers first.' }
+      : { names: saved.names };
+  }
+  return { error: `${usage} requires --package or --last-answers.` };
 }
 
 export function resetSelection(): void {
@@ -548,7 +639,7 @@ export function buildRunnerArgs(
     topLevelUrls: config?.urls?.map(normalizeUrlEntry),
     envFiles: config?.envFiles ?? envFileNames(),
     envOverride: config?.envOverride,
-    logTimestamps: config?.logTimestamps ?? false,
+    logTimestamps: config?.logTimestamps ?? true,
     cwd: process.cwd(),
   };
 }

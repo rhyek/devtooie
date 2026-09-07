@@ -28,9 +28,11 @@
   "files": [
     "dist",
     "assets",
-    "docs"
+    "docs",
+    "postinstall.js"
   ],
   "scripts": {
+    "postinstall": "node ./postinstall.js",
     "gen": "node scripts/gen-config-types.ts",
     "build": "rm -rf dist && pnpm gen && tsc -p ./tsconfig.build.json && chmod +x dist/cli.js"
   },
