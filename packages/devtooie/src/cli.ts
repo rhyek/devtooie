@@ -182,9 +182,9 @@ function resolveSelectedNamesOrExit(
 }
 
 async function clearDist(pkg: AnyPackageConfig): Promise<void> {
-  const result = await execa('rm', ['-rf', path.join(pkg.path, 'dist')], { reject: false });
+  const result = await execa('rm', ['-rf', path.join(pkg.absoluteDir, 'dist')], { reject: false });
   if (result.exitCode !== 0) {
-    console.error(`warning: could not clear ${path.join(pkg.path, 'dist')}`);
+    console.error(`warning: could not clear ${path.join(pkg.absoluteDir, 'dist')}`);
   }
 }
 
@@ -290,19 +290,19 @@ async function resolveCmdTargetOrExit(
       console.error(`Package "${explicitName}" not found in the devtooie config.`);
       process.exit(1);
     }
-    return { dir: pkg.path, envLayer: layerFor(pkg) };
+    return { dir: pkg.absoluteDir, envLayer: layerFor(pkg) };
   }
 
   const pkg = findAncestorPackage(invocationCwd, configPackages, root);
   if (pkg) {
-    return { dir: pkg.path, envLayer: layerFor(pkg) };
+    return { dir: pkg.absoluteDir, envLayer: layerFor(pkg) };
   }
   return { dir: root, envLayer: resolveEnv({ cwd: root, relativeDir: '.', files, override }).env };
 }
 
 async function buildOne(pkg: AnyPackageConfig, script: string): Promise<void> {
   const [cmd, args] = getExecArgs(pkg, script);
-  await execa(cmd, args, { stdio: 'inherit', cwd: pkg.path });
+  await execa(cmd, args, { stdio: 'inherit', cwd: pkg.absoluteDir });
 }
 
 /** Builds every buildable dep in `deps.buildSet`, in dependency order, with console output. */
@@ -503,9 +503,9 @@ program
     let cmdArgs: string[];
     if (opts.cmd !== undefined) {
       // `-c` names a package script / make target: resolve how to invoke it in this dir, then
-      // forward the operands as its args. getExecArgs/hasScript key off `.path` only, so a
+      // forward the operands as its args. getExecArgs/hasScript key off `.absoluteDir` only, so a
       // minimal package view over the resolved dir suffices.
-      const pkgAtDir = { path: dir } as AnyPackageConfig;
+      const pkgAtDir = { absoluteDir: dir } as AnyPackageConfig;
       if (!hasScript(pkgAtDir, opts.cmd)) {
         console.error(`No "${opts.cmd}" script or make target found in ${dir}.`);
         process.exit(1);

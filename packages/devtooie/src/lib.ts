@@ -140,7 +140,7 @@ export function findAncestorPackage(
   packages: AnyPackageConfig[],
   root: string,
 ): AnyPackageConfig | null {
-  const byPath = new Map(packages.map((p) => [path.resolve(p.path), p]));
+  const byPath = new Map(packages.map((p) => [path.resolve(p.absoluteDir), p]));
   const stop = path.resolve(root);
   let dir = path.resolve(startDir);
   for (;;) {
@@ -161,7 +161,7 @@ export function findAncestorPackage(
 
 function readPackageJson(pkg: AnyPackageConfig): { scripts?: Record<string, string> } | null {
   try {
-    return JSON.parse(fs.readFileSync(path.join(pkg.path, 'package.json'), 'utf8'));
+    return JSON.parse(fs.readFileSync(path.join(pkg.absoluteDir, 'package.json'), 'utf8'));
   } catch {
     return null;
   }
@@ -176,10 +176,10 @@ export function getScriptText(pkg: AnyPackageConfig, script: string): string | n
 }
 
 export function getCommandRunner(pkg: AnyPackageConfig): 'pnpm' | 'make' {
-  if (fs.existsSync(path.join(pkg.path, 'package.json'))) {
+  if (fs.existsSync(path.join(pkg.absoluteDir, 'package.json'))) {
     return 'pnpm';
   }
-  if (fs.existsSync(path.join(pkg.path, 'Makefile'))) {
+  if (fs.existsSync(path.join(pkg.absoluteDir, 'Makefile'))) {
     return 'make';
   }
   return 'pnpm';
@@ -245,7 +245,7 @@ export function hasDevScript(pkg: AnyPackageConfig): boolean {
 
 export function getMakeTargets(pkg: AnyPackageConfig): string[] {
   try {
-    const mk = fs.readFileSync(path.join(pkg.path, 'Makefile'), 'utf8');
+    const mk = fs.readFileSync(path.join(pkg.absoluteDir, 'Makefile'), 'utf8');
     // Exclude make's special targets (`.PHONY`, `.DEFAULT`, …) — they start with `.` and aren't
     // runnable targets, so they must not surface as commands.
     return [...mk.matchAll(/^([a-zA-Z0-9_.-]+):/gm)]
@@ -300,7 +300,7 @@ export function getTsconfigBuildPackages(pkg: AnyPackageConfig): AnyPackageConfi
     return [];
   }
   const registered = getRegisteredPackages();
-  const byPath = new Map(registered.map((a) => [path.resolve(a.path), a]));
+  const byPath = new Map(registered.map((a) => [path.resolve(a.absoluteDir), a]));
   const seen = new Set<string>();
   const result: AnyPackageConfig[] = [];
   const visit = (dir: string) => {
@@ -324,7 +324,7 @@ export function getTsconfigBuildPackages(pkg: AnyPackageConfig): AnyPackageConfi
       visit(refDir);
     }
   };
-  visit(pkg.path);
+  visit(pkg.absoluteDir);
   return result;
 }
 

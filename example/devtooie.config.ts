@@ -13,16 +13,16 @@ export default defineConfig({
     rootDomain: 'localhost', // the default
     defaultPackage: 'frontend', // http://localhost:21050
   },
+  // Each package lives at packages/<key> unless it sets `relativeDir` itself.
+  packageRootDir: 'packages',
   // Keyed by package name — what `-p` takes and what `waitFor`/`deps` reference.
   packages: {
     // (@example/db is not a devtooie package: no build, no dev process — plain `workspace:*`.)
     isomorphic: {
-      relativeDir: 'packages/isomorphic',
       // Build-time dep (from the apps' project references); `tsc --watch` re-emits `dist` live.
       selectable: false,
     },
     backend: {
-      relativeDir: 'packages/backend',
       shortName: 'api',
       subdomain: 'api', // http://api.localhost:21050
       tokens: { region: 'us-east' },
@@ -34,7 +34,6 @@ export default defineConfig({
       ],
     },
     worker: {
-      relativeDir: 'packages/worker',
       // Go, via the Makefile's `start` target: recompiles on start, doesn't watch — restart after edits.
       command: ['start', { watches: false, builds: true, cleans: true }],
       port: 3002,
@@ -52,7 +51,6 @@ export default defineConfig({
       },
     },
     frontend: {
-      relativeDir: 'packages/frontend',
       shortName: 'web',
       subdomain: 'web', // http://web.localhost:21050; Vite HMR rides the proxied connection (see vite.config.ts)
       port: 3000,

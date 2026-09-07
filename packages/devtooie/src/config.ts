@@ -209,11 +209,26 @@ type PackageNameRefs<N extends string> = {
  * config's — both inferred from what you wrote, so the callbacks below see the merged record
  * with real keys.
  */
-export type PackageConfigInput<Own = unknown, Top = object, N extends string = string> = Omit<
+export type PackageConfigInput<
+  Own = unknown,
+  Top = object,
+  N extends string = string,
+  RootDir extends string | undefined = undefined,
+> = Omit<
   GeneratedPackageConfig,
-  'name' | 'command' | 'waitFor' | 'deps' | 'logs' | 'port' | 'urls' | 'healthcheck' | 'tokens'
+  | 'name'
+  | 'command'
+  | 'waitFor'
+  | 'deps'
+  | 'logs'
+  | 'port'
+  | 'urls'
+  | 'healthcheck'
+  | 'tokens'
+  | 'relativeDir'
 > &
-  PackageNameRefs<N> & {
+  PackageNameRefs<N> &
+  RelativeDirField<RootDir> & {
     /**
      * Values of your own for this package's callbacks, merged **over** the config's top-level
      * `tokens` and handed to them as `tokens` — typed from what you declare here, so
@@ -395,6 +410,21 @@ export interface ResolvedDevReverseProxy {
 }
 
 /**
+ * A package's `relativeDir`: optional when the config sets `packageRootDir` (then inferred as
+ * `<packageRootDir>/<key>`, and this only overrides it), required otherwise. `RootDir` is the
+ * type of the config's `packageRootDir` — `undefined` when it isn't set.
+ */
+export type RelativeDirField<RootDir extends string | undefined> = undefined extends RootDir
+  ? {
+      /** Directory holding the package, relative to `workspaceDir`. (Set `packageRootDir` to infer it.) */
+      relativeDir: string;
+    }
+  : {
+      /** Directory holding the package, relative to `workspaceDir`. Overrides `<packageRootDir>/<key>`. */
+      relativeDir?: string;
+    };
+
+/**
  * `defineConfig`'s options. `Top` is the config's own `tokens` and `P` the per-package ones,
  * keyed by package name — `packages` is a mapped type over `P` so each package's callbacks are
  * typed with *its* tokens merged over `Top`, and `K` (the keys) types every name reference.
@@ -403,7 +433,17 @@ export type DefineConfigOptions<
   Top extends TokenRecord,
   P extends Record<string, unknown>,
   K extends string = Extract<keyof P, string>,
-> = Omit<GeneratedDefineConfig, 'packages' | 'urls' | 'tokens' | 'devReverseProxy'> & {
+  RootDir extends string | undefined = undefined,
+> = Omit<
+  GeneratedDefineConfig,
+  'packages' | 'urls' | 'tokens' | 'devReverseProxy' | 'packageRootDir'
+> & {
+  /**
+   * The directory the packages live under, relative to `workspaceDir` — `'packages'`, say. With
+   * it set, a package's directory is inferred as `<packageRootDir>/<key>` and its `relativeDir`
+   * becomes optional (an override); without it, every package must set `relativeDir`.
+   */
+  packageRootDir?: RootDir;
   /**
    * Run devtooie's own dev reverse proxy: a loopback listener routing `<subdomain>.<rootDomain>`
    * to the package declaring that `subdomain`. Present = enabled; there is no `enabled` flag.
@@ -422,7 +462,7 @@ export type DefineConfigOptions<
   // package declares nothing but callbacks inferred no keys at all and `K` widened to `string`
   // (dropping the `waitFor`/`deps` checks). `Record<K, unknown>` has `unknown` values, so it
   // needs no contextual typing and infers the keys regardless — without competing with `P`.
-  packages: { [Q in keyof P]: PackageConfigInput<P[Q], Top, K> } & Record<K, unknown>;
+  packages: { [Q in keyof P]: PackageConfigInput<P[Q], Top, K, RootDir> } & Record<K, unknown>;
   /**
    * Values of your own, handed to every callback as `tokens` (merged under each package's own
    * `tokens`) and typed from what you declare here.
@@ -454,8 +494,10 @@ export type ResolvedPackageConfig<N extends string, T = TokenRecord> = Omit<
      * package's tokens: `config.packages.api.tokens.region`.
      */
     tokens: T;
+    /** The package directory relative to `workspaceDir`: as written, or `<packageRootDir>/<key>`. */
     relativeDir: string;
-    path: string;
+    /** The package directory, absolute (`workspaceDir` + `relativeDir`). */
+    absoluteDir: string;
     /** The package's dev port, with any `port` callback already resolved. */
     port?: number;
     /** Footer links, with every callback already resolved to a string. */
@@ -485,6 +527,8 @@ export interface Config<
 > {
   /** User-pinned control-API port, or `undefined` to let devtooie pick a random one at startup. */
   apiPort?: number;
+  /** The directory package directories were inferred under, when the config set one. */
+  packageRootDir?: string;
   /**
    * The resolved packages, **keyed by name** — the same keys the config declared, so
    * `config.packages.api.tokens` is that package's tokens and `config.packages.ghost` is a
@@ -737,6 +781,21 @@ function packageContext(
   });
 }
 
+/**
+ * A package's directory when it sets no `relativeDir`: `<packageRootDir>/<key>` (a trailing
+ * slash on the root tolerated). Without a `packageRootDir` there is nothing to infer from — the
+ * types require `relativeDir` then, and this is the backstop for a config that bypassed them.
+ */
+function inferredRelativeDir(packageRootDir: string | undefined, name: string): string {
+  if (packageRootDir === undefined) {
+    throw new Error(
+      `${name} has no \`relativeDir\`, and the config sets no \`packageRootDir\` to infer it from. ` +
+        `Set \`packageRootDir\` (e.g. 'packages') at the top level, or \`relativeDir\` on ${name}.`,
+    );
+  }
+  return `${packageRootDir.replace(/\/+$/, '')}/${name}`;
+}
+
 /** A lowercase hostname: DNS labels of `[a-z0-9-]`, none starting or ending with a hyphen. */
 const HOSTNAME_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/;
 
@@ -863,7 +922,8 @@ export function defineConfig<
   const Top extends TokenRecord,
   P extends Record<string, unknown>,
   K extends string = Extract<keyof P, string>,
->(opts: DefineConfigOptions<Top, P, K>): Config<K, P, Top> {
+  RootDir extends string | undefined = undefined,
+>(opts: DefineConfigOptions<Top, P, K, RootDir>): Config<K, P, Top> {
   const result = DefineConfigSchema.safeParse(opts);
   if (!result.success) {
     throw new Error(formatConfigError(result.error));
@@ -964,7 +1024,7 @@ export function defineConfig<
     resolveDevReverseProxy(parsed.devReverseProxy, workspaceBase, workspaceEnv.files);
 
   const packages = parsedPackages.map((config) => {
-    const relativeDir = config.relativeDir ?? `packages/${config.name}`;
+    const relativeDir = config.relativeDir ?? inferredRelativeDir(parsed.packageRootDir, config.name); // prettier-ignore
     const env = envsFor(relativeDir);
     // The package's own tokens win over the config's, so a package can override a shared value.
     const pkgTokens = config.tokens ? { ...tokens, ...config.tokens } : tokens;
@@ -995,7 +1055,7 @@ export function defineConfig<
       tokens: pkgTokens,
       port,
       relativeDir,
-      path: path.resolve(workspaceDir, relativeDir),
+      absoluteDir: path.resolve(workspaceDir, relativeDir),
       urls: config.urls?.map((entry) => resolveUrlEntry(entry, scope(`${config.name} urls`))),
       healthcheck:
         config.healthcheck === undefined
@@ -1034,6 +1094,7 @@ export function defineConfig<
 
   const resolved: Config<string> = {
     apiPort: parsed.apiPort,
+    packageRootDir: parsed.packageRootDir,
     // Back to a record, keyed by name, preserving the declaration order of the keys.
     packages: Object.fromEntries(
       packages.map((pkg) => [pkg.name, pkg]),

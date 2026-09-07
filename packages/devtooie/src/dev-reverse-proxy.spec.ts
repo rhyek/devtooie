@@ -536,6 +536,7 @@ describe('status-aware responses', () => {
 describe('routesFromConfig', () => {
   test('lists every hostname of every routable package, bare root last for defaultPackage', () => {
     const config = defineConfig({
+      packageRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: ROOT, defaultPackage: 'web' },
       packages: {
         web: { port: 3000, subdomain: ['web', 'www'], healthcheck: 'http://localhost:3000/' },
@@ -553,6 +554,10 @@ describe('routesFromConfig', () => {
   });
 
   test('is empty without a proxy block', () => {
-    expect(routesFromConfig(defineConfig({ packages: { web: { port: 3000 } } }))).toEqual([]);
+    expect(
+      routesFromConfig(
+        defineConfig({ packageRootDir: 'packages', packages: { web: { port: 3000 } } }),
+      ),
+    ).toEqual([]);
   });
 });

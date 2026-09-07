@@ -17,6 +17,7 @@ import type { PackageConfig } from './register.js';
 describe('per-package tokens', () => {
   it('gives each package the config tokens plus its own, and nothing from a sibling', () => {
     defineConfig({
+      packageRootDir: 'packages',
       tokens: { domain: 'example.test', proto: 'https' },
       packages: {
         api: {
@@ -47,6 +48,7 @@ describe('per-package tokens', () => {
 
   it('exposes each package resolved tokens on the returned config', () => {
     const config = defineConfig({
+      packageRootDir: 'packages',
       tokens: { domain: 'example.test' },
       packages: { api: { tokens: { region: 'us-east' } }, web: {} },
     });
@@ -80,7 +82,7 @@ describe('package names', () => {
   });
 
   it('types the resolved package name as its own key', () => {
-    const config = defineConfig({ packages: { api: {}, web: {} } });
+    const config = defineConfig({ packageRootDir: 'packages', packages: { api: {}, web: {} } });
     expectTypeOf(config.packages.api.name).toEqualTypeOf<'api'>();
     expectTypeOf(config.packages.web.name).toEqualTypeOf<'web'>();
   });
@@ -89,6 +91,7 @@ describe('package names', () => {
 describe('port', () => {
   it('hands callbacks a plain `number`, never `number | undefined`', () => {
     defineConfig({
+      packageRootDir: 'packages',
       packages: {
         literal: {
           port: 3000,
@@ -125,6 +128,7 @@ describe('port', () => {
 
   it('offers no port to a `port` callback or to workspace-wide urls', () => {
     defineConfig({
+      packageRootDir: 'packages',
       tokens: { domain: 'example.test' },
       urls: [
         (ctx) => {
@@ -147,7 +151,10 @@ describe('port', () => {
   });
 
   it('keeps the resolved port optional on the config, where it really can be absent', () => {
-    const config = defineConfig({ packages: { api: { port: 3001 }, lib: {} } });
+    const config = defineConfig({
+      packageRootDir: 'packages',
+      packages: { api: { port: 3001 }, lib: {} },
+    });
     expectTypeOf(config.packages.api.port).toEqualTypeOf<number | undefined>();
     expectTypeOf(config.packages.lib.port).toEqualTypeOf<number | undefined>();
   });
@@ -156,6 +163,7 @@ describe('port', () => {
 describe('envs', () => {
   it('is a plain string record in every callback', () => {
     defineConfig({
+      packageRootDir: 'packages',
       packages: {
         api: {
           port: ({ envs }) => {
@@ -178,6 +186,7 @@ describe('key narrowing survives a config of nothing but callbacks', () => {
 
   it('a single package with only a port callback and a healthcheck callback', () => {
     const c = defineConfig({
+      packageRootDir: 'packages',
       packages: {
         api: {
           port: ({ envs }) => Number(envs.API_PORT),
@@ -190,6 +199,7 @@ describe('key narrowing survives a config of nothing but callbacks', () => {
 
   it('a urls-only package', () => {
     const c = defineConfig({
+      packageRootDir: 'packages',
       packages: { api: { urls: [({ port }) => `http://localhost:${port}`] } },
     });
     expectTypeOf(c.packages.api.name).toEqualTypeOf<'api'>();
@@ -197,6 +207,7 @@ describe('key narrowing survives a config of nothing but callbacks', () => {
 
   it('several packages, every one of them callbacks only', () => {
     const c = defineConfig({
+      packageRootDir: 'packages',
       packages: {
         api: { healthcheck: ({ port }) => `http://localhost:${port}/health` },
         web: { healthcheck: ({ port }) => `http://localhost:${port}/` },
@@ -216,6 +227,7 @@ describe('key narrowing survives a config of nothing but callbacks', () => {
 
   it('still narrows when only some packages are callbacks only', () => {
     const c = defineConfig({
+      packageRootDir: 'packages',
       packages: {
         api: { healthcheck: ({ port }) => `http://localhost:${port}/health` },
         lib: { selectable: false },
@@ -229,6 +241,7 @@ describe('key narrowing survives a config of nothing but callbacks', () => {
 describe('subdomain', () => {
   test('is typed on the resolved package, and on `PackageConfig<name>`', () => {
     const config = defineConfig({
+      packageRootDir: 'packages',
       packages: { api: { subdomain: 'api' }, web: { subdomain: ['web', 'www'] }, lib: {} },
     });
     expectTypeOf(config.packages.api.subdomain).toEqualTypeOf<string | string[] | undefined>();
@@ -242,6 +255,7 @@ describe('subdomain', () => {
 
   test('hands the canonical subdomain to a package callback, but not to workspace-wide urls', () => {
     defineConfig({
+      packageRootDir: 'packages',
       urls: [
         (ctx) => {
           expectTypeOf(ctx).not.toHaveProperty('subdomain');
@@ -285,6 +299,7 @@ describe('subdomain', () => {
 describe('devReverseProxy', () => {
   test('types the block on the options, with callbacks over the workspace context', () => {
     defineConfig({
+      packageRootDir: 'packages',
       tokens: { tld: 'test' },
       devReverseProxy: {
         port: (ctx) => {
@@ -310,6 +325,7 @@ describe('devReverseProxy', () => {
 
   test('exposes the resolved block on the returned config', () => {
     const config = defineConfig({
+      packageRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'example.test' },
       packages: { web: { port: 3000, subdomain: 'web' } },
     });
@@ -325,9 +341,29 @@ describe('devReverseProxy', () => {
 describe('devReverseProxy rootDomain', () => {
   test('is optional on the options and a plain string on the resolved config', () => {
     const config = defineConfig({
+      packageRootDir: 'packages',
       devReverseProxy: { port: 4000 },
       packages: { web: { port: 3000, subdomain: 'web' } },
     });
     expectTypeOf(config.devReverseProxy!.rootDomain).toEqualTypeOf<string>();
+  });
+});
+
+describe('packageRootDir', () => {
+  test('makes relativeDir optional when set, required otherwise', () => {
+    type WithRoot = Parameters<
+      typeof defineConfig<Record<never, never>, { api: unknown }, 'api', 'packages'>
+    >[0]['packages']['api'];
+    type WithoutRoot = Parameters<
+      typeof defineConfig<Record<never, never>, { api: unknown }, 'api'>
+    >[0]['packages']['api'];
+    expectTypeOf<Pick<WithRoot, 'relativeDir'>>().toEqualTypeOf<{ relativeDir?: string }>();
+    expectTypeOf<Pick<WithoutRoot, 'relativeDir'>>().toEqualTypeOf<{ relativeDir: string }>();
+  });
+
+  test('infers from a literal packageRootDir, and the resolved relativeDir is always a string', () => {
+    const config = defineConfig({ packageRootDir: 'packages', packages: { api: {} } });
+    expectTypeOf(config.packages.api.relativeDir).toEqualTypeOf<string>();
+    expectTypeOf(config.packageRootDir).toEqualTypeOf<string | undefined>();
   });
 });

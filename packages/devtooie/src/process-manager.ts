@@ -603,7 +603,7 @@ export class ProcessManager implements ControlManager {
     const pfx = managed.prefix;
     const [cmd, args] = getExecArgs(managed.pkg, getDevScript(managed.pkg));
     const proc = execa(cmd, args, {
-      cwd: managed.pkg.path,
+      cwd: managed.pkg.absoluteDir,
       env: this.packageEnv(managed.pkg),
       stdin: 'ignore',
       stdout: 'pipe',
@@ -615,7 +615,7 @@ export class ProcessManager implements ControlManager {
 
     managed.proc = proc;
     managed.status = 'running';
-    this.trackChild(proc, managed.pkg.path);
+    this.trackChild(proc, managed.pkg.absoluteDir);
 
     const { searchName } = managed;
 
@@ -813,7 +813,7 @@ export class ProcessManager implements ControlManager {
       // package has no combined script/target — resolved identically for pnpm and make.
       for (const [cmd, args] of getRebuildCommands(managed.pkg)) {
         const buildProc = execa(cmd, args, {
-          cwd: managed.pkg.path,
+          cwd: managed.pkg.absoluteDir,
           env: this.packageEnv(managed.pkg),
           stdin: 'ignore',
           reject: false,
@@ -823,7 +823,7 @@ export class ProcessManager implements ControlManager {
         // shutdownAll / forceKillAll can reach (and kill the group of) this
         // child even though it isn't the package's own long-running `proc`.
         managed.extraProcs.add(buildProc);
-        this.trackChild(buildProc, managed.pkg.path);
+        this.trackChild(buildProc, managed.pkg.absoluteDir);
         let result;
         try {
           result = await buildProc;
@@ -899,7 +899,7 @@ export class ProcessManager implements ControlManager {
     this.addLine(pfx, chalk.cyan(`▶ running: ${displayLabel}`), searchName, false);
 
     const proc = execa(cmd, args, {
-      cwd: managed.pkg.path,
+      cwd: managed.pkg.absoluteDir,
       env: this.packageEnv(managed.pkg),
       stdin: 'ignore',
       stdout: 'pipe',
@@ -911,7 +911,7 @@ export class ProcessManager implements ControlManager {
     });
 
     managed.extraProcs.add(proc);
-    this.trackChild(proc, managed.pkg.path);
+    this.trackChild(proc, managed.pkg.absoluteDir);
 
     if (proc.stdout) {
       proc.stdout.on('data', (data: Buffer) => {

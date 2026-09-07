@@ -101,7 +101,7 @@ describe('package prefix colors', () => {
 });
 
 function pkg(): AnyPackageConfig {
-  return { name: 'fixture', relativeDir: '.', path: dir };
+  return { name: 'fixture', relativeDir: '.', absoluteDir: dir };
 }
 
 function runnerArgs(a: AnyPackageConfig): RunnerArgs {
@@ -151,14 +151,14 @@ describe('on-screen log timestamps', () => {
   // A control line tagged with a package's name shares that package's timestamp resolution,
   // so it's a spawn-free way to observe the per-package override.
   it("a package's logs.timestamps: true overrides a top-level default of false", () => {
-    const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', path: dir, logs: { timestamps: true } }; // prettier-ignore
+    const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', absoluteDir: dir, logs: { timestamps: true } }; // prettier-ignore
     manager = new ProcessManager({ ...runnerArgs(p), logTimestamps: false });
     manager.logControl('hi', { package: 'fixture' });
     expect(lastRow(manager)).toMatch(TS);
   });
 
   it("a package's logs.timestamps: false overrides a top-level default of true", () => {
-    const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', path: dir, logs: { timestamps: false } }; // prettier-ignore
+    const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', absoluteDir: dir, logs: { timestamps: false } }; // prettier-ignore
     manager = new ProcessManager({ ...runnerArgs(p), logTimestamps: true });
     manager.logControl('hi', { package: 'fixture' });
     expect(lastRow(manager)).not.toMatch(TS);
@@ -364,7 +364,7 @@ describe('ProcessManager', () => {
     const wide: AnyPackageConfig = {
       name: 'payments-worker',
       relativeDir: '.',
-      path: dir,
+      absoluteDir: dir,
     };
     manager = new ProcessManager(runnerArgs(wide), { plain: true });
     manager.logControl('restart', { package: 'payments-worker' });
@@ -531,7 +531,7 @@ describe('ProcessManager env injection', () => {
   });
 
   it('injects resolved .env vars into the spawned dev process', async () => {
-    const a: AnyPackageConfig = { name: 'envfixture', relativeDir: '.', path: envDir };
+    const a: AnyPackageConfig = { name: 'envfixture', relativeDir: '.', absoluteDir: envDir };
     mgr = new ProcessManager(
       {
         sortedPackages: [a],
@@ -584,7 +584,7 @@ describe('ProcessManager PORT injection', () => {
     const a: AnyPackageConfig = {
       name: 'portfix',
       relativeDir: '.',
-      path: portDir,
+      absoluteDir: portDir,
       port: 4321,
       command: { name: 'dev', watches: true, builds: true },
     };
@@ -654,7 +654,7 @@ describe('ProcessManager child NODE_ENV inheritance', () => {
   });
 
   function makeManager(): ProcessManager {
-    const a: AnyPackageConfig = { name: 'nodeenvfix', relativeDir: '.', path: dir };
+    const a: AnyPackageConfig = { name: 'nodeenvfix', relativeDir: '.', absoluteDir: dir };
     return new ProcessManager(
       {
         sortedPackages: [a],
@@ -733,7 +733,7 @@ describe('ProcessManager NODE_ENV from a .env file', () => {
 
   it("uses the package's .env.development NODE_ENV even when the shell leaves it unset", async () => {
     delete process.env.NODE_ENV; // shell has no NODE_ENV
-    const a: AnyPackageConfig = { name: 'nodeenvdotenv', relativeDir: '.', path: dir };
+    const a: AnyPackageConfig = { name: 'nodeenvdotenv', relativeDir: '.', absoluteDir: dir };
     mgr = new ProcessManager(
       {
         sortedPackages: [a],
@@ -785,7 +785,7 @@ describe('ProcessManager env-change restart', () => {
   });
 
   it('restarts a running package when its .env changes, picking up the new value', async () => {
-    const a: AnyPackageConfig = { name: 'wfixture', relativeDir: '.', path: d };
+    const a: AnyPackageConfig = { name: 'wfixture', relativeDir: '.', absoluteDir: d };
     m = new ProcessManager(
       {
         sortedPackages: [a],
@@ -844,7 +844,7 @@ describe('ProcessManager logs.formatter', () => {
     const a: AnyPackageConfig = {
       name: 'fmtfix',
       relativeDir: '.',
-      path: fmtDir,
+      absoluteDir: fmtDir,
       ...(formatter ? { logs: { formatter } } : {}),
     };
     return {
@@ -1001,7 +1001,7 @@ describe('ProcessManager stderr color through a formatter', () => {
     const a: AnyPackageConfig = {
       name: 'errfix',
       relativeDir: '.',
-      path: errDir,
+      absoluteDir: errDir,
       ...(formatter ? { logs: { formatter } } : {}),
     };
     return {
@@ -1083,7 +1083,7 @@ describe('ProcessManager healthcheck probing', () => {
     const packages: AnyPackageConfig[] = names.map((name) => ({
       name,
       relativeDir: '.',
-      path: hcDir,
+      absoluteDir: hcDir,
     }));
     return new ProcessManager(
       {
@@ -1239,7 +1239,7 @@ describe('ProcessManager rebuild (clean + build)', () => {
   });
 
   it('runs clean then build (in order) and restarts when there is no build:clean', async () => {
-    const a: AnyPackageConfig = { name: 'rbfix', relativeDir: '.', path: rbDir };
+    const a: AnyPackageConfig = { name: 'rbfix', relativeDir: '.', absoluteDir: rbDir };
     mgr = new ProcessManager(
       {
         sortedPackages: [a],

@@ -17,17 +17,17 @@ nearest `devtooie.config.*`, switches to that directory, and loads its workspace
 
 Common options:
 
-| Option                 | Description                                                                                                                                                                                                                 |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-p, --package <name>` | Repeatable. Package(s) to run, bypassing the interactive selector.                                                                                                                                                          |
-| `-m, --mode <name>`    | Environment mode selecting the `.env.<mode>` files to load. Defaults to `development`. Also accepted after a subcommand (`devtooie cmd --mode test`). See [Environment loading](../README.md#environment-env-loading).      |
-| `--ui`                 | Interactive terminal UI (default). Mutually exclusive with `--plain`.                                                                                                                                                       |
-| `--plain`              | No TUI — stream logs to stdout with colored name prefixes. Requires `-p` or `--last-answers`.                                                                                                                               |
-| `--last-answers`       | Skip selection; reuse the last saved selection. If a saved name is no longer a package (a renamed key), the picker opens instead with the surviving names preselected; `--plain`/`--build` refuse with a message naming the stale ones.                                                                                                                                                                             |
-| `--build`              | Build the selected packages and their build-time deps, then exit (no run phase).                                                                                                                                            |
-| `--rebuild`            | Like `--build`, but first clears `dist/` for every build target.                                                                                                                                                            |
-| `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/`. Each run gets a fresh `<timestamp>.log`; previous sessions' logs are kept. Also used by [`devtooie cmd`](#devtooie-cmd). |
-| `--kill-others`        | Quit a devtooie session already running for this project instead of asking. See [Taking over a running session](#taking-over-a-running-session).                                                                            |
+| Option                 | Description                                                                                                                                                                                                                             |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-p, --package <name>` | Repeatable. Package(s) to run, bypassing the interactive selector.                                                                                                                                                                      |
+| `-m, --mode <name>`    | Environment mode selecting the `.env.<mode>` files to load. Defaults to `development`. Also accepted after a subcommand (`devtooie cmd --mode test`). See [Environment loading](../README.md#environment-env-loading).                  |
+| `--ui`                 | Interactive terminal UI (default). Mutually exclusive with `--plain`.                                                                                                                                                                   |
+| `--plain`              | No TUI — stream logs to stdout with colored name prefixes. Requires `-p` or `--last-answers`.                                                                                                                                           |
+| `--last-answers`       | Skip selection; reuse the last saved selection. If a saved name is no longer a package (a renamed key), the picker opens instead with the surviving names preselected; `--plain`/`--build` refuse with a message naming the stale ones. |
+| `--build`              | Build the selected packages and their build-time deps, then exit (no run phase).                                                                                                                                                        |
+| `--rebuild`            | Like `--build`, but first clears `dist/` for every build target.                                                                                                                                                                        |
+| `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/`. Each run gets a fresh `<timestamp>.log`; previous sessions' logs are kept. Also used by [`devtooie cmd`](#devtooie-cmd).             |
+| `--kill-others`        | Quit a devtooie session already running for this project instead of asking. See [Taking over a running session](#taking-over-a-running-session).                                                                                        |
 
 Subcommands:
 
@@ -68,7 +68,8 @@ A session's own answer is published as `startedByAgent` on
 
 Print the **fully resolved config** as prettified JSON — the same object a running session serves
 as `config` on [`GET /query/status`](./control-api.md) — **without a session**. Callbacks have run,
-defaults are applied, `command` is normalized, and every package carries its resolved `port`,
+defaults are applied, `command` is normalized, and every package carries its `relativeDir`
+(as written, or inferred from `packageRootDir`) and `absoluteDir`, its resolved `port`,
 `urls`, `healthcheck`, and — under the [dev reverse proxy](./dev-reverse-proxy.md) — its
 `publicOrigin` (`<urlScheme>://<subdomain>.<rootDomain>[:<port>]`). The `devReverseProxy` block
 itself, port included, is there too.

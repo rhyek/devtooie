@@ -6,7 +6,7 @@
 /* eslint-disable */
 
 export type GeneratedPackageConfig = {
-    /** Directory holding the package, relative to `workspaceDir`. Defaults to `packages/<name>`, where `<name>` is the key this package is declared under. */
+    /** Directory holding the package, relative to `workspaceDir`. Inferred as `<packageRootDir>/<key>` when the config sets `packageRootDir`; required otherwise. Set it to override the inferred one. */
     relativeDir?: string | undefined;
     /** Show in the interactive picker (default `true`). */
     selectable?: boolean | undefined;
@@ -53,7 +53,7 @@ export type GeneratedDefineConfig = {
     apiPort?: number | undefined;
     packages: {
         [key: string]: {
-            /** Directory holding the package, relative to `workspaceDir`. Defaults to `packages/<name>`, where `<name>` is the key this package is declared under. */
+            /** Directory holding the package, relative to `workspaceDir`. Inferred as `<packageRootDir>/<key>` when the config sets `packageRootDir`; required otherwise. Set it to override the inferred one. */
             relativeDir?: string | undefined;
             /** Show in the interactive picker (default `true`). */
             selectable?: boolean | undefined;
@@ -95,6 +95,7 @@ export type GeneratedDefineConfig = {
             } | undefined;
         };
     };
+    packageRootDir?: string | undefined;
     urls?: (((string | any) | {
         label: string;
         url: string | any;

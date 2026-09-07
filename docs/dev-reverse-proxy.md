@@ -16,6 +16,7 @@ The proxy does no TLS, no path-based routing, and no auth.
 
 ```ts
 export default defineConfig({
+  packageRootDir: 'packages',
   devReverseProxy: {
     port: ({ envs }) => Number(envs.DEV_REVERSE_PROXY_PORT), // number | callback
     rootDomain: ({ envs }) => `myproject.${envs.LOCALDEV_DOMAIN}`, // string | callback, default 'localhost'

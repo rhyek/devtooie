@@ -167,7 +167,7 @@ export function BuildProgress({
           });
           try {
             const [cmd, args] = getExecArgs(pkg, 'build');
-            await execa(cmd, args, { stdio: 'pipe', cwd: pkg.path });
+            await execa(cmd, args, { stdio: 'pipe', cwd: pkg.absoluteDir });
           } catch (error) {
             if (cancelled) {
               return;

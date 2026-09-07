@@ -112,6 +112,7 @@ on every run.
 import { defineConfig } from 'devtooie';
 
 export default defineConfig({
+  packageRootDir: 'packages',
   // keyed by package name — the key is the name, so there's no `name` field
   packages: {
     'core-api': {
@@ -281,6 +282,7 @@ exceptions with `env.override` when a file needs to *extend* an inherited value:
 
 ```ts
 defineConfig({
+  packageRootDir: 'packages',
   env: { override: ['NODE_OPTIONS'] },   // or `true` for every variable
   packages: {/* … */},
 });

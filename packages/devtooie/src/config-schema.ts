@@ -95,7 +95,7 @@ export const PackageConfigSchema = z.object({
     .string()
     .optional()
     .describe(
-      'Directory holding the package, relative to `workspaceDir`. Defaults to `packages/<name>`, where `<name>` is the key this package is declared under.',
+      'Directory holding the package, relative to `workspaceDir`. Inferred as `<packageRootDir>/<key>` when the config sets `packageRootDir`; required otherwise. Set it to override the inferred one.',
     ),
   selectable: z.boolean().optional().describe('Show in the interactive picker (default `true`).'),
   shortName: z.string().optional().describe('Shorter label used in the TUI in place of `name`.'),
@@ -211,6 +211,9 @@ export const DefineConfigSchema = z.object({
   // Keyed by package name; the key becomes the package's `name`. Overridden in config.ts (a
   // mapped type carrying each package's own token types); documented there.
   packages: z.record(z.string().min(1), PackageConfigSchema),
+  // Overridden in config.ts (its presence is what makes each package's `relativeDir` optional
+  // at the type level); documented there.
+  packageRootDir: z.string().optional(),
   // Overridden in config.ts (callbacks `z.custom` erases to `any`); documented there.
   urls: z.array(UrlEntrySchema).optional(),
   // Overridden in config.ts (callbacks erase to `any`); documented there.

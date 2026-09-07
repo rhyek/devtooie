@@ -78,7 +78,8 @@ reports as `config` on `GET /query/status`. For each package you get, among the 
       "publicOrigin": "https://api.myproject.example.test", // where it is served (injected as PUBLIC_ORIGIN)
       "healthcheck": { "url": "http://localhost:3001/health", "timeout": 1500 },
       "urls": ["https://api.myproject.example.test/todos"], // from `urls: ['/todos']` in the config
-      "path": "/abs/packages/api"
+      "relativeDir": "packages/api", // as written, or <packageRootDir>/<key>
+      "absoluteDir": "/abs/packages/api"
     }
   }
 }
@@ -158,6 +159,7 @@ The one file you author and commit — the single source of truth the CLI reads 
 import { defineConfig } from 'devtooie';
 
 export default defineConfig({
+  packageRootDir: 'packages',
   // Keyed by package name — the key IS the name, so there is no `name` field.
   packages: {
     'core-api': {
@@ -241,6 +243,7 @@ scratch to clear stale build output — those enable the rebuild command (the `b
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `packages`     | Your package definitions, **keyed by package name** (see below).                                                                                                                              |
 | `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.                                                                                   |
+| `packageRootDir` | The directory the packages live under, e.g. `'packages'`: each package's directory is inferred as `<packageRootDir>/<key>`, and `relativeDir` becomes an optional override. Without it, every package must set `relativeDir`. **Always set it** and omit `relativeDir` unless a package really lives elsewhere. |
 | `env`          | Environment-loading options — currently just `override` (which variables a `.env` file may win over the ambient environment for). Which files load is chosen with `--mode`. See [Environment loading](#environment-env-loading). |
 | `logs`         | Log display options: `{ timestamps?: boolean }` (default `false`) — see [Log timestamps](#log-timestamps).                                                         |
 | `apiPort`      | Pin the [control API](#drive-a-running-session-via-the-control-api) port (otherwise chosen automatically).                                                         |
@@ -259,15 +262,18 @@ packages: {
 ```
 
 The key is the package's name — what `-p <name>` takes, what `waitFor`/`deps` reference, and
-what `relativeDir` defaults from. **There is no `name` field**, names can't drift, and every
+what its directory is inferred from under `packageRootDir`. **There is no `name` field**, names can't drift, and every
 name reference is type-checked against the keys. Integer-like keys (`'2'`) are rejected at load
 time, since JavaScript reorders them and that would change start order.
 
 Each package's value has a flat set of fields, all optional (omit them all for a build-only
 lib):
 
-- **`relativeDir`** — directory containing the package, relative to `workspaceDir`. Defaults
-  to `packages/<key>`.
+- **`relativeDir`** — directory containing the package, relative to `workspaceDir`. Optional
+  when the config sets `packageRootDir` — then it's inferred as `<packageRootDir>/<key>` — and
+  required otherwise; TypeScript enforces both. **Prefer `packageRootDir` and omit this**; set
+  it only to override the inferred directory (a scoped key like `@scope/web-api` would
+  otherwise land at `packages/@scope/web-api`).
 - **`selectable`** (default `true`) — show in the interactive picker.
 - **`color`** — override the auto-assigned color of this package's log-prefix label. Any
   Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`),
@@ -331,6 +337,7 @@ resolves it against the package's port (or its public origin under the dev rever
 
 ```ts
 export default defineConfig({
+  packageRootDir: 'packages',
   tokens: { domain: 'example.test' },
   packages: {
     backend: {
@@ -370,6 +377,7 @@ Declare them only where you have them. A package with no tokens of its own write
 
 ```ts
 export default defineConfig({
+  packageRootDir: 'packages',
   tokens: { domain: 'example.test', proto: 'https' },
   packages: {
     api: {
@@ -474,6 +482,7 @@ every on-screen log line (both the interactive TUI and `--plain` output) with a
 
 ```ts
 export default defineConfig({
+  packageRootDir: 'packages',
   logs: { timestamps: true },
   packages: {/* … */},
 });
@@ -493,6 +502,7 @@ package; when omitted, the package inherits the top-level value:
 
 ```ts
 export default defineConfig({
+  packageRootDir: 'packages',
   logs: { timestamps: false }, // top-level default
   packages: {
     api: {}, // inherits → no timestamps on screen
@@ -548,6 +558,7 @@ assumption.
 import { defineConfig, logging } from 'devtooie';
 
 export default defineConfig({
+  packageRootDir: 'packages',
   packages: {
     'go-svc': {}, // no config — slog's string levels just work via the default
     api: { logs: { formatter: logging.nodejs.pino.formatter() } }, // pino numeric levels
@@ -650,6 +661,7 @@ The proxy does no TLS, no path-based routing, and no auth.
 
 ```ts
 export default defineConfig({
+  packageRootDir: 'packages',
   devReverseProxy: {
     port: ({ envs }) => Number(envs.DEV_REVERSE_PROXY_PORT), // number | callback
     rootDomain: ({ envs }) => `myproject.${envs.LOCALDEV_DOMAIN}`, // string | callback, default 'localhost'
@@ -1073,6 +1085,7 @@ when a file needs to *extend* an inherited value rather than lose to it:
 
 ```ts
 defineConfig({
+  packageRootDir: 'packages',
   env: { override: ['NODE_OPTIONS'] },   // or `true` for every variable
   packages: {/* … */},
 });
@@ -1452,6 +1465,9 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
 
    All package fields are flat (there is no `run` nesting). Infer them from what the package
    actually is:
+   - Set **`packageRootDir`** (e.g. `'packages'`) once at the top level and **omit
+     `relativeDir`** on every package: its directory is `<packageRootDir>/<key>`. Give a package
+     a `relativeDir` only when it lives somewhere else (or its key is scoped).
    - `port` — the dev port it listens on. devtooie injects this into the package's process as the
      `PORT` env var, so the app can read `process.env.PORT` without you duplicating it in a `.env`
      (an explicit `.env` `PORT` still wins).
@@ -1554,6 +1570,7 @@ other scripts in your repo can import the resolved package type:
 import { defineConfig } from 'devtooie';
 
 const config = defineConfig({
+  packageRootDir: 'packages',
   packages: {/* … */},
 });
 export default config;

@@ -8,6 +8,7 @@
 | -------------- | ------------------------------------------------------------------------------------------- |
 | `packages`     | Your package definitions, **keyed by package name** (see below).                            |
 | `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.            |
+| `packageRootDir` | The directory the packages live under, e.g. `'packages'`: each package's directory is inferred as `<packageRootDir>/<key>`, and `relativeDir` becomes an optional override. Without it, every package must set `relativeDir`. **Recommended.** |
 | `env`          | Environment-loading options — currently just `override`, below. Which files load is chosen with `--mode`; see [Environment loading](../README.md#environment-env-loading). |
 | `logs`         | Top-level log options (`{ timestamps? }`); timestamps + structured-log formatting — see [Logging](./logging.md). |
 | `apiPort`      | Pin the [control API](./control-api.md) port (otherwise chosen automatically).              |
@@ -27,14 +28,17 @@ packages: {
 ```
 
 The **key is the package's name** — what `-p <name>` takes, what `waitFor`/`deps` reference,
-and what `relativeDir` defaults from. So names can't be duplicated or drift out of sync, and
+and what its directory is inferred from under `packageRootDir`. So names can't be duplicated or drift out of sync, and
 TypeScript checks every name reference against them. There is no `name` field.
 
 Each package's value has a flat set of fields, all optional (omit them all for a build-only
 lib):
 
-- **`relativeDir`** — directory containing the package, relative to
-  `workspaceDir`. Defaults to `packages/<key>`.
+- **`relativeDir`** — directory containing the package, relative to `workspaceDir`. Optional
+  when the config sets `packageRootDir` — then it's inferred as `<packageRootDir>/<key>`, the
+  recommended setup — and required otherwise; TypeScript enforces both. Set it to override the
+  inferred one (a scoped key like `@scope/web-api` would otherwise land at
+  `packages/@scope/web-api`).
 - **`selectable`** (default `true`) — show in the interactive picker.
 - **`color`** — override the auto-assigned color of this package's log-prefix label. Any
   Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`),
@@ -102,6 +106,7 @@ file is allowed to win instead:
 
 ```ts
 defineConfig({
+  packageRootDir: 'packages',
   env: { override: ['NODE_OPTIONS'] },   // or `true` for every variable
   packages: {/* … */},
 });
@@ -128,6 +133,7 @@ resolves it against the package's port (or its public origin under the dev rever
 
 ```ts
 export default defineConfig({
+  packageRootDir: 'packages',
   tokens: { domain: 'example.test' },
   packages: {
     backend: {
@@ -166,6 +172,7 @@ Declare them only where you have them. A package with no tokens of its own write
 
 ```ts
 export default defineConfig({
+  packageRootDir: 'packages',
   tokens: { domain: 'example.test', proto: 'https' },
   packages: {
     api: {
@@ -308,6 +315,7 @@ augment the `'devtooie'` module with it:
 import { defineConfig } from 'devtooie';
 
 const config = defineConfig({
+  packageRootDir: 'packages',
   packages: {/* … */},
 });
 export default config;
