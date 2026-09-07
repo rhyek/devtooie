@@ -247,7 +247,7 @@ export type PackageConfigInput<
       /**
        * Prefix this package's on-screen log lines with a `YYYY-MM-DD HH:MM:SS` (24-hour)
        * timestamp. Overrides the top-level `logs.timestamps` for this package; when omitted, it
-       * inherits that setting (which itself defaults to `false`). The on-disk log file is always
+       * inherits that setting (which itself defaults to `true`). The on-disk log file is always
        * timestamped regardless of this option.
        */
       timestamps?: boolean;
@@ -1104,7 +1104,7 @@ export function defineConfig<
     envFiles,
     envMode: currentMode(),
     envOverride,
-    logTimestamps: parsed.logs?.timestamps ?? false,
+    logTimestamps: parsed.logs?.timestamps ?? true,
   };
   registeredPackages = packages as unknown as AnyPackageConfig[];
   loadedConfig = resolved;

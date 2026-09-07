@@ -143,18 +143,18 @@ describe('meta defaults', () => {
     expect(cfg.envOverride).toEqual(['NODE_OPTIONS']);
   });
 
-  it('defaults logTimestamps to false', () => {
+  it('defaults logTimestamps to true', () => {
     const cfg = defineConfig({ packageRootDir: 'packages', packages: { svc: {} } });
-    expect(cfg.logTimestamps).toBe(false);
+    expect(cfg.logTimestamps).toBe(true);
   });
 
   it('honors a logs.timestamps override', () => {
     const cfg = defineConfig({
       packageRootDir: 'packages',
-      logs: { timestamps: true },
+      logs: { timestamps: false },
       packages: { svc: {} },
     });
-    expect(cfg.logTimestamps).toBe(true);
+    expect(cfg.logTimestamps).toBe(false);
   });
 });
 

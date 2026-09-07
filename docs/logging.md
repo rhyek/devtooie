@@ -4,27 +4,32 @@
 
 How devtooie displays and records each package's output. Two things: optional on-screen
 **timestamps**, and the **structured-log (JSON) formatting** devtooie applies by default. You rarely
-need to configure either — timestamps are off unless you turn them on, and the structured-log
-formatter works out of the box (most dev processes don't even emit JSON logs). Both are driven by
+need to configure either — timestamps are on out of the box, and so is the structured-log
+formatter (most dev processes don't even emit JSON logs). Both are driven by
 the top-level and per-package `logs` option of [`defineConfig`](./configuration.md).
 
 ## Timestamps
 
-By default log lines are shown without a timestamp. Set `logs.timestamps: true` to prefix
-every on-screen log line (both the interactive TUI and `--plain` output) with a
-`YYYY-MM-DD HH:MM:SS` local-time (24-hour) stamp:
+By default every on-screen log line (both the interactive TUI and `--plain` output) is
+prefixed with a local-time (24-hour) stamp. Set `logs.timestamps: false` to turn that off:
 
 ```ts
 export default defineConfig({
-  logs: { timestamps: true },
+  logs: { timestamps: false },
   packages: {/* … */},
 });
 ```
 
 ```
-2026-07-13 13:53:32 [api]     backend ready, starting…
-2026-07-13 13:53:32 [web]     VITE ready in 431 ms
+13:53:32 [api]     backend ready, starting…
+13:53:32 [web]     VITE ready in 431 ms
 ```
+
+**The TUI shows the date only when it matters.** While every timestamped line on screen is from
+the same day, rows show just the time, as above; as soon as two days are visible together —
+scrolled back across midnight, or the first lines after it — the full `YYYY-MM-DD HH:MM:SS` stamp
+comes back so the rows can be told apart. `--plain` output and the log file always carry the full
+stamp.
 
 The on-disk session log file always records timestamps (in the same format) regardless of
 this setting; `logs.timestamps` only controls whether they're shown on screen.

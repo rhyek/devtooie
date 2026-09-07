@@ -582,12 +582,12 @@ export function NativeRunner({
     };
   }, [stdout]);
 
-  // A resize (wrapping changes) or a filter change re-flows the visible content,
-  // invalidating the flat-row/column coordinates a selection is anchored to — so
-  // drop any active selection.
+  // A resize (wrapping changes), a filter change, or the timestamp column changing
+  // width re-flows the visible content, invalidating the flat-row/column coordinates
+  // a selection is anchored to — so drop any active selection.
   useEffect(() => {
     clearSelection();
-  }, [columns, rows, activeFilter, clearSelection]);
+  }, [columns, rows, activeFilter, viewport.tsMode, clearSelection]);
 
   // Kill every child process when this run phase unmounts.
   useEffect(() => {

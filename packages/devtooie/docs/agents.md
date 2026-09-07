@@ -245,7 +245,7 @@ scratch to clear stale build output — those enable the rebuild command (the `b
 | `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.                                                                                   |
 | `packageRootDir` | The directory the packages live under, e.g. `'packages'`: each package's directory is inferred as `<packageRootDir>/<key>`, and `relativeDir` becomes an optional override. Without it, every package must set `relativeDir`. **Always set it** and omit `relativeDir` unless a package really lives elsewhere. |
 | `env`          | Environment-loading options — currently just `override` (which variables a `.env` file may win over the ambient environment for). Which files load is chosen with `--mode`. See [Environment loading](#environment-env-loading). |
-| `logs`         | Log display options: `{ timestamps?: boolean }` (default `false`) — see [Log timestamps](#log-timestamps).                                                         |
+| `logs`         | Log display options: `{ timestamps?: boolean }` (default `true`) — see [Log timestamps](#log-timestamps).                                                          |
 | `apiPort`      | Pin the [control API](#drive-a-running-session-via-the-control-api) port (otherwise chosen automatically).                                                         |
 | `urls`         | Workspace-wide footer links, not tied to a package. Same shape as a package's `urls`, but a callback here gets only `{ envs, tokens }` (no package, so no `port`). |
 | `tokens`       | Values of your own, handed to every callback as `tokens` (a package's own `tokens` are merged on top) — see [Callbacks](#callbacks-instead-of-interpolation).      |
@@ -476,22 +476,27 @@ config.packages.api.port; // number | undefined
 
 ### Log timestamps
 
-By default log lines are shown without a timestamp. Set `logs.timestamps: true` to prefix
-every on-screen log line (both the interactive TUI and `--plain` output) with a
-`YYYY-MM-DD HH:MM:SS` local-time (24-hour) stamp:
+By default every on-screen log line (both the interactive TUI and `--plain` output) is
+prefixed with a local-time (24-hour) stamp. Set `logs.timestamps: false` to turn that off:
 
 ```ts
 export default defineConfig({
   packageRootDir: 'packages',
-  logs: { timestamps: true },
+  logs: { timestamps: false },
   packages: {/* … */},
 });
 ```
 
 ```
-2026-07-13 13:53:32 [api]     backend ready, starting…
-2026-07-13 13:53:32 [web]     VITE ready in 431 ms
+13:53:32 [api]     backend ready, starting…
+13:53:32 [web]     VITE ready in 431 ms
 ```
+
+**The TUI shows the date only when it matters.** While every timestamped line on screen is from
+the same day, rows show just the time, as above; as soon as two days are visible together —
+scrolled back across midnight, or the first lines after it — the full `YYYY-MM-DD HH:MM:SS` stamp
+comes back so the rows can be told apart. `--plain` output and the log file always carry the full
+stamp.
 
 The on-disk session log file always records timestamps (in the same format) regardless of this
 setting; `logs.timestamps` only controls whether they're shown on screen.

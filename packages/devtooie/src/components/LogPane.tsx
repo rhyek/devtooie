@@ -9,7 +9,7 @@ import React, {
   useSyncExternalStore,
 } from 'react';
 import { copyToClipboard } from '../clipboard.js';
-import { computeWindow, windowRows } from '../log-window.js';
+import { computeWindow, convertOffset, windowRows } from '../log-window.js';
 import type { MouseReport } from '../mouse.js';
 import type { ProcessManager } from '../process-manager.js';
 import {
@@ -34,6 +34,7 @@ import {
   scrollToTop,
   type Scroll,
 } from '../scroll.js';
+import { spansOneDay, type TsMode } from '../timestamp-mode.js';
 import { DEFAULT_TOAST_MS } from '../toasts.js';
 import { trackClick, wordSelectionAt, wordSpanAt, type ClickState } from '../word-select.js';
 import type { Toasts } from './ToastStack.js';
@@ -52,6 +53,11 @@ export type LogViewport = {
   hiddenBelow: number;
   /** Rendered rows of older output hidden above the viewport (0 when the buffer fits). */
   hiddenAbove: number;
+  /**
+   * The timestamp layout the rows were rendered in: `time` (just `HH:MM:SS`) while every stamp
+   * on screen is from one day, `date` once two days are visible. A change is a re-flow.
+   */
+  tsMode: TsMode;
   /** Scroll by whole rows: positive toward older output, negative toward newest. */
   scrollLines: (delta: number) => void;
   /** Scroll by pages (a page is one viewport minus a row of overlap). */
@@ -79,63 +85,105 @@ export function useLogViewport(
     () => manager.getVersion(),
   );
 
+  // The scroll position is kept in the **date** layout's row space — the reference layout, where
+  // every line takes at least as many rows as in the narrower `time` layout — and translated into
+  // whichever layout is actually rendered. Storing it in the rendered space instead would let a
+  // change of layout (the date column appearing or vanishing) reflow thousands of wrapped rows
+  // out from under a plain row count.
   const [scroll, setScroll] = useState<Scroll>(FOLLOWING);
+  // The two layouts' row counts, for the scroll callbacks to translate with.
+  const layoutRef = useRef<{ date: number[]; time: number[] }>({ date: [], time: [] });
 
-  const { rows, totalRows, maxScroll, firstVisibleFlatRow } = useMemo(() => {
-    const lines = manager.getVisibleLines();
-    const rowCounts = lines.map((line) => manager.countRows(line, width));
-    const win = computeWindow(rowCounts, height, scroll.offset);
-    const rendered = windowRows<(typeof lines)[number], RowMeta>(lines, win, (line, lineIndex) => {
-      // Where the value starts is a property of the *line*; where content starts is a property of
-      // each rendered row (a wrapped row begins past the hanging indent).
-      const { kind, valueStart } = classifyLine(line.text);
-      return manager.wrapLineRows(line, width).map((row, r) => ({
-        text: row.text,
-        contentStart: row.contentStart,
-        valueStart: r === 0 ? row.contentStart + valueStart : row.contentStart,
-        lineIndex,
-        kind,
-      }));
-    });
-    // First on-screen flat row = bottom edge (totalRows - clamped offset) minus
-    // however many rows we actually rendered. Stable under appends, which is what
-    // lets a content-anchored selection ride along as new output arrives.
-    const clampedOffset = Math.min(Math.max(0, scroll.offset), win.maxScroll);
-    const firstVisible = win.totalRows - clampedOffset - rendered.length;
-    return {
-      rows: rendered,
-      totalRows: win.totalRows,
-      maxScroll: win.maxScroll,
-      firstVisibleFlatRow: firstVisible,
-    };
-    // `version` is the buffer-change signal: getVisibleLines/countRows read
-    // mutable manager state that only changes when the version bumps.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [manager, version, width, height, scroll.offset]);
+  const { rows, dateTotalRows, dateMaxScroll, maxScroll, offset, firstVisibleFlatRow, tsMode } =
+    useMemo(() => {
+      const lines = manager.getVisibleLines();
+      const dateRows = lines.map((line) => manager.countRows(line, width, 'date'));
+      const timeRows = lines.map((line) => manager.countRows(line, width, 'time'));
+      layoutRef.current = { date: dateRows, time: timeRows };
+      const dateWin = computeWindow(dateRows, height, scroll.offset);
+
+      // Try the time-only layout first: the same bottom edge, laid out without the date column.
+      // It stands if every stamp it brings on screen is from one day; otherwise the date layout
+      // is rendered as-is. Either way the choice is a pure function of the stored position, so it
+      // can't flip back and forth on its own.
+      const timeOffset = convertOffset(dateRows, timeRows, scroll.offset);
+      const timeWin = computeWindow(timeRows, height, timeOffset);
+      const mode: TsMode = spansOneDay(lines, timeWin.startIndex, timeWin.endIndex)
+        ? 'time'
+        : 'date';
+      const win = mode === 'time' ? timeWin : dateWin;
+      const clampedOffset = Math.min(
+        Math.max(0, mode === 'time' ? timeOffset : scroll.offset),
+        win.maxScroll,
+      );
+
+      const rendered = windowRows<(typeof lines)[number], RowMeta>(
+        lines,
+        win,
+        (line, lineIndex) => {
+          // Where the value starts is a property of the *line*; where content starts is a property of
+          // each rendered row (a wrapped row begins past the hanging indent).
+          const { kind, valueStart } = classifyLine(line.text);
+          return manager.wrapLineRows(line, width, mode).map((row, r) => ({
+            text: row.text,
+            contentStart: row.contentStart,
+            valueStart: r === 0 ? row.contentStart + valueStart : row.contentStart,
+            lineIndex,
+            kind,
+          }));
+        },
+      );
+      // First on-screen flat row = bottom edge (totalRows - clamped offset) minus
+      // however many rows we actually rendered. Stable under appends, which is what
+      // lets a content-anchored selection ride along as new output arrives.
+      const firstVisible = win.totalRows - clampedOffset - rendered.length;
+      return {
+        rows: rendered,
+        dateTotalRows: dateWin.totalRows,
+        dateMaxScroll: dateWin.maxScroll,
+        maxScroll: win.maxScroll,
+        offset: clampedOffset,
+        firstVisibleFlatRow: firstVisible,
+        tsMode: mode,
+      };
+      // `version` is the buffer-change signal: getVisibleLines/countRows read
+      // mutable manager state that only changes when the version bumps.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [manager, version, width, height, scroll.offset]);
 
   // Keep a scrolled-up view pinned to the same content as the buffer grows or
-  // shrinks; stay following at the bottom otherwise.
-  const prevTotalRef = useRef(totalRows);
+  // shrinks; stay following at the bottom otherwise. Measured in the date layout,
+  // like the stored offset, so a change of timestamp layout contributes nothing.
+  const prevTotalRef = useRef(dateTotalRows);
   useEffect(() => {
-    const delta = totalRows - prevTotalRef.current;
-    prevTotalRef.current = totalRows;
+    const delta = dateTotalRows - prevTotalRef.current;
+    prevTotalRef.current = dateTotalRows;
     if (delta !== 0) {
-      setScroll((current) => onContentResized(current, delta, maxScroll));
+      setScroll((current) => onContentResized(current, delta, dateMaxScroll));
     }
-  }, [totalRows, maxScroll]);
+  }, [dateTotalRows, dateMaxScroll]);
 
-  const scrollLines = useCallback(
-    (delta: number) => setScroll((current) => scrollByRows(current, delta, maxScroll)),
-    [maxScroll],
-  );
-  const scrollPages = useCallback(
+  // Scroll by `delta` rows *as rendered*: translate the stored position into the rendered
+  // layout, move, and translate back.
+  const scrollRendered = useCallback(
     (delta: number) =>
-      setScroll((current) => scrollByRows(current, delta * Math.max(1, height - 1), maxScroll)),
-    [maxScroll, height],
+      setScroll((current) => {
+        const { date, time } = layoutRef.current;
+        const from = tsMode === 'time' ? convertOffset(date, time, current.offset) : current.offset;
+        const moved = scrollByRows({ offset: from }, delta, maxScroll);
+        const back = tsMode === 'time' ? convertOffset(time, date, moved.offset) : moved.offset;
+        return back === 0 ? FOLLOWING : { offset: back };
+      }),
+    [tsMode, maxScroll],
+  );
+  const scrollLines = scrollRendered;
+  const scrollPages = useCallback(
+    (delta: number) => scrollRendered(delta * Math.max(1, height - 1)),
+    [scrollRendered, height],
   );
   const toTop = useCallback(() => {
-    setScroll(scrollToTop(maxScroll));
-  }, [maxScroll]);
+    setScroll(scrollToTop(dateMaxScroll));
+  }, [dateMaxScroll]);
   const toBottom = useCallback(() => {
     setScroll(scrollToBottom());
   }, []);
@@ -144,8 +192,9 @@ export function useLogViewport(
     rows,
     firstVisibleFlatRow,
     following: isFollowing(scroll),
-    hiddenBelow: scroll.offset,
-    hiddenAbove: Math.max(0, maxScroll - scroll.offset),
+    hiddenBelow: offset,
+    hiddenAbove: Math.max(0, maxScroll - offset),
+    tsMode,
     scrollLines,
     scrollPages,
     scrollToTop: toTop,

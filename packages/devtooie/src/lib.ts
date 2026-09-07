@@ -639,7 +639,7 @@ export function buildRunnerArgs(
     topLevelUrls: config?.urls?.map(normalizeUrlEntry),
     envFiles: config?.envFiles ?? envFileNames(),
     envOverride: config?.envOverride,
-    logTimestamps: config?.logTimestamps ?? false,
+    logTimestamps: config?.logTimestamps ?? true,
     cwd: process.cwd(),
   };
 }

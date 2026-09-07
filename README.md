@@ -226,9 +226,9 @@ TypeScript project references, and typed package names — lives in
 ## Logging
 
 devtooie **auto-formats structured (JSON) logs** — from Go `slog`, pino, winston, … — into a
-colored `[LEVEL] message` for local dev, with no `NODE_ENV` branching and nothing to configure. You
-can add on-screen timestamps, and customize that JSON rendering per package with the `logging`
-helpers — or, for output that **isn't** JSON, write a `logs.formatter` over the raw line yourself.
+colored `[LEVEL] message` for local dev, with no `NODE_ENV` branching and nothing to configure.
+Every line carries a timestamp (just the time, until two days share the screen), and you can
+customize that JSON rendering per package with the `logging` helpers — or, for output that **isn't** JSON, write a `logs.formatter` over the raw line yourself.
 See **[docs/logging.md](docs/logging.md)**.
 
 Every session is also teed to a timestamped logfile. Read the current one from another terminal

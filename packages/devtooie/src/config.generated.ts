@@ -124,7 +124,7 @@ export type GeneratedDefineConfig = {
     } | undefined;
     /** Log display options. */
     logs?: {
-        /** Prefix each on-screen log line with a `YYYY-MM-DD HH:MM:SS` (24-hour) timestamp. Defaults to `false`. The on-disk log file always includes timestamps regardless of this setting. */
+        /** Prefix each on-screen log line with a local-time (24-hour) timestamp — `HH:MM:SS` while everything on screen is from one day, `YYYY-MM-DD HH:MM:SS` once two days are visible. Defaults to `true`. The on-disk log file always includes timestamps regardless of this setting. */
         timestamps?: boolean | undefined;
     } | undefined;
 };

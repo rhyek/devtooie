@@ -439,24 +439,24 @@ describe('display sort + runner args', () => {
     expect(args.topLevelUrls).toBeUndefined();
   });
 
-  it('buildRunnerArgs carries logTimestamps from the loaded config (default false)', () => {
-    const off = Object.values(
+  it('buildRunnerArgs carries logTimestamps from the loaded config (default true)', () => {
+    const on = Object.values(
       defineConfig({ packageRootDir: 'packages', workspaceDir: '/repo', packages: { web: {} } })
         .packages,
     );
-    const web = off.find((a) => a.name === 'web')!;
-    expect(buildRunnerArgs([web], resolveDeps([web])).logTimestamps).toBe(false);
+    const web = on.find((a) => a.name === 'web')!;
+    expect(buildRunnerArgs([web], resolveDeps([web])).logTimestamps).toBe(true);
 
-    const on = Object.values(
+    const off = Object.values(
       defineConfig({
         packageRootDir: 'packages',
         workspaceDir: '/repo',
-        logs: { timestamps: true },
+        logs: { timestamps: false },
         packages: { web: {} },
       }).packages,
     );
-    const web2 = on.find((a) => a.name === 'web')!;
-    expect(buildRunnerArgs([web2], resolveDeps([web2])).logTimestamps).toBe(true);
+    const web2 = off.find((a) => a.name === 'web')!;
+    expect(buildRunnerArgs([web2], resolveDeps([web2])).logTimestamps).toBe(false);
   });
 });
 
