@@ -78,7 +78,7 @@ type Status = 'running' | 'stopped' | 'waiting' | 'rebuilding' | 'restarting';
 interface StubManager extends DevReverseProxyManager {
   set(name: string, status: Status | null): void;
   setReady(name: string, ready: boolean): void;
-  logged: string[];
+  logged: [attrs: Record<string, unknown>, message: string][];
 }
 
 function stubManager(initial: Record<string, Status> = {}): StubManager {
@@ -90,7 +90,7 @@ function stubManager(initial: Record<string, Status> = {}): StubManager {
       l();
     }
   };
-  const logged: string[] = [];
+  const logged: [attrs: Record<string, unknown>, message: string][] = [];
   return {
     logged,
     getStatus: (name) => statuses.get(name) ?? null,
@@ -99,7 +99,9 @@ function stubManager(initial: Record<string, Status> = {}): StubManager {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    systemLog: { info: (msg: string) => void logged.push(msg) },
+    systemLog: {
+      info: (attrs: Record<string, unknown>, message: string) => void logged.push([attrs, message]),
+    },
     set(name, status) {
       if (status === null) {
         statuses.delete(name);
@@ -516,7 +518,7 @@ describe('status-aware responses', () => {
     expect(JSON.parse(reply.body)).toMatchObject({ package: 'web', status: 'stopped' });
   });
 
-  test('logs one devtooie line naming the port, root domain, and every route on attach', async () => {
+  test('logs one devtooie entry on attach: the listener as the message, one route per attr', async () => {
     const web = await upstream('web');
     const proxy = await proxyFor([
       route(`web.${ROOT}`, 'web', web.port),
@@ -525,11 +527,13 @@ describe('status-aware responses', () => {
     const manager = stubManager({ web: 'running' });
     proxy.attach(manager);
     expect(manager.logged).toHaveLength(1);
-    const line = manager.logged[0]!;
-    expect(line).toContain(String(proxy.port));
-    expect(line).toContain(ROOT);
-    expect(line).toContain(`web.${ROOT} → web :${String(web.port)}`);
-    expect(line).toContain(`www.${ROOT} → web :${String(web.port)}`);
+    const [attrs, message] = manager.logged[0]!;
+    expect(message).toBe(`dev reverse proxy listening on 127.0.0.1:${String(proxy.port)}`);
+    // Rendered by the log formatter as `  <host>: <package> :<port>` lines under the message.
+    expect(attrs).toEqual({
+      [`web.${ROOT}`]: `web :${String(web.port)}`,
+      [`www.${ROOT}`]: `web :${String(web.port)}`,
+    });
   });
 });
 

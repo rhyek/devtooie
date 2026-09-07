@@ -810,8 +810,8 @@ Its port goes through the same conflict handling package ports get: a previous d
 session being handed off releases it as it shuts down; anything still holding it after that is
 a startup error naming the port.
 
-At start, one `[devtooie]` log line lists the proxy port, the root domain, and each route as
-`<host> → <package> :<port>`. The [control API](#drive-a-running-session-via-the-control-api)'s `GET /query/status` reports
+At start, one `[devtooie]` log entry names the proxy port, with one indented line per route
+beneath it (`<host>: <package> :<port>`). The [control API](#drive-a-running-session-via-the-control-api)'s `GET /query/status` reports
 the same table under `devReverseProxy`.
 
 ### No terminator: plain `localhost`

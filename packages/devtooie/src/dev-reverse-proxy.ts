@@ -39,8 +39,8 @@ export interface DevReverseProxyManager {
   isReady(name: string): boolean;
   /** Called on buffer/status changes; returns the unsubscribe. Readiness alone doesn't fire it. */
   subscribe(listener: () => void): () => void;
-  /** devtooie's own `[devtooie]` log channel. */
-  systemLog: { info(message: string): void };
+  /** devtooie's own `[devtooie]` log channel: attrs render as indented lines under the message. */
+  systemLog: { info(attrs: Record<string, unknown>, message: string): void };
 }
 
 export interface DevReverseProxyServer {
@@ -468,10 +468,15 @@ export async function startDevReverseProxy(opts: {
     routes,
     attach(m) {
       manager = m;
-      const table = routes.map((r) => `${r.host} → ${r.package} :${String(r.port)}`).join(', ');
+      // One entry: the listener as the message, then a line per route (`<host>: <package> :<port>`),
+      // which the log formatter indents beneath it — readable at any terminal width.
+      const table = Object.fromEntries(
+        routes.map((r) => [r.host, `${r.package} :${String(r.port)}`]),
+      );
       m.systemLog.info(
-        `dev reverse proxy listening on 127.0.0.1:${String(port)} for *.${rootDomain}` +
-          (routes.length ? ` — ${table}` : ' — no routable packages (none declares both `subdomain` and `port`)'), // prettier-ignore
+        table,
+        `dev reverse proxy listening on 127.0.0.1:${String(port)}` +
+          (routes.length ? '' : ' — no routable packages (none declares both `subdomain` and `port`)'), // prettier-ignore
       );
     },
     close() {
