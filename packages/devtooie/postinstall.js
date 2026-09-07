@@ -3,6 +3,4 @@
 // work lives in `dist/postinstall.js` (compiled from `src/postinstall.ts`); this only makes sure
 // an install can never fail on its account — `dist` is absent while devtooie's own workspace
 // installs (before its first build), and a lifecycle script that throws fails the whole install.
-import('./dist/postinstall.js')
-  .then((m) => m.main())
-  .catch(() => {});
+import('./dist/postinstall.js').then((m) => m.main()).catch(() => {});
