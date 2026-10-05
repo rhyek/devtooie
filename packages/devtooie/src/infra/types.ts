@@ -1,4 +1,5 @@
 import type { TokenRecord } from '../config.js';
+import type { Mode } from '../env.js';
 
 /** How long `infra up` waits for the services to become ready, when the config doesn't say. */
 export const DEFAULT_READY_TIMEOUT_MS = 300_000;
@@ -27,8 +28,8 @@ export interface InfraRunResult {
 export interface InfraCallbackContext<T = TokenRecord> {
   /** The service this callback belongs to. */
   service: string;
-  /** The active mode (`development`, `test`, …). */
-  mode: string;
+  /** The active mode: `development` unless `--mode` says otherwise, or any name you pass it. */
+  mode: Mode;
   /** `true` when this run is `infra up --reset`. Always `false` under `infra destroy`. */
   reset: boolean;
   /** The workspace root, absolute. */
@@ -90,8 +91,8 @@ export interface InfraServiceCallbacks<T = TokenRecord> {
  * only what decides whether there will be one.
  */
 export interface InfraEnabledContext<T = TokenRecord> {
-  /** The active mode (`development`, `test`, …). */
-  mode: string;
+  /** The active mode: `development` unless `--mode` says otherwise, or any name you pass it. */
+  mode: Mode;
   /** The workspace-scope `.env` files for the mode, merged over the ambient environment. */
   envs: Record<string, string>;
   /** The config's top-level `tokens`. */

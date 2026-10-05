@@ -14,6 +14,7 @@ import { describe, it, test, expectTypeOf } from 'vitest';
 import { defineConfig, type ResolvedDevReverseProxy } from './config.js';
 import type { PackageConfig } from './register.js';
 import type { InfraRunResult, ResolvedInfra } from './infra/types.js';
+import type { Mode } from './env.js';
 
 describe('per-package tokens', () => {
   it('gives each package the config tokens plus its own, and nothing from a sibling', () => {
@@ -391,12 +392,12 @@ describe('infra callbacks', () => {
               },
               // a synchronous callback is fine too
               beforeUp: (ctx) => {
-                expectTypeOf(ctx.mode).toEqualTypeOf<string>();
+                expectTypeOf(ctx.mode).toEqualTypeOf<Mode>();
                 // only afterReady knows: before the start there is nothing to be fresh yet
                 expectTypeOf(ctx).not.toHaveProperty('fresh');
               },
               enabled: (ctx) => {
-                expectTypeOf(ctx.mode).toEqualTypeOf<string>();
+                expectTypeOf(ctx.mode).toEqualTypeOf<Mode>();
                 expectTypeOf(ctx.envs).toEqualTypeOf<Record<string, string>>();
                 expectTypeOf(ctx.tokens.domain).toEqualTypeOf<'example.test'>();
                 // decided when the config loads: no service to act on, nothing to run
@@ -410,5 +411,17 @@ describe('infra callbacks', () => {
       packages: { web: {} },
     });
     expectTypeOf(config.infra).toEqualTypeOf<ResolvedInfra | undefined>();
+  });
+});
+
+describe('Mode', () => {
+  test('suggests the usual names without closing the set: any string is a mode', () => {
+    expectTypeOf<'development'>().toExtend<Mode>();
+    expectTypeOf<'test'>().toExtend<Mode>();
+    expectTypeOf<'staging'>().toExtend<Mode>();
+    expectTypeOf<string>().toExtend<Mode>();
+    expectTypeOf<Mode>().toExtend<string>();
+    // …and it has not collapsed into plain `string`, which is what would drop the suggestions.
+    expectTypeOf<Mode>().not.toEqualTypeOf<string>();
   });
 });

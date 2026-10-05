@@ -1,5 +1,6 @@
 import path from 'node:path';
 import type { TokenRecord } from '../config.js';
+import type { Mode } from '../env.js';
 import type { Exec, ExecOptions, ExecResult, SpawnInherit } from './exec.js';
 import {
   InfraError,
@@ -22,7 +23,7 @@ const DEFAULT_POLL_INTERVAL_MS = 500;
 export interface ProviderRuntime {
   /** The workspace root, absolute. */
   workspaceDir: string;
-  mode: string;
+  mode: Mode;
   /** The workspace-scope `.env` files for the mode, merged over the ambient environment. */
   envs: Record<string, string>;
   /** The config's top-level `tokens`. */

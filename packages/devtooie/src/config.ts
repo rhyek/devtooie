@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { z } from 'zod';
-import { ambientEnv, resolveEnv, envFileNames, currentMode, type EnvOverride } from './env.js';
+import { ambientEnv, resolveEnv, envFileNames, currentMode, type EnvOverride, type Mode } from './env.js'; // prettier-ignore
 import { type CommandSchema, type PackageConfigSchema, DefineConfigSchema, DEFAULT_HEALTHCHECK_TIMEOUT_MS } from './config-schema.js'; // prettier-ignore
 import type { GeneratedPackageConfig, GeneratedDefineConfig } from './config.generated.js';
 import { composeProjectName } from './infra/project-name.js';
@@ -560,7 +560,7 @@ export interface Config<
   /** Resolved `.env` filenames loaded per package, for the active mode. */
   envFiles: string[];
   /** The active mode (`--mode`, else `DEVTOOIE_MODE`, else `development`). */
-  envMode: string;
+  envMode: Mode;
   /** Variables whose `.env` value may beat the ambient environment. */
   envOverride?: EnvOverride;
   /** Whether to prefix on-screen log lines with a timestamp (defaults to `false`). */

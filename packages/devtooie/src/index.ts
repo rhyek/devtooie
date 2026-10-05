@@ -58,6 +58,7 @@ export {
   envFileNames,
   currentMode,
   DEFAULT_MODE,
+  type Mode,
   type EnvOverride,
 } from './env.js';
 export type { EnvResolution } from './env.js';

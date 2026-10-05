@@ -8,11 +8,19 @@ import { findPassthrough } from './infra/argv.js';
 export const DEFAULT_MODE = 'development';
 
 /**
+ * A mode name, as a callback receives it. Any name is a valid mode — `--mode staging` loads
+ * `.env.staging` — so this is every string; the two literals are there so an editor offers the
+ * usual ones, `development` (the default) and `test`. `string & {}` is what keeps them from being
+ * absorbed into plain `string`.
+ */
+export type Mode = typeof DEFAULT_MODE | 'test' | (string & {});
+
+/**
  * The active mode. Set once at CLI startup (`resolveMode` writes `DEVTOOIE_MODE` before the
  * config is loaded) and read from the environment thereafter, so config callbacks and spawned
  * children agree on it without threading a parameter through every call site.
  */
-export function currentMode(): string {
+export function currentMode(): Mode {
   return process.env.DEVTOOIE_MODE || DEFAULT_MODE;
 }
 
