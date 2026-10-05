@@ -73,4 +73,64 @@ describe('runSessionInfra', () => {
     expect(failure).toBeInstanceOf(InfraFailedError);
     expect((failure as InfraFailedError).message).toBe('db: exited (1)\nFATAL: bad config');
   });
+
+  test("a failed callback's error carries what the callback printed, so the reason is visible", async () => {
+    defineConfig({
+      workspaceDir: ws,
+      packageRootDir: 'packages',
+      infra: {
+        'docker-compose': {
+          services: {
+            db: {
+              afterReady: ({ log }) => {
+                log('applying 0002_add_index');
+                log('ERROR: relation "todos" does not exist');
+                throw new Error('`migrate` exited with code 1');
+              },
+            },
+          },
+        },
+      },
+      packages: { web: {} },
+    });
+    const failure = await runSessionInfra(undefined, { exec: docker({ State: 'running' }) }).catch(
+      (err: unknown) => err,
+    );
+    expect((failure as InfraFailedError).message).toBe(
+      [
+        'db: afterReady failed: `migrate` exited with code 1',
+        '    applying 0002_add_index',
+        '    ERROR: relation "todos" does not exist',
+      ].join('\n'),
+    );
+  });
+
+  test('keeps only the tail of a long output', async () => {
+    defineConfig({
+      workspaceDir: ws,
+      packageRootDir: 'packages',
+      infra: {
+        'docker-compose': {
+          services: {
+            db: {
+              afterReady: ({ log }) => {
+                for (let i = 1; i <= 40; i++) {
+                  log(`line ${String(i)}`);
+                }
+                throw new Error('boom');
+              },
+            },
+          },
+        },
+      },
+      packages: { web: {} },
+    });
+    const failure = await runSessionInfra(undefined, { exec: docker({ State: 'running' }) }).catch(
+      (err: unknown) => err,
+    );
+    const lines = (failure as InfraFailedError).message.split('\n');
+    expect(lines).toHaveLength(1 + 15);
+    expect(lines[1]).toBe('    line 26');
+    expect(lines.at(-1)).toBe('    line 40');
+  });
 });

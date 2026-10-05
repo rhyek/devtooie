@@ -3,15 +3,30 @@ import type { InfraLogLine, SessionInfra } from '../runners/types.js';
 import { InfraManager, type InfraManagerDeps } from './manager.js';
 import type { InfraEvent, InfraRunSummary } from './types.js';
 
-/** A session's infra step ended with at least one service not ready. */
+/** How many lines of a failed service's output its failure report carries. */
+const FAILURE_OUTPUT_LINES = 15;
+
+/**
+ * A session's infra step ended with at least one service not ready. The message is the whole
+ * report: each failed service and why, followed by the tail of what its callbacks printed —
+ * the TUI shows nothing else of that output, and it is usually where the reason is.
+ */
 export class InfraFailedError extends Error {
   override name = 'InfraFailedError';
 
-  constructor(readonly summary: InfraRunSummary) {
+  constructor(
+    readonly summary: InfraRunSummary,
+    output: ReadonlyMap<string, string[]> = new Map(),
+  ) {
     super(
       summary.services
         .filter((s) => !s.ok)
-        .map((s) => `${s.service}: ${s.error ?? 'failed'}`)
+        .flatMap((s) => [
+          `${s.service}: ${s.error ?? 'failed'}`,
+          ...(output.get(s.service) ?? [])
+            .slice(-FAILURE_OUTPUT_LINES)
+            .map((line) => `    ${line}`),
+        ])
         .join('\n'),
     );
   }
@@ -53,17 +68,21 @@ export async function runSessionInfra(
   }
   const services: SessionInfra['services'] = [];
   const log: InfraLogLine[] = [];
+  const output = new Map<string, string[]>();
   const summary = await manager.up({
     onEvent: (event) => {
       if (event.type === 'targets') {
         services.push(...event.services.map((name) => ({ provider: event.provider, name })));
+      }
+      if (event.type === 'output' && event.service !== undefined) {
+        output.set(event.service, [...(output.get(event.service) ?? []), event.line]);
       }
       log.push(...logLines(event));
       onEvent?.(event);
     },
   });
   if (!summary.ok) {
-    throw new InfraFailedError(summary);
+    throw new InfraFailedError(summary, output);
   }
   return { services, log };
 }
