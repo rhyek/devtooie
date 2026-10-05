@@ -382,7 +382,7 @@ devtooie infra docker-compose logs -f db   # Compose itself, bound to this proje
 ```
 
 Per-service callbacks (`beforeUp`, `afterReady`, `afterDestroy`) run your migrations and seeds,
-`isEnabled` switches a service off by mode or by a missing variable, and each [mode](#modes)
+`enabled` switches a service off by mode or by a missing variable, and each [mode](#modes)
 gets its own Compose project, so `--mode test` has its own containers and ports. See **[docs/infra.md](docs/infra.md)**.
 
 ## Dev reverse proxy

@@ -44,6 +44,7 @@ export type {
   InfraEnabledContext,
   InfraCallback,
   InfraCallbackContext,
+  InfraReadyContext,
   InfraRunOptions,
   InfraRunResult,
   ResolvedInfra,

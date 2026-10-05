@@ -767,22 +767,22 @@ function resolvePort(
 }
 
 /**
- * Whether an infra service runs: its `isEnabled` literal, or its callback's answer, defaulting
+ * Whether an infra service runs: its `enabled` literal, or its callback's answer, defaulting
  * to `true`. The callback must return a real boolean — `envs.SOME_KEY` (a string, or undefined)
  * is the easy slip, and quietly reading either as a yes or a no would be a guess.
  */
 function resolveInfraEnabled(
   service: string,
-  isEnabled: unknown,
+  enabled: unknown,
   ctx: () => InfraEnabledContext,
 ): boolean {
-  if (typeof isEnabled !== 'function') {
-    return (isEnabled as boolean | undefined) ?? true;
+  if (typeof enabled !== 'function') {
+    return (enabled as boolean | undefined) ?? true;
   }
-  const result: unknown = (isEnabled as (ctx: InfraEnabledContext) => unknown)(ctx());
+  const result: unknown = (enabled as (ctx: InfraEnabledContext) => unknown)(ctx());
   if (typeof result !== 'boolean') {
     throw new Error(
-      `infra: the \`isEnabled\` callback of "${service}" returned ` +
+      `infra: the \`enabled\` callback of "${service}" returned ` +
         `${typeof result === 'string' ? JSON.stringify(result) : String(result)}, not a boolean — ` +
         'wrap it, e.g. `Boolean(envs.SOME_KEY)`.',
     );
@@ -1141,7 +1141,7 @@ export function defineConfig<
     validateDevReverseProxy(devReverseProxy, packages as unknown as AnyPackageConfig[]);
   }
 
-  // The project name and each service's `isEnabled` are settled here, from the workspace
+  // The project name and each service's `enabled` are settled here, from the workspace
   // environment; the callbacks stay as written, to run when an `infra` command does.
   const compose = parsed.infra?.['docker-compose'];
   const infra: ResolvedInfra | undefined = compose && {
@@ -1154,11 +1154,11 @@ export function defineConfig<
       }),
       readyTimeout: compose.readyTimeout ?? DEFAULT_READY_TIMEOUT_MS,
       services: Object.fromEntries(
-        Object.entries(compose.services ?? {}).map(([name, { isEnabled, ...callbacks }]) => [
+        Object.entries(compose.services ?? {}).map(([name, { enabled, ...callbacks }]) => [
           name,
           {
             ...(callbacks as InfraServiceCallbacks),
-            isEnabled: resolveInfraEnabled(name, isEnabled, () => ({
+            enabled: resolveInfraEnabled(name, enabled, () => ({
               mode: currentMode(),
               ...workspaceBase(),
             })),

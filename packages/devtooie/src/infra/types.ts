@@ -51,6 +51,23 @@ export interface InfraCallbackContext<T = TokenRecord> {
 
 export type InfraCallback<T = TokenRecord> = (ctx: InfraCallbackContext<T>) => void | Promise<void>;
 
+/** What `afterReady` receives: the common context, plus what is only known once a service is up. */
+export interface InfraReadyContext<T = TokenRecord> extends InfraCallbackContext<T> {
+  /**
+   * `true` when **this run created the service's data** — the first time it ever ran, and after
+   * a destroy or a reset. The moment to seed: `if (fresh) await run('pnpm', ['seed'])`.
+   *
+   * It goes by the service's named volumes: fresh means none of them existed before this run
+   * started it. So stopping a service and starting it again (`infra down`, then `up`) is not
+   * fresh — the container is new, the data isn't. A service with no named volume keeps its data
+   * in the container, and is fresh when it had none.
+   *
+   * It describes this run only. If `afterReady` fails on the run where it is `true`, it is
+   * `false` on the next one; `infra up --reset <service>` gives the service a clean start.
+   */
+  fresh: boolean;
+}
+
 /** The callbacks a service can attach. They run around devtooie's built-in steps, never instead. */
 export interface InfraServiceCallbacks<T = TokenRecord> {
   /**
@@ -62,13 +79,13 @@ export interface InfraServiceCallbacks<T = TokenRecord> {
   beforeUp?: InfraCallback<T>;
   /**
    * On every `infra up`, once the service is ready — **including when it was already running**.
-   * For migrations and seeding, so it must be idempotent.
+   * For migrations, so it must be idempotent; seed behind its `fresh` flag.
    */
-  afterReady?: InfraCallback<T>;
+  afterReady?: (ctx: InfraReadyContext<T>) => void | Promise<void>;
 }
 
 /**
- * What an `isEnabled` callback receives. Like the config's other load-time callbacks it is
+ * What an `enabled` callback receives. Like the config's other load-time callbacks it is
  * synchronous and resolved once, while the config loads — so there is no service to act on yet,
  * only what decides whether there will be one.
  */
@@ -89,12 +106,12 @@ export interface InfraServiceInput<T = TokenRecord> extends InfraServiceCallback
    * A disabled service is left out of `infra up` and of a dev session, and its callbacks don't
    * run. (Compose still starts it if an enabled service `depends_on` it.)
    */
-  isEnabled?: boolean | ((ctx: InfraEnabledContext<T>) => boolean);
+  enabled?: boolean | ((ctx: InfraEnabledContext<T>) => boolean);
 }
 
-/** A service's config, resolved: `isEnabled` decided, the callbacks as written. */
+/** A service's config, resolved: `enabled` decided, the callbacks as written. */
 export interface ResolvedInfraService extends InfraServiceCallbacks {
-  isEnabled: boolean;
+  enabled: boolean;
 }
 
 /** The `docker-compose` provider's options. `{}` is a complete config. */
@@ -108,7 +125,7 @@ export interface DockerComposeInfraInput<T = TokenRecord> {
   readyTimeout?: number;
   /**
    * Per-service options, keyed by Compose service name. Every service Compose reports for the
-   * file runs, listed here or not — unless its `isEnabled` says otherwise.
+   * file runs, listed here or not — unless its `enabled` says otherwise.
    */
   services?: Record<string, InfraServiceInput<T>>;
 }
@@ -125,8 +142,8 @@ export interface ResolvedDockerComposeInfra {
   projectName: string;
   readyTimeout: number;
   /**
-   * The services the config names, with `isEnabled` resolved and the callbacks as written.
-   * Functions have no JSON form, so serializing one leaves `{ isEnabled }`.
+   * The services the config names, with `enabled` resolved and the callbacks as written.
+   * Functions have no JSON form, so serializing one leaves `{ enabled }`.
    */
   services: Record<string, ResolvedInfraService>;
 }

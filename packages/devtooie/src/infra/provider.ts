@@ -42,7 +42,8 @@ export interface InfraRunRequest {
 
 export type Emit = (event: InfraEvent) => void;
 
-type CallbackName = keyof InfraServiceCallbacks;
+/** The callbacks that run before the start; `afterReady` has its own path and context. */
+type CallbackName = 'afterDestroy' | 'beforeUp';
 
 const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -67,10 +68,7 @@ export abstract class InfraProvider {
   protected constructor(
     protected readonly runtime: ProviderRuntime,
     /** What the config says about each service it names: its callbacks, and whether it runs. */
-    protected readonly serviceConfig: Record<
-      string,
-      InfraServiceCallbacks & { isEnabled?: boolean }
-    >,
+    protected readonly serviceConfig: Record<string, InfraServiceCallbacks & { enabled?: boolean }>,
     protected readonly readyTimeout: number,
   ) {}
 
@@ -85,6 +83,12 @@ export abstract class InfraProvider {
   protected abstract destroyServices(targets: string[], emit: Emit): Promise<void>;
   /** Removes everything the provider created for the project. */
   protected abstract destroyAll(emit: Emit): Promise<void>;
+  /**
+   * Which of the targets have no data yet — the ones the coming start will create it for.
+   * Called once, right before {@link startServices}: the last moment the question can be
+   * answered, and a provider's one look at how things stand before it changes them.
+   */
+  protected abstract readFresh(targets: string[]): Promise<Set<string>>;
   /** Starts the services, without waiting for them to become ready. */
   protected abstract startServices(targets: string[], emit: Emit): Promise<void>;
   /** One readiness reading per target. */
@@ -120,6 +124,7 @@ export abstract class InfraProvider {
     const run = new Run(targets, emit);
     emit({ type: 'targets', provider: this.key, action: 'up', services: targets });
     run.setAll('pending');
+    let fresh: Set<string>;
 
     try {
       // Nothing enabled is nothing to destroy or start — not an error, and not a reason to run
@@ -140,13 +145,15 @@ export abstract class InfraProvider {
       if (!(await this.runPhase('beforeUp', run, reset))) {
         return run.summary();
       }
+      // After any destroy, so a reset service counts: its data is about to be created anew.
+      fresh = await this.readFresh(targets);
       await this.startServices(targets, emit);
     } catch (err) {
       run.failAll(errorMessage(err));
       return run.summary();
     }
 
-    await this.awaitReady(run, reset);
+    await this.awaitReady(run, reset, fresh);
     return run.summary();
   }
 
@@ -205,20 +212,20 @@ export abstract class InfraProvider {
           `Services: ${all.join(', ') || '(none)'}`,
       );
     }
-    const isEnabled = (name: string) => this.serviceConfig[name]?.isEnabled !== false;
+    const enabled = (name: string) => this.serviceConfig[name]?.enabled !== false;
     if (!named || named.length === 0) {
-      return { targets: all.filter(isEnabled), everything: true };
+      return { targets: all.filter(enabled), everything: true };
     }
     const unknown = named.filter((name) => !all.includes(name));
     if (unknown.length > 0) {
       throw unknownServicesError(unknown, all);
     }
-    const disabled = named.filter((name) => !isEnabled(name));
+    const disabled = named.filter((name) => !enabled(name));
     if (action === 'up' && disabled.length > 0) {
       throw new InfraError(
         `infra service${disabled.length > 1 ? 's' : ''} ${disabled.map((s) => `"${s}"`).join(', ')} ` +
           `${disabled.length > 1 ? 'are' : 'is'} disabled for mode "${this.runtime.mode}" ` +
-          '(`isEnabled` in the devtooie config), so there is nothing to bring up.',
+          '(`enabled` in the devtooie config), so there is nothing to bring up.',
       );
     }
     return { targets: [...new Set(named)], everything: false };
@@ -270,7 +277,7 @@ export abstract class InfraProvider {
    * `afterReady` starts as soon as that service is ready, so a slow one doesn't hold up
    * another's migrations.
    */
-  private async awaitReady(run: Run, reset: boolean): Promise<void> {
+  private async awaitReady(run: Run, reset: boolean, fresh: Set<string>): Promise<void> {
     const pending = new Set(run.targets);
     const settling: Promise<void>[] = [];
     const lastDetail = new Map<string, string>();
@@ -291,7 +298,7 @@ export abstract class InfraProvider {
         const reading = readings.get(service) ?? { state: 'pending', detail: 'creating' };
         if (reading.state === 'ready') {
           pending.delete(service);
-          settling.push(this.settleReady(service, run, reset));
+          settling.push(this.settleReady(service, run, reset, fresh.has(service)));
         } else if (reading.state === 'failed') {
           pending.delete(service);
           settling.push(this.settleFailed(service, reading.detail, run));
@@ -318,12 +325,17 @@ export abstract class InfraProvider {
     await Promise.all(settling);
   }
 
-  private async settleReady(service: string, run: Run, reset: boolean): Promise<void> {
+  private async settleReady(
+    service: string,
+    run: Run,
+    reset: boolean,
+    fresh: boolean,
+  ): Promise<void> {
     const callback = this.serviceConfig[service]?.afterReady;
     if (callback) {
       run.set(service, 'starting', 'afterReady');
       try {
-        await callback(this.context(service, reset, run.emit));
+        await callback({ ...this.context(service, reset, run.emit), fresh });
       } catch (err) {
         run.fail(service, `afterReady failed: ${errorMessage(err)}`);
         return;

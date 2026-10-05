@@ -22,6 +22,9 @@ function docker(dbState: { State: string; ExitCode?: number }): Exec {
     if (sub.startsWith('ps ')) {
       return { exitCode: 0, stdout: JSON.stringify({ Service: 'db', ...dbState }), stderr: '' };
     }
+    if (sub === 'config --format json') {
+      return { exitCode: 0, stdout: '{}', stderr: '' };
+    }
     if (sub.startsWith('logs ')) {
       return { exitCode: 0, stdout: 'FATAL: bad config\n', stderr: '' };
     }

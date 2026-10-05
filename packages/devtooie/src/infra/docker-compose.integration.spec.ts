@@ -125,7 +125,7 @@ describe.skipIf(!dockerAvailable())(
       let sawReadyFile = false;
       const { provider: infra, project } = provider({
         checked: {
-          isEnabled: true,
+          enabled: true,
           afterReady: async ({ compose }) => {
             // Only true if afterReady really waited for the healthcheck to pass.
             await compose(['exec', '-T', 'checked', 'test', '-f', '/tmp/ready']);
@@ -192,6 +192,29 @@ describe.skipIf(!dockerAvailable())(
         0,
       );
       expect((await dc('exec', '-T', 'plain', 'test', '-f', '/data/marker')).exitCode).toBe(0);
+    });
+
+    test('fresh is true only on the run that created the data', async () => {
+      const seen: Record<string, boolean[]> = { checked: [], plain: [], oneshot: [] };
+      const note = {
+        enabled: true,
+        afterReady: (ctx: { service: string; fresh: boolean }) => {
+          seen[ctx.service]!.push(ctx.fresh);
+        },
+      };
+      const { provider: infra } = provider({ checked: note, plain: note, oneshot: note });
+
+      await infra.up({}); // 1: nothing existed
+      await infra.up({}); // 2: everything is already there
+      await infra.down([]);
+      await infra.up({}); // 3: new containers, old volumes
+      await infra.up({ reset: true, services: ['checked'] }); // 4: checked's volume was just removed
+
+      expect(seen.checked).toEqual([true, false, false, true]);
+      // `plain` has a named volume too, and was never reset.
+      expect(seen.plain).toEqual([true, false, false]);
+      // `oneshot` has no volume: it goes by its container, which `down` removed.
+      expect(seen.oneshot).toEqual([true, false, true]);
     });
 
     test('down removes the containers and keeps the volumes', async () => {

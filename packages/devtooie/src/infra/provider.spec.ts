@@ -15,7 +15,7 @@ const WAITING: Readiness = { state: 'pending', detail: 'waiting for healthy' };
 
 interface FakeOptions {
   services?: string[];
-  callbacks?: Record<string, InfraServiceCallbacks & { isEnabled?: boolean }>;
+  callbacks?: Record<string, InfraServiceCallbacks & { enabled?: boolean }>;
   failDestroyAll?: string;
   /** Successive readings per service; the last one repeats. Defaults to ready at once. */
   readiness?: Record<string, Readiness[]>;
@@ -23,6 +23,10 @@ interface FakeOptions {
   exec?: Exec;
   failStart?: string;
   failDestroy?: string;
+  /** Services whose data doesn't exist yet. */
+  fresh?: string[];
+  /** Record the freshness reading in `calls`, to assert where it falls in the order. */
+  recordFresh?: boolean;
 }
 
 /** A provider whose primitives only record that they were called. */
@@ -67,6 +71,12 @@ class FakeProvider extends InfraProvider {
     if (this.o.failDestroyAll) {
       throw new InfraError(this.o.failDestroyAll);
     }
+  }
+  protected async readFresh(targets: string[]) {
+    if (this.o.recordFresh) {
+      this.calls.push(`readFresh:${targets.join(',')}`);
+    }
+    return new Set(this.o.fresh ?? []);
   }
   protected async startServices(targets: string[]) {
     this.calls.push(`start:${targets.join(',')}`);
@@ -254,6 +264,26 @@ describe('InfraProvider.up', () => {
   });
 });
 
+describe('fresh', () => {
+  test('afterReady is told whether this run created its service’s data', async () => {
+    const seen: Record<string, boolean> = {};
+    const note = (ctx: { service: string; fresh: boolean }) => {
+      seen[ctx.service] = ctx.fresh;
+    };
+    await new FakeProvider({
+      fresh: ['db'],
+      callbacks: { db: { afterReady: note }, redis: { afterReady: note } },
+    }).up({});
+    expect(seen).toEqual({ db: true, redis: false });
+  });
+
+  test('is read after any destroy and before the start — a reset makes a service fresh', async () => {
+    const provider = new FakeProvider({ recordFresh: true });
+    await provider.up({ reset: true, services: ['db'] });
+    expect(provider.calls).toEqual(['destroyServices:db', 'readFresh:db', 'start:db']);
+  });
+});
+
 describe('InfraProvider callback context', () => {
   test('carries the service, mode, workspace, tokens and the provider-extended env', async () => {
     let seen: InfraCallbackContext | undefined;
@@ -402,7 +432,7 @@ describe('InfraProvider.destroy', () => {
 describe('a disabled service', () => {
   const withDisabledRedis = (calls: string[] = []) =>
     new FakeProvider({
-      callbacks: { redis: { ...recording(calls, 'redis'), isEnabled: false } },
+      callbacks: { redis: { ...recording(calls, 'redis'), enabled: false } },
     });
 
   test('is left out of "all services": not started, and its callbacks do not run', async () => {
@@ -418,7 +448,7 @@ describe('a disabled service', () => {
     const provider = withDisabledRedis();
     await expect(provider.up({ services: ['redis'] })).rejects.toThrow(InfraError);
     await expect(provider.up({ services: ['redis'] })).rejects.toThrow(
-      /"redis"[\s\S]*disabled[\s\S]*"test"[\s\S]*isEnabled/,
+      /"redis"[\s\S]*disabled[\s\S]*"test"[\s\S]*enabled/,
     );
     expect(provider.calls).toEqual([]);
   });
@@ -447,7 +477,7 @@ describe('a disabled service', () => {
 
 describe('no services to act on', () => {
   const allDisabled = (o: { failDestroyAll?: string } = {}) =>
-    new FakeProvider({ services: ['db'], callbacks: { db: { isEnabled: false } }, ...o });
+    new FakeProvider({ services: ['db'], callbacks: { db: { enabled: false } }, ...o });
 
   test('up starts nothing — and with --reset destroys nothing — and succeeds', async () => {
     const provider = allDisabled();

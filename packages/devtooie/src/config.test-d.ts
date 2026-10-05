@@ -382,6 +382,7 @@ describe('infra callbacks', () => {
                 expectTypeOf(ctx.tokens.domain).toEqualTypeOf<'example.test'>();
                 expectTypeOf(ctx.tokens).not.toHaveProperty('region');
                 expectTypeOf(ctx.reset).toEqualTypeOf<boolean>();
+                expectTypeOf(ctx.fresh).toEqualTypeOf<boolean>();
                 expectTypeOf(ctx.service).toEqualTypeOf<string>();
                 expectTypeOf(ctx.workspaceDir).toEqualTypeOf<string>();
                 expectTypeOf(ctx.compose).returns.toEqualTypeOf<Promise<InfraRunResult>>();
@@ -391,8 +392,10 @@ describe('infra callbacks', () => {
               // a synchronous callback is fine too
               beforeUp: (ctx) => {
                 expectTypeOf(ctx.mode).toEqualTypeOf<string>();
+                // only afterReady knows: before the start there is nothing to be fresh yet
+                expectTypeOf(ctx).not.toHaveProperty('fresh');
               },
-              isEnabled: (ctx) => {
+              enabled: (ctx) => {
                 expectTypeOf(ctx.mode).toEqualTypeOf<string>();
                 expectTypeOf(ctx.envs).toEqualTypeOf<Record<string, string>>();
                 expectTypeOf(ctx.tokens.domain).toEqualTypeOf<'example.test'>();

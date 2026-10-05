@@ -24,10 +24,11 @@ export default defineConfig({
           // Once Postgres is healthy — on every `infra up` and every session start, including
           // when it was already running, so this has to be idempotent. `run` executes a command
           // with the mode's environment (DATABASE_URI among it) and sends its output to devtooie.
-          afterReady: async ({ run, reset }) => {
+          afterReady: async ({ run, fresh }) => {
             await run('node', ['src/migrate.ts'], { cwd: 'packages/db' });
-            // `devtooie infra up --reset` destroyed the volume first: start from sample rows.
-            if (reset) {
+            // `fresh`: this run created the database's volume — the very first start, or the
+            // first after `devtooie infra destroy` / `infra up --reset`. Start from sample rows.
+            if (fresh) {
               await run('node', ['src/seed.ts'], { cwd: 'packages/db' });
             }
           },

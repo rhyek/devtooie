@@ -213,11 +213,11 @@ const infraCallback = (name: string) =>
 // Strict throughout: a misspelled callback (`onReady`) must be an error, not a silently ignored key.
 export const InfraServiceSchema = z.strictObject({
   // A literal, or a callback `defineConfig` resolves to a boolean while the config loads.
-  isEnabled: z
+  enabled: z
     .union([
       z.boolean(),
       z.custom<(...args: never[]) => unknown>((v) => typeof v === 'function', {
-        message: 'infra: isEnabled must be a boolean or a function',
+        message: 'infra: enabled must be a boolean or a function',
       }),
     ])
     .optional(),

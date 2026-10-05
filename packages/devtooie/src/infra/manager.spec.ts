@@ -26,6 +26,9 @@ function scriptedDocker() {
       const rows = args.slice(7).map((Service) => JSON.stringify({ Service, State: 'running' }));
       return { exitCode: 0, stdout: rows.join('\n'), stderr: '' };
     }
+    if (sub === 'config --format json') {
+      return { exitCode: 0, stdout: '{}', stderr: '' };
+    }
     return { exitCode: 0, stdout: '', stderr: '' };
   };
   return { exec, calls };

@@ -89,7 +89,7 @@ devtooie show-config | jq '.packages | map_values(.port)'
 process, when the file loads, so this prints what a session started with the same mode runs with.
 Function-valued fields (`logs.formatter`, the [`infra`](./infra.md) callbacks) have no JSON form
 and are omitted, as on the control API. The `infra` block carries what was resolved — the compose
-`file`, `readyTimeout`, the mode's `projectName`, and each configured service's `isEnabled`:
+`file`, `readyTimeout`, the mode's `projectName`, and each configured service's `enabled`:
 
 ```bash
 devtooie show-config | jq -r '.infra["docker-compose"].projectName'   # example-development

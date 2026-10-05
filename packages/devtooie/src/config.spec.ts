@@ -1623,11 +1623,11 @@ describe('infra', () => {
     const cfg = withInfra({ 'docker-compose': { services: { db: { afterReady } } } });
     expect(cfg.infra?.['docker-compose']?.services.db?.afterReady).toBe(afterReady);
     expect(JSON.parse(JSON.stringify(cfg)).infra['docker-compose'].services).toEqual({
-      db: { isEnabled: true },
+      db: { enabled: true },
     });
   });
 
-  test('isEnabled defaults to true, takes a literal, and resolves a callback over mode, envs and tokens', () => {
+  test('enabled defaults to true, takes a literal, and resolves a callback over mode, envs and tokens', () => {
     fs.writeFileSync(path.join(ws, '.env'), 'TRACING_KEY=abc\n');
     const seen: unknown[] = [];
     const cfg = defineConfig({
@@ -1638,33 +1638,33 @@ describe('infra', () => {
         'docker-compose': {
           services: {
             db: {},
-            emulator: { isEnabled: false },
+            emulator: { enabled: false },
             tracing: {
-              isEnabled: ({ mode, envs, tokens }) => {
+              enabled: ({ mode, envs, tokens }) => {
                 seen.push({ mode, region: tokens.region });
                 return mode !== 'test' && Boolean(envs.TRACING_KEY);
               },
             },
-            mailer: { isEnabled: ({ envs }) => Boolean(envs.DEVTOOIE_SPEC_NO_SUCH_VAR) },
+            mailer: { enabled: ({ envs }) => Boolean(envs.DEVTOOIE_SPEC_NO_SUCH_VAR) },
           },
         },
       },
       packages: { web: {} },
     });
     const services = cfg.infra!['docker-compose']!.services;
-    expect(services.db!.isEnabled).toBe(true);
-    expect(services.emulator!.isEnabled).toBe(false);
-    expect(services.tracing!.isEnabled).toBe(true);
-    expect(services.mailer!.isEnabled).toBe(false);
+    expect(services.db!.enabled).toBe(true);
+    expect(services.emulator!.enabled).toBe(false);
+    expect(services.tracing!.enabled).toBe(true);
+    expect(services.mailer!.enabled).toBe(false);
     expect(seen).toEqual([{ mode: 'development', region: 'eu' }]);
   });
 
-  test('rejects an isEnabled callback that does not return a boolean, naming the service', () => {
+  test('rejects an enabled callback that does not return a boolean, naming the service', () => {
     expect(() =>
-      withInfra({ 'docker-compose': { services: { tracing: { isEnabled: () => 'yes' } } } }),
-    ).toThrow(/infra[\s\S]*isEnabled[\s\S]*"tracing"[\s\S]*"yes"[\s\S]*boolean/);
+      withInfra({ 'docker-compose': { services: { tracing: { enabled: () => 'yes' } } } }),
+    ).toThrow(/infra[\s\S]*enabled[\s\S]*"tracing"[\s\S]*"yes"[\s\S]*boolean/);
     expect(() =>
-      withInfra({ 'docker-compose': { services: { tracing: { isEnabled: 'yes' } } } }),
-    ).toThrow(/isEnabled/);
+      withInfra({ 'docker-compose': { services: { tracing: { enabled: 'yes' } } } }),
+    ).toThrow(/enabled/);
   });
 });

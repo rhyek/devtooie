@@ -99,6 +99,31 @@ export function classify(rows: PsRow[]): Readiness {
   );
 }
 
+/** The keys, under the file's top-level `volumes`, of the named volumes a service mounts. */
+function mountedVolumeKeys(config: ComposeConfig, service: string): string[] {
+  return (config.services?.[service]?.volumes ?? [])
+    .filter((v) => v.type === 'volume' && v.source)
+    .map((v) => v.source!);
+}
+
+/**
+ * Whether a service has no data yet, given the volumes and containers that exist. A service
+ * that mounts named volumes goes by them alone — its container comes and goes (`down`, a config
+ * change) while the data stays. One that mounts none keeps its data in the container.
+ */
+export function isFresh(
+  config: ComposeConfig,
+  service: string,
+  existing: { volumes: ReadonlySet<string>; services: ReadonlySet<string> },
+): boolean {
+  const volumes = mountedVolumeKeys(config, service).map(
+    (key) => config.volumes?.[key]?.name ?? key,
+  );
+  return volumes.length > 0
+    ? !volumes.some((name) => existing.volumes.has(name))
+    : !existing.services.has(service);
+}
+
 /**
  * Which named volumes go when `targets` are destroyed, by the name Compose resolved for each.
  * A volume stays if it is `external`, or if a service that is *not* being destroyed mounts it
@@ -110,10 +135,7 @@ export function selectVolumes(
   targets: string[],
 ): { remove: string[]; kept: { name: string; reason: string }[] } {
   const services = config.services ?? {};
-  const mounted = (service: string): string[] =>
-    (services[service]?.volumes ?? [])
-      .filter((v) => v.type === 'volume' && v.source)
-      .map((v) => v.source!);
+  const mounted = (service: string) => mountedVolumeKeys(config, service);
 
   const remove: string[] = [];
   const kept: { name: string; reason: string }[] = [];
@@ -143,7 +165,7 @@ export class DockerComposeProvider extends InfraProvider {
 
   /**
    * Ids of containers with no healthcheck that have been seen running before — either already
-   * up when this run began, or on an earlier reading. See {@link readStatuses}.
+   * up when this run began ({@link readFresh}), or on an earlier reading ({@link readStatuses}).
    */
   private readonly seenRunning = new Set<string>();
 
@@ -241,19 +263,32 @@ export class DockerComposeProvider extends InfraProvider {
   }
 
   /**
+   * The one look at how things stand before `up` changes them. It answers which services have no
+   * data yet, and notes which containers are already running — so the wait after the start can
+   * tell a container that has been up all along from one this run started.
+   */
+  protected async readFresh(targets: string[]): Promise<Set<string>> {
+    const [rows, config, volumes] = await Promise.all([
+      this.ps(targets),
+      this.config(),
+      this.volumeNames(),
+    ]);
+    for (const row of rows) {
+      if (isRunningUnchecked(row)) {
+        this.seenRunning.add(row.ID!);
+      }
+    }
+    const existing = { volumes, services: new Set(rows.map((row) => row.Service)) };
+    return new Set(targets.filter((service) => isFresh(config, service, existing)));
+  }
+
+  /**
    * One `up` for every target, never one per service: concurrent `up` calls on a fresh project
    * race to create the network. `--remove-orphans` takes the containers of services no longer in
    * the compose file, and stopped one-off `run` containers. `--quiet-pull` keeps an image pull to its first and last line: without
    * it, a first run prints several hundred lines of per-layer download progress.
    */
   protected async startServices(targets: string[], emit: Emit): Promise<void> {
-    // Note what is already running, so the wait below can tell a container that has been up all
-    // along from one this `up` is about to start.
-    for (const row of await this.ps(targets)) {
-      if (isRunningUnchecked(row)) {
-        this.seenRunning.add(row.ID!);
-      }
-    }
     await this.compose(
       ['up', '--detach', '--remove-orphans', '--quiet-pull', ...targets],
       this.progress(emit),
@@ -290,6 +325,24 @@ export class DockerComposeProvider extends InfraProvider {
     );
   }
 
+  /** The compose file as Compose resolved it: interpolated, with every volume's real name. */
+  private async config(): Promise<ComposeConfig> {
+    const { stdout } = await this.compose(['config', '--format', 'json']);
+    return JSON.parse(stdout) as ComposeConfig;
+  }
+
+  /** The name of every volume Docker has. Matched against the exact names `config` reports. */
+  private async volumeNames(): Promise<Set<string>> {
+    const result = await this.runtime.exec('docker', ['volume', 'ls', '--format', '{{.Name}}'], {
+      cwd: this.runtime.workspaceDir,
+      env: this.env(),
+    });
+    if (result.exitCode !== 0) {
+      throw new InfraError(`\`docker volume ls\` failed:\n${result.stderr.trim()}`);
+    }
+    return new Set(result.stdout.split('\n').filter(Boolean));
+  }
+
   /** The targets' own containers. */
   private async ps(targets: string[]): Promise<PsRow[]> {
     const { stdout } = await this.compose(['ps', '--all', '--format', 'json', ...targets]);
@@ -322,8 +375,7 @@ export class DockerComposeProvider extends InfraProvider {
    */
   protected async destroyServices(targets: string[], emit: Emit): Promise<void> {
     await this.compose(['rm', '--stop', '--force', '--volumes', ...targets], this.progress(emit));
-    const { stdout } = await this.compose(['config', '--format', 'json']);
-    const { remove, kept } = selectVolumes(JSON.parse(stdout) as ComposeConfig, targets);
+    const { remove, kept } = selectVolumes(await this.config(), targets);
     const say = (line: string) => emit({ type: 'output', line, isError: false });
     for (const { name, reason } of kept) {
       say(`kept volume ${name}: ${reason}`);

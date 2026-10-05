@@ -42,7 +42,10 @@ function setup(
   const exec: Exec = async (command, args, opts) => {
     const call = { command, args, cwd: opts.cwd, env: opts.env };
     calls.push(call);
-    const result = respond(sub(call), call) ?? ok();
+    // An unscripted `config` is an empty project; everything else unscripted succeeds silently.
+    const subArgs = sub(call);
+    const result =
+      respond(subArgs, call) ?? (subArgs.join(' ') === 'config --format json' ? ok('{}') : ok());
     for (const line of result.stderr.split('\n').filter(Boolean)) {
       opts.onLine?.(line, true);
     }
@@ -254,7 +257,10 @@ describe('lifecycle primitives', () => {
     expect(summary.ok).toBe(true);
     expect(subs()).toEqual([
       ['config', '--services'],
+      // one look before the start: what is running, and whose data already exists
       ['ps', '--all', '--format', 'json', 'db', 'redis'],
+      ['config', '--format', 'json'],
+      ['volume', 'ls', '--format', '{{.Name}}'],
       ['up', '--detach', '--remove-orphans', '--quiet-pull', 'db', 'redis'],
       ['ps', '--all', '--format', 'json', 'db', 'redis'],
       ['ps', '--all', '--format', 'json', 'db'],
@@ -490,6 +496,75 @@ describe('lifecycle primitives', () => {
   });
 });
 
+describe('fresh', () => {
+  const config: ComposeConfig = {
+    services: {
+      db: { volumes: [{ type: 'volume', source: 'db-data' }] },
+      redis: {},
+    },
+    volumes: { 'db-data': { name: 'example-test_db-data' } },
+  };
+
+  /** Runs `up` over a Docker in the given state; returns the `fresh` each afterReady saw. */
+  async function freshSeen(state: { volumes: string[]; containers: string[] }) {
+    const seen: Record<string, boolean> = {};
+    const note = { enabled: true, afterReady: (ctx: { service: string; fresh: boolean }) => {
+      seen[ctx.service] = ctx.fresh;
+    } }; // prettier-ignore
+    let polls = 0;
+    const { provider } = setup(
+      servicesThen((args) => {
+        if (args.join(' ') === 'config --format json') {
+          return ok(JSON.stringify(config));
+        }
+        if (args[0] === 'volume' && args[1] === 'ls') {
+          return ok(state.volumes.join('\n'));
+        }
+        if (args[0] === 'ps') {
+          polls += 1;
+          // The first reading is the one taken before `up`; after it, everything is running.
+          const services = polls === 1 ? state.containers : ['db', 'redis'];
+          return ndjson(...services.map((s) => container(`id-${s}`, s, 'running', 'healthy')));
+        }
+        return undefined;
+      }),
+      { services: { db: note, redis: note } },
+    );
+    expect((await provider.up({})).ok).toBe(true);
+    return seen;
+  }
+
+  test('nothing exists yet: every service is fresh', async () => {
+    expect(await freshSeen({ volumes: [], containers: [] })).toEqual({ db: true, redis: true });
+  });
+
+  test('a service with a named volume goes by the volume, not the container', async () => {
+    // After `infra down`: the containers are gone and the data is still there.
+    expect(await freshSeen({ volumes: ['example-test_db-data'], containers: [] })).toEqual({
+      db: false,
+      redis: true,
+    });
+    // A new volume under an old container can't happen, but the rule is the volume either way.
+    expect(await freshSeen({ volumes: [], containers: ['db', 'redis'] })).toEqual({
+      db: true,
+      redis: false,
+    });
+  });
+
+  test('a service with no named volume is fresh when it had no container', async () => {
+    expect(
+      await freshSeen({ volumes: ['example-test_db-data'], containers: ['db', 'redis'] }),
+    ).toEqual({ db: false, redis: false });
+  });
+
+  test("another project's volume of a similar name does not count", async () => {
+    expect(await freshSeen({ volumes: ['example-development_db-data'], containers: [] })).toEqual({
+      db: true,
+      redis: true,
+    });
+  });
+});
+
 describe('down, the passthrough, and the compose helper', () => {
   test('down hands the terminal to `docker compose down`, and never asks for volumes', async () => {
     const { provider, inherited } = setup();
@@ -530,7 +605,7 @@ describe('down, the passthrough, and the compose helper', () => {
       {
         services: {
           db: {
-            isEnabled: true,
+            enabled: true,
             afterReady: async ({ compose, envs }) => {
               expect(envs.COMPOSE_PROJECT_NAME).toBe('example-test');
               await compose(['exec', '-T', 'db', 'psql', '-c', 'SELECT 1']);

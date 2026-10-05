@@ -256,7 +256,7 @@ scratch to clear stale build output — those enable the rebuild command (the `b
 | `apiPort`      | Pin the [control API](#drive-a-running-session-via-the-control-api) port (otherwise chosen automatically).                                                         |
 | `urls`         | Workspace-wide footer links, not tied to a package. Same shape as a package's `urls`, but a callback here gets only `{ envs, tokens }` (no package, so no `port`). |
 | `tokens`       | Values of your own, handed to every callback as `tokens` (a package's own `tokens` are merged on top) — see [Callbacks](#callbacks-instead-of-interpolation).      |
-| `infra`        | Infrastructure that isn't a package — databases, caches, brokers — keyed by provider: `{ 'docker-compose': { file?, readyTimeout?, services? } }`, where `services` gives a service its `isEnabled` and callbacks. Brought up, and waited on, before the packages start. See [Infra](#infra). |
+| `infra`        | Infrastructure that isn't a package — databases, caches, brokers — keyed by provider: `{ 'docker-compose': { file?, readyTimeout?, services? } }`, where `services` gives a service its `enabled` and callbacks. Brought up, and waited on, before the packages start. See [Infra](#infra). |
 | `devReverseProxy` | Run devtooie's own dev reverse proxy, routing `<subdomain>.<rootDomain>` to packages by their `subdomain`. `{ port, rootDomain?, defaultPackage?, urlScheme? }`; present = enabled. See [Dev reverse proxy](#dev-reverse-proxy). |
 
 `packages` is an object **keyed by package name**:
@@ -881,6 +881,13 @@ export default defineConfig({
 That is a complete config for a self-contained `docker-compose.yaml`. `infra` is keyed by
 provider; `docker-compose` is the only one. It needs Docker with Compose v2.
 
+For a working setup to copy from, see the
+[`example/`](https://github.com/rhyek/devtooie/tree/main/example) monorepo (in the devtooie repo, not
+in `node_modules`): a Postgres service in
+`docker-compose.yaml` with a healthcheck, its connection values in the mode's `.env` file (read
+by Compose, and by the app as `DATABASE_URI`), and an `afterReady` in `devtooie.config.ts` that
+migrates on every start and seeds a fresh database.
+
 ```sh
 devtooie infra up                     # start every service, wait until ready, then exit
 devtooie infra up db                  # only `db`
@@ -905,7 +912,7 @@ Every one of these exits when it's done. None stays up streaming logs.
 - **Never run a bare `docker compose …` in the workspace.** devtooie puts the mode in the
   Compose project name, so a bare command targets a different, empty project. Use
   `devtooie infra docker-compose <args>`: it's the same Compose, bound to the right project.
-- **A service may be switched off for the current mode** (`isEnabled` in the config). Then it
+- **A service may be switched off for the current mode** (`enabled` in the config). Then it
   isn't started and `devtooie infra up <name>` refuses it. Check with
   `devtooie show-config | jq '.infra["docker-compose"].services'` before assuming it's broken.
 - **`infra up --reset` and `infra destroy` delete data.** Don't run either on your own
@@ -950,7 +957,7 @@ infra: {
     readyTimeout: 300_000,         // optional, ms
     services: {                    // optional — keys are Compose service names
       db: {
-        isEnabled: ({ mode }) => mode !== 'test',
+        enabled: ({ mode }) => mode !== 'test',
         afterDestroy: async (ctx) => {},
         beforeUp: async (ctx) => {},
         afterReady: async (ctx) => {},
@@ -960,11 +967,11 @@ infra: {
 }
 ```
 
-| Field          | Meaning                                                                                                                                                                                                                                                                 |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `file`         | The compose file, relative to `workspaceDir`. Omit it and Compose discovers the file itself (`compose.yaml`, `docker-compose.yaml`, plus any override file).                                                                                                            |
-| `readyTimeout` | How long `up` waits for the services to become ready, in ms. Default: 5 minutes.                                                                                                                                                                                        |
-| `services`     | Per-service options, keyed by Compose service name: [`isEnabled`](#turning-a-service-off) and the [callbacks](#callbacks). A service doesn't have to be listed to run. A key that isn't a service in the compose file is an error, reported before anything is started. |
+| Field          | Meaning                                                                                                                                                                                                                                                               |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `file`         | The compose file, relative to `workspaceDir`. Omit it and Compose discovers the file itself (`compose.yaml`, `docker-compose.yaml`, plus any override file).                                                                                                          |
+| `readyTimeout` | How long `up` waits for the services to become ready, in ms. Default: 5 minutes.                                                                                                                                                                                      |
+| `services`     | Per-service options, keyed by Compose service name: [`enabled`](#turning-a-service-off) and the [callbacks](#callbacks). A service doesn't have to be listed to run. A key that isn't a service in the compose file is an error, reported before anything is started. |
 
 **Which services run:** all the services Compose reports for the file — minus any you
 [turn off](#turning-a-service-off) — or the ones you name on the command line.
@@ -984,15 +991,15 @@ services:
 
 ### Turning a service off
 
-`isEnabled` decides whether devtooie runs a service. It's a boolean, or a callback over the mode
+`enabled` decides whether devtooie runs a service. It's a boolean, or a callback over the mode
 and the environment:
 
 ```ts
 services: {
   // not in test mode
-  emulator: { isEnabled: ({ mode }) => mode !== 'test' },
+  emulator: { enabled: ({ mode }) => mode !== 'test' },
   // only when its API key is set
-  tracing: { isEnabled: ({ envs }) => Boolean(envs.TRACING_API_KEY) },
+  tracing: { enabled: ({ envs }) => Boolean(envs.TRACING_API_KEY) },
 }
 ```
 
@@ -1003,14 +1010,14 @@ callbacks (`port`, `urls`) it's synchronous and runs once, when the config loads
 
 ```sh
 devtooie --mode test show-config | jq '.infra["docker-compose"].services'
-# { "emulator": { "isEnabled": false }, "tracing": { "isEnabled": true } }
+# { "emulator": { "enabled": false }, "tracing": { "enabled": true } }
 ```
 
 A disabled service is left out of `infra up` and of a dev session, isn't in the footer, and its
 callbacks don't run. Naming it — `devtooie infra up emulator` — is an error that says it's
 disabled. It can still be destroyed by name, to clean up after a mode where it ran.
 
-Two things `isEnabled` doesn't do:
+Two things `enabled` doesn't do:
 
 - **It doesn't override `depends_on`.** If an enabled service depends on a disabled one, Compose
   starts both.
@@ -1025,11 +1032,11 @@ Compose entirely.
 Optional and async. They run **around** devtooie's built-in steps — they don't replace them —
 and each is named for when it runs:
 
-| Callback       | Runs                                                                                                                                                                            |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `afterDestroy` | After the service's container and volumes are removed: on `infra destroy` and on `infra up --reset`. For state Compose can't see, such as a bind-mounted directory.             |
-| `beforeUp`     | On every `infra up`, after any destroy and before the services are started. If one fails, nothing is started.                                                                   |
-| `afterReady`   | On every `infra up`, once the service is ready — **including when it was already running**, and so at every session start. For migrations and seeding. It has to be idempotent. |
+| Callback       | Runs                                                                                                                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `afterDestroy` | After the service's container and volumes are removed: on `infra destroy` and on `infra up --reset`. For state Compose can't see, such as a bind-mounted directory.                                                       |
+| `beforeUp`     | On every `infra up`, after any destroy and before the services are started. If one fails, nothing is started.                                                                                                             |
+| `afterReady`   | On every `infra up`, once the service is ready — **including when it was already running**, and so at every session start. For migrations, which have to be idempotent, and for seeding behind [`fresh`](#seeding-fresh). |
 
 `afterReady` runs every time on purpose: pull a branch with new migrations, start a session,
 and they're applied — even though the database never stopped.
@@ -1039,10 +1046,10 @@ wait until ready → `afterReady`.
 
 ```ts
 db: {
-  afterReady: async ({ run, reset }) => {
-    await run('pnpm', ['migrate'], { cwd: 'packages/db' });
-    if (reset) {
-      await run('pnpm', ['seed'], { cwd: 'packages/db' });
+  afterReady: async ({ run, fresh }) => {
+    await run('pnpm', ['migrate'], { cwd: 'packages/db' }); // every time: idempotent
+    if (fresh) {
+      await run('pnpm', ['seed'], { cwd: 'packages/db' }); // only into a new database
     }
   },
 },
@@ -1055,12 +1062,42 @@ Each callback receives one object:
 | `service`      | The Compose service this callback belongs to.                                                                                       |
 | `mode`         | The active mode (`development`, `test`, …).                                                                                         |
 | `reset`        | `true` when this run is `infra up --reset`. Always `false` under `infra destroy`.                                                   |
+| `fresh`        | **`afterReady` only.** `true` when this run created the service's data — see [Seeding: `fresh`](#seeding-fresh).                    |
 | `workspaceDir` | The workspace root, absolute.                                                                                                       |
 | `envs`         | The workspace-scope `.env` files for the mode merged over the ambient environment, plus `COMPOSE_PROJECT_NAME`.                     |
 | `tokens`       | The config's top-level [`tokens`](#typed-tokens), typed from what you declared.                                   |
 | `compose`      | `compose(args, opts?)` — runs `docker compose <args>` against this project: `await compose(['exec', '-T', 'db', 'psql', '-c', …])`. |
 | `run`          | `run(command, args?, opts?)` — runs any other command.                                                                              |
 | `log`          | `log(message)` — writes a line to devtooie's infra output.                                                                          |
+
+#### Seeding: `fresh`
+
+`afterReady` runs on every `up`, so a seeder needs to know whether the database is new.
+`fresh` says so: it's `true` when **this run created the service's data**.
+
+| What happened                     | `fresh` |
+| --------------------------------- | ------- |
+| The service's first start ever    | `true`  |
+| `infra up` again, already running | `false` |
+| `infra down`, then `infra up`     | `false` |
+| `infra destroy`, then `infra up`  | `true`  |
+| `infra up --reset`                | `true`  |
+
+devtooie goes by the service's **named volumes**: `fresh` means none of them existed before this
+run started the service. That's why `down` and `up` isn't fresh — the container is new, the data
+isn't. A service with no named volume keeps its data in the container, so it's fresh when it had
+no container. (Data in a bind-mounted host directory is invisible to devtooie: such a service
+goes by its container too.)
+
+`fresh` describes this run and nothing is remembered between runs. So **if `afterReady` fails on
+the run where `fresh` is `true`** — the migration errors before the seed — it's `false` the next
+time, and the seed doesn't run. Give the service a clean start with
+`devtooie infra up --reset <service>`.
+
+`reset` is narrower: it's `true` only when this run was `infra up --reset`. Use `fresh` to seed;
+`reset` is for the rare step that should follow a deliberate reset and nothing else.
+
+#### The helpers
 
 `compose` and `run` take `{ cwd?, env?, reject? }` and resolve with
 `{ exitCode, stdout, stderr }`:
@@ -1168,10 +1205,10 @@ One that was already running is ready on the first look, so a repeat `up` stays 
 
 What `infra destroy` removes depends on whether you name services:
 
-| You name…   | What goes                                                                                                                                         |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| no services | **The whole project**, disabled services' leftovers included: every container, the named volumes the file declares, anonymous volumes, the project's networks, and orphan containers.    |
-| services    | Those services' containers, their anonymous volumes, and the **named volumes only they mount**. The network stays — the other services are on it. |
+| You name…   | What goes                                                                                                                                                                             |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| no services | **The whole project**, disabled services' leftovers included: every container, the named volumes the file declares, anonymous volumes, the project's networks, and orphan containers. |
+| services    | Those services' containers, their anonymous volumes, and the **named volumes only they mount**. The network stays — the other services are on it.                                     |
 
 When you name services, devtooie leaves alone — and tells you about — a volume another service
 also mounts, an `external` volume, and one a container outside the file still holds. It never
