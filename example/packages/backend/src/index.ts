@@ -13,22 +13,22 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/todos', (_req, res) => {
-  res.json(listTodos());
+app.get('/todos', async (_req, res) => {
+  res.json(await listTodos());
 });
 
-app.post('/todos', (req, res) => {
+app.post('/todos', async (req, res) => {
   // Same validation rules the frontend enforces — shared from @example/isomorphic.
   const result = validateNewTodo(req.body);
   if (!result.ok) {
     res.status(400).json({ error: result.error });
     return;
   }
-  res.status(201).json(insertTodo(result.title));
+  res.status(201).json(await insertTodo(result.title));
 });
 
-app.patch('/todos/:id', (req, res) => {
-  const updated = updateTodo(Number(req.params.id), {
+app.patch('/todos/:id', async (req, res) => {
+  const updated = await updateTodo(Number(req.params.id), {
     title: req.body?.title,
     completed: req.body?.completed,
   });
@@ -39,8 +39,8 @@ app.patch('/todos/:id', (req, res) => {
   res.json(updated);
 });
 
-app.delete('/todos/:id', (req, res) => {
-  deleteTodo(Number(req.params.id));
+app.delete('/todos/:id', async (req, res) => {
+  await deleteTodo(Number(req.params.id));
   res.status(204).end();
 });
 

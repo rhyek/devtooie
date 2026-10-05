@@ -13,6 +13,28 @@ export default defineConfig({
     rootDomain: 'localhost', // the default
     defaultPackage: 'frontend', // http://localhost:21050
   },
+  // Infrastructure that isn't a package: the Postgres in ./docker-compose.yaml. `devtooie infra up`
+  // starts it and waits for its healthcheck; `pnpm dev` does the same before starting the packages,
+  // and leaves it running when you quit. `infra: { 'docker-compose': {} }` alone would be enough —
+  // `services` only attaches callbacks.
+  infra: {
+    'docker-compose': {
+      services: {
+        db: {
+          // Once Postgres is healthy — on every `infra up` and every session start, including
+          // when it was already running, so this has to be idempotent. `run` executes a command
+          // with the mode's environment (DATABASE_URI among it) and sends its output to devtooie.
+          afterReady: async ({ run, reset }) => {
+            await run('node', ['src/migrate.ts'], { cwd: 'packages/db' });
+            // `devtooie infra up --reset` destroyed the volume first: start from sample rows.
+            if (reset) {
+              await run('node', ['src/seed.ts'], { cwd: 'packages/db' });
+            }
+          },
+        },
+      },
+    },
+  },
   // Each package lives at packages/<key> unless it sets `relativeDir` itself.
   packageRootDir: 'packages',
   // Keyed by package name — what `-p` takes and what `waitFor`/`deps` reference.

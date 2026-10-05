@@ -1,7 +1,10 @@
 {
   "extends": "../../tsconfig.common.json",
   "compilerOptions": {
-    "types": ["node"]
+    "types": ["node"],
+    // @example/db's source is type-checked as part of this program, and its files import each
+    // other by their real `.ts` name (see its tsconfig).
+    "allowImportingTsExtensions": true
   },
   "include": ["src"],
   // devtooie reads these project references (no separate tsconfig.build.json) to build

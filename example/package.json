@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.10.0",
-  "description": "Example monorepo showcasing devtooie: an Express + SQLite backend and a TanStack Start frontend, run together with one command.",
+  "description": "Example monorepo showcasing devtooie: an Express + Postgres backend and a TanStack Start frontend, run together with one command.",
   "scripts": {
     "dev": "devtooie",
     "lint": "eslint .",

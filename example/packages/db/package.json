@@ -11,9 +11,15 @@
     }
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "migrate": "node src/migrate.ts",
+    "seed": "node src/seed.ts"
   },
   "dependencies": {
-    "@example/isomorphic": "workspace:*"
+    "@example/isomorphic": "workspace:*",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1"
   }
 }
