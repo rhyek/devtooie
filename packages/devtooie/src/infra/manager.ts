@@ -1,9 +1,9 @@
-import { getConfigTokens, getWorkspaceDir, type Config, type TokenRecord } from '../config.js';
+import { getConfigTokens, getWorkspaceDir, type Config } from '../config.js';
 import { ambientEnv, resolveEnv } from '../env.js';
 import { execLines, spawnInherit, type Exec, type SpawnInherit } from './exec.js';
 import type { InfraProvider, InfraRunRequest, ProviderRuntime } from './provider.js';
 import { DockerComposeProvider } from './providers/docker-compose.js';
-import { InfraError, type InfraRunSummary } from './types.js';
+import { InfraError, unknownServicesError, type InfraRunSummary } from './types.js';
 
 /** A service and the provider that runs it. */
 export interface InfraServiceRef {
@@ -11,12 +11,10 @@ export interface InfraServiceRef {
   name: string;
 }
 
-/** Overrides for what a manager is built from; a session passes none. */
+/** The command runners a manager's providers use; a session passes none and gets the real ones. */
 export interface InfraManagerDeps {
   exec?: Exec;
   spawnInherit?: SpawnInherit;
-  workspaceDir?: string;
-  tokens?: TokenRecord;
 }
 
 /**
@@ -32,7 +30,7 @@ export class InfraManager {
     if (!config.infra) {
       return null;
     }
-    const workspaceDir = deps.workspaceDir ?? getWorkspaceDir();
+    const workspaceDir = getWorkspaceDir();
     const runtime: ProviderRuntime = {
       workspaceDir,
       mode: config.envMode,
@@ -47,7 +45,7 @@ export class InfraManager {
           override: config.envOverride,
         }).env,
       ),
-      tokens: deps.tokens ?? getConfigTokens(),
+      tokens: getConfigTokens(),
       exec: deps.exec ?? execLines,
       spawnInherit: deps.spawnInherit ?? spawnInherit,
     };
@@ -140,10 +138,7 @@ export class InfraManager {
     }
     const unknown = named.filter((name) => !owners.has(name));
     if (unknown.length > 0) {
-      throw new InfraError(
-        `unknown infra service${unknown.length > 1 ? 's' : ''} ${unknown.map((s) => `"${s}"`).join(', ')}. ` +
-          `Services: ${[...owners.keys()].join(', ') || '(none)'}`,
-      );
+      throw unknownServicesError(unknown, [...owners.keys()]);
     }
     for (const name of named) {
       const provider = owners.get(name)!;

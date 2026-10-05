@@ -221,7 +221,7 @@ describe('InfraProvider.up', () => {
     const stuck = new FakeProvider({ readiness: { db: [WAITING] }, readyTimeout: 20 });
     const summary = await stuck.up({});
     expect(summary.services[0]!.ok).toBe(false);
-    expect(summary.services[0]!.error).toMatch(/db.*not ready after.*waiting for healthy/);
+    expect(summary.services[0]!.error).toBe('not ready after 0s (waiting for healthy)');
     expect(summary.services[1]).toEqual({ service: 'redis', ok: true });
   });
 

@@ -52,10 +52,7 @@ describe('runSessionInfra', () => {
     });
     expect(infra).toEqual({
       services: [{ provider: 'docker-compose', name: 'db' }],
-      log: [
-        { service: 'db', text: '2 migrations applied', isError: false },
-        { service: 'db', text: 'ready', isError: false },
-      ],
+      log: [{ service: 'db', text: '2 migrations applied', isError: false }],
     });
     expect(seen).toContain('targets');
   });

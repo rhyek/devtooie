@@ -450,6 +450,12 @@ async function runBuildPhase(names: string[], rebuild: boolean): Promise<void> {
 // Commander wiring
 // ---------------------------------------------------------------------------
 
+// `--mode`, declared on the root and again on each subcommand that takes it (see the note on
+// `cmd` for why both).
+const MODE_FLAGS = '-m, --mode <name>';
+const MODE_HELP =
+  'environment mode selecting the .env.<mode> files to load (default: "development")';
+
 const program = new Command()
   .name('devtooie')
   .description("Dependency-aware CLI for a monorepo's local dev packages")
@@ -459,10 +465,7 @@ const program = new Command()
     collect,
     [],
   )
-  .option(
-    '-m, --mode <name>',
-    'environment mode selecting the .env.<mode> files to load (default: "development")',
-  )
+  .option(MODE_FLAGS, MODE_HELP)
   .option('--ui', 'run the interactive TUI (default)')
   .option('--plain', 'run without the TUI, streaming logs to stdout')
   .option('--last-answers', 'skip the selector and reuse the last saved selection', false)
@@ -538,10 +541,7 @@ program
   )
   // Declared here too so `devtooie show-config --mode test` works (see `cmd`); the config
   // resolves against that mode's `.env` files, which is what a callback `port` reads.
-  .option(
-    '-m, --mode <name>',
-    'environment mode selecting the .env.<mode> files to load (default: "development")',
-  )
+  .option(MODE_FLAGS, MODE_HELP)
   .action(async () => {
     await loadConfigOrExit();
     const config = getLoadedConfig();
@@ -571,10 +571,7 @@ program
   // Also declared on the root, but Commander rejects a root-only option that appears after a
   // subcommand — so both `devtooie --mode test cmd …` and `devtooie cmd --mode test …` work.
   // resolveMode already read it off raw argv; this declaration is for --help and validation.
-  .option(
-    '-m, --mode <name>',
-    'environment mode selecting the .env.<mode> files to load (default: "development")',
-  )
+  .option(MODE_FLAGS, MODE_HELP)
   .argument(
     '[args...]',
     'a literal command to run (after `--`), or — with -c/--cmd — the args forwarded to that script',
@@ -667,11 +664,7 @@ program
 
 // `infra`: the services the packages need but that aren't packages. Every subcommand exits when
 // it's done — none stays up streaming logs — and none goes through session acquisition, so a
-// running dev session is never disturbed. `--mode` is declared at each level for the same reason
-// as on `cmd`: resolveMode already read it off raw argv; these are for --help and validation.
-const MODE_FLAGS = '-m, --mode <name>';
-const MODE_HELP =
-  'environment mode selecting the .env.<mode> files to load (default: "development")';
+// running dev session is never disturbed.
 const infra = program
   .command('infra')
   .description(

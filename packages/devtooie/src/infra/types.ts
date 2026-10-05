@@ -144,3 +144,11 @@ export interface Readiness {
 export class InfraError extends Error {
   override name = 'InfraError';
 }
+
+/** The error for service names that don't exist, listing the ones that do. */
+export function unknownServicesError(unknown: string[], known: string[]): InfraError {
+  return new InfraError(
+    `unknown infra service${unknown.length > 1 ? 's' : ''} ${unknown.map((s) => `"${s}"`).join(', ')}. ` +
+      `Services: ${known.join(', ') || '(none)'}`,
+  );
+}

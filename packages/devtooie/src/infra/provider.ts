@@ -12,6 +12,7 @@ import {
   type InfraServiceResult,
   type InfraServiceStatus,
   type Readiness,
+  unknownServicesError,
 } from './types.js';
 
 /** How often `up` re-reads the services' readiness, when the runtime doesn't say. */
@@ -176,12 +177,12 @@ export abstract class InfraProvider {
     named: string[] | undefined,
   ): Promise<{ targets: string[]; everything: boolean }> {
     const all = await this.listServices();
-    const known = `Services: ${all.join(', ') || '(none)'}`;
     const strays = Object.keys(this.callbacks).filter((name) => !all.includes(name));
     if (strays.length > 0) {
       throw new InfraError(
         `infra: the config's \`${this.key}\` services name ${strays.map((s) => `"${s}"`).join(', ')}, ` +
-          `which ${strays.length > 1 ? 'are not services' : 'is not a service'} the provider has. ${known}`,
+          `which ${strays.length > 1 ? 'are not services' : 'is not a service'} the provider has. ` +
+          `Services: ${all.join(', ') || '(none)'}`,
       );
     }
     if (!named || named.length === 0) {
@@ -189,9 +190,7 @@ export abstract class InfraProvider {
     }
     const unknown = named.filter((name) => !all.includes(name));
     if (unknown.length > 0) {
-      throw new InfraError(
-        `unknown infra service${unknown.length > 1 ? 's' : ''} ${unknown.map((s) => `"${s}"`).join(', ')}. ${known}`,
-      );
+      throw unknownServicesError(unknown, all);
     }
     return { targets: [...new Set(named)], everything: false };
   }
@@ -280,7 +279,7 @@ export abstract class InfraProvider {
           const saw = lastDetail.get(service);
           run.fail(
             service,
-            `${service} was not ready after ${formatTimeout(this.readyTimeout)}${saw ? ` (${saw})` : ''}`,
+            `not ready after ${formatTimeout(this.readyTimeout)}${saw ? ` (${saw})` : ''}`,
           );
         }
         break;

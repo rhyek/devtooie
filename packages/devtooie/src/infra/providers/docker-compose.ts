@@ -1,4 +1,4 @@
-import type { ExecOptions, ExecResult } from '../exec.js';
+import { SPAWN_FAILED, type ExecOptions, type ExecResult } from '../exec.js';
 import { InfraProvider, type Emit, type ProviderRuntime } from '../provider.js';
 import { InfraError, type Readiness, type ResolvedDockerComposeInfra } from '../types.js';
 
@@ -136,6 +136,9 @@ export class DockerComposeProvider extends InfraProvider {
    */
   private readonly seenRunning = new Set<string>();
 
+  /** The service list, once asked for. See {@link listServices}. */
+  private services: Promise<string[]> | undefined;
+
   constructor(
     private readonly resolved: ResolvedDockerComposeInfra,
     runtime: ProviderRuntime,
@@ -182,7 +185,7 @@ export class DockerComposeProvider extends InfraProvider {
       env: this.env(),
       onLine,
     });
-    if (result.exitCode === 127) {
+    if (result.exitCode === SPAWN_FAILED) {
       throw new InfraError(
         "infra: couldn't run `docker compose` — is Docker installed and on your PATH?\n" +
           result.stderr.trim(),
@@ -210,14 +213,20 @@ export class DockerComposeProvider extends InfraProvider {
     };
   }
 
-  /** Sorted, because Compose prints them in no stable order and the list is shown to the user. */
-  async listServices(): Promise<string[]> {
-    const { stdout } = await this.compose(['config', '--services']);
-    return stdout
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .sort();
+  /**
+   * Sorted, because Compose prints them in no stable order and the list is shown to the user.
+   * Asked of Compose once: a provider lives for one command, and the compose file doesn't
+   * change under it.
+   */
+  listServices(): Promise<string[]> {
+    this.services ??= this.compose(['config', '--services']).then(({ stdout }) =>
+      stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .sort(),
+    );
+    return this.services;
   }
 
   /**
@@ -344,6 +353,7 @@ export class DockerComposeProvider extends InfraProvider {
   protected async runTool(args: string[], opts: ExecOptions): Promise<ExecResult> {
     return this.runtime.exec('docker', this.composeArgs(args), {
       ...opts,
+      // The project name last: whatever `env` a callback passes, `compose` stays on this project.
       env: { ...opts.env, ...this.extraEnv() },
     });
   }

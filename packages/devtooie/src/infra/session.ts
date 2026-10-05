@@ -16,36 +16,21 @@ export class InfraFailedError extends Error {
 
   constructor(
     readonly summary: InfraRunSummary,
-    output: ReadonlyMap<string, string[]> = new Map(),
+    log: InfraLogLine[] = [],
   ) {
     super(
       summary.services
         .filter((s) => !s.ok)
         .flatMap((s) => [
           `${s.service}: ${s.error ?? 'failed'}`,
-          ...(output.get(s.service) ?? [])
+          ...log
+            .filter((line) => line.service === s.service)
             .slice(-FAILURE_OUTPUT_LINES)
-            .map((line) => `    ${line}`),
+            .map((line) => `    ${line.text}`),
         ])
         .join('\n'),
     );
   }
-}
-
-/** The line an event leaves in the session log, if any. */
-function logLines(event: InfraEvent): InfraLogLine[] {
-  if (event.type === 'output') {
-    return [{ service: event.service, text: event.line, isError: event.isError }];
-  }
-  if (event.type === 'status' && event.status === 'ready') {
-    return [{ service: event.service, text: 'ready', isError: false }];
-  }
-  if (event.type === 'status' && event.status === 'failed') {
-    return `failed: ${event.detail ?? ''}`
-      .split('\n')
-      .map((text) => ({ service: event.service, text, isError: true }));
-  }
-  return [];
 }
 
 /**
@@ -67,22 +52,21 @@ export async function runSessionInfra(
     return undefined;
   }
   const services: SessionInfra['services'] = [];
+  // Everything printed on the way up: the session log's first lines if it works, and where a
+  // failure's report takes its output from if it doesn't.
   const log: InfraLogLine[] = [];
-  const output = new Map<string, string[]>();
   const summary = await manager.up({
     onEvent: (event) => {
       if (event.type === 'targets') {
         services.push(...event.services.map((name) => ({ provider: event.provider, name })));
+      } else if (event.type === 'output') {
+        log.push({ service: event.service, text: event.line, isError: event.isError });
       }
-      if (event.type === 'output' && event.service !== undefined) {
-        output.set(event.service, [...(output.get(event.service) ?? []), event.line]);
-      }
-      log.push(...logLines(event));
       onEvent?.(event);
     },
   });
   if (!summary.ok) {
-    throw new InfraFailedError(summary, output);
+    throw new InfraFailedError(summary, log);
   }
   return { services, log };
 }

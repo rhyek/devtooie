@@ -24,8 +24,8 @@ export type SpawnInherit = (
   opts: { cwd: string; env: Record<string, string> },
 ) => Promise<number>;
 
-/** The exit code a shell reports for a command it couldn't find. */
-const SPAWN_FAILED = 127;
+/** The exit code a shell reports for a command it couldn't find; ours for one that never ran. */
+export const SPAWN_FAILED = 127;
 
 /** Why a command never ran, from execa's result for a child that failed to spawn. */
 function spawnFailure(command: string, result: { shortMessage?: string }): string {
