@@ -15,6 +15,11 @@ import {
 import { envFileNames, packageEnvLayer, resolveEnv, resolveMode } from './env.js';
 import { acquireDevSession, startSessionDevReverseProxy } from './dev-session.js';
 import { handleShellError } from './errors.js';
+import { passthroughArgs } from './infra/argv.js';
+import { InfraManager } from './infra/manager.js';
+import type { InfraRunRequest } from './infra/provider.js';
+import { createInfraReporter } from './infra/report.js';
+import { InfraError, type InfraRunSummary } from './infra/types.js';
 import { runInit } from './init.js';
 import {
   NoProjectConfigError,
@@ -300,6 +305,64 @@ async function resolveCmdTargetOrExit(
   return { dir: root, envLayer: resolveEnv({ cwd: root, relativeDir: '.', files, override }).env };
 }
 
+/** The infra manager for the loaded config, exiting with a hint when it declares no `infra`. */
+async function loadInfraOrExit(): Promise<{ manager: InfraManager; mode: string }> {
+  await loadConfigOrExit();
+  const config = getLoadedConfig();
+  const manager = config ? InfraManager.fromConfig(config) : null;
+  if (!config || !manager) {
+    console.error(
+      "No `infra` in the devtooie config — add `infra: { 'docker-compose': {} }` to use `devtooie infra`.",
+    );
+    process.exit(1);
+  }
+  return { manager, mode: config.envMode };
+}
+
+/**
+ * Runs an infra command to its exit code. An {@link InfraError} is a message for the user —
+ * an unknown service, Docker not running — so it prints as one line, not a stack trace.
+ */
+async function infraExitCode(run: () => Promise<number>): Promise<number> {
+  try {
+    return await run();
+  } catch (err) {
+    if (err instanceof InfraError) {
+      console.error(chalk.red(err.message));
+      return 1;
+    }
+    throw err;
+  }
+}
+
+/** `infra up` / `infra destroy`: run it with the plain reporter, exit 0 only if every service made it. */
+async function runInfraAction(
+  action: 'up' | 'destroy',
+  req: Pick<InfraRunRequest, 'services' | 'reset'>,
+): Promise<never> {
+  const { manager, mode } = await loadInfraOrExit();
+  const reporter = createInfraReporter({ mode });
+  process.exit(
+    await infraExitCode(async () => {
+      const run = { ...req, onEvent: reporter.onEvent };
+      const summary: InfraRunSummary =
+        action === 'up' ? await manager.up(run) : await manager.destroy(run);
+      reporter.finish(summary, action);
+      return summary.ok ? 0 : 1;
+    }),
+  );
+}
+
+/**
+ * `infra <provider> …`: the provider's own tool, bound to this project and mode. Runs in the
+ * directory devtooie was invoked from, so a relative path in the arguments means what the user
+ * typed, and exits with the tool's exit code.
+ */
+async function runInfraPassthrough(provider: string, args: string[]): Promise<never> {
+  const { manager } = await loadInfraOrExit();
+  process.exit(await infraExitCode(() => manager.passthrough(provider, args, INVOCATION_CWD)));
+}
+
 async function buildOne(pkg: AnyPackageConfig, script: string): Promise<void> {
   const [cmd, args] = getExecArgs(pkg, script);
   await execa(cmd, args, { stdio: 'inherit', cwd: pkg.absoluteDir });
@@ -574,6 +637,69 @@ program
     process.exit(result.exitCode ?? (result.signal ? 0 : 1));
   });
 
+// `infra`: the services the packages need but that aren't packages. Every subcommand exits when
+// it's done — none stays up streaming logs — and none goes through session acquisition, so a
+// running dev session is never disturbed. `--mode` is declared at each level for the same reason
+// as on `cmd`: resolveMode already read it off raw argv; these are for --help and validation.
+const MODE_FLAGS = '-m, --mode <name>';
+const MODE_HELP =
+  'environment mode selecting the .env.<mode> files to load (default: "development")';
+const infra = program
+  .command('infra')
+  .description(
+    'bring up, tear down, or drive the infrastructure declared under `infra` (databases, caches, …)',
+  )
+  .option(MODE_FLAGS, MODE_HELP);
+
+infra
+  .command('up')
+  .description(
+    'start the services (all, or the ones named), wait until they are ready, then exit; they keep running',
+  )
+  .argument('[services...]', 'services to start (default: all)')
+  .option('--reset', 'destroy the services first, then start them clean', false)
+  .option(MODE_FLAGS, MODE_HELP)
+  .action(async (services: string[], opts: { reset: boolean }) => {
+    await runInfraAction('up', { services, reset: opts.reset });
+  });
+
+infra
+  .command('down')
+  .description('stop and remove the containers (all, or the ones named); their data is kept')
+  .argument('[services...]', 'services to stop (default: all)')
+  .option(MODE_FLAGS, MODE_HELP)
+  .action(async (services: string[]) => {
+    const { manager } = await loadInfraOrExit();
+    process.exit(await infraExitCode(() => manager.down(services)));
+  });
+
+infra
+  .command('destroy')
+  .description(
+    'remove the services and their data: the ones named, or — with none named — the whole project (containers, volumes, networks)',
+  )
+  .argument('[services...]', 'services to destroy (default: everything)')
+  .option(MODE_FLAGS, MODE_HELP)
+  .action(async (services: string[]) => {
+    await runInfraAction('destroy', { services });
+  });
+
+// Listed for --help. A real invocation never reaches this action: it's dispatched from raw argv
+// before Commander parses (see the bottom of this file), because nothing after the provider word
+// is devtooie's to interpret — not `-m`, not `-p`, not `--help`.
+infra
+  .command('docker-compose')
+  .description(
+    'run `docker compose` itself against this project and mode — everything after it goes to Compose untouched (put --mode before it)',
+  )
+  .argument('[args...]', 'arguments for `docker compose`')
+  .allowUnknownOption()
+  .allowExcessArguments()
+  .helpOption(false)
+  .action(async (args: string[]) => {
+    await runInfraPassthrough('docker-compose', args);
+  });
+
 // ---------------------------------------------------------------------------
 // Main flow (§6.5) — the default action, run only when no subcommand matched.
 // ---------------------------------------------------------------------------
@@ -682,4 +808,8 @@ program.action(async () => {
 // Anchor at the config root (chdir + load its workspace-scope env) before dispatching any
 // command, so devtooie behaves the same from anywhere in the tree.
 await anchorAtConfigRoot(INVOCATION_CWD);
+const passthrough = passthroughArgs(process.argv);
+if (passthrough) {
+  await runInfraPassthrough(passthrough.provider, passthrough.args);
+}
 await program.parseAsync(process.argv).catch((err: unknown) => handleShellError(err));

@@ -4,6 +4,8 @@ import { InfraError, type Readiness, type ResolvedDockerComposeInfra } from '../
 
 /** The fields of a `docker compose ps --format json` row that readiness is read from. */
 export interface PsRow {
+  /** The container's id — what tells a container this run started from one already running. */
+  ID?: string;
   Service: string;
   /** `created`, `running`, `restarting`, `exited`, `paused`, `removing` or `dead`. */
   State: string;
@@ -64,6 +66,11 @@ function classifyContainer(row: PsRow): Readiness {
   }
 }
 
+/** A running container with no healthcheck, and an id to remember it by. */
+function isRunningUnchecked(row: PsRow): boolean {
+  return row.State === 'running' && !row.Health && row.ID !== undefined;
+}
+
 /**
  * Whether a service is ready, from its containers' rows. Readiness is exactly what the compose
  * file's `healthcheck` says — no probe of devtooie's own. A service with several containers is
@@ -122,6 +129,12 @@ export function selectVolumes(
  */
 export class DockerComposeProvider extends InfraProvider {
   readonly key = 'docker-compose';
+
+  /**
+   * Ids of containers with no healthcheck that have been seen running before — either already
+   * up when this run began, or on an earlier reading. See {@link readStatuses}.
+   */
+  private readonly seenRunning = new Set<string>();
 
   constructor(
     private readonly resolved: ResolvedDockerComposeInfra,
@@ -197,12 +210,14 @@ export class DockerComposeProvider extends InfraProvider {
     };
   }
 
+  /** Sorted, because Compose prints them in no stable order and the list is shown to the user. */
   async listServices(): Promise<string[]> {
     const { stdout } = await this.compose(['config', '--services']);
     return stdout
       .split('\n')
       .map((line) => line.trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      .sort();
   }
 
   /**
@@ -211,15 +226,49 @@ export class DockerComposeProvider extends InfraProvider {
    * from the compose file.
    */
   protected async startServices(targets: string[], emit: Emit): Promise<void> {
+    // Note what is already running, so the wait below can tell a container that has been up all
+    // along from one this `up` is about to start.
+    for (const row of await this.ps(targets)) {
+      if (isRunningUnchecked(row)) {
+        this.seenRunning.add(row.ID!);
+      }
+    }
     await this.compose(['up', '--detach', '--remove-orphans', ...targets], this.progress(emit));
   }
 
+  /**
+   * One reading per target, from `ps`. With one addition to {@link classify}: a container with
+   * no healthcheck that this run just started is only called ready on the **second** reading
+   * that finds it running. "Running" is all there is to go on for such a container, and one that
+   * crashes on startup — a bad flag, a missing variable — is still reported as running for a
+   * moment after `up` returns. A container that was already running when the run began skips
+   * the second look, so bringing up what is already up stays quick.
+   */
   protected async readStatuses(targets: string[]): Promise<Map<string, Readiness>> {
-    const { stdout } = await this.compose(['ps', '--all', '--format', 'json', ...targets]);
-    const rows = parsePs(stdout);
+    const rows = await this.ps(targets);
     return new Map(
-      targets.map((service) => [service, classify(rows.filter((row) => row.Service === service))]),
+      targets.map((service) => {
+        const own = rows.filter((row) => row.Service === service);
+        const reading = classify(own);
+        const unconfirmed = own.filter(
+          (row) => isRunningUnchecked(row) && !this.seenRunning.has(row.ID!),
+        );
+        for (const row of unconfirmed) {
+          this.seenRunning.add(row.ID!);
+        }
+        return [
+          service,
+          reading.state === 'ready' && unconfirmed.length > 0
+            ? { state: 'pending', detail: 'started' }
+            : reading,
+        ];
+      }),
     );
+  }
+
+  private async ps(targets: string[]): Promise<PsRow[]> {
+    const { stdout } = await this.compose(['ps', '--all', '--format', 'json', ...targets]);
+    return parsePs(stdout);
   }
 
   protected async failureDetail(service: string): Promise<string> {

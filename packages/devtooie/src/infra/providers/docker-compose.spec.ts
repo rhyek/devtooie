@@ -77,6 +77,11 @@ const row = (Service: string, State: string, Health = '', ExitCode = 0): PsRow =
   Health,
   ExitCode,
 });
+/** A row with a container id — what the provider needs to recognise a container it has seen. */
+const container = (ID: string, Service: string, State: string, Health = ''): PsRow => ({
+  ...row(Service, State, Health),
+  ID,
+});
 const ndjson = (...rows: PsRow[]) => ok(rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
 
 describe('the Compose invocation', () => {
@@ -110,9 +115,11 @@ describe('the Compose invocation', () => {
     ]);
   });
 
-  test('lists the services Compose reports', async () => {
-    const { provider } = setup(servicesThen(() => undefined));
-    expect(await provider.listServices()).toEqual(['db', 'redis']);
+  test('lists the services Compose reports, sorted — Compose prints them in no stable order', async () => {
+    const { provider } = setup((args) =>
+      args.join(' ') === 'config --services' ? ok('redis\ninit\ndb\n') : undefined,
+    );
+    expect(await provider.listServices()).toEqual(['db', 'init', 'redis']);
   });
 
   test('says so plainly when Docker is not installed', async () => {
@@ -232,9 +239,13 @@ describe('lifecycle primitives', () => {
       servicesThen((args) => {
         if (args[0] === 'ps') {
           polls += 1;
-          return polls === 1
-            ? ndjson(row('db', 'running', 'starting'), row('redis', 'running'))
-            : ndjson(row('db', 'running', 'healthy'));
+          // 1: before `up`, both already running. 2: db still starting. 3: db healthy.
+          return polls <= 2
+            ? ndjson(
+                container('c1', 'db', 'running', 'starting'),
+                container('c2', 'redis', 'running'),
+              )
+            : ndjson(container('c1', 'db', 'running', 'healthy'));
         }
         return undefined;
       }),
@@ -243,10 +254,74 @@ describe('lifecycle primitives', () => {
     expect(summary.ok).toBe(true);
     expect(subs()).toEqual([
       ['config', '--services'],
+      ['ps', '--all', '--format', 'json', 'db', 'redis'],
       ['up', '--detach', '--remove-orphans', 'db', 'redis'],
       ['ps', '--all', '--format', 'json', 'db', 'redis'],
       ['ps', '--all', '--format', 'json', 'db'],
     ]);
+  });
+
+  test('a container with no healthcheck that this run started must be seen running twice', async () => {
+    let polls = 0;
+    const events: InfraEvent[] = [];
+    const { provider } = setup((args) => {
+      if (args.join(' ') === 'config --services') {
+        return ok('redis\n');
+      }
+      if (args[0] === 'ps') {
+        polls += 1;
+        // Nothing before `up`; then running on every reading after it.
+        return polls === 1 ? ok('') : ndjson(container('c9', 'redis', 'running'));
+      }
+      return undefined;
+    });
+    expect((await provider.up({ onEvent: (e) => events.push(e) })).ok).toBe(true);
+    expect(polls).toBe(3);
+    expect(events).toContainEqual({
+      type: 'status',
+      service: 'redis',
+      status: 'starting',
+      detail: 'started',
+    });
+  });
+
+  test('a container that crashes right after starting is not mistaken for ready', async () => {
+    let polls = 0;
+    const { provider } = setup((args) => {
+      if (args.join(' ') === 'config --services') {
+        return ok('redis\n');
+      }
+      if (args[0] === 'ps') {
+        polls += 1;
+        if (polls === 1) {
+          return ok('');
+        }
+        // Docker still says "running" on the first look after `up`, then catches up.
+        return polls === 2
+          ? ndjson(container('c9', 'redis', 'running'))
+          : ndjson({ ...container('c9', 'redis', 'exited'), ExitCode: 3 });
+      }
+      return undefined;
+    });
+    const summary = await provider.up({});
+    expect(summary.services[0]).toMatchObject({ service: 'redis', ok: false });
+    expect(summary.services[0]!.error).toMatch(/^exited \(3\)/);
+  });
+
+  test('a container that was already running is ready on the first look', async () => {
+    let polls = 0;
+    const { provider } = setup((args) => {
+      if (args.join(' ') === 'config --services') {
+        return ok('redis\n');
+      }
+      if (args[0] === 'ps') {
+        polls += 1;
+        return ndjson(container('c9', 'redis', 'running'));
+      }
+      return undefined;
+    });
+    expect((await provider.up({})).ok).toBe(true);
+    expect(polls).toBe(2);
   });
 
   test('a failed container reports its state with the tail of its logs', async () => {
