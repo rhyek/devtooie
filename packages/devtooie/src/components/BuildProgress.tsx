@@ -9,10 +9,12 @@ import { debugLog } from '../debug-log.js';
 import { ACCENT_COLOR, DANGER_COLOR, OK_COLOR, ON_ACCENT_COLOR } from '../colors.js';
 import { acquireDevSession, startSessionDevReverseProxy } from '../dev-session.js';
 import type { DevReverseProxyServer } from '../dev-reverse-proxy.js';
+import { runSessionInfra } from '../infra/session.js';
 import { findConfigPath } from '../load-config.js';
 import { pickRandomPort } from '../running.js';
 import { buildRunnerArgs, getExecArgs, hasScript, resolveDeps } from '../lib.js';
-import type { RunnerArgs } from '../runners/types.js';
+import type { RunnerArgs, SessionInfra } from '../runners/types.js';
+import { applyInfraEvent, InfraProgress, type InfraRow } from './InfraProgress.js';
 
 /** The control server handed to `onControlReady`, owned by this component until the run phase takes over. */
 export type ControlServer = Awaited<ReturnType<typeof startCommandServer>>;
@@ -33,14 +35,16 @@ type BuildState =
   | { phase: 'resolving' }
   | { phase: 'building'; current: number; total: number; name: string }
   | { phase: 'handoff'; message: string }
+  | { phase: 'infra' }
   | { phase: 'done' }
-  | { phase: 'error'; message: string };
+  | { phase: 'error'; title: string; message: string };
 
 /**
  * Shows the resolved build/runtime dependency summary for the selected
  * packages, then drives the sequence that has to happen before the run
  * phase can start: hand off from any prior session, start the control
- * server, and build every dependency that needs it. The control server is
+ * server, build every dependency that needs it, and bring the config's infra
+ * up (see `infra/session.ts`). The control server is
  * handed to the caller as soon as it's listening (`onControlReady`) so a
  * newer session can detect and close this one even mid-build; the fully
  * resolved run arguments are handed over once the build completes
@@ -58,6 +62,9 @@ export function BuildProgress({
   // PackageSelector for the gap-at-top rationale).
   const { columns, rows } = useWindowSize();
   const [state, setState] = useState<BuildState>({ phase: 'resolving' });
+  // The infra services and where each one is; empty until the infra step starts (and for good
+  // when the config declares none).
+  const [infraRows, setInfraRows] = useState<InfraRow[]>([]);
 
   // The run phase takes ownership of the control server once handed off via
   // onComplete; until then, an unmount (cancelled build, build error) must
@@ -174,6 +181,7 @@ export function BuildProgress({
             }
             setState({
               phase: 'error',
+              title: 'Build failed',
               message: error instanceof Error ? error.message : 'Unknown build error',
             });
             return;
@@ -183,16 +191,43 @@ export function BuildProgress({
           return;
         }
 
-        // 5. Run — the caller now owns the control server's lifecycle.
+        // 5. Bring the infra up — the same thing `devtooie infra up` does — and wait until it
+        //    is ready. A service that doesn't make it stops the session here: the packages
+        //    must not start against infrastructure that isn't there.
+        let infra: SessionInfra | undefined;
+        setState({ phase: 'infra' });
+        try {
+          infra = await runSessionInfra((event) => {
+            if (!cancelled) {
+              setInfraRows((rows) => applyInfraEvent(rows, event));
+            }
+          });
+        } catch (error) {
+          if (cancelled) {
+            return;
+          }
+          setState({
+            phase: 'error',
+            title: 'Infra failed',
+            message: error instanceof Error ? error.message : 'Unknown infra error',
+          });
+          return;
+        }
+        if (cancelled) {
+          return;
+        }
+
+        // 6. Run — the caller now owns the control server's lifecycle.
         setState({ phase: 'done' });
         handedOffRef.current = true;
-        onComplete({ ...buildRunnerArgs(selectedPackages, deps), logFile });
+        onComplete({ ...buildRunnerArgs(selectedPackages, deps), logFile, infra });
       } catch (error) {
         if (cancelled) {
           return;
         }
         setState({
           phase: 'error',
+          title: 'Build failed',
           message: error instanceof Error ? error.message : 'Unknown build error',
         });
       }
@@ -227,7 +262,7 @@ export function BuildProgress({
     return (
       <Box flexDirection="column" width={columns} height={rows}>
         <Text color={DANGER_COLOR} bold>
-          Build failed
+          {state.title}
         </Text>
         <Text color={DANGER_COLOR}>{state.message}</Text>
       </Box>
@@ -285,8 +320,10 @@ export function BuildProgress({
             </Text>{' '}
             {state.message}
           </Text>
-        ) : state.phase === 'done' ? (
-          <Text color={OK_COLOR}>Dependencies built.</Text>
+        ) : state.phase === 'done' || state.phase === 'infra' ? (
+          <Text color={OK_COLOR}>
+            {buildablePackages.length > 0 ? 'Dependencies built.' : 'No build dependencies needed.'}
+          </Text>
         ) : buildablePackages.length > 0 ? (
           <Text>
             <Text color={ACCENT_COLOR}>
@@ -298,6 +335,8 @@ export function BuildProgress({
           <Text color={OK_COLOR}>No build dependencies needed.</Text>
         )}
       </Box>
+
+      <InfraProgress rows={infraRows} />
     </Box>
   );
 }

@@ -987,6 +987,7 @@ export function NativeRunner({
 
   const isFilter = mode === 'filter';
   const isCommands = mode === 'commands';
+  const infraServices = args.infra?.services ?? [];
 
   const topSection = shuttingDown ? (
     <Text color={WARN_COLOR}>Shutting down... (press Ctrl+C again to force kill)</Text>
@@ -1084,6 +1085,19 @@ export function NativeRunner({
           <Box marginTop={1}>{packageStatusDots}</Box>
           {isNormal && <HotkeyHints hints={packageHints} />}
           <Box flexDirection="column" marginTop={1}>
+            {infraServices.length > 0 && (
+              // The session's infra, listed like the packages above it. Every dot is green:
+              // these were ready when the session started, and nothing watches them after.
+              <Box flexWrap="wrap" columnGap={2}>
+                <Text color={ACCENT_COLOR}>infra:</Text>
+                {infraServices.map((service) => (
+                  <Box key={`${service.provider}/${service.name}`} flexShrink={0}>
+                    <Text color={OK_COLOR}>●</Text>
+                    <Text> {service.name}</Text>
+                  </Box>
+                ))}
+              </Box>
+            )}
             <Box columnGap={2}>
               <Text>
                 <Text color={ACCENT_COLOR}>cwd: </Text>

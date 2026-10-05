@@ -35,6 +35,9 @@ import type { Logger } from 'pino';
  */
 const devtooieLabel = (text: string) => chalk.hex(DEVTOOIE_LABEL_COLOR)(text);
 
+/** What infra's startup lines are filed under for the log filter: typing `infra` finds them. */
+const INFRA_SEARCH_NAME = 'infra';
+
 type ProcessState = 'running' | 'stopped' | 'waiting';
 type Status = ProcessState | 'rebuilding' | 'restarting';
 
@@ -303,6 +306,7 @@ export class ProcessManager implements ControlManager {
       envOverride,
       cwd,
       logTimestamps = true,
+      infra,
     }: RunnerArgs,
     {
       plain = false,
@@ -373,6 +377,22 @@ export class ProcessManager implements ControlManager {
     const internal = createInternalLogger((chunk) => this.ingestInternalLog(chunk));
     this.systemLog = internal.system;
     this.controlLog = internal.control;
+
+    // What infra printed while the session started, as the first lines of the log — it happened
+    // before any package did. Labelled by service (`[infra:db]`), or `[infra]` for the provider's
+    // own output; padded to line up with each other and with the package prefixes.
+    const infraLabel = (service?: string) => (service ? `infra:${service}` : 'infra');
+    const infraLines = infra?.log ?? [];
+    const infraWidth = infraLines.reduce(
+      (width, line) => Math.max(width, infraLabel(line.service).length),
+      maxNameLen,
+    );
+    for (const line of infraLines) {
+      const prefix = devtooieLabel(`[${infraLabel(line.service).padEnd(infraWidth)}]`) + ' ';
+      // A plain session already printed these as they happened (the infra reporter), so there
+      // they go to the buffer and the logfile only.
+      this.addLine(prefix, line.text, INFRA_SEARCH_NAME, line.isError, false, true);
+    }
   }
 
   /**
@@ -1499,6 +1519,8 @@ export class ProcessManager implements ControlManager {
     searchName: string,
     isError: boolean,
     isContinuation?: boolean,
+    /** The line is already on the terminal: buffer and log it, but don't print it (plain mode). */
+    alreadyShown = false,
   ): void {
     // Consecutive lines from the same package are grouped: a continuation
     // line shares the group of the entry it belongs to, so filtering and
@@ -1517,7 +1539,16 @@ export class ProcessManager implements ControlManager {
     // screen is resolved per package (falling back to the top-level default).
     const ts = logTimestamp();
     const showTs = this.showTsBySearchName.get(searchName) ?? this.defaultShowTimestamps;
-    this.buffer.push({ prefix, text, ts, showTs, searchName, isError, groupId, rendered: false });
+    this.buffer.push({
+      prefix,
+      text,
+      ts,
+      showTs,
+      searchName,
+      isError,
+      groupId,
+      rendered: alreadyShown,
+    });
     if (this.buffer.length > MAX_BUFFER_LINES) {
       this.buffer.splice(0, this.buffer.length - MAX_BUFFER_LINES);
     }
@@ -1528,7 +1559,7 @@ export class ProcessManager implements ControlManager {
     debugLog(`addLine: visibleLineCount=${this.visibleLineCount} searchName="${searchName}"`);
     // Plain mode streams each line straight to stdout; the interactive
     // (fullscreen Ink) UI re-renders from the buffer when notified instead.
-    if (this.plain) {
+    if (this.plain && !alreadyShown) {
       this.renderNewLine();
     }
     this.notify();

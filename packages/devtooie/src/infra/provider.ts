@@ -114,7 +114,7 @@ export abstract class InfraProvider {
     const reset = req.reset ?? false;
     const { targets, everything } = await this.resolveTargets(req.services);
     const run = new Run(targets, emit);
-    emit({ type: 'targets', action: 'up', services: targets });
+    emit({ type: 'targets', provider: this.key, action: 'up', services: targets });
     run.setAll('pending');
 
     try {
@@ -147,7 +147,7 @@ export abstract class InfraProvider {
     const emit = req.onEvent ?? (() => {});
     const { targets, everything } = await this.resolveTargets(req.services);
     const run = new Run(targets, emit);
-    emit({ type: 'targets', action: 'destroy', services: targets });
+    emit({ type: 'targets', provider: this.key, action: 'destroy', services: targets });
     run.setAll('destroying');
     try {
       await (everything ? this.destroyAll(emit) : this.destroyServices(targets, emit));

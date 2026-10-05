@@ -113,8 +113,8 @@ export type InfraServiceStatus =
 
 /** Everything a run reports, through one callback, for whichever surface is showing it. */
 export type InfraEvent =
-  /** The services this run acts on, once resolved. */
-  | { type: 'targets'; action: 'up' | 'destroy'; services: string[] }
+  /** The services this run acts on, once resolved, and the provider that runs them. */
+  | { type: 'targets'; provider: string; action: 'up' | 'destroy'; services: string[] }
   /** A service changed status, or the step it is on (`detail`) changed. */
   | { type: 'status'; service: string; status: InfraServiceStatus; detail?: string }
   /** A line of output: from a callback (tagged with its service) or from the provider's tool. */

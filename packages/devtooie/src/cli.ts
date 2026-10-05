@@ -12,13 +12,14 @@ import {
   getRegisteredPackages,
   getLoadedConfig,
 } from './config.js';
-import { envFileNames, packageEnvLayer, resolveEnv, resolveMode } from './env.js';
+import { currentMode, envFileNames, packageEnvLayer, resolveEnv, resolveMode } from './env.js';
 import { acquireDevSession, startSessionDevReverseProxy } from './dev-session.js';
 import { handleShellError } from './errors.js';
 import { passthroughArgs } from './infra/argv.js';
 import { InfraManager } from './infra/manager.js';
 import type { InfraRunRequest } from './infra/provider.js';
 import { createInfraReporter } from './infra/report.js';
+import { InfraFailedError, runSessionInfra } from './infra/session.js';
 import { InfraError, type InfraRunSummary } from './infra/types.js';
 import { runInit } from './init.js';
 import {
@@ -48,6 +49,7 @@ import { readRunning } from './running.js';
 import { createPlainStatusReporter } from './plain-status.js';
 import { renderAppInProduction } from './render-app-production.js';
 import { runPlain } from './runners/plain.js';
+import type { SessionInfra } from './runners/types.js';
 import { refreshSkillIfStale } from './skill.js';
 import { preflightTakeover } from './takeover.js';
 
@@ -361,6 +363,32 @@ async function runInfraAction(
 async function runInfraPassthrough(provider: string, args: string[]): Promise<never> {
   const { manager } = await loadInfraOrExit();
   process.exit(await infraExitCode(() => manager.passthrough(provider, args, INVOCATION_CWD)));
+}
+
+/**
+ * The infra step of a `--plain` session: the same `up` as `devtooie infra up`, reported the same
+ * way, between the build output and the first package line. Exits 1 if a service doesn't come
+ * up — the packages must not start against infrastructure that isn't there.
+ */
+async function runPlainInfraOrExit(): Promise<SessionInfra | undefined> {
+  const reporter = createInfraReporter({ mode: currentMode() });
+  try {
+    const infra = await runSessionInfra(reporter.onEvent);
+    if (infra) {
+      reporter.finish({ ok: true, services: [] }, 'up');
+    }
+    return infra;
+  } catch (err) {
+    if (err instanceof InfraFailedError) {
+      reporter.finish(err.summary, 'up');
+      process.exit(1);
+    }
+    if (err instanceof InfraError) {
+      console.error(chalk.red(err.message));
+      process.exit(1);
+    }
+    throw err;
+  }
 }
 
 async function buildOne(pkg: AnyPackageConfig, script: string): Promise<void> {
@@ -791,7 +819,12 @@ program.action(async () => {
       const packages = names.map((n) => findPackage(n));
       const deps = resolveDeps(packages);
       await buildDeps(deps);
-      await runPlain({ ...buildRunnerArgs(packages, deps), logFile }, server, devReverseProxy);
+      const infra = await runPlainInfraOrExit();
+      await runPlain(
+        { ...buildRunnerArgs(packages, deps), logFile, infra },
+        server,
+        devReverseProxy,
+      );
     } catch (err) {
       handleShellError(err);
     }

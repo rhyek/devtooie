@@ -26,7 +26,7 @@ describe('createInfraReporter', () => {
   test('prints a header, one line per service that became ready, and a closing line', () => {
     const lines = render(
       [
-        { type: 'targets', action: 'up', services: ['db', 'redis'] },
+        { type: 'targets', provider: 'docker-compose', action: 'up', services: ['db', 'redis'] },
         { type: 'status', service: 'db', status: 'pending' },
         { type: 'status', service: 'redis', status: 'starting', detail: 'waiting for healthy' },
         { type: 'status', service: 'redis', status: 'ready' },
@@ -53,7 +53,7 @@ describe('createInfraReporter', () => {
   test('shows a failure with its first line inline and the rest indented', () => {
     const lines = render(
       [
-        { type: 'targets', action: 'up', services: ['db'] },
+        { type: 'targets', provider: 'docker-compose', action: 'up', services: ['db'] },
         {
           type: 'status',
           service: 'db',
@@ -75,7 +75,7 @@ describe('createInfraReporter', () => {
   test('reports a destroy in its own words', () => {
     const lines = render(
       [
-        { type: 'targets', action: 'destroy', services: ['db'] },
+        { type: 'targets', provider: 'docker-compose', action: 'destroy', services: ['db'] },
         { type: 'status', service: 'db', status: 'destroying' },
         { type: 'output', line: 'removed volume example_db-data', isError: false },
         { type: 'status', service: 'db', status: 'destroyed' },

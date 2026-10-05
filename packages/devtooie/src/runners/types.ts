@@ -1,6 +1,22 @@
 import type { AnyPackageConfig, ResolvedHealthcheck, UrlLine } from '../config.js';
 import type { EnvOverride } from '../env.js';
 
+/** One line infra printed while a session started, kept for the session log. */
+export interface InfraLogLine {
+  /** The service the line belongs to; absent for the provider's own output. */
+  service?: string;
+  text: string;
+  isError: boolean;
+}
+
+/** What a session's infra step hands the run phase. */
+export interface SessionInfra {
+  /** The services brought up, for the footer. */
+  services: { provider: string; name: string }[];
+  /** Everything infra printed on the way up, written at the top of the session log. */
+  log: InfraLogLine[];
+}
+
 export interface RunnerArgs {
   sortedPackages: AnyPackageConfig[];
   selectedSet: Set<string>;
@@ -24,4 +40,6 @@ export interface RunnerArgs {
   logTimestamps?: boolean;
   /** Workspace root that package `relativeDir`s resolve against (defaults to `process.cwd()`). */
   cwd?: string;
+  /** The session's infra, once it is up; absent when the config declares none. */
+  infra?: SessionInfra;
 }

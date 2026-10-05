@@ -1331,3 +1331,57 @@ describe('ProcessManager rebuild (clean + build)', () => {
     await mgr.stop('rbfix');
   }, 15_000);
 });
+
+describe('infra startup output', () => {
+  const infra: RunnerArgs['infra'] = {
+    services: [{ provider: 'docker-compose', name: 'db' }],
+    log: [
+      { text: 'Container example-db-1 Started', isError: false },
+      { service: 'db', text: '2 migrations applied', isError: false },
+      { service: 'db', text: 'psql: warning', isError: true },
+    ],
+  };
+
+  test('lands at the top of the session log, prefixed by service, before anything else', () => {
+    manager = new ProcessManager({ ...runnerArgs(pkg()), infra });
+    manager.logSystem('later');
+    const rows = manager.getVisibleLines().map((l) => `${stripAnsi(l.prefix)}${stripAnsi(l.text)}`);
+    expect(rows.slice(0, 3)).toEqual([
+      '[infra   ] Container example-db-1 Started',
+      '[infra:db] 2 migrations applied',
+      '[infra:db] psql: warning',
+    ]);
+    expect(manager.getVisibleLines()[2]!.isError).toBe(true);
+    const file = fs.readFileSync(logFile, 'utf8').split('\n');
+    expect(file[0]).toMatch(
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[infra {3}\] Container example-db-1 Started$/,
+    );
+    expect(file[1]).toMatch(/\[infra:db\] 2 migrations applied$/);
+  });
+
+  test('is searchable as "infra" under a filter', () => {
+    manager = new ProcessManager({ ...runnerArgs(pkg()), infra });
+    manager.logSystem('unrelated');
+    manager.setFilter(['infra']);
+    expect(manager.getVisibleLines()).toHaveLength(3);
+  });
+
+  test('is not printed again in plain mode, where the reporter already showed it', () => {
+    const written: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      written.push(args.join(' '));
+    });
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      written.push(String(chunk));
+      return true;
+    });
+    try {
+      manager = new ProcessManager({ ...runnerArgs(pkg()), infra }, { plain: true });
+    } finally {
+      spy.mockRestore();
+      stdout.mockRestore();
+    }
+    expect(written.join('\n')).not.toMatch(/migrations applied/);
+    expect(fs.readFileSync(logFile, 'utf8')).toMatch(/\[infra:db\] 2 migrations applied/);
+  });
+});

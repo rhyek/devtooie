@@ -241,7 +241,7 @@ describe('InfraProvider.up', () => {
       onEvent: (e) => events.push(e),
     });
     expect(events).toEqual([
-      { type: 'targets', action: 'up', services: ['db'] },
+      { type: 'targets', provider: 'fake', action: 'up', services: ['db'] },
       { type: 'status', service: 'db', status: 'pending' },
       { type: 'status', service: 'db', status: 'starting' },
       { type: 'status', service: 'db', status: 'starting', detail: 'waiting for healthy' },
@@ -360,7 +360,12 @@ describe('InfraProvider.destroy', () => {
     const summary = await provider.destroy({ onEvent: (e) => events.push(e) });
     expect(provider.calls).toEqual(['destroyAll', 'afterDestroy:db:reset=false']);
     expect(summary.ok).toBe(true);
-    expect(events[0]).toEqual({ type: 'targets', action: 'destroy', services: ['db', 'redis'] });
+    expect(events[0]).toEqual({
+      type: 'targets',
+      provider: 'fake',
+      action: 'destroy',
+      services: ['db', 'redis'],
+    });
     expect(events.at(-1)).toEqual({ type: 'status', service: 'redis', status: 'destroyed' });
   });
 
