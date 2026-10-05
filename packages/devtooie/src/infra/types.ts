@@ -131,7 +131,7 @@ export interface ResolvedInfraService extends InfraServiceCallbacks {
   enabled: boolean;
 }
 
-/** The `docker-compose` provider's options. `{}` is a complete config. */
+/** The `docker-compose` provider's options. `{}` — or `true` in its place — is a complete config. */
 export interface DockerComposeInfraInput<T = TokenRecord> {
   /**
    * The compose file, relative to `workspaceDir`. Omit it to let Compose discover the file
@@ -149,7 +149,8 @@ export interface DockerComposeInfraInput<T = TokenRecord> {
 
 /** The top-level `infra` option: keyed by provider, and it must name at least one. */
 export interface InfraInput<T = TokenRecord> {
-  'docker-compose'?: DockerComposeInfraInput<T>;
+  /** Docker Compose. `true` for a compose file that needs nothing configured — the same as `{}`. */
+  'docker-compose'?: true | DockerComposeInfraInput<T>;
 }
 
 export interface ResolvedDockerComposeInfra {

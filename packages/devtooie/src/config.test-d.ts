@@ -425,3 +425,16 @@ describe('Mode', () => {
     expectTypeOf<Mode>().not.toEqualTypeOf<string>();
   });
 });
+
+describe('shorthands', () => {
+  test('subdomain: true resolves to a string, and a provider takes true for {}', () => {
+    const config = defineConfig({
+      packageRootDir: 'packages',
+      infra: { 'docker-compose': true },
+      packages: { web: { subdomain: true } },
+    });
+    // `true` never survives resolution: readers of the config get the label itself.
+    expectTypeOf(config.packages.web.subdomain).toEqualTypeOf<string | string[] | undefined>();
+    expectTypeOf(config.infra).toEqualTypeOf<ResolvedInfra | undefined>();
+  });
+});

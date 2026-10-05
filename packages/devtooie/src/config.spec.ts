@@ -1013,6 +1013,57 @@ describe('subdomain', () => {
     expect(cfg.packages.api.subdomain).toEqual(['api', 'api-legacy']);
   });
 
+  test("`true` is the package's own name, resolved to that string everywhere it is read", () => {
+    const seen: (string | undefined)[] = [];
+    const cfg = defineConfig({
+      packageRootDir: 'packages',
+      devReverseProxy: { port: 4000 },
+      packages: {
+        'web-api': {
+          subdomain: true,
+          port: 3001,
+          urls: [
+            ({ subdomain }) => {
+              seen.push(subdomain);
+              return 'http://localhost/';
+            },
+          ],
+        },
+      },
+    });
+    expect(cfg.packages['web-api'].subdomain).toBe('web-api');
+    expect(seen).toEqual(['web-api']);
+    expect(cfg.packages['web-api'].publicOrigin).toBe('http://web-api.localhost:4000');
+    expect(JSON.parse(JSON.stringify(cfg)).packages['web-api'].subdomain).toBe('web-api');
+  });
+
+  test('`true` on a name that is not a DNS label is an error asking for an explicit one', () => {
+    expect(() =>
+      defineConfig({ packageRootDir: 'packages', packages: { '@scope/web': { subdomain: true } } }),
+    ).toThrow(/@scope\/web[\s\S]*subdomain: true[\s\S]*DNS label[\s\S]*explicit/);
+    expect(() =>
+      defineConfig({ packageRootDir: 'packages', packages: { Web_API: { subdomain: true } } }),
+    ).toThrow(/Web_API[\s\S]*subdomain: true/);
+  });
+
+  test('`true` still collides with another package claiming the same label', () => {
+    expect(() =>
+      defineConfig({
+        packageRootDir: 'packages',
+        packages: { api: { subdomain: true }, legacy: { subdomain: ['old', 'api'] } },
+      }),
+    ).toThrow(/api and legacy both declare the subdomain "api"/);
+  });
+
+  test('rejects `false`: leave the field out for no subdomain', () => {
+    expect(() =>
+      defineConfig({
+        packageRootDir: 'packages',
+        packages: { api: { subdomain: false as unknown as true } },
+      }),
+    ).toThrow(/subdomain/);
+  });
+
   test('leaves the resolved subdomain undefined when the package declares none', () => {
     const cfg = defineConfig({ packageRootDir: 'packages', packages: { api: {} } });
     expect(cfg.packages.api.subdomain).toBeUndefined();
@@ -1580,6 +1631,13 @@ describe('infra', () => {
         services: {},
       },
     });
+  });
+
+  test('`true` for a provider is the same as an empty block', () => {
+    expect(withInfra({ 'docker-compose': true }).infra).toEqual(
+      withInfra({ 'docker-compose': {} }).infra,
+    );
+    expect(() => withInfra({ 'docker-compose': false })).toThrow(/infra/);
   });
 
   test('rejects an infra block naming no provider', () => {

@@ -314,7 +314,7 @@ async function loadInfraOrExit(): Promise<{ manager: InfraManager; mode: string 
   const manager = config ? InfraManager.fromConfig(config) : null;
   if (!config || !manager) {
     console.error(
-      "No `infra` in the devtooie config — add `infra: { 'docker-compose': {} }` to use `devtooie infra`.",
+      "No `infra` in the devtooie config — add `infra: { 'docker-compose': true }` to use `devtooie infra`.",
     );
     process.exit(1);
   }

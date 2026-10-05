@@ -298,8 +298,10 @@ lib):
   **`false`** to leave it stopped; start it with the **`s`** hotkey or a control-API `restart`
   (`POST /command/restart/<name>` starts a stopped package). Ignored when `command` is `null`.
 - **`port`** — the package's dev port; injected as `PORT`, handed to this package's `healthcheck`/`urls` callbacks, and swept on session handoff. May be a **callback** deriving it from the package's [environment](#environment-env-loading) — see [Callbacks instead of interpolation](#callbacks-instead-of-interpolation). Return `undefined` for "no port" (same as omitting the field); returning `NaN` — the usual sign of a missing variable — is an error naming the package and the env files that were loaded. Declaring a `port` is what lets this package's other callbacks use `port` — see [The `port` in a callback](#the-port-in-a-callback).
-- **`subdomain`** — the package's dev subdomain, a string or an array of them (the first is the
-  canonical subdomain, the rest are aliases). It is data for tooling that reads the exported
+- **`subdomain`** — the package's dev subdomain: a string, an array of them (the first is the
+  canonical subdomain, the rest are aliases), or **`true`** for the package's own name —
+  `api: { subdomain: true }` is `subdomain: 'api'`. (`true` needs a name that is itself a DNS
+  label; a scoped or uppercase key has to spell its subdomain out.) It is data for tooling that reads the exported
   config — a reverse proxy building its routing table from each package's `subdomain` and
   resolved `port` (`config.packages.api.subdomain`). With a
   top-level [`devReverseProxy`](#dev-reverse-proxy), devtooie is that proxy: it routes
@@ -686,7 +688,7 @@ export default defineConfig({
   },
   packages: {
     web: { port: 3000, subdomain: ['web', 'www'] },
-    api: { port: 3001, subdomain: 'api', healthcheck: '/health' },
+    api: { port: 3001, subdomain: true, healthcheck: '/health' }, // true: the key, `api`
     worker: { port: 3002 }, // a port but no subdomain: simply not routed
   },
 });
@@ -875,13 +877,14 @@ setup steps (migrations, seeding) — as a command, and at the start of every de
 // devtooie.config.ts
 export default defineConfig({
   infra: {
-    'docker-compose': {},
+    'docker-compose': true,
   },
   packages: {/* … */},
 });
 ```
 
-That is a complete config for a self-contained `docker-compose.yaml`. `infra` is keyed by
+That is a complete config for a self-contained `docker-compose.yaml`; `true` is short for `{}`,
+the block the options below go in. `infra` is keyed by
 provider; `docker-compose` is the only one. It needs Docker with Compose v2.
 
 For a working setup to copy from, see the

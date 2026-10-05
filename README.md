@@ -371,7 +371,7 @@ file. It's the one doc that ships inside the package (so the skill can load it f
 ## Infra
 
 Databases, caches and brokers aren't packages, but your packages need them running. Declare
-them with a top-level `infra` block — `infra: { 'docker-compose': {} }` is enough for a
+them with a top-level `infra` block — `infra: { 'docker-compose': true }` is enough for a
 self-contained `docker-compose.yaml` — and devtooie brings them up and waits for their
 healthchecks **before starting the packages**, then leaves them running when you quit.
 

@@ -105,11 +105,13 @@ export const PackageConfigSchema = z.object({
     .describe(
       "Color for this package's log-prefix label, overriding the auto-assigned palette color. Any Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`), `'rgb(175,135,255)'`, or `'ansi256(140)'`.",
     ),
+  // `true` is shorthand for the package's own name; `defineConfig` replaces it with that string
+  // (checking it is a label) before anything else reads the field.
   subdomain: z
-    .union([SubdomainLabelSchema, z.array(SubdomainLabelSchema)])
+    .union([z.literal(true), SubdomainLabelSchema, z.array(SubdomainLabelSchema)])
     .optional()
     .describe(
-      "The package's dev subdomain(s). With a top-level `devReverseProxy`, devtooie routes `<subdomain>.<rootDomain>` to this package's `port`; without one it is data for tooling that reads the exported config (a reverse proxy of your own, say). Each entry is a DNS label — lowercase letters, digits, and hyphens — that no other package declares. An array's first entry is the canonical subdomain, handed to this package's callbacks as `subdomain`; the rest are aliases that route too.",
+      "The package's dev subdomain(s): a label, an array of them, or `true` for the package's own name (its key). With a top-level `devReverseProxy`, devtooie routes `<subdomain>.<rootDomain>` to this package's `port`; without one it is data for tooling that reads the exported config (a reverse proxy of your own, say). Each entry is a DNS label — lowercase letters, digits, and hyphens — that no other package declares. An array's first entry is the canonical subdomain, handed to this package's callbacks as `subdomain`; the rest are aliases that route too.",
     ),
   // Overridden in config.ts (pinned to the keys the package declares); documented there.
   // Must be parsed, not stripped — it's what a callback's `tokens` is built from.
@@ -235,9 +237,16 @@ export const DockerComposeInfraSchema = z.strictObject({
 // Keyed by provider. Overridden in config.ts (callbacks erase to `any`); documented in
 // infra/types.ts.
 export const InfraSchema = z
-  .strictObject({ 'docker-compose': DockerComposeInfraSchema.optional() })
+  // `true` is shorthand for a provider with nothing to configure: `{}`. Rewritten before the
+  // object schema sees it rather than offered as a union alternative, because a union reports a
+  // mistake inside the block as a bare "Invalid input" — losing the field's path and message.
+  .strictObject({
+    'docker-compose': z
+      .preprocess((value) => (value === true ? {} : value), DockerComposeInfraSchema)
+      .optional(),
+  })
   .refine((infra) => Object.values(infra).some((provider) => provider !== undefined), {
-    message: "infra must name a provider — `infra: { 'docker-compose': {} }`",
+    message: "infra must name a provider — `infra: { 'docker-compose': true }`",
   });
 
 export const DefineConfigSchema = z.object({

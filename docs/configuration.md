@@ -62,8 +62,10 @@ lib):
   of a missing variable — is an error naming the package and the env files that were loaded.
   Declaring a `port` is what lets this package's other callbacks use `port` — see
   [The `port` in a callback](#the-port-in-a-callback).
-- **`subdomain`** — the package's dev subdomain, a string or an array of them (the first is
-  the canonical subdomain, the rest are aliases). With a top-level
+- **`subdomain`** — the package's dev subdomain: a string, an array of them (the first is the
+  canonical subdomain, the rest are aliases), or **`true`** for the package's own name —
+  `api: { subdomain: true }` is `subdomain: 'api'`. (`true` needs a name that is itself a DNS
+  label; a scoped or uppercase key has to spell its subdomain out.) With a top-level
   [`devReverseProxy`](./dev-reverse-proxy.md), devtooie routes `<subdomain>.<rootDomain>` to
   this package's `port` (aliases too) and injects `PUBLIC_ORIGIN` into its process (also
   exposed as `publicOrigin` on the resolved package). Without

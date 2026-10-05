@@ -1,7 +1,7 @@
 import path from 'node:path';
 import type { z } from 'zod';
 import { ambientEnv, resolveEnv, envFileNames, currentMode, type EnvOverride, type Mode } from './env.js'; // prettier-ignore
-import { type CommandSchema, type PackageConfigSchema, DefineConfigSchema, DEFAULT_HEALTHCHECK_TIMEOUT_MS } from './config-schema.js'; // prettier-ignore
+import { type CommandSchema, type PackageConfigSchema, DefineConfigSchema, SubdomainLabelSchema, DEFAULT_HEALTHCHECK_TIMEOUT_MS } from './config-schema.js'; // prettier-ignore
 import type { GeneratedPackageConfig, GeneratedDefineConfig } from './config.generated.js';
 import { composeProjectName } from './infra/project-name.js';
 import {
@@ -450,7 +450,7 @@ export type DefineConfigOptions<
    * Infrastructure that isn't a package — a database, a cache, a broker — keyed by provider
    * (`'docker-compose'` is the only one). `devtooie infra up` brings it up and waits until it is
    * ready, and a dev session does the same before starting the packages; quitting devtooie
-   * leaves it running. `infra: { 'docker-compose': {} }` is a complete config.
+   * leaves it running. `infra: { 'docker-compose': true }` is a complete config.
    * See {@link InfraInput}.
    */
   infra?: InfraInput<Top>;
@@ -499,11 +499,16 @@ export type DefineConfigOptions<
 
 export type ResolvedPackageConfig<N extends string, T = TokenRecord> = Omit<
   z.infer<typeof PackageConfigSchema>,
-  'waitFor' | 'deps' | 'port' | 'urls' | 'healthcheck' | 'tokens'
+  'waitFor' | 'deps' | 'port' | 'urls' | 'healthcheck' | 'tokens' | 'subdomain'
 > &
   PackageNameRefs<N> & {
     /** The package's name — the key it was declared under. */
     name: N;
+    /**
+     * The package's subdomain(s) as labels: what the config wrote, with `true` already replaced
+     * by the package's name. An array's first entry is the canonical one.
+     */
+    subdomain?: string | string[];
     /**
      * The config's top-level `tokens` with this package's own merged over them, typed from
      * what was declared. Available on the exported config, so other scripts can read a
@@ -790,6 +795,21 @@ function resolveInfraEnabled(
   return result;
 }
 
+/**
+ * The subdomain `subdomain: true` stands for: the package's own name. A name that isn't a DNS
+ * label (a scoped `@scope/web`, an uppercase or underscored key) can't be one, and guessing a
+ * cleaned-up version would put the package at a hostname nobody wrote down.
+ */
+function subdomainFromName(name: string): string {
+  if (!SubdomainLabelSchema.safeParse(name).success) {
+    throw new Error(
+      `${name}: \`subdomain: true\` uses the package's name as its subdomain, but "${name}" isn't a ` +
+        'DNS label (lowercase letters, digits, and hyphens). Give it an explicit `subdomain`.',
+    );
+  }
+  return name;
+}
+
 /** Every subdomain a package declares — canonical first, then aliases — or none. */
 function subdomainsOf(pkg: { subdomain?: string | string[] | undefined }): string[] {
   return pkg.subdomain === undefined
@@ -982,9 +1002,11 @@ export function defineConfig<
   const workspaceDir = parsed.workspaceDir ?? process.cwd();
   workspaceRoot = path.resolve(workspaceDir);
 
-  // The key IS the package name. Everything downstream works on an array, so flatten here.
+  // The key IS the package name. Everything downstream works on an array, so flatten here —
+  // and settle `subdomain: true` into the name it stands for, so nothing downstream sees `true`.
   const parsedPackages = Object.entries(parsed.packages).map(([name, config]) => ({
     ...config,
+    subdomain: config.subdomain === true ? subdomainFromName(name) : config.subdomain,
     name,
   }));
 

@@ -25,7 +25,7 @@ export default defineConfig({
   },
   packages: {
     web: { port: 3000, subdomain: ['web', 'www'] },
-    api: { port: 3001, subdomain: 'api', healthcheck: '/health' },
+    api: { port: 3001, subdomain: true, healthcheck: '/health' }, // true: the key, `api`
     worker: { port: 3002 }, // a port but no subdomain: simply not routed
   },
 });

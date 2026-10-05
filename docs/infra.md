@@ -10,13 +10,14 @@ setup steps (migrations, seeding) — as a command, and at the start of every de
 // devtooie.config.ts
 export default defineConfig({
   infra: {
-    'docker-compose': {},
+    'docker-compose': true,
   },
   packages: {/* … */},
 });
 ```
 
-That is a complete config for a self-contained `docker-compose.yaml`. `infra` is keyed by
+That is a complete config for a self-contained `docker-compose.yaml`; `true` is short for `{}`,
+the block the options below go in. `infra` is keyed by
 provider; `docker-compose` is the only one. It needs Docker with Compose v2.
 
 For a working setup to copy from, see the
