@@ -36,6 +36,10 @@ picked.
   live-reloaded, restarting the affected package when a file changes.
 - **Readiness ordering.** `healthcheck` + `waitFor` hold a package until the
   services it needs are actually up.
+- **Infra included.** Point devtooie at your `docker-compose.yaml` and it brings the database,
+  cache or broker up before the packages start, waits for their healthchecks, and runs your
+  migrations — per mode, so a test database never lands on the dev port. `devtooie infra up`
+  does the same on its own. See [Infra](docs/infra.md).
 - **One hostname per package.** Optionally, devtooie runs the dev reverse proxy itself:
   give a package a `subdomain` and reach it at `http://api.localhost:4000` — or
   `https://api.myproject.test` behind a TLS terminator — instead of a bare port, with a
@@ -53,7 +57,9 @@ A complete, runnable example monorepo lives in
 [`example/`](https://github.com/rhyek/devtooie/tree/main/example): four packages — a shared
 TypeScript library (`isomorphic`), a Node API (`backend`), a Go worker driven through a
 `Makefile` (`worker`), and a web `frontend` — wired up with dependency-aware builds, `.env`
-loading, healthchecks, and `waitFor` readiness ordering.
+loading, healthchecks, and `waitFor` readiness ordering. Its Postgres database is a Compose
+service that devtooie's [infra](docs/infra.md) brings up and migrates before the backend
+starts, so running it needs Docker.
 
 ## Requirements
 
@@ -65,6 +71,7 @@ loading, healthchecks, and `waitFor` readiness ordering.
   packages are run with `make` instead.)
 - A `package.json` (or `Makefile`) per package with the scripts devtooie drives
   (`dev`, `build`, ...) — see [Package supporting scripts](#package-supporting-scripts) below.
+- **Docker with Compose v2** — only if the config declares [`infra`](docs/infra.md).
 
 ## Install
 
@@ -340,8 +347,9 @@ env (or invoke one of its scripts/targets with `-c`) — see
 ## Advanced CLI usage
 
 Every flag and subcommand — plus `devtooie cmd` for running a command in a package's
-environment on demand, and `devtooie show-config` for printing the fully resolved config as JSON
-without a session — is documented in **[docs/cli.md](docs/cli.md)**.
+environment on demand, `devtooie show-config` for printing the fully resolved config as JSON
+without a session, and `devtooie infra` for the project's [infrastructure](docs/infra.md) — is
+documented in **[docs/cli.md](docs/cli.md)**.
 
 ## Agent skill
 
@@ -359,6 +367,23 @@ The skill points the agent at a single consolidated guide,
 material as this README plus how to drive devtooie headlessly, in one self-contained
 file. It's the one doc that ships inside the package (so the skill can load it from
 `node_modules`); the topic docs above live at the repo root.
+
+## Infra
+
+Databases, caches and brokers aren't packages, but your packages need them running. Declare
+them with a top-level `infra` block — `infra: { 'docker-compose': {} }` is enough for a
+self-contained `docker-compose.yaml` — and devtooie brings them up and waits for their
+healthchecks **before starting the packages**, then leaves them running when you quit.
+
+```sh
+devtooie infra up              # the same step on its own: start, wait until ready, exit
+devtooie infra up --reset db   # wipe one service's data and start it clean
+devtooie infra docker-compose logs -f db   # Compose itself, bound to this project and mode
+```
+
+Per-service callbacks (`beforeUp`, `afterReady`, `afterDestroy`) run your migrations and seeds,
+and each [mode](#modes) gets its own Compose project, so `--mode test` has its own containers
+and ports. See **[docs/infra.md](docs/infra.md)**.
 
 ## Dev reverse proxy
 

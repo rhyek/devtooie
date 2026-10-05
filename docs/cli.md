@@ -9,6 +9,7 @@ devtooie -p web -p api    # repeatable -p: run multiple named packages
 devtooie --build -p web   # build `web` + its build-time deps, then exit
 devtooie --rebuild -p web # like --build, but clears dist/ first
 devtooie --mode test      # load .env.test instead of .env.development
+devtooie infra up         # bring the config's infra up, wait until ready, exit
 ```
 
 Every command works from **anywhere in the repo**: as a first step devtooie walks up to the
@@ -39,6 +40,8 @@ Subcommands:
   resolved `.env`); see [below](#devtooie-cmd).
 - **`devtooie logs`** — print (or `-f/--follow`) the current dev session's logfile; see
   [below](#devtooie-logs).
+- **`devtooie infra`** — bring up, tear down, or drive the infrastructure the config declares
+  under `infra`; see [below](#devtooie-infra).
 
 ## Taking over a running session
 
@@ -84,7 +87,13 @@ devtooie show-config | jq '.packages | map_values(.port)'
 `--mode` selects the `.env.<mode>` files the config resolves against, exactly as for a session or
 `devtooie cmd`; it defaults to `development`. The config is resolved exactly once per devtooie
 process, when the file loads, so this prints what a session started with the same mode runs with.
-Function-valued fields (`logs.formatter`) have no JSON form and are omitted, as on the control API.
+Function-valued fields (`logs.formatter`, the [`infra`](./infra.md) callbacks) have no JSON form
+and are omitted, as on the control API. The `infra` block carries what was resolved — the compose
+`file`, `readyTimeout`, and the mode's `projectName`:
+
+```bash
+devtooie show-config | jq -r '.infra["docker-compose"].projectName'   # example-development
+```
 
 ## `devtooie cmd`
 
@@ -132,6 +141,41 @@ Output is streamed to your terminal **and** teed to a fresh timestamped logfile 
 `node_modules/.devtooie/logs/` (or `--log-dir`), the same place a `--plain` session logs.
 Nothing else is printed — the terminal shows only the command's own output, so `devtooie cmd`
 composes in a pipeline.
+
+## `devtooie infra`
+
+Drive the infrastructure the config declares under [`infra`](./infra.md) — the databases,
+caches and brokers your packages need. Every subcommand **exits when it's done**, and none
+disturbs a running dev session. (A session runs `infra up` itself, before starting the packages.)
+
+```bash
+devtooie infra up                     # start every service, wait until ready, then exit
+devtooie infra up db                  # only `db`
+devtooie infra up --reset             # destroy everything first, then start clean
+devtooie infra up --reset db          # destroy and restart only `db`
+devtooie infra down [services...]     # stop and remove containers; data is kept
+devtooie infra destroy [services...]  # remove containers and their data
+devtooie infra docker-compose ps      # Compose itself, bound to this project and mode
+```
+
+| Subcommand                 | What it does                                                                                                                                                                                                                                                |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `up [services...]`         | Starts the services (default: all), waits until each is ready, runs its `afterReady` callback, exits `0` — or `1` if any didn't make it. They keep running. `--reset` destroys the targets first.                                                           |
+| `down [services...]`       | `docker compose down`, with Compose's output: removes the containers (and, with no services named, the network). Volumes are kept.                                                                                                                          |
+| `destroy [services...]`    | Removes the services **and their data**, then runs `afterDestroy`. With services named, only what those services own; with none, the whole project — containers, volumes, networks.                                                                         |
+| `docker-compose [args...]` | Runs `docker compose <args>` against this project and mode, with the terminal handed over: `logs -f`, `exec db psql`, and the exit code all behave as they do with Compose directly. Runs in your current directory, so relative paths mean what you typed. |
+
+`-m/--mode` selects the mode's `.env` files **and** its Compose project
+(`<workspace directory>-<mode>`), so `devtooie --mode test infra up` runs next to the development
+one. It's accepted before or after `up`/`down`/`destroy` — but for the passthrough it has to
+come **before** `docker-compose`, because everything after that word is Compose's:
+
+```bash
+devtooie -m test infra docker-compose ps         # test mode's project
+devtooie infra docker-compose build -m 2g        # -m here is Compose's memory limit
+```
+
+Readiness, the callbacks, and exactly what `destroy` removes are in [Infra](./infra.md).
 
 ## `devtooie logs`
 

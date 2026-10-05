@@ -18,8 +18,8 @@ it says where a session _would_ answer, not that one is running — query the po
     "configPath": "/abs/devtooie.config.ts", // the devtooie.config.* it was started with
     "startedByAgent": false, // was this session launched by a coding agent?
     "logFile": "/abs/.../node_modules/.devtooie/logs/1784784120727.log", // current logfile (rotation-aware)
-    "packages": { "web": "running", "api": "waiting" }, // running | stopped | waiting | restarting | rebuilding; null until the build finishes
-    "config": {/* … */}, // the resolved config; null until the build finishes
+    "packages": { "web": "running", "api": "waiting" }, // running | stopped | waiting | restarting | rebuilding; null until the build and infra steps finish
+    "config": {/* … */}, // the resolved config; null until the build and infra steps finish
     "devReverseProxy": {
       // the session's dev reverse proxy, or null when the config declares none
       "port": 4000,
@@ -36,11 +36,15 @@ it says where a session _would_ answer, not that one is running — query the po
   `AGENT`, and friends); it decides whether a starting session may quit this one without
   asking — see [Taking over a running session](./cli.md#taking-over-a-running-session).
   Instances older than 0.7.0 omit the field, which reads as `false`. `packages` and `config`
-  are `null` until the process manager attaches, then populated. `config` is fully
+  are `null` until the process manager attaches — after the build and after the config's
+  [infra](./infra.md) is up — then populated. `config` is fully
   **resolved** (defaults applied, `command` normalized to `{ name, watches, builds, cleans }`)
   as loaded at startup — restart devtooie to pick up edits. `logFile` tracks in-session
   log rotation, so it's always the file currently being written. The same resolved `config`,
   without a session, is what [`devtooie show-config`](./cli.md#devtooie-show-config) prints.
+  A config with `infra` carries it resolved under `config.infra` (the mode's Compose
+  `projectName` among it); infra has no endpoints of its own — drive it with
+  [`devtooie infra`](./cli.md#devtooie-infra).
   `devReverseProxy` is present
   from the start (the proxy binds before anything else) and lists every hostname it routes —
   see [Dev reverse proxy](./dev-reverse-proxy.md).
