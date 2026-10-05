@@ -105,7 +105,7 @@ export abstract class InfraProvider {
   }
 
   /**
-   * Brings the targets up and waits until each is ready: (with `reset`) destroy and
+   * Brings the targets up and waits until each is ready: (with `reset`) destroy them and run
    * `afterDestroy`, then `beforeUp`, one start for all of them, a readiness poll, and each
    * service's `afterReady` the moment *it* is ready.
    *
@@ -116,15 +116,22 @@ export abstract class InfraProvider {
   async up(req: InfraRunRequest = {}): Promise<InfraRunSummary> {
     const emit = req.onEvent ?? (() => {});
     const reset = req.reset ?? false;
-    const { targets, everything } = await this.resolveTargets(req.services, 'up');
+    const { targets } = await this.resolveTargets(req.services, 'up');
     const run = new Run(targets, emit);
     emit({ type: 'targets', provider: this.key, action: 'up', services: targets });
     run.setAll('pending');
 
     try {
+      // Nothing enabled is nothing to destroy or start — not an error, and not a reason to run
+      // the provider's tool with an empty service list, which it would read as "all of them".
+      if (targets.length === 0) {
+        return run.summary();
+      }
       if (reset) {
+        // Exactly the services about to be started, never the whole project: a reset must not
+        // take the data of a service it isn't bringing back — one disabled in this mode, say.
         run.setAll('destroying');
-        await (everything ? this.destroyAll(emit) : this.destroyServices(targets, emit));
+        await this.destroyServices(targets, emit);
         if (!(await this.runPhase('afterDestroy', run, reset))) {
           return run.summary();
         }
@@ -133,12 +140,10 @@ export abstract class InfraProvider {
       if (!(await this.runPhase('beforeUp', run, reset))) {
         return run.summary();
       }
-      // Nothing enabled is nothing to start — not an error, and not a command worth running.
-      if (targets.length > 0) {
-        await this.startServices(targets, emit);
-      }
+      await this.startServices(targets, emit);
     } catch (err) {
-      return this.abort(run, err);
+      run.failAll(errorMessage(err));
+      return run.summary();
     }
 
     await this.awaitReady(run, reset);
@@ -147,7 +152,8 @@ export abstract class InfraProvider {
 
   /**
    * Removes the targets and their data, then calls `afterDestroy({ reset: false })`. With no
-   * services named it removes the whole project.
+   * services named it removes the whole project — disabled services' leftovers included — and
+   * the targets, for `afterDestroy`, are the enabled ones.
    */
   async destroy(req: Omit<InfraRunRequest, 'reset'> = {}): Promise<InfraRunSummary> {
     const emit = req.onEvent ?? (() => {});
@@ -158,7 +164,13 @@ export abstract class InfraProvider {
     try {
       await (everything ? this.destroyAll(emit) : this.destroyServices(targets, emit));
     } catch (err) {
-      return this.abort(run, err);
+      // With no targets — every service disabled — there is nothing to report the failure on,
+      // so it propagates instead of vanishing.
+      if (targets.length === 0) {
+        throw err;
+      }
+      run.failAll(errorMessage(err));
+      return run.summary();
     }
     const failures = await this.runCallbacks('afterDestroy', targets, false, emit);
     for (const service of targets) {
@@ -169,18 +181,6 @@ export abstract class InfraProvider {
         run.fail(service, error);
       }
     }
-    return run.summary();
-  }
-
-  /**
-   * A failure before any service has a result of its own: every target fails with it. With no
-   * targets there is nothing to report it on, so it propagates instead of vanishing.
-   */
-  private abort(run: Run, err: unknown): InfraRunSummary {
-    if (run.targets.length === 0) {
-      throw err;
-    }
-    run.failAll(errorMessage(err));
     return run.summary();
   }
 

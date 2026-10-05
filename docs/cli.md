@@ -151,7 +151,7 @@ disturbs a running dev session. (A session runs `infra up` itself, before starti
 ```bash
 devtooie infra up                     # start every service, wait until ready, then exit
 devtooie infra up db                  # only `db`
-devtooie infra up --reset             # destroy everything first, then start clean
+devtooie infra up --reset             # destroy the services first, then start them clean
 devtooie infra up --reset db          # destroy and restart only `db`
 devtooie infra down [services...]     # stop and remove containers; data is kept
 devtooie infra destroy [services...]  # remove containers and their data

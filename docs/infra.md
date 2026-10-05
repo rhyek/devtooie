@@ -22,7 +22,7 @@ provider; `docker-compose` is the only one. It needs Docker with Compose v2.
 ```sh
 devtooie infra up                     # start every service, wait until ready, then exit
 devtooie infra up db                  # only `db`
-devtooie infra up --reset             # destroy everything first, then start clean
+devtooie infra up --reset             # destroy the services first, then start them clean
 devtooie infra up --reset db          # destroy and restart only `db`
 devtooie infra down [services...]     # stop and remove containers; data is kept
 devtooie infra destroy [services...]  # remove containers *and* their data
@@ -291,17 +291,22 @@ One that was already running is ready on the first look, so a repeat `up` stays 
 
 ## What destroy removes
 
-`infra destroy`, and the first step of `infra up --reset`:
+What `infra destroy` removes depends on whether you name services:
 
-| You name…   | What goes                                                                                                                                         |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| no services | **The whole project**: every container, the named volumes the file declares, anonymous volumes, the project's networks, and orphan containers.    |
-| services    | Those services' containers, their anonymous volumes, and the **named volumes only they mount**. The network stays — the other services are on it. |
+| You name…   | What goes                                                                                                                                                                             |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| no services | **The whole project**, disabled services' leftovers included: every container, the named volumes the file declares, anonymous volumes, the project's networks, and orphan containers. |
+| services    | Those services' containers, their anonymous volumes, and the **named volumes only they mount**. The network stays — the other services are on it.                                     |
 
 When you name services, devtooie leaves alone — and tells you about — a volume another service
 also mounts, an `external` volume, and one a container outside the file still holds. It never
 runs `docker compose down <service> --volumes`, which would also delete the volumes of every
 other service whose container doesn't currently exist.
+
+`infra up --reset` always works the second way, on exactly the services it is about to start —
+all the enabled ones when you name none. It never takes the whole project, so a service that is
+[turned off](#turning-a-service-off) keeps its data through a reset; only `infra destroy` with no
+services named removes that too.
 
 Never removed: images, `external` volumes and networks, the volumes of services in a Compose
 profile that isn't active, and bind-mounted host directories. Clean the last of those up in

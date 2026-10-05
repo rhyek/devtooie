@@ -884,7 +884,7 @@ provider; `docker-compose` is the only one. It needs Docker with Compose v2.
 ```sh
 devtooie infra up                     # start every service, wait until ready, then exit
 devtooie infra up db                  # only `db`
-devtooie infra up --reset             # destroy everything first, then start clean
+devtooie infra up --reset             # destroy the services first, then start them clean
 devtooie infra up --reset db          # destroy and restart only `db`
 devtooie infra down [services...]     # stop and remove containers; data is kept
 devtooie infra destroy [services...]  # remove containers *and* their data
@@ -909,8 +909,8 @@ Every one of these exits when it's done. None stays up streaming logs.
   isn't started and `devtooie infra up <name>` refuses it. Check with
   `devtooie show-config | jq '.infra["docker-compose"].services'` before assuming it's broken.
 - **`infra up --reset` and `infra destroy` delete data.** Don't run either on your own
-  initiative — only when asked, or when the task plainly requires a clean database. With no
-  service named, they take the whole project's volumes.
+  initiative — only when asked, or when the task plainly requires a clean database. `up --reset`
+  wipes the services it restarts; `destroy` with no service named wipes the whole project.
 - **To learn the Compose project name** without guessing:
   `devtooie show-config | jq -r '.infra["docker-compose"].projectName'`.
 - **Don't spawn processes with inherited stdio from an infra callback** you write — use the
@@ -960,10 +960,10 @@ infra: {
 }
 ```
 
-| Field          | Meaning                                                                                                                                                                                                                  |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `file`         | The compose file, relative to `workspaceDir`. Omit it and Compose discovers the file itself (`compose.yaml`, `docker-compose.yaml`, plus any override file).                                                             |
-| `readyTimeout` | How long `up` waits for the services to become ready, in ms. Default: 5 minutes.                                                                                                                                         |
+| Field          | Meaning                                                                                                                                                                                                                                                                 |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `file`         | The compose file, relative to `workspaceDir`. Omit it and Compose discovers the file itself (`compose.yaml`, `docker-compose.yaml`, plus any override file).                                                                                                            |
+| `readyTimeout` | How long `up` waits for the services to become ready, in ms. Default: 5 minutes.                                                                                                                                                                                        |
 | `services`     | Per-service options, keyed by Compose service name: [`isEnabled`](#turning-a-service-off) and the [callbacks](#callbacks). A service doesn't have to be listed to run. A key that isn't a service in the compose file is an error, reported before anything is started. |
 
 **Which services run:** all the services Compose reports for the file — minus any you
@@ -1166,17 +1166,22 @@ One that was already running is ready on the first look, so a repeat `up` stays 
 
 ### What destroy removes
 
-`infra destroy`, and the first step of `infra up --reset`:
+What `infra destroy` removes depends on whether you name services:
 
 | You name…   | What goes                                                                                                                                         |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| no services | **The whole project**: every container, the named volumes the file declares, anonymous volumes, the project's networks, and orphan containers.    |
+| no services | **The whole project**, disabled services' leftovers included: every container, the named volumes the file declares, anonymous volumes, the project's networks, and orphan containers.    |
 | services    | Those services' containers, their anonymous volumes, and the **named volumes only they mount**. The network stays — the other services are on it. |
 
 When you name services, devtooie leaves alone — and tells you about — a volume another service
 also mounts, an `external` volume, and one a container outside the file still holds. It never
 runs `docker compose down <service> --volumes`, which would also delete the volumes of every
 other service whose container doesn't currently exist.
+
+`infra up --reset` always works the second way, on exactly the services it is about to start —
+all the enabled ones when you name none. It never takes the whole project, so a service that is
+[turned off](#turning-a-service-off) keeps its data through a reset; only `infra destroy` with no
+services named removes that too.
 
 Never removed: images, `external` volumes and networks, the volumes of services in a Compose
 profile that isn't active, and bind-mounted host directories. Clean the last of those up in

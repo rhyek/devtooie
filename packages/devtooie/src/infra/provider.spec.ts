@@ -124,12 +124,12 @@ describe('InfraProvider.up', () => {
     });
   });
 
-  test('--reset with no services destroys everything first, then calls afterDestroy', async () => {
+  test('--reset destroys the services it is about to start, then calls afterDestroy', async () => {
     const provider = new FakeProvider();
     Object.assign(provider['serviceConfig'], { db: recording(provider.calls, 'db') });
     await provider.up({ reset: true });
     expect(provider.calls).toEqual([
-      'destroyAll',
+      'destroyServices:db,redis',
       'afterDestroy:db:reset=true',
       'beforeUp:db:reset=true',
       'start:db,redis',
@@ -429,6 +429,12 @@ describe('a disabled service', () => {
     expect(provider.calls).toEqual(['destroyServices:redis']);
   });
 
+  test('is not touched by `up --reset`, which destroys only what it is about to start', async () => {
+    const provider = withDisabledRedis();
+    expect((await provider.up({ reset: true })).ok).toBe(true);
+    expect(provider.calls).toEqual(['destroyServices:db', 'start:db']);
+  });
+
   test('a full destroy takes the whole project but runs afterDestroy only for enabled services', async () => {
     const calls: string[] = [];
     const provider = withDisabledRedis(calls);
@@ -443,13 +449,14 @@ describe('no services to act on', () => {
   const allDisabled = (o: { failDestroyAll?: string } = {}) =>
     new FakeProvider({ services: ['db'], callbacks: { db: { isEnabled: false } }, ...o });
 
-  test('up starts nothing and succeeds', async () => {
+  test('up starts nothing — and with --reset destroys nothing — and succeeds', async () => {
     const provider = allDisabled();
     const events: InfraEvent[] = [];
     expect(await provider.up({ onEvent: (e) => events.push(e) })).toEqual({
       ok: true,
       services: [],
     });
+    expect(await provider.up({ reset: true })).toEqual({ ok: true, services: [] });
     expect(provider.calls).toEqual([]);
     expect(events).toEqual([{ type: 'targets', provider: 'fake', action: 'up', services: [] }]);
   });
@@ -457,8 +464,5 @@ describe('no services to act on', () => {
   test('a failure with no service to report it on is not swallowed', async () => {
     const provider = allDisabled({ failDestroyAll: 'cannot connect to the Docker daemon' });
     await expect(provider.destroy({})).rejects.toThrow(/cannot connect to the Docker daemon/);
-    await expect(provider.up({ reset: true })).rejects.toThrow(
-      /cannot connect to the Docker daemon/,
-    );
   });
 });
