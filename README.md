@@ -357,8 +357,8 @@ If you opt in during `devtooie init`, devtooie installs an agent-facing skill
 file at `.claude/skills/devtooie/SKILL.md` (and, best-effort, under `.agents/` /
 `.cursor/` if those directories already exist). It teaches a coding agent how
 to check whether an app in the repo is already running, run devtooie headlessly
-(`--plain -p <package>`), drive a running session through the control API, read
-the logfile for debugging, and onboard a new package. The installed file is **managed** — treat it as generated, not something
+(`--plain -p <package>`), drive a running session through the control API, bring the project's
+[infra](docs/infra.md) up or reset it, read the logfile for debugging, and onboard a new package. The installed file is **managed** — treat it as generated, not something
 to hand-edit. `devtooie init` and every `devtooie` run refresh it to the
 installed version.
 
