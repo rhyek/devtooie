@@ -919,7 +919,7 @@ Every one of these exits when it's done. None stays up streaming logs.
 ### In a dev session
 
 `devtooie` (the TUI or `--plain`) runs the same `up` **after building and before starting the
-packages**, for every service. The startup screen shows a row per service while it happens, and
+packages**, for every enabled service. The startup screen shows a row per service while it happens, and
 the footer lists them once the session is running:
 
 ```
