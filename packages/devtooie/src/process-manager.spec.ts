@@ -1351,7 +1351,10 @@ describe('infra startup output', () => {
       '[infra:db] 2 migrations applied',
       '[infra:db] psql: warning',
     ]);
+    // stderr keeps its red, as a package's does.
     expect(manager.getVisibleLines()[2]!.isError).toBe(true);
+    expect(manager.getVisibleLines()[2]!.text).toBe(chalk.red('psql: warning'));
+    expect(manager.getVisibleLines()[1]!.text).toBe('2 migrations applied');
     const file = fs.readFileSync(logFile, 'utf8').split('\n');
     expect(file[0]).toMatch(
       /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[infra {3}\] Container example-db-1 Started$/,

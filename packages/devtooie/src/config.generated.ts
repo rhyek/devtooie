@@ -117,6 +117,7 @@ export type GeneratedDefineConfig = {
             readyTimeout?: number | undefined;
             services?: {
                 [key: string]: {
+                    isEnabled?: (boolean | any) | undefined;
                     afterDestroy?: any | undefined;
                     beforeUp?: any | undefined;
                     afterReady?: any | undefined;

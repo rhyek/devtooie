@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { ambientEnv } from '../env.js';
 import { execLines } from './exec.js';
 import { DockerComposeProvider } from './providers/docker-compose.js';
-import type { InfraServiceCallbacks } from './types.js';
+import type { ResolvedInfraService } from './types.js';
 
 function dockerAvailable(): boolean {
   try {
@@ -57,7 +57,7 @@ const projects: string[] = [];
 
 /** A provider on a fresh project name; the project is removed after the test. */
 function provider(
-  services: Record<string, InfraServiceCallbacks> = {},
+  services: Record<string, ResolvedInfraService> = {},
   suffix = '',
 ): { provider: DockerComposeProvider; project: string } {
   const project = `devtooie-spec-${String(process.pid)}-${String(++counter)}${suffix}`;
@@ -125,6 +125,7 @@ describe.skipIf(!dockerAvailable())(
       let sawReadyFile = false;
       const { provider: infra, project } = provider({
         checked: {
+          isEnabled: true,
           afterReady: async ({ compose }) => {
             // Only true if afterReady really waited for the healthcheck to pass.
             await compose(['exec', '-T', 'checked', 'test', '-f', '/tmp/ready']);

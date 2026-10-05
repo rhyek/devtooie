@@ -11,6 +11,8 @@ export interface PsRow {
   State: string;
   /** `starting`, `healthy` or `unhealthy`; empty when the service has no healthcheck. */
   Health?: string;
+  /** The container's labels, as one `key=value,key=value` string. */
+  Labels?: string;
   ExitCode?: number;
 }
 
@@ -64,6 +66,15 @@ function classifyContainer(row: PsRow): Readiness {
     default:
       return { state: 'pending', detail: row.State };
   }
+}
+
+/**
+ * A one-off container, from `docker compose run`. `ps` lists it under its service's name, but
+ * it isn't the service: a `run db psql` left open inherits `db`'s healthcheck and, with no
+ * server inside, never passes it.
+ */
+function isOneOff(row: PsRow): boolean {
+  return (row.Labels ?? '').split(',').includes('com.docker.compose.oneoff=True');
 }
 
 /** A running container with no healthcheck, and an id to remember it by. */
@@ -231,8 +242,8 @@ export class DockerComposeProvider extends InfraProvider {
 
   /**
    * One `up` for every target, never one per service: concurrent `up` calls on a fresh project
-   * race to create the network. `--remove-orphans` takes only containers whose service is gone
-   * from the compose file. `--quiet-pull` keeps an image pull to its first and last line: without
+   * race to create the network. `--remove-orphans` takes the containers of services no longer in
+   * the compose file, and stopped one-off `run` containers. `--quiet-pull` keeps an image pull to its first and last line: without
    * it, a first run prints several hundred lines of per-layer download progress.
    */
   protected async startServices(targets: string[], emit: Emit): Promise<void> {
@@ -279,9 +290,10 @@ export class DockerComposeProvider extends InfraProvider {
     );
   }
 
+  /** The targets' own containers. */
   private async ps(targets: string[]): Promise<PsRow[]> {
     const { stdout } = await this.compose(['ps', '--all', '--format', 'json', ...targets]);
-    return parsePs(stdout);
+    return parsePs(stdout).filter((row) => !isOneOff(row));
   }
 
   protected async failureDetail(service: string): Promise<string> {

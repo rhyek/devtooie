@@ -392,6 +392,14 @@ describe('infra callbacks', () => {
               beforeUp: (ctx) => {
                 expectTypeOf(ctx.mode).toEqualTypeOf<string>();
               },
+              isEnabled: (ctx) => {
+                expectTypeOf(ctx.mode).toEqualTypeOf<string>();
+                expectTypeOf(ctx.envs).toEqualTypeOf<Record<string, string>>();
+                expectTypeOf(ctx.tokens.domain).toEqualTypeOf<'example.test'>();
+                // decided when the config loads: no service to act on, nothing to run
+                expectTypeOf(ctx).not.toHaveProperty('compose');
+                return ctx.mode !== 'test';
+              },
             },
           },
         },

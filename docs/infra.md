@@ -34,6 +34,7 @@ Every one of these exits when it's done. None stays up streaming logs.
 
 - [In a dev session](#in-a-dev-session)
 - [Config](#config)
+- [Turning a service off](#turning-a-service-off)
 - [Callbacks](#callbacks)
 - [Modes: one Compose project each](#modes-one-compose-project-each)
 - [Commands](#commands)
@@ -74,6 +75,7 @@ infra: {
     readyTimeout: 300_000,         // optional, ms
     services: {                    // optional — keys are Compose service names
       db: {
+        isEnabled: ({ mode }) => mode !== 'test',
         afterDestroy: async (ctx) => {},
         beforeUp: async (ctx) => {},
         afterReady: async (ctx) => {},
@@ -83,16 +85,14 @@ infra: {
 }
 ```
 
-| Field          | Meaning                                                                                                                                                                                                                  |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `file`         | The compose file, relative to `workspaceDir`. Omit it and Compose discovers the file itself (`compose.yaml`, `docker-compose.yaml`, plus any override file).                                                             |
-| `readyTimeout` | How long `up` waits for the services to become ready, in ms. Default: 5 minutes.                                                                                                                                         |
-| `services`     | Attaches [callbacks](#callbacks) to services, keyed by Compose service name. It does **not** choose which services run. A key that isn't a service in the compose file is an error, reported before anything is started. |
+| Field          | Meaning                                                                                                                                                                                                                                                                 |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `file`         | The compose file, relative to `workspaceDir`. Omit it and Compose discovers the file itself (`compose.yaml`, `docker-compose.yaml`, plus any override file).                                                                                                            |
+| `readyTimeout` | How long `up` waits for the services to become ready, in ms. Default: 5 minutes.                                                                                                                                                                                        |
+| `services`     | Per-service options, keyed by Compose service name: [`isEnabled`](#turning-a-service-off) and the [callbacks](#callbacks). A service doesn't have to be listed to run. A key that isn't a service in the compose file is an error, reported before anything is started. |
 
-**Which services run:** all the services Compose reports for the file, or the ones you name on
-the command line. To run a different set per mode, use Compose's own
-[profiles](https://docs.docker.com/compose/how-tos/profiles/): put `COMPOSE_PROFILES=…` in that
-mode's `.env` file.
+**Which services run:** all the services Compose reports for the file — minus any you
+[turn off](#turning-a-service-off) — or the ones you name on the command line.
 
 **Readiness, ports, images, volumes — all of it lives in the compose file.** devtooie hands
 Compose the mode's environment, so the file can interpolate it:
@@ -106,6 +106,44 @@ services:
     healthcheck:
       test: ['CMD', 'pg_isready', '-h', '127.0.0.1']
 ```
+
+## Turning a service off
+
+`isEnabled` decides whether devtooie runs a service. It's a boolean, or a callback over the mode
+and the environment:
+
+```ts
+services: {
+  // not in test mode
+  emulator: { isEnabled: ({ mode }) => mode !== 'test' },
+  // only when its API key is set
+  tracing: { isEnabled: ({ envs }) => Boolean(envs.TRACING_API_KEY) },
+}
+```
+
+The callback gets `{ mode, envs, tokens }` — `envs` being the workspace-scope `.env` files for
+the mode over the ambient environment — and must return a real boolean. Like the config's other
+callbacks (`port`, `urls`) it's synchronous and runs once, when the config loads, so
+`devtooie show-config` shows the answer:
+
+```sh
+devtooie --mode test show-config | jq '.infra["docker-compose"].services'
+# { "emulator": { "isEnabled": false }, "tracing": { "isEnabled": true } }
+```
+
+A disabled service is left out of `infra up` and of a dev session, isn't in the footer, and its
+callbacks don't run. Naming it — `devtooie infra up emulator` — is an error that says it's
+disabled. It can still be destroyed by name, to clean up after a mode where it ran.
+
+Two things `isEnabled` doesn't do:
+
+- **It doesn't override `depends_on`.** If an enabled service depends on a disabled one, Compose
+  starts both.
+- **It doesn't stop a container that's already running.** It only decides what devtooie starts.
+
+Compose's own [profiles](https://docs.docker.com/compose/how-tos/profiles/) are the other way
+to do this — `COMPOSE_PROFILES=…` in a mode's `.env` file — and they do hide a service from
+Compose entirely.
 
 ## Callbacks
 
@@ -187,8 +225,8 @@ session.
 
 ### `devtooie infra up [services...] [--reset]`
 
-Starts the services (all, or the ones named), waits until each is [ready](#readiness), runs
-`afterReady`, and exits — `0` if every service made it, `1` otherwise. The services keep
+Starts the services (all the enabled ones, or the ones named), waits until each is
+[ready](#readiness), runs `afterReady`, and exits — `0` if every service made it, `1` otherwise. The services keep
 running.
 
 ```
@@ -243,6 +281,9 @@ after `readyTimeout`.
 That's the whole definition: devtooie adds no probe of its own, so **give a service a
 `healthcheck`** when "the container is running" isn't the same as "it accepts connections". For
 anything beyond that, wait in `afterReady`.
+
+Only the service's own containers count: a one-off `docker compose run` container left open in
+another terminal is ignored.
 
 A container with no healthcheck that this run just started is only called ready the second time
 devtooie finds it running — one that crashes on startup still reads as `running` for a moment.

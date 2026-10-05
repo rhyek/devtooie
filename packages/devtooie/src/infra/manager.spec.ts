@@ -54,10 +54,7 @@ describe('InfraManager', () => {
     fs.writeFileSync(path.join(ws, '.env.development'), 'DB_PORT=21051\n');
     const { exec, calls } = scriptedDocker();
     const manager = InfraManager.fromConfig(configWith({ 'docker-compose': {} }), { exec })!;
-    expect(await manager.services()).toEqual([
-      { provider: 'docker-compose', name: 'db' },
-      { provider: 'docker-compose', name: 'redis' },
-    ]);
+    expect((await manager.up()).ok).toBe(true);
     expect(calls[0]!.env).toMatchObject({
       DB_PORT: '21051',
       COMPOSE_PROJECT_NAME: `${path.basename(ws).toLowerCase()}-development`,

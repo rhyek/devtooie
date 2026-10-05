@@ -89,7 +89,7 @@ devtooie show-config | jq '.packages | map_values(.port)'
 process, when the file loads, so this prints what a session started with the same mode runs with.
 Function-valued fields (`logs.formatter`, the [`infra`](./infra.md) callbacks) have no JSON form
 and are omitted, as on the control API. The `infra` block carries what was resolved — the compose
-`file`, `readyTimeout`, and the mode's `projectName`:
+`file`, `readyTimeout`, the mode's `projectName`, and each configured service's `isEnabled`:
 
 ```bash
 devtooie show-config | jq -r '.infra["docker-compose"].projectName'   # example-development
@@ -160,7 +160,7 @@ devtooie infra docker-compose ps      # Compose itself, bound to this project an
 
 | Subcommand                 | What it does                                                                                                                                                                                                                                                |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `up [services...]`         | Starts the services (default: all), waits until each is ready, runs its `afterReady` callback, exits `0` — or `1` if any didn't make it. They keep running. `--reset` destroys the targets first.                                                           |
+| `up [services...]`         | Starts the services (default: every [enabled](./infra.md#turning-a-service-off) one), waits until each is ready, runs its `afterReady` callback, exits `0` — or `1` if any didn't make it. They keep running. `--reset` destroys the targets first.         |
 | `down [services...]`       | `docker compose down`, with Compose's output: removes the containers (and, with no services named, the network). Volumes are kept.                                                                                                                          |
 | `destroy [services...]`    | Removes the services **and their data**, then runs `afterDestroy`. With services named, only what those services own; with none, the whole project — containers, volumes, networks.                                                                         |
 | `docker-compose [args...]` | Runs `docker compose <args>` against this project and mode, with the terminal handed over: `logs -f`, `exec db psql`, and the exit code all behave as they do with Compose directly. Runs in your current directory, so relative paths mean what you typed. |

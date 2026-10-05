@@ -308,6 +308,26 @@ describe('lifecycle primitives', () => {
     expect(summary.services[0]!.error).toMatch(/^exited \(3\)/);
   });
 
+  test("ignores one-off `compose run` containers, which ps lists under the service's name", async () => {
+    // An open `devtooie infra docker-compose run db psql` inherits db's healthcheck, and with no
+    // server inside it never passes — it must not decide whether `db` itself is ready.
+    const oneOff = {
+      ...container('r1', 'db', 'running', 'unhealthy'),
+      Labels: 'com.docker.compose.project=example-test,com.docker.compose.oneoff=True',
+    };
+    const real = {
+      ...container('c1', 'db', 'running', 'healthy'),
+      Labels: 'com.docker.compose.oneoff=False,com.docker.compose.project=example-test',
+    };
+    const { provider } = setup((args) => {
+      if (args.join(' ') === 'config --services') {
+        return ok('db\n');
+      }
+      return args[0] === 'ps' ? ndjson(real, oneOff) : undefined;
+    });
+    expect(await provider.up({})).toEqual({ ok: true, services: [{ service: 'db', ok: true }] });
+  });
+
   test('a container that was already running is ready on the first look', async () => {
     let polls = 0;
     const { provider } = setup((args) => {
@@ -510,6 +530,7 @@ describe('down, the passthrough, and the compose helper', () => {
       {
         services: {
           db: {
+            isEnabled: true,
             afterReady: async ({ compose, envs }) => {
               expect(envs.COMPOSE_PROJECT_NAME).toBe('example-test');
               await compose(['exec', '-T', 'db', 'psql', '-c', 'SELECT 1']);

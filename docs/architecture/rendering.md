@@ -86,9 +86,12 @@ top-aligned. Any new phase must do the same.
 - `LogPane` is always rendered (never gated on the measurement), so flexbox pins
   the footer to the bottom from the first frame; `paneHeight` is briefly the full
   height until the chrome is measured, which is harmless (the run-phase buffer
-  starts empty).
+  starts empty, or with only the few lines infra printed while the session
+  started).
 - The footer content is unchanged from before (package dots, hotkey hints, URL
   links, `git:(branch)` / `logfile:`); it's simply no longer hand-positioned.
+  A config with `infra` adds one row above `cwd:` — `infra:` and a green dot per
+  service — which is static: it records what was ready at startup.
 
 ## Virtualized log viewport
 

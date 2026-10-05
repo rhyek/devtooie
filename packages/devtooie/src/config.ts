@@ -6,6 +6,7 @@ import type { GeneratedPackageConfig, GeneratedDefineConfig } from './config.gen
 import { composeProjectName } from './infra/project-name.js';
 import {
   DEFAULT_READY_TIMEOUT_MS,
+  type InfraEnabledContext,
   type InfraInput,
   type InfraServiceCallbacks,
   type ResolvedInfra,
@@ -765,6 +766,30 @@ function resolvePort(
   return port;
 }
 
+/**
+ * Whether an infra service runs: its `isEnabled` literal, or its callback's answer, defaulting
+ * to `true`. The callback must return a real boolean — `envs.SOME_KEY` (a string, or undefined)
+ * is the easy slip, and quietly reading either as a yes or a no would be a guess.
+ */
+function resolveInfraEnabled(
+  service: string,
+  isEnabled: unknown,
+  ctx: () => InfraEnabledContext,
+): boolean {
+  if (typeof isEnabled !== 'function') {
+    return (isEnabled as boolean | undefined) ?? true;
+  }
+  const result: unknown = (isEnabled as (ctx: InfraEnabledContext) => unknown)(ctx());
+  if (typeof result !== 'boolean') {
+    throw new Error(
+      `infra: the \`isEnabled\` callback of "${service}" returned ` +
+        `${typeof result === 'string' ? JSON.stringify(result) : String(result)}, not a boolean — ` +
+        'wrap it, e.g. `Boolean(envs.SOME_KEY)`.',
+    );
+  }
+  return result;
+}
+
 /** Every subdomain a package declares — canonical first, then aliases — or none. */
 function subdomainsOf(pkg: { subdomain?: string | string[] | undefined }): string[] {
   return pkg.subdomain === undefined
@@ -1116,8 +1141,8 @@ export function defineConfig<
     validateDevReverseProxy(devReverseProxy, packages as unknown as AnyPackageConfig[]);
   }
 
-  // Only the project name needs the environment; the callbacks stay as written, to run when an
-  // `infra` command does.
+  // The project name and each service's `isEnabled` are settled here, from the workspace
+  // environment; the callbacks stay as written, to run when an `infra` command does.
   const compose = parsed.infra?.['docker-compose'];
   const infra: ResolvedInfra | undefined = compose && {
     'docker-compose': {
@@ -1128,7 +1153,18 @@ export function defineConfig<
         mode: currentMode(),
       }),
       readyTimeout: compose.readyTimeout ?? DEFAULT_READY_TIMEOUT_MS,
-      services: (compose.services ?? {}) as Record<string, InfraServiceCallbacks>,
+      services: Object.fromEntries(
+        Object.entries(compose.services ?? {}).map(([name, { isEnabled, ...callbacks }]) => [
+          name,
+          {
+            ...(callbacks as InfraServiceCallbacks),
+            isEnabled: resolveInfraEnabled(name, isEnabled, () => ({
+              mode: currentMode(),
+              ...workspaceBase(),
+            })),
+          },
+        ]),
+      ),
     },
   };
 

@@ -1071,7 +1071,8 @@ export function NativeRunner({
       </Box>
       {/* Always rendered so flexGrow pins the footer to the bottom from the first
           frame; paneHeight is briefly the full height until the footer is measured,
-          which is harmless (the run-phase buffer starts empty). */}
+          which is harmless (the run-phase buffer starts empty, or with only the few
+          lines infra printed while the session started). */}
       <LogPane rows={viewport.rows} highlights={highlights} />
       <BottomChrome
         ref={bottomRef}

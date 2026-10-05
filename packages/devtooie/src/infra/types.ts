@@ -67,6 +67,36 @@ export interface InfraServiceCallbacks<T = TokenRecord> {
   afterReady?: InfraCallback<T>;
 }
 
+/**
+ * What an `isEnabled` callback receives. Like the config's other load-time callbacks it is
+ * synchronous and resolved once, while the config loads — so there is no service to act on yet,
+ * only what decides whether there will be one.
+ */
+export interface InfraEnabledContext<T = TokenRecord> {
+  /** The active mode (`development`, `test`, …). */
+  mode: string;
+  /** The workspace-scope `.env` files for the mode, merged over the ambient environment. */
+  envs: Record<string, string>;
+  /** The config's top-level `tokens`. */
+  tokens: T;
+}
+
+/** What a service can be given under `services`: its callbacks, and whether it runs at all. */
+export interface InfraServiceInput<T = TokenRecord> extends InfraServiceCallbacks<T> {
+  /**
+   * Whether devtooie runs this service (default `true`). A literal, or a callback over the mode
+   * and environment — `({ mode }) => mode !== 'test'`, `({ envs }) => Boolean(envs.API_KEY)`.
+   * A disabled service is left out of `infra up` and of a dev session, and its callbacks don't
+   * run. (Compose still starts it if an enabled service `depends_on` it.)
+   */
+  isEnabled?: boolean | ((ctx: InfraEnabledContext<T>) => boolean);
+}
+
+/** A service's config, resolved: `isEnabled` decided, the callbacks as written. */
+export interface ResolvedInfraService extends InfraServiceCallbacks {
+  isEnabled: boolean;
+}
+
 /** The `docker-compose` provider's options. `{}` is a complete config. */
 export interface DockerComposeInfraInput<T = TokenRecord> {
   /**
@@ -77,10 +107,10 @@ export interface DockerComposeInfraInput<T = TokenRecord> {
   /** How long `infra up` waits for the services to become ready, in ms. Defaults to 5 minutes. */
   readyTimeout?: number;
   /**
-   * Callbacks, keyed by Compose service name. This does **not** choose which services run — every
-   * service Compose reports for the file does.
+   * Per-service options, keyed by Compose service name. Every service Compose reports for the
+   * file runs, listed here or not — unless its `isEnabled` says otherwise.
    */
-  services?: Record<string, InfraServiceCallbacks<T>>;
+  services?: Record<string, InfraServiceInput<T>>;
 }
 
 /** The top-level `infra` option: keyed by provider, and it must name at least one. */
@@ -94,8 +124,11 @@ export interface ResolvedDockerComposeInfra {
   /** The Compose project name in force for the active mode. */
   projectName: string;
   readyTimeout: number;
-  /** The callbacks as written. Functions have no JSON form, so serializing this leaves `{}`. */
-  services: Record<string, InfraServiceCallbacks>;
+  /**
+   * The services the config names, with `isEnabled` resolved and the callbacks as written.
+   * Functions have no JSON form, so serializing one leaves `{ isEnabled }`.
+   */
+  services: Record<string, ResolvedInfraService>;
 }
 
 /** `infra`, resolved. The service list isn't here: producing it means running the provider. */

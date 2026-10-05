@@ -39,13 +39,16 @@ export type { Register, PackageConfig, PackageName } from './register.js';
 export type {
   InfraInput,
   DockerComposeInfraInput,
+  InfraServiceInput,
   InfraServiceCallbacks,
+  InfraEnabledContext,
   InfraCallback,
   InfraCallbackContext,
   InfraRunOptions,
   InfraRunResult,
   ResolvedInfra,
   ResolvedDockerComposeInfra,
+  ResolvedInfraService,
 } from './infra/types.js';
 export {
   resolveEnv,

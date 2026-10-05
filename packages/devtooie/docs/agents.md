@@ -256,7 +256,7 @@ scratch to clear stale build output — those enable the rebuild command (the `b
 | `apiPort`      | Pin the [control API](#drive-a-running-session-via-the-control-api) port (otherwise chosen automatically).                                                         |
 | `urls`         | Workspace-wide footer links, not tied to a package. Same shape as a package's `urls`, but a callback here gets only `{ envs, tokens }` (no package, so no `port`). |
 | `tokens`       | Values of your own, handed to every callback as `tokens` (a package's own `tokens` are merged on top) — see [Callbacks](#callbacks-instead-of-interpolation).      |
-| `infra`        | Infrastructure that isn't a package — databases, caches, brokers — keyed by provider: `{ 'docker-compose': { file?, readyTimeout?, services? } }`. Brought up, and waited on, before the packages start. See [Infra](#infra). |
+| `infra`        | Infrastructure that isn't a package — databases, caches, brokers — keyed by provider: `{ 'docker-compose': { file?, readyTimeout?, services? } }`, where `services` gives a service its `isEnabled` and callbacks. Brought up, and waited on, before the packages start. See [Infra](#infra). |
 | `devReverseProxy` | Run devtooie's own dev reverse proxy, routing `<subdomain>.<rootDomain>` to packages by their `subdomain`. `{ port, rootDomain?, defaultPackage?, urlScheme? }`; present = enabled. See [Dev reverse proxy](#dev-reverse-proxy). |
 
 `packages` is an object **keyed by package name**:
@@ -905,6 +905,9 @@ Every one of these exits when it's done. None stays up streaming logs.
 - **Never run a bare `docker compose …` in the workspace.** devtooie puts the mode in the
   Compose project name, so a bare command targets a different, empty project. Use
   `devtooie infra docker-compose <args>`: it's the same Compose, bound to the right project.
+- **A service may be switched off for the current mode** (`isEnabled` in the config). Then it
+  isn't started and `devtooie infra up <name>` refuses it. Check with
+  `devtooie show-config | jq '.infra["docker-compose"].services'` before assuming it's broken.
 - **`infra up --reset` and `infra destroy` delete data.** Don't run either on your own
   initiative — only when asked, or when the task plainly requires a clean database. With no
   service named, they take the whole project's volumes.
@@ -947,6 +950,7 @@ infra: {
     readyTimeout: 300_000,         // optional, ms
     services: {                    // optional — keys are Compose service names
       db: {
+        isEnabled: ({ mode }) => mode !== 'test',
         afterDestroy: async (ctx) => {},
         beforeUp: async (ctx) => {},
         afterReady: async (ctx) => {},
@@ -960,12 +964,10 @@ infra: {
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `file`         | The compose file, relative to `workspaceDir`. Omit it and Compose discovers the file itself (`compose.yaml`, `docker-compose.yaml`, plus any override file).                                                             |
 | `readyTimeout` | How long `up` waits for the services to become ready, in ms. Default: 5 minutes.                                                                                                                                         |
-| `services`     | Attaches [callbacks](#callbacks) to services, keyed by Compose service name. It does **not** choose which services run. A key that isn't a service in the compose file is an error, reported before anything is started. |
+| `services`     | Per-service options, keyed by Compose service name: [`isEnabled`](#turning-a-service-off) and the [callbacks](#callbacks). A service doesn't have to be listed to run. A key that isn't a service in the compose file is an error, reported before anything is started. |
 
-**Which services run:** all the services Compose reports for the file, or the ones you name on
-the command line. To run a different set per mode, use Compose's own
-[profiles](https://docs.docker.com/compose/how-tos/profiles/): put `COMPOSE_PROFILES=…` in that
-mode's `.env` file.
+**Which services run:** all the services Compose reports for the file — minus any you
+[turn off](#turning-a-service-off) — or the ones you name on the command line.
 
 **Readiness, ports, images, volumes — all of it lives in the compose file.** devtooie hands
 Compose the mode's environment, so the file can interpolate it:
@@ -979,6 +981,44 @@ services:
     healthcheck:
       test: ['CMD', 'pg_isready', '-h', '127.0.0.1']
 ```
+
+### Turning a service off
+
+`isEnabled` decides whether devtooie runs a service. It's a boolean, or a callback over the mode
+and the environment:
+
+```ts
+services: {
+  // not in test mode
+  emulator: { isEnabled: ({ mode }) => mode !== 'test' },
+  // only when its API key is set
+  tracing: { isEnabled: ({ envs }) => Boolean(envs.TRACING_API_KEY) },
+}
+```
+
+The callback gets `{ mode, envs, tokens }` — `envs` being the workspace-scope `.env` files for
+the mode over the ambient environment — and must return a real boolean. Like the config's other
+callbacks (`port`, `urls`) it's synchronous and runs once, when the config loads, so
+`devtooie show-config` shows the answer:
+
+```sh
+devtooie --mode test show-config | jq '.infra["docker-compose"].services'
+# { "emulator": { "isEnabled": false }, "tracing": { "isEnabled": true } }
+```
+
+A disabled service is left out of `infra up` and of a dev session, isn't in the footer, and its
+callbacks don't run. Naming it — `devtooie infra up emulator` — is an error that says it's
+disabled. It can still be destroyed by name, to clean up after a mode where it ran.
+
+Two things `isEnabled` doesn't do:
+
+- **It doesn't override `depends_on`.** If an enabled service depends on a disabled one, Compose
+  starts both.
+- **It doesn't stop a container that's already running.** It only decides what devtooie starts.
+
+Compose's own [profiles](https://docs.docker.com/compose/how-tos/profiles/) are the other way
+to do this — `COMPOSE_PROFILES=…` in a mode's `.env` file — and they do hide a service from
+Compose entirely.
 
 ### Callbacks
 
@@ -1060,8 +1100,8 @@ session.
 
 #### `devtooie infra up [services...] [--reset]`
 
-Starts the services (all, or the ones named), waits until each is [ready](#readiness), runs
-`afterReady`, and exits — `0` if every service made it, `1` otherwise. The services keep
+Starts the services (all the enabled ones, or the ones named), waits until each is
+[ready](#readiness), runs `afterReady`, and exits — `0` if every service made it, `1` otherwise. The services keep
 running.
 
 ```
@@ -1116,6 +1156,9 @@ after `readyTimeout`.
 That's the whole definition: devtooie adds no probe of its own, so **give a service a
 `healthcheck`** when "the container is running" isn't the same as "it accepts connections". For
 anything beyond that, wait in `afterReady`.
+
+Only the service's own containers count: a one-off `docker compose run` container left open in
+another terminal is ignored.
 
 A container with no healthcheck that this run just started is only called ready the second time
 devtooie finds it running — one that crashes on startup still reads as `running` for a moment.

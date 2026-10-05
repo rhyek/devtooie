@@ -5,12 +5,6 @@ import type { InfraProvider, InfraRunRequest, ProviderRuntime } from './provider
 import { DockerComposeProvider } from './providers/docker-compose.js';
 import { InfraError, unknownServicesError, type InfraRunSummary } from './types.js';
 
-/** A service and the provider that runs it. */
-export interface InfraServiceRef {
-  provider: string;
-  name: string;
-}
-
 /** The command runners a manager's providers use; a session passes none and gets the real ones. */
 export interface InfraManagerDeps {
   exec?: Exec;
@@ -55,16 +49,6 @@ export class InfraManager {
       providers.push(new DockerComposeProvider(compose, runtime));
     }
     return new InfraManager(providers);
-  }
-
-  /** Every service, across providers, in the order the providers report them. */
-  async services(): Promise<InfraServiceRef[]> {
-    const lists = await Promise.all(
-      this.providers.map(async (provider) =>
-        (await provider.listServices()).map((name) => ({ provider: provider.key, name })),
-      ),
-    );
-    return lists.flat();
   }
 
   /** Brings services up and waits until they are ready. See {@link InfraProvider.up}. */

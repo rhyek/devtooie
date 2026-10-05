@@ -66,8 +66,11 @@ export abstract class InfraProvider {
 
   protected constructor(
     protected readonly runtime: ProviderRuntime,
-    /** The config's callbacks, keyed by service name. */
-    protected readonly callbacks: Record<string, InfraServiceCallbacks>,
+    /** What the config says about each service it names: its callbacks, and whether it runs. */
+    protected readonly serviceConfig: Record<
+      string,
+      InfraServiceCallbacks & { isEnabled?: boolean }
+    >,
     protected readonly readyTimeout: number,
   ) {}
 
@@ -113,7 +116,7 @@ export abstract class InfraProvider {
   async up(req: InfraRunRequest = {}): Promise<InfraRunSummary> {
     const emit = req.onEvent ?? (() => {});
     const reset = req.reset ?? false;
-    const { targets, everything } = await this.resolveTargets(req.services);
+    const { targets, everything } = await this.resolveTargets(req.services, 'up');
     const run = new Run(targets, emit);
     emit({ type: 'targets', provider: this.key, action: 'up', services: targets });
     run.setAll('pending');
@@ -130,10 +133,12 @@ export abstract class InfraProvider {
       if (!(await this.runPhase('beforeUp', run, reset))) {
         return run.summary();
       }
-      await this.startServices(targets, emit);
+      // Nothing enabled is nothing to start — not an error, and not a command worth running.
+      if (targets.length > 0) {
+        await this.startServices(targets, emit);
+      }
     } catch (err) {
-      run.failAll(errorMessage(err));
-      return run.summary();
+      return this.abort(run, err);
     }
 
     await this.awaitReady(run, reset);
@@ -146,15 +151,14 @@ export abstract class InfraProvider {
    */
   async destroy(req: Omit<InfraRunRequest, 'reset'> = {}): Promise<InfraRunSummary> {
     const emit = req.onEvent ?? (() => {});
-    const { targets, everything } = await this.resolveTargets(req.services);
+    const { targets, everything } = await this.resolveTargets(req.services, 'destroy');
     const run = new Run(targets, emit);
     emit({ type: 'targets', provider: this.key, action: 'destroy', services: targets });
     run.setAll('destroying');
     try {
       await (everything ? this.destroyAll(emit) : this.destroyServices(targets, emit));
     } catch (err) {
-      run.failAll(errorMessage(err));
-      return run.summary();
+      return this.abort(run, err);
     }
     const failures = await this.runCallbacks('afterDestroy', targets, false, emit);
     for (const service of targets) {
@@ -169,15 +173,31 @@ export abstract class InfraProvider {
   }
 
   /**
+   * A failure before any service has a result of its own: every target fails with it. With no
+   * targets there is nothing to report it on, so it propagates instead of vanishing.
+   */
+  private abort(run: Run, err: unknown): InfraRunSummary {
+    if (run.targets.length === 0) {
+      throw err;
+    }
+    run.failAll(errorMessage(err));
+    return run.summary();
+  }
+
+  /**
    * The services a request acts on, validated: a name the provider doesn't have is an error
    * listing the real ones — for a service named on the command line and for a key under the
    * config's `services` alike, before anything is touched.
+   *
+   * With none named, it is every **enabled** service. A disabled one can't be brought up by
+   * name either — but it can be destroyed by name, to clean up after a mode where it ran.
    */
   private async resolveTargets(
     named: string[] | undefined,
+    action: 'up' | 'destroy',
   ): Promise<{ targets: string[]; everything: boolean }> {
     const all = await this.listServices();
-    const strays = Object.keys(this.callbacks).filter((name) => !all.includes(name));
+    const strays = Object.keys(this.serviceConfig).filter((name) => !all.includes(name));
     if (strays.length > 0) {
       throw new InfraError(
         `infra: the config's \`${this.key}\` services name ${strays.map((s) => `"${s}"`).join(', ')}, ` +
@@ -185,12 +205,21 @@ export abstract class InfraProvider {
           `Services: ${all.join(', ') || '(none)'}`,
       );
     }
+    const isEnabled = (name: string) => this.serviceConfig[name]?.isEnabled !== false;
     if (!named || named.length === 0) {
-      return { targets: all, everything: true };
+      return { targets: all.filter(isEnabled), everything: true };
     }
     const unknown = named.filter((name) => !all.includes(name));
     if (unknown.length > 0) {
       throw unknownServicesError(unknown, all);
+    }
+    const disabled = named.filter((name) => !isEnabled(name));
+    if (action === 'up' && disabled.length > 0) {
+      throw new InfraError(
+        `infra service${disabled.length > 1 ? 's' : ''} ${disabled.map((s) => `"${s}"`).join(', ')} ` +
+          `${disabled.length > 1 ? 'are' : 'is'} disabled for mode "${this.runtime.mode}" ` +
+          '(`isEnabled` in the devtooie config), so there is nothing to bring up.',
+      );
     }
     return { targets: [...new Set(named)], everything: false };
   }
@@ -222,7 +251,7 @@ export abstract class InfraProvider {
     const failures = new Map<string, string>();
     await Promise.all(
       targets.map(async (service) => {
-        const callback = this.callbacks[service]?.[name];
+        const callback = this.serviceConfig[service]?.[name];
         if (!callback) {
           return;
         }
@@ -290,7 +319,7 @@ export abstract class InfraProvider {
   }
 
   private async settleReady(service: string, run: Run, reset: boolean): Promise<void> {
-    const callback = this.callbacks[service]?.afterReady;
+    const callback = this.serviceConfig[service]?.afterReady;
     if (callback) {
       run.set(service, 'starting', 'afterReady');
       try {

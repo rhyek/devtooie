@@ -391,7 +391,8 @@ export class ProcessManager implements ControlManager {
       const prefix = devtooieLabel(`[${infraLabel(line.service).padEnd(infraWidth)}]`) + ' ';
       // A plain session already printed these as they happened (the infra reporter), so there
       // they go to the buffer and the logfile only.
-      this.addLine(prefix, line.text, INFRA_SEARCH_NAME, line.isError, false, true);
+      const text = line.isError ? chalk.red(line.text) : line.text;
+      this.addLine(prefix, text, INFRA_SEARCH_NAME, line.isError, false, true);
     }
   }
 
