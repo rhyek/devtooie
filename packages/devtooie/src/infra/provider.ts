@@ -24,7 +24,10 @@ export interface ProviderRuntime {
   /** The workspace root, absolute. */
   workspaceDir: string;
   mode: Mode;
-  /** The workspace-scope `.env` files for the mode, merged over the ambient environment. */
+  /**
+   * The workspace-scope `.env` files for the mode and the ambient environment, the ambient
+   * environment winning over the files except for the variables `env.override` names.
+   */
   envs: Record<string, string>;
   /** The config's top-level `tokens`. */
   tokens: TokenRecord;

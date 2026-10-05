@@ -29,7 +29,7 @@ export class InfraManager {
       workspaceDir,
       mode: config.envMode,
       // The same environment a workspace-scope config callback sees: the mode's `.env` files
-      // over the ambient environment.
+      // and the ambient environment, which wins over the files except where `env.override` says.
       envs: Object.assign(
         ambientEnv(),
         resolveEnv({

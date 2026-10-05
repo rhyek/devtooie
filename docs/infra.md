@@ -127,8 +127,9 @@ services: {
 }
 ```
 
-The callback gets `{ mode, envs, tokens }` — `envs` being the workspace-scope `.env` files for
-the mode over the ambient environment — and must return a real boolean. Like the config's other
+The callback gets `{ mode, envs, tokens }` — `envs` being the mode's workspace-scope `.env` files
+and the ambient environment, where the ambient environment wins over the files — and must return
+a real boolean. Like the config's other
 callbacks (`port`, `urls`) it's synchronous and runs once, when the config loads, so
 `devtooie show-config` shows the answer:
 
@@ -181,18 +182,18 @@ db: {
 
 Each callback receives one object:
 
-| Field          | What it is                                                                                                                          |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `service`      | The Compose service this callback belongs to.                                                                                       |
-| `mode`         | The active mode (`development`, `test`, …).                                                                                         |
-| `reset`        | `true` when this run is `infra up --reset`. Always `false` under `infra destroy`.                                                   |
-| `fresh`        | **`afterReady` only.** `true` when this run created the service's data — see [Seeding: `fresh`](#seeding-fresh).                    |
-| `workspaceDir` | The workspace root, absolute.                                                                                                       |
-| `envs`         | The workspace-scope `.env` files for the mode merged over the ambient environment, plus `COMPOSE_PROJECT_NAME`.                     |
-| `tokens`       | The config's top-level [`tokens`](./configuration.md#typed-tokens), typed from what you declared.                                   |
-| `compose`      | `compose(args, opts?)` — runs `docker compose <args>` against this project: `await compose(['exec', '-T', 'db', 'psql', '-c', …])`. |
-| `run`          | `run(command, args?, opts?)` — runs any other command.                                                                              |
-| `log`          | `log(message)` — writes a line to devtooie's infra output.                                                                          |
+| Field          | What it is                                                                                                                                                                                                                                                                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `service`      | The Compose service this callback belongs to.                                                                                                                                                                                                                                                                                                                                   |
+| `mode`         | The active mode (`development`, `test`, …).                                                                                                                                                                                                                                                                                                                                     |
+| `reset`        | `true` when this run is `infra up --reset`. Always `false` under `infra destroy`.                                                                                                                                                                                                                                                                                               |
+| `fresh`        | **`afterReady` only.** `true` when this run created the service's data — see [Seeding: `fresh`](#seeding-fresh).                                                                                                                                                                                                                                                                |
+| `workspaceDir` | The workspace root, absolute.                                                                                                                                                                                                                                                                                                                                                   |
+| `envs`         | This mode's environment: the workspace-scope `.env` files and the ambient environment — **the ambient environment wins over the files**, except for the variables `env.override` names ([Environment loading](../README.md#environment-env-loading)) — plus `COMPOSE_PROJECT_NAME`. It includes `DEVTOOIE_MODE`. It is the environment `run` and `compose` give their commands. |
+| `tokens`       | The config's top-level [`tokens`](./configuration.md#typed-tokens), typed from what you declared.                                                                                                                                                                                                                                                                               |
+| `compose`      | `compose(args, opts?)` — runs `docker compose <args>` against this project, with `envs` as its environment: `await compose(['exec', '-T', 'db', 'psql', '-c', …])`.                                                                                                                                                                                                             |
+| `run`          | `run(command, args?, opts?)` — runs any other command, with `envs` as its environment: a migration or seed script gets the mode's variables and `DEVTOOIE_MODE` with nothing passed by hand.                                                                                                                                                                                    |
+| `log`          | `log(message)` — writes a line to devtooie's infra output.                                                                                                                                                                                                                                                                                                                      |
 
 ### Seeding: `fresh`
 
@@ -227,8 +228,27 @@ time, and the seed doesn't run. Give the service a clean start with
 `{ exitCode, stdout, stderr }`:
 
 - `cwd` is relative to the workspace root, which is the default.
-- `env` is merged over `envs`.
+- `env` adds to `envs`, or overrides it, for that one command.
 - A non-zero exit **rejects** — which fails the service — unless you pass `reject: false`.
+
+**A command started with `run` or `compose` gets `envs` as its whole environment**, with any `env`
+option merged on top. That includes `DEVTOOIE_MODE` and everything in the mode's workspace-scope
+`.env` files, so a migration or seed script sees the same `DATABASE_URL` and the same mode the
+packages do, with nothing passed by hand:
+
+```ts
+// DATABASE_URL and DEVTOOIE_MODE are already in the script's environment
+await run('pnpm', ['seed'], { cwd: 'packages/db' });
+```
+
+Two limits:
+
+- **It is the workspace scope only.** A variable defined in a package's own `.env` file isn't in
+  `envs` — setting `cwd` to that package doesn't add it — and neither are the `PORT` and
+  `PUBLIC_ORIGIN` devtooie injects into a package's process. Pass those with `env`, or keep what
+  a callback needs in the workspace-scope files.
+- **`compose` always runs against this project.** Its `env` option can't change
+  `COMPOSE_PROJECT_NAME`.
 
 **Use `compose`, `run` and `log` for anything a callback prints or spawns.** Their output goes
 where devtooie is showing infra output: the terminal for `infra up`, the startup screen and the

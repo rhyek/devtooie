@@ -8,7 +8,7 @@ export const DEFAULT_READY_TIMEOUT_MS = 300_000;
 export interface InfraRunOptions {
   /** Working directory; a relative path resolves against `workspaceDir`, which is the default. */
   cwd?: string;
-  /** Extra variables, merged over the callback's `envs`. */
+  /** Extra variables for this one command, merged over the callback's `envs`. */
   env?: Record<string, string>;
   /** Set `false` to get the result of a failing command instead of a rejection. */
   reject?: boolean;
@@ -34,17 +34,30 @@ export interface InfraCallbackContext<T = TokenRecord> {
   reset: boolean;
   /** The workspace root, absolute. */
   workspaceDir: string;
-  /** The workspace-scope `.env` files for the mode, merged over the ambient environment. */
+  /**
+   * This mode's environment: the workspace-scope `.env` files and the ambient environment —
+   * the ambient environment wins over the files, except for the variables `env.override` names —
+   * plus whatever the provider adds (`COMPOSE_PROJECT_NAME`). It includes `DEVTOOIE_MODE`.
+   *
+   * It is the whole environment {@link run} and {@link compose} give their commands. Workspace
+   * scope only: a package's own `.env` files, and the `PORT`/`PUBLIC_ORIGIN` devtooie injects
+   * into a package's process, aren't in it.
+   */
   envs: Record<string, string>;
   /** The config's top-level `tokens`, typed from what the config declares. */
   tokens: T;
   /**
-   * Runs `docker compose <args>` against this project — the mode's project name, environment and
-   * compose file already applied. Its output goes to devtooie's infra output, and a non-zero exit
-   * rejects unless `reject: false`.
+   * Runs `docker compose <args>` against this project — the compose file and the mode's project
+   * name already applied, and {@link envs} as its environment (an `env` option is merged on top,
+   * but can't change the project). Its output goes to devtooie's infra output, and a non-zero
+   * exit rejects unless `reject: false`.
    */
   compose: (args: string[], opts?: InfraRunOptions) => Promise<InfraRunResult>;
-  /** Runs any other command, the same way: output captured, a non-zero exit rejects. */
+  /**
+   * Runs any other command with {@link envs} as its environment (an `env` option is merged on
+   * top) — so a migration or seed script gets the mode's variables and `DEVTOOIE_MODE` with
+   * nothing passed by hand. Output captured; a non-zero exit rejects unless `reject: false`.
+   */
   run: (command: string, args?: string[], opts?: InfraRunOptions) => Promise<InfraRunResult>;
   /** Writes a line to devtooie's infra output. */
   log: (message: string) => void;
@@ -93,7 +106,10 @@ export interface InfraServiceCallbacks<T = TokenRecord> {
 export interface InfraEnabledContext<T = TokenRecord> {
   /** The active mode: `development` unless `--mode` says otherwise, or any name you pass it. */
   mode: Mode;
-  /** The workspace-scope `.env` files for the mode, merged over the ambient environment. */
+  /**
+   * The workspace-scope `.env` files for the mode and the ambient environment; the ambient
+   * environment wins over the files, except for the variables `env.override` names.
+   */
   envs: Record<string, string>;
   /** The config's top-level `tokens`. */
   tokens: T;
