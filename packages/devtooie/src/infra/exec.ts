@@ -27,6 +27,11 @@ export type SpawnInherit = (
 /** The exit code a shell reports for a command it couldn't find. */
 const SPAWN_FAILED = 127;
 
+/** Why a command never ran, from execa's result for a child that failed to spawn. */
+function spawnFailure(command: string, result: { shortMessage?: string }): string {
+  return result.shortMessage ?? `could not run ${command}`;
+}
+
 /** Feeds `onLine` complete lines from a stream of chunks; returns the flush for a trailing one. */
 function lineSplitter(onLine: (line: string) => void): {
   push: (chunk: string) => void;
@@ -74,7 +79,7 @@ export const execLines: Exec = async (command, args, { cwd, env, onLine }) => {
   out.flush();
   err.flush();
   if (result.exitCode === undefined && !result.signal) {
-    return { exitCode: SPAWN_FAILED, stdout: '', stderr: result.shortMessage };
+    return { exitCode: SPAWN_FAILED, stdout: '', stderr: spawnFailure(command, result) };
   }
   return {
     // Killed by a signal: no exit code, and not a success.
@@ -107,7 +112,7 @@ export const spawnInherit: SpawnInherit = async (command, args, { cwd, env }) =>
   try {
     const result = await child;
     if (result.exitCode === undefined && !result.signal) {
-      console.error(result.shortMessage);
+      console.error(spawnFailure(command, result));
       return SPAWN_FAILED;
     }
     return result.exitCode ?? 1;

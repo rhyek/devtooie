@@ -102,3 +102,45 @@ export interface ResolvedDockerComposeInfra {
 export interface ResolvedInfra {
   'docker-compose'?: ResolvedDockerComposeInfra;
 }
+
+// ---------------------------------------------------------------------------
+// Runtime: what a run reports while it happens, and what it returns.
+// ---------------------------------------------------------------------------
+
+/** Where a service is in an `up` or `destroy` run. `ready`, `destroyed` and `failed` are final. */
+export type InfraServiceStatus =
+  'pending' | 'destroying' | 'starting' | 'ready' | 'destroyed' | 'failed';
+
+/** Everything a run reports, through one callback, for whichever surface is showing it. */
+export type InfraEvent =
+  /** The services this run acts on, once resolved. */
+  | { type: 'targets'; action: 'up' | 'destroy'; services: string[] }
+  /** A service changed status, or the step it is on (`detail`) changed. */
+  | { type: 'status'; service: string; status: InfraServiceStatus; detail?: string }
+  /** A line of output: from a callback (tagged with its service) or from the provider's tool. */
+  | { type: 'output'; service?: string; line: string; isError: boolean };
+
+export interface InfraServiceResult {
+  service: string;
+  ok: boolean;
+  /** Why it failed; may span several lines (a failed container's log tail, say). */
+  error?: string;
+}
+
+export interface InfraRunSummary {
+  /** True only when every target succeeded. */
+  ok: boolean;
+  services: InfraServiceResult[];
+}
+
+/** One reading of whether a service is ready. */
+export interface Readiness {
+  state: 'pending' | 'ready' | 'failed';
+  /** What the provider saw, in a few words (`waiting for healthy`, `exited (1)`). */
+  detail: string;
+}
+
+/** A failure with a message meant for the user as-is — printed without a stack trace. */
+export class InfraError extends Error {
+  override name = 'InfraError';
+}
