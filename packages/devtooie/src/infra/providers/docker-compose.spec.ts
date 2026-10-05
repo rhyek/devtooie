@@ -255,7 +255,7 @@ describe('lifecycle primitives', () => {
     expect(subs()).toEqual([
       ['config', '--services'],
       ['ps', '--all', '--format', 'json', 'db', 'redis'],
-      ['up', '--detach', '--remove-orphans', 'db', 'redis'],
+      ['up', '--detach', '--remove-orphans', '--quiet-pull', 'db', 'redis'],
       ['ps', '--all', '--format', 'json', 'db', 'redis'],
       ['ps', '--all', '--format', 'json', 'db'],
     ]);

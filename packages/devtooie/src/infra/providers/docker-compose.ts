@@ -223,7 +223,8 @@ export class DockerComposeProvider extends InfraProvider {
   /**
    * One `up` for every target, never one per service: concurrent `up` calls on a fresh project
    * race to create the network. `--remove-orphans` takes only containers whose service is gone
-   * from the compose file.
+   * from the compose file. `--quiet-pull` keeps an image pull to its first and last line: without
+   * it, a first run prints several hundred lines of per-layer download progress.
    */
   protected async startServices(targets: string[], emit: Emit): Promise<void> {
     // Note what is already running, so the wait below can tell a container that has been up all
@@ -233,7 +234,10 @@ export class DockerComposeProvider extends InfraProvider {
         this.seenRunning.add(row.ID!);
       }
     }
-    await this.compose(['up', '--detach', '--remove-orphans', ...targets], this.progress(emit));
+    await this.compose(
+      ['up', '--detach', '--remove-orphans', '--quiet-pull', ...targets],
+      this.progress(emit),
+    );
   }
 
   /**

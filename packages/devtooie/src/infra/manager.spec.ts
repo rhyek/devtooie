@@ -85,7 +85,7 @@ describe('InfraManager', () => {
     expect(summary).toEqual({ ok: true, services: [{ service: 'db', ok: true }] });
     expect(seen).toEqual({ tokens: { region: 'eu' }, mode: 'development' });
     expect(calls.map((c) => c.args.slice(3).join(' '))).toContain(
-      'up --detach --remove-orphans db',
+      'up --detach --remove-orphans --quiet-pull db',
     );
   });
 
