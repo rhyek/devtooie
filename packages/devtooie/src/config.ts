@@ -3,6 +3,13 @@ import type { z } from 'zod';
 import { ambientEnv, resolveEnv, envFileNames, currentMode, type EnvOverride } from './env.js';
 import { type CommandSchema, type PackageConfigSchema, DefineConfigSchema, DEFAULT_HEALTHCHECK_TIMEOUT_MS } from './config-schema.js'; // prettier-ignore
 import type { GeneratedPackageConfig, GeneratedDefineConfig } from './config.generated.js';
+import { composeProjectName } from './infra/project-name.js';
+import {
+  DEFAULT_READY_TIMEOUT_MS,
+  type InfraInput,
+  type InfraServiceCallbacks,
+  type ResolvedInfra,
+} from './infra/types.js';
 
 export const PackageType = { BACKEND: 'backend', BROWSER: 'browser', LIB: 'lib' } as const;
 export type PackageType = (typeof PackageType)[keyof typeof PackageType];
@@ -436,8 +443,16 @@ export type DefineConfigOptions<
   RootDir extends string | undefined = undefined,
 > = Omit<
   GeneratedDefineConfig,
-  'packages' | 'urls' | 'tokens' | 'devReverseProxy' | 'packageRootDir'
+  'packages' | 'urls' | 'tokens' | 'devReverseProxy' | 'packageRootDir' | 'infra'
 > & {
+  /**
+   * Infrastructure that isn't a package — a database, a cache, a broker — keyed by provider
+   * (`'docker-compose'` is the only one). `devtooie infra up` brings it up and waits until it is
+   * ready, and a dev session does the same before starting the packages; quitting devtooie
+   * leaves it running. `infra: { 'docker-compose': {} }` is a complete config.
+   * See {@link InfraInput}.
+   */
+  infra?: InfraInput<Top>;
   /**
    * The directory the packages live under, relative to `workspaceDir` — `'packages'`, say. With
    * it set, a package's directory is inferred as `<packageRootDir>/<key>` and its `relativeDir`
@@ -539,6 +554,8 @@ export interface Config<
   urls?: UrlEntry[];
   /** The dev reverse proxy, resolved, or `undefined` when the config declares none. */
   devReverseProxy?: ResolvedDevReverseProxy;
+  /** The infra providers, resolved, or `undefined` when the config declares none. */
+  infra?: ResolvedInfra;
   /** Resolved `.env` filenames loaded per package, for the active mode. */
   envFiles: string[];
   /** The active mode (`--mode`, else `DEVTOOIE_MODE`, else `development`). */
@@ -555,6 +572,8 @@ export interface Config<
 
 let registeredPackages: AnyPackageConfig[] = [];
 let loadedConfig: Config<string> | null = null;
+/** The loaded config's top-level `tokens` — what an infra callback receives as `tokens`. */
+let loadedTokens: TokenRecord = {};
 /**
  * Absolute directory package paths resolve against. Set when a config loads; until then the
  * process cwd, which is what `defineConfig` itself defaults to.
@@ -578,6 +597,11 @@ export function getLoadedConfig(): Config<string> | null {
  */
 export function getWorkspaceDir(): string {
   return workspaceRoot;
+}
+
+/** The loaded config's top-level `tokens` (empty until a config loads, or when it declares none). */
+export function getConfigTokens(): TokenRecord {
+  return loadedTokens;
 }
 
 export function findPackage(name: string): AnyPackageConfig {
@@ -1092,6 +1116,22 @@ export function defineConfig<
     validateDevReverseProxy(devReverseProxy, packages as unknown as AnyPackageConfig[]);
   }
 
+  // Only the project name needs the environment; the callbacks stay as written, to run when an
+  // `infra` command does.
+  const compose = parsed.infra?.['docker-compose'];
+  const infra: ResolvedInfra | undefined = compose && {
+    'docker-compose': {
+      file: compose.file === undefined ? undefined : path.resolve(workspaceDir, compose.file),
+      projectName: composeProjectName({
+        envs: workspaceEnv.envs(),
+        workspaceDir,
+        mode: currentMode(),
+      }),
+      readyTimeout: compose.readyTimeout ?? DEFAULT_READY_TIMEOUT_MS,
+      services: (compose.services ?? {}) as Record<string, InfraServiceCallbacks>,
+    },
+  };
+
   const resolved: Config<string> = {
     apiPort: parsed.apiPort,
     packageRootDir: parsed.packageRootDir,
@@ -1101,6 +1141,7 @@ export function defineConfig<
     ) as unknown as Config<string>['packages'],
     urls,
     devReverseProxy,
+    infra,
     envFiles,
     envMode: currentMode(),
     envOverride,
@@ -1108,6 +1149,7 @@ export function defineConfig<
   };
   registeredPackages = packages as unknown as AnyPackageConfig[];
   loadedConfig = resolved;
+  loadedTokens = tokens;
   // The runtime shape is identical; only the key/token types are sharper for the caller.
   return resolved as unknown as Config<K, P, Top>;
 }

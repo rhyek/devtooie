@@ -201,6 +201,36 @@ export const DevReverseProxySchema = z.strictObject({
     ),
 });
 
+// One callback an infra service can attach. Zod only checks it's a function and passes it
+// through untouched; the real signature lives in infra/types.ts and is overlaid in config.ts.
+const infraCallback = (name: string) =>
+  z
+    .custom<(...args: never[]) => unknown>((v) => typeof v === 'function', {
+      message: `infra: ${name} must be a function`,
+    })
+    .optional();
+
+// Strict throughout: a misspelled callback (`onReady`) must be an error, not a silently ignored key.
+export const InfraServiceSchema = z.strictObject({
+  afterDestroy: infraCallback('afterDestroy'),
+  beforeUp: infraCallback('beforeUp'),
+  afterReady: infraCallback('afterReady'),
+});
+
+export const DockerComposeInfraSchema = z.strictObject({
+  file: z.string().min(1).optional(),
+  readyTimeout: z.number().positive().optional(),
+  services: z.record(z.string().min(1), InfraServiceSchema).optional(),
+});
+
+// Keyed by provider. Overridden in config.ts (callbacks erase to `any`); documented in
+// infra/types.ts.
+export const InfraSchema = z
+  .strictObject({ 'docker-compose': DockerComposeInfraSchema.optional() })
+  .refine((infra) => Object.values(infra).some((provider) => provider !== undefined), {
+    message: "infra must name a provider — `infra: { 'docker-compose': {} }`",
+  });
+
 export const DefineConfigSchema = z.object({
   apiPort: z
     .number()
@@ -218,6 +248,8 @@ export const DefineConfigSchema = z.object({
   urls: z.array(UrlEntrySchema).optional(),
   // Overridden in config.ts (callbacks erase to `any`); documented there.
   devReverseProxy: DevReverseProxySchema.optional(),
+  // Overridden in config.ts (callbacks erase to `any`); documented in infra/types.ts.
+  infra: InfraSchema.optional(),
   workspaceDir: z
     .string()
     .optional()

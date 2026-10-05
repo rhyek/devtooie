@@ -111,6 +111,19 @@ export type GeneratedDefineConfig = {
         /** Scheme of the public URLs devtooie derives (footer links, `PUBLIC_ORIGIN`). Defaults from `rootDomain`: `http` on `localhost` (the browser hits the proxy directly, so the URLs carry its `port`), `https` on any other root (a TLS terminator in front, so no port). */
         urlScheme?: ("http" | "https") | undefined;
     } | undefined;
+    infra?: {
+        "docker-compose"?: {
+            file?: string | undefined;
+            readyTimeout?: number | undefined;
+            services?: {
+                [key: string]: {
+                    afterDestroy?: any | undefined;
+                    beforeUp?: any | undefined;
+                    afterReady?: any | undefined;
+                };
+            } | undefined;
+        } | undefined;
+    } | undefined;
     /** Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`. */
     workspaceDir?: string | undefined;
     /** Arbitrary values handed to every `port`/`healthcheck`/`urls` callback as `tokens`. */

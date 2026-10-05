@@ -36,6 +36,17 @@ export type {
   Command,
 } from './config.js';
 export type { Register, PackageConfig, PackageName } from './register.js';
+export type {
+  InfraInput,
+  DockerComposeInfraInput,
+  InfraServiceCallbacks,
+  InfraCallback,
+  InfraCallbackContext,
+  InfraRunOptions,
+  InfraRunResult,
+  ResolvedInfra,
+  ResolvedDockerComposeInfra,
+} from './infra/types.js';
 export {
   resolveEnv,
   envCandidatePaths,

@@ -1548,3 +1548,80 @@ describe('paths without a leading slash', () => {
     expect(cfg.packages.api.urls).toEqual(['ws://localhost:3001/socket']);
   });
 });
+
+describe('infra', () => {
+  let ws: string;
+  beforeEach(() => {
+    ws = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-infra-'));
+  });
+  afterEach(() => fs.rmSync(ws, { recursive: true, force: true }));
+
+  const withInfra = (infra: unknown) =>
+    defineConfig({
+      workspaceDir: ws,
+      packageRootDir: 'packages',
+      infra: infra as RootedOpts['infra'],
+      packages: { web: {} },
+    });
+
+  test('is absent from the resolved config when the block is omitted', () => {
+    expect(
+      defineConfig({ packageRootDir: 'packages', packages: { web: {} } }).infra,
+    ).toBeUndefined();
+  });
+
+  test('an empty docker-compose block is a complete config, with defaults applied', () => {
+    const cfg = withInfra({ 'docker-compose': {} });
+    expect(cfg.infra).toEqual({
+      'docker-compose': {
+        file: undefined,
+        projectName: `${path.basename(ws).toLowerCase()}-development`,
+        readyTimeout: 300_000,
+        services: {},
+      },
+    });
+  });
+
+  test('rejects an infra block naming no provider', () => {
+    expect(() => withInfra({})).toThrow(/infra[\s\S]*docker-compose/);
+  });
+
+  test('rejects an unknown provider and an unknown service field', () => {
+    expect(() => withInfra({ podman: {} })).toThrow(/infra/);
+    expect(() => withInfra({ 'docker-compose': { services: { db: { onStarted() {} } } } })).toThrow(
+      /infra/,
+    );
+  });
+
+  test('rejects a callback that is not a function', () => {
+    expect(() =>
+      withInfra({ 'docker-compose': { services: { db: { afterReady: 'migrate' } } } }),
+    ).toThrow(/afterReady[\s\S]*function|function[\s\S]*afterReady/);
+  });
+
+  test('rejects a non-positive readyTimeout', () => {
+    expect(() => withInfra({ 'docker-compose': { readyTimeout: 0 } })).toThrow(/readyTimeout/);
+  });
+
+  test('resolves `file` to an absolute path under the workspace', () => {
+    const cfg = withInfra({ 'docker-compose': { file: './infra/compose.yaml', readyTimeout: 5 } });
+    expect(cfg.infra?.['docker-compose']).toMatchObject({
+      file: path.join(ws, 'infra', 'compose.yaml'),
+      readyTimeout: 5,
+    });
+  });
+
+  test('takes the project name from COMPOSE_PROJECT_NAME in a workspace .env file', () => {
+    fs.writeFileSync(path.join(ws, '.env'), 'COMPOSE_PROJECT_NAME=from-env-file\n');
+    expect(withInfra({ 'docker-compose': {} }).infra?.['docker-compose']?.projectName).toBe(
+      'from-env-file',
+    );
+  });
+
+  test('keeps the callbacks by identity, and JSON drops them', () => {
+    const afterReady = async () => {};
+    const cfg = withInfra({ 'docker-compose': { services: { db: { afterReady } } } });
+    expect(cfg.infra?.['docker-compose']?.services.db?.afterReady).toBe(afterReady);
+    expect(JSON.parse(JSON.stringify(cfg)).infra['docker-compose'].services).toEqual({ db: {} });
+  });
+});

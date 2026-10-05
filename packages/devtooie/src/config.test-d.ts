@@ -13,6 +13,7 @@
 import { describe, it, test, expectTypeOf } from 'vitest';
 import { defineConfig, type ResolvedDevReverseProxy } from './config.js';
 import type { PackageConfig } from './register.js';
+import type { InfraRunResult, ResolvedInfra } from './infra/types.js';
 
 describe('per-package tokens', () => {
   it('gives each package the config tokens plus its own, and nothing from a sibling', () => {
@@ -365,5 +366,38 @@ describe('packageRootDir', () => {
     const config = defineConfig({ packageRootDir: 'packages', packages: { api: {} } });
     expectTypeOf(config.packages.api.relativeDir).toEqualTypeOf<string>();
     expectTypeOf(config.packageRootDir).toEqualTypeOf<string | undefined>();
+  });
+});
+
+describe('infra callbacks', () => {
+  test("type the context from the config's own tokens", () => {
+    const config = defineConfig({
+      packageRootDir: 'packages',
+      tokens: { domain: 'example.test' },
+      infra: {
+        'docker-compose': {
+          services: {
+            db: {
+              afterReady: async (ctx) => {
+                expectTypeOf(ctx.tokens.domain).toEqualTypeOf<'example.test'>();
+                expectTypeOf(ctx.tokens).not.toHaveProperty('region');
+                expectTypeOf(ctx.reset).toEqualTypeOf<boolean>();
+                expectTypeOf(ctx.service).toEqualTypeOf<string>();
+                expectTypeOf(ctx.workspaceDir).toEqualTypeOf<string>();
+                expectTypeOf(ctx.compose).returns.toEqualTypeOf<Promise<InfraRunResult>>();
+                expectTypeOf(ctx.run).returns.toEqualTypeOf<Promise<InfraRunResult>>();
+                expectTypeOf(ctx.log).parameters.toEqualTypeOf<[message: string]>();
+              },
+              // a synchronous callback is fine too
+              beforeUp: (ctx) => {
+                expectTypeOf(ctx.mode).toEqualTypeOf<string>();
+              },
+            },
+          },
+        },
+      },
+      packages: { web: {} },
+    });
+    expectTypeOf(config.infra).toEqualTypeOf<ResolvedInfra | undefined>();
   });
 });
