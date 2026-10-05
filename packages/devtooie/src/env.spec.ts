@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, test } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -89,6 +89,28 @@ describe('resolveMode', () => {
       expect(
         resolveMode(['node', 'cli', '--mode', 'test', 'cmd', '--', 'vitest', '--mode', 'watch']),
       ).toBe('test');
+    });
+  });
+
+  test('stops at an `infra <provider>` passthrough, whose flags belong to the provider', () => {
+    withAmbient({}, () => {
+      delete process.env.DEVTOOIE_MODE;
+      // `-m 2g` is `docker compose build`'s memory limit, not a devtooie mode.
+      expect(resolveMode(['node', 'cli', 'infra', 'docker-compose', 'build', '-m', '2g'])).toBe(
+        'development',
+      );
+      expect(resolveMode(['node', 'cli', 'infra', 'docker-compose', 'run', '--mode=x', 'db'])).toBe(
+        'development',
+      );
+      // ...but a mode before the provider word still counts, in either position.
+      expect(
+        resolveMode(['node', 'cli', '-m', 'test', 'infra', 'docker-compose', 'build', '-m', '2g']),
+      ).toBe('test');
+      expect(
+        resolveMode(['node', 'cli', 'infra', '-m', 'test', 'docker-compose', '--mode', 'x']),
+      ).toBe('test');
+      // The other infra subcommands take the mode anywhere, like `cmd`.
+      expect(resolveMode(['node', 'cli', 'infra', 'up', '--mode', 'test'])).toBe('test');
     });
   });
 

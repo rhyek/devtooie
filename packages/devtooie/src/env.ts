@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import dotenvx from '@dotenvx/dotenvx';
 import type { AnyPackageConfig } from './config.js';
+import { findPassthrough } from './infra/argv.js';
 
 /** The mode used when neither `--mode` nor `DEVTOOIE_MODE` says otherwise. */
 export const DEFAULT_MODE = 'development';
@@ -36,9 +37,13 @@ export function assertValidMode(mode: string): string {
  * **Stops at the first bare `--`.** Everything after it belongs to the command being run:
  * `devtooie cmd -- vitest --mode watch` passes `--mode watch` to vitest, and must not silently
  * load `.env.watch` here.
+ *
+ * **And at an `infra <provider>` passthrough**, for the same reason:
+ * `devtooie infra docker-compose build -m 2g` hands `-m 2g` to Compose.
  */
 export function resolveMode(argv: readonly string[]): string {
-  const end = argv.indexOf('--');
+  const passthrough = findPassthrough(argv);
+  const end = passthrough === -1 ? argv.indexOf('--') : passthrough;
   const args = end === -1 ? argv : argv.slice(0, end);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] ?? '';
