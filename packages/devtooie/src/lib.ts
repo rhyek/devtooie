@@ -47,6 +47,31 @@ export function displayLogFile(file: string): string {
 }
 
 /**
+ * A duration in words for the exit line: `3 days 2 hours 3 minutes`. Units that are zero
+ * are left out, and seconds appear only while the whole duration is under a minute. Rounds
+ * down, so a unit never reads as the next one up.
+ */
+export function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  if (totalSeconds < 60) {
+    return plural(totalSeconds, 'second');
+  }
+  const units: [number, string][] = [
+    [Math.floor(totalSeconds / 86_400), 'day'],
+    [Math.floor((totalSeconds % 86_400) / 3600), 'hour'],
+    [Math.floor((totalSeconds % 3600) / 60), 'minute'],
+  ];
+  return units
+    .filter(([count]) => count > 0)
+    .map(([count, unit]) => plural(count, unit))
+    .join(' ');
+}
+
+function plural(count: number, unit: string): string {
+  return `${count} ${unit}${count === 1 ? '' : 's'}`;
+}
+
+/**
  * The most recently modified `*.log` file in `dir` (absolute path), or null when `dir` is
  * missing or holds no logfiles. Used by `devtooie logs` to locate the current session's log
  * when a live instance can't be queried for it.

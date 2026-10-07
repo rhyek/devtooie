@@ -77,8 +77,8 @@ const logFileRef = { current: options.logFile };        // run phase keeps this 
 process.stdout.write(`▶ devtooie started\n`);           // primary screen, before alt
 const instance = render(<App logFileRef={logFileRef}/>, { alternateScreen: true, … });
 void instance.waitUntilExit().finally(() => {
-  const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
-  let message = `■ devtooie exited after ${seconds}s\n`;
+  const duration = formatDuration(Date.now() - startedAt);
+  let message = `■ devtooie exited after ${duration}\n`;
   if (logFileRef.current) message += `  logfile: ${displayLogFile(logFileRef.current)}\n`;
   process.stdout.write(message, () => process.exit(0));
 });
@@ -89,7 +89,7 @@ void instance.waitUntilExit().finally(() => {
   when the screen is restored on exit.
 - **`waitUntilExit()`** resolves only after Ink's teardown barrier — i.e. after
   `exitAlternativeScreen` has flushed and the primary screen is restored — so the
-  **`■ devtooie exited after Ns`** line lands on the clean, restored screen.
+  **`■ devtooie exited after …`** line lands on the clean, restored screen.
 - Exiting from the write **callback** ensures that line is flushed before the
   process dies (rather than racing `process.exit`).
 - The **`logfile:`** line beneath it prints the last logfile written to, through
@@ -104,7 +104,7 @@ Result on the primary screen after a session:
 ```
 > pnpm dev
 ▶ devtooie started
-■ devtooie exited after 42.3s
+■ devtooie exited after 2 hours 14 minutes
   logfile: node_modules/.devtooie/logs/1783966456337.log
 >
 ```

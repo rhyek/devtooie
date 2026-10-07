@@ -4,6 +4,7 @@ import path from 'node:path';
 import React, { useCallback, useRef, useState } from 'react';
 import {
   displayLogFile,
+  formatDuration,
   getRuntimeDepsMap,
   getSelectablePackages,
   initialPhaseFor,
@@ -170,8 +171,8 @@ export function renderApp(options: RenderAppOptions = {}): Instance {
     alternateScreen: true,
   });
   void instance.waitUntilExit().finally(() => {
-    const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
-    let message = chalk.dim(`■ devtooie exited after ${seconds}s\n`);
+    const duration = formatDuration(Date.now() - startedAt);
+    let message = chalk.dim(`■ devtooie exited after ${duration}\n`);
     if (logFileRef.current) {
       message += chalk.dim(`  logfile: ${displayLogFile(logFileRef.current)}\n`);
     }

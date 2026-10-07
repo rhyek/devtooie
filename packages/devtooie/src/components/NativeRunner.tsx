@@ -481,7 +481,7 @@ export function NativeRunner({
     manager.dispose();
     // Ink's teardown drives the exit from here: `exit()` unmounts, restores the
     // primary screen, and resolves `waitUntilExit` in renderApp, which prints the
-    // "exited after Ns" line on the restored screen and exits the process.
+    // "exited after …" line on the restored screen and exits the process.
     exit();
     // Safety net: force-exit if that teardown ever stalls, so a fully-cleaned-up
     // session (every child already killed above) can't leave a lingering parent
