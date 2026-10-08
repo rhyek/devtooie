@@ -120,6 +120,21 @@ The case it exists for is a file that *extends* an inherited value rather than r
 line silently does nothing whenever the shell already sets `NODE_OPTIONS`, which VS Code's
 integrated terminal always does.
 
+**Ambient means the environment devtooie was started with** — what the shell (or a CI runner)
+exported. A value that comes from a `.env` file is never ambient, at either scope. So
+`env.override` only ever decides between the shell and the files; it never decides between two
+files, where the higher-ranked one always wins. With `LOG_LEVEL=info` in the workspace's `.env`
+and `LOG_LEVEL=warn` in `packages/api/.env`:
+
+| The shell has     | `env.override`  | `api` gets `LOG_LEVEL=`                                    |
+| ----------------- | --------------- | ---------------------------------------------------------- |
+| `LOG_LEVEL=debug` | not set         | `debug` — the shell wins                                   |
+| `LOG_LEVEL=debug` | `['LOG_LEVEL']` | `warn` — the files win, the package's over the workspace's |
+| nothing           | not set         | `warn`                                                     |
+| nothing           | `['LOG_LEVEL']` | `warn`                                                     |
+
+A package file needs no `env.override` entry to replace a variable the workspace's files define.
+
 Which **files** load isn't configured here — that's [`--mode`](./cli.md).
 
 ## Callbacks instead of interpolation

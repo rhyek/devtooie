@@ -281,11 +281,14 @@ The two `.local` files are the personal tier — commit `.env` and `.env.<mode>`
 
 **Package scope overrides workspace scope**, and within a scope a later file
 overrides an earlier one. `${VAR}` references expand against already-loaded files
-and the current environment.
+and the ambient environment.
 
 **The ambient environment wins over the files**, as in Next.js, Vite and
-`node --env-file` — so `FOO=bar devtooie` overrides a file for one run. Name the
-exceptions with `env.override` when a file needs to *extend* an inherited value:
+`node --env-file` — so `FOO=bar devtooie` overrides a file for one run. Ambient
+means the environment devtooie was started with: a variable only the files define
+takes its highest-ranked file's value, so a package's file replaces the
+workspace's with no further setup. Name the exceptions with `env.override` when a
+file needs to *extend* an inherited value:
 
 ```ts
 defineConfig({

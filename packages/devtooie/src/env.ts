@@ -102,6 +102,11 @@ interface ResolveEnvOptions {
   files?: string[];
   /** Variables the files may override the ambient environment for. */
   override?: EnvOverride;
+  /**
+   * The ambient environment to resolve against. Defaults to the one devtooie was started with
+   * (see {@link captureShellEnv}), or the live `process.env` when none was recorded.
+   */
+  ambient?: Record<string, string>;
 }
 
 /**
@@ -114,7 +119,7 @@ export function envCandidatePaths({
   cwd,
   relativeDir,
   files = envFileNames(),
-}: Omit<ResolveEnvOptions, 'override'>): string[] {
+}: Omit<ResolveEnvOptions, 'override' | 'ambient'>): string[] {
   const workspaceDir = path.resolve(cwd);
   const pkgDir = path.resolve(cwd, relativeDir);
   const scopes = pkgDir === workspaceDir ? [workspaceDir] : [workspaceDir, pkgDir];
@@ -134,6 +139,23 @@ export function ambientEnv(): Record<string, string> {
     }
   }
   return env;
+}
+
+/** The environment devtooie was started with, once {@link captureShellEnv} has recorded it. */
+let shellEnv: Record<string, string> | undefined;
+
+/**
+ * Records the environment as it stands — the one devtooie was started with — as the **ambient
+ * environment** every later {@link resolveEnv} resolves against.
+ *
+ * The CLI calls this once, before it merges the workspace's `.env` files into its own
+ * `process.env`. From then on `process.env` holds file values next to the shell's, and nothing
+ * in it says which is which — but only a variable the shell set is entitled to win over a file.
+ * A workspace file's value that counted as ambient would beat the package file meant to
+ * override it, and would keep beating the workspace file itself after an edit.
+ */
+export function captureShellEnv(): void {
+  shellEnv = ambientEnv();
 }
 
 /**
@@ -174,12 +196,14 @@ export function literalizeForExpansion(ambient: Record<string, string>): Record<
  * The **ambient environment wins** over the files — matching Next.js, Vite, dotenv-flow and
  * `node --env-file`, so `FOO=bar devtooie` overrides a file for one run. `override` names the
  * exceptions: variables whose file value is allowed to win instead (or `true` for all of them).
+ * Ambient means what devtooie was started with: a variable only the files define is never
+ * ambient, so its highest-ranked file wins whatever `override` says.
  */
 export function resolveEnv(opts: ResolveEnvOptions): EnvResolution {
   const candidates = envCandidatePaths(opts);
   const files = candidates.filter((p) => fs.existsSync(p));
 
-  const ambient = ambientEnv();
+  const ambient = opts.ambient ?? shellEnv ?? ambientEnv();
   const source = files.map((p) => fs.readFileSync(p, 'utf8')).join('\n');
   if (!source) {
     return { env: {}, files, candidates };

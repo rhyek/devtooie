@@ -12,7 +12,14 @@ import {
   getRegisteredPackages,
   getLoadedConfig,
 } from './config.js';
-import { currentMode, envFileNames, packageEnvLayer, resolveEnv, resolveMode } from './env.js';
+import {
+  captureShellEnv,
+  currentMode,
+  envFileNames,
+  packageEnvLayer,
+  resolveEnv,
+  resolveMode,
+} from './env.js';
 import { acquireDevSession, startSessionDevReverseProxy } from './dev-session.js';
 import { handleShellError } from './errors.js';
 import { passthroughArgs } from './infra/argv.js';
@@ -99,16 +106,17 @@ async function anchorAtConfigRoot(invocationCwd: string): Promise<void> {
   if (root !== process.cwd()) {
     process.chdir(root);
   }
+  // Before the merge below puts file values into `process.env`: what is there now is what the
+  // shell handed us, and only that may win over a `.env` file (see captureShellEnv).
+  captureShellEnv();
   try {
     await loadConfig(root);
     const files = getLoadedConfig()?.envFiles ?? envFileNames();
-    // Deliberately resolved WITHOUT the config's `env.override`. An overriding variable is
-    // typically self-referential (`NODE_OPTIONS=$NODE_OPTIONS --flag`), and this merge is the
-    // base that every later per-package resolution expands against — applying the override here
-    // would fold the file's contribution into the ambient value, and the package-level pass
-    // would then append it a second time. Without it these keys resolve to their ambient value,
-    // so the assignment is a no-op for them and each child appends exactly once. (Nothing is
-    // lost for devtooie's own process: node reads NODE_OPTIONS at startup, long before this.)
+    // Deliberately resolved WITHOUT the config's `env.override`, so a variable the shell set
+    // keeps the shell's value here. An overriding variable is typically self-referential
+    // (`NODE_OPTIONS=$NODE_OPTIONS --flag`), and its file value is applied where a child's
+    // environment is built, not to devtooie's own. (Nothing is lost for devtooie's own process:
+    // node reads NODE_OPTIONS at startup, long before this.)
     const { env } = resolveEnv({ cwd: root, relativeDir: '.', files });
     Object.assign(process.env, env);
   } catch (err) {

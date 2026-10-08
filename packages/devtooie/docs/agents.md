@@ -1488,7 +1488,7 @@ The two `.local` files are the personal tier — commit `.env` and `.env.<mode>`
 `.env*.local` out of git.
 
 **Package scope overrides workspace scope**, and within a scope a later file overrides an earlier
-one. `${VAR}` references expand against already-loaded files and the current environment.
+one. `${VAR}` references expand against already-loaded files and the ambient environment.
 
 **The ambient environment wins over the files**, as in Next.js, Vite and `node --env-file` — so
 `FOO=bar devtooie` overrides a file for a single run. `env.override` names the exceptions, for
@@ -1502,7 +1502,30 @@ defineConfig({
 });
 ```
 
-With that, `NODE_OPTIONS=$NODE_OPTIONS --flag` appends to whatever the shell already set.
+With that, `NODE_OPTIONS=$NODE_OPTIONS --flag` appends to whatever the shell already set. Without
+it that line silently does nothing whenever the shell already sets `NODE_OPTIONS`, which VS Code's
+integrated terminal always does.
+
+**Ambient means the environment devtooie was started with** — what the shell (or a CI runner)
+exported. A value that comes from a `.env` file is never ambient, at either scope. So
+`env.override` only ever decides between the shell and the files; it never decides between two
+files, where the higher-ranked one always wins. With `LOG_LEVEL=info` in the workspace's `.env`
+and `LOG_LEVEL=warn` in `packages/api/.env`:
+
+| The shell has     | `env.override`  | `api` gets `LOG_LEVEL=`                                    |
+| ----------------- | --------------- | ---------------------------------------------------------- |
+| `LOG_LEVEL=debug` | not set         | `debug` — the shell wins                                   |
+| `LOG_LEVEL=debug` | `['LOG_LEVEL']` | `warn` — the files win, the package's over the workspace's |
+| nothing           | not set         | `warn`                                                     |
+| nothing           | `['LOG_LEVEL']` | `warn`                                                     |
+
+A package file needs no `env.override` entry to replace a variable the workspace's files define.
+
+When a variable doesn't have the value you expect in a package, work down that table: check
+whether the shell that started devtooie exports it, then which files define it —
+`devtooie cmd -p <package> -- printenv NAME` prints what the package gets. Don't work around a
+workspace value by inventing a second variable name: put the value in the package's own `.env`
+file.
 
 A package's `port` is also injected as `PORT` (an explicit `.env` `PORT` still overrides it), and under the [dev reverse proxy](#dev-reverse-proxy) a routable package also gets `PUBLIC_ORIGIN` (its public `https://<subdomain>.<rootDomain>`) under the same rule. The reverse direction works too: `port` may be a callback (`port: ({ envs }) => Number(envs.BACKEND_PORT)`) that reads these same resolved files to decide the port, and `healthcheck`/`urls` callbacks get the same `envs` — see [Callbacks instead of interpolation](#callbacks-instead-of-interpolation).
 

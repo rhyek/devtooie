@@ -17,6 +17,7 @@
 
 - **A saved selection naming a package that no longer exists no longer crashes the picker.**
 - **Resizing the terminal redraws the TUI right away, even with a long log.**
+- **A package's `.env` files override the workspace's for the same variable**, with no `env.override` entry needed. See [Environment loading](README.md#environment-env-loading).
 
 ### Breaking changes
 
