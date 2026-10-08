@@ -369,6 +369,33 @@ describe('wrapping a line too wide for the terminal', () => {
       expect(row.length).toBeLessThanOrEqual(COLS);
     }
   });
+
+  // The viewport counts every buffered line's rows without wrapping it, then wraps only the few
+  // on screen — so the count has to be the wrap's length for whatever a line looks like, at any
+  // width, in either timestamp layout, or every row below the disagreement lands a row off.
+  for (const timestamps of [true, false]) {
+    test(`counts the rows a line wraps into without wrapping it (timestamps ${timestamps ? 'on' : 'off'})`, () => {
+      manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: timestamps });
+      const words = 'lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor';
+      manager.logControl('asset-fetch', { content_url: LONG, note: `${words} ${words}` });
+      manager.logControl('short');
+      manager.logSystem('x'.repeat(300));
+      manager.logSystem(`${words} ${chalk.red(LONG)} ${words}`);
+      manager.logSystem(`    indented ${words} ${words}`);
+      manager.logSystem(`✓ built … ➜ ${words} ${words}`);
+      manager.logSystem(`wide 漢字 🚀 ${words} ${words}`);
+      const lines = manager.getVisibleLines();
+      for (let cols = 30; cols <= 150; cols += 7) {
+        for (const mode of ['date', 'time'] as const) {
+          for (const line of lines) {
+            expect(manager.countRows(line, cols, mode), `cols=${cols} ${mode} ${line.text}`).toBe(
+              manager.wrapLineRows(line, cols, mode).length,
+            );
+          }
+        }
+      }
+    });
+  }
 });
 
 describe('ProcessManager', () => {

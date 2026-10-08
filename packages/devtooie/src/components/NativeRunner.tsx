@@ -511,16 +511,18 @@ export function NativeRunner({
   // which are swallowed whole (see the input handler). True only in the brief
   // window after a terminal reattach drops our SGR encoding mode.
   const swallowLegacyPayloadRef = useRef(false);
-  // Runs every render to re-measure the chrome (top indicator + footer) as its
-  // content changes; the setState calls bail on unchanged values, so no loop.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useLayoutEffect(() => {
+  const measureChrome = useCallback(() => {
     if (bottomRef.current) {
       setBottomHeight(measureElement(bottomRef.current).height);
     }
     if (topRef.current) {
       setTopHeight(measureElement(topRef.current).height);
     }
+  }, []);
+  // Runs every render to re-measure the chrome (top indicator + footer) as its
+  // content changes; the setState calls bail on unchanged values, so no loop.
+  useLayoutEffect(() => {
+    measureChrome();
     if (!startedRef.current) {
       startedRef.current = true;
       manager.startAll();
@@ -573,6 +575,18 @@ export function NativeRunner({
   useEffect(() => {
     stdout.write(MOUSE_ENABLE);
   }, [stdout, columns, rows]);
+
+  // On a resize, re-measure the chrome in the same commit as the new size. By the time this
+  // listener runs Ink has laid the tree out at the new width (see "Resizing" in
+  // docs/architecture/rendering.md), so a footer that now wraps differently already has its
+  // new height — and taking it here, not after the commit, spares a frame whose pane is the
+  // wrong height.
+  useEffect(() => {
+    stdout.on('resize', measureChrome);
+    return () => {
+      stdout.off('resize', measureChrome);
+    };
+  }, [stdout, measureChrome]);
 
   // Reporting takes over the mouse from the terminal while active, so it MUST be
   // disabled on unmount — and defensively in `shutdown()` — to hand the mouse back.
@@ -1058,8 +1072,12 @@ export function NativeRunner({
         ? FOCUS_COLOR
         : MUTED_COLOR;
 
+  // `width="100%"` rather than `columns`: on a resize Ink repaints once on its own, before this
+  // component has re-rendered at the new size. A root pinned to the old `columns` draws that
+  // frame — the footer's box with it — at the old width, which a narrower terminal wraps into
+  // garbage; a root that follows Ink's own root is laid out at the new width straight away.
   return (
-    <Box flexDirection="column" width={columns} height={rows} overflow="hidden">
+    <Box flexDirection="column" width="100%" height={rows} overflow="hidden">
       {/* Centered: the indicators are addressed to the whole viewport, not to the
           left-aligned log rows they sit against. */}
       <Box ref={topRef} flexShrink={0} justifyContent="center">

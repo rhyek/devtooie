@@ -30,7 +30,7 @@ export function PackageSelector({
   // fullscreen and anchors it at the top; without an explicit height the small
   // frame is drawn wherever the cursor was left on entry (near the bottom, after
   // the shell prompt + "started" line), leaving a large blank gap above it.
-  const { columns, rows } = useWindowSize();
+  const { rows } = useWindowSize();
 
   const itemNames = useMemo(() => new Set(items.map((a) => a.name)), [items]);
 
@@ -87,7 +87,7 @@ export function PackageSelector({
   });
 
   return (
-    <Box flexDirection="column" width={columns} height={rows}>
+    <Box flexDirection="column" width="100%" height={rows}>
       <Box>
         <Text backgroundColor={ACCENT_COLOR} color={ON_ACCENT_COLOR} bold>
           {' devtooie '}

@@ -60,7 +60,7 @@ export function BuildProgress({
   // Fill the whole alternate-screen viewport so Ink treats this frame as
   // fullscreen and anchors it at the top, matching NativeRunner (see
   // PackageSelector for the gap-at-top rationale).
-  const { columns, rows } = useWindowSize();
+  const { rows } = useWindowSize();
   const [state, setState] = useState<BuildState>({ phase: 'resolving' });
   // The infra services and where each one is; empty until the infra step starts (and for good
   // when the config declares none).
@@ -260,7 +260,7 @@ export function BuildProgress({
 
   if (state.phase === 'error') {
     return (
-      <Box flexDirection="column" width={columns} height={rows}>
+      <Box flexDirection="column" width="100%" height={rows}>
         <Text color={DANGER_COLOR} bold>
           {state.title}
         </Text>
@@ -270,7 +270,7 @@ export function BuildProgress({
   }
 
   return (
-    <Box flexDirection="column" width={columns} height={rows}>
+    <Box flexDirection="column" width="100%" height={rows}>
       <Box>
         <Text backgroundColor={ACCENT_COLOR} color={ON_ACCENT_COLOR} bold>
           {' devtooie '}

@@ -3,8 +3,6 @@ import path from 'node:path';
 import chalk from 'chalk';
 import { execa, type ResultPromise } from 'execa';
 import stringWidth from 'string-width';
-import wrapAnsi from 'wrap-ansi';
-import sliceAnsi from 'slice-ansi';
 import type { AnyPackageConfig, ResolvedHealthcheck } from './config.js';
 import { getDevScript, getLoadedConfig } from './config.js';
 import { defaultFormatter } from './log-formatter.js';
@@ -25,6 +23,7 @@ import type { RunnerArgs } from './runners/types.js';
 import { SHUTDOWN_GRACE_MS } from './shutdown-timing.js';
 import { stripTitleSequences } from './terminal-title.js';
 import { displayTimestamp, timestampGutterWidth, type TsMode } from './timestamp-mode.js';
+import { countWrappedRows, measureText, wrapRows, type TextMeasure } from './wrap-rows.js';
 import { DEVTOOIE_LABEL_COLOR, PACKAGE_PALETTE } from './colors.js';
 import { createInternalLogger, formatInternalRecord } from './internal-logger.js';
 import type { Logger } from 'pino';
@@ -76,6 +75,10 @@ export interface BufferedLine {
   rowCountWidth?: number;
   rowCountDate?: number;
   rowCountTime?: number;
+  /** Memoized width-independent measurements of `text` — what a row count is worked out from. */
+  measure?: TextMeasure;
+  /** Memoized {@link hangingIndent} of `text`. */
+  hangingIndent?: number;
 }
 
 /**
@@ -180,46 +183,6 @@ function hangingIndent(text: string): number {
 }
 
 /**
- * Wrap `text` into rows: the first `width` columns wide, every row after it `indent` columns
- * narrower to leave room for the hanging indent (which the caller applies). Rows are returned
- * without that indent.
- *
- * `wrap-ansi` only wraps to a single fixed width, so this walks the text one row at a time,
- * slicing off exactly what the previous row consumed. `trim: false` is essential — the default
- * strips a row's leading whitespace, which would eat the formatter's property indent and leave a
- * wrapped `  key:` sitting two columns left of every key short enough not to wrap.
- */
-function wrapRows(text: string, width: number, indent: number): string[] {
-  const rows: string[] = [];
-  const nextRowWidth = width - indent;
-  let rest = text;
-  let rowWidth = width;
-  while (stringWidth(rest) > rowWidth) {
-    let row = wrapAnsi(rest, rowWidth, { hard: true, trim: false }).split('\n')[0]!;
-    // `wrap-ansi` pushes an over-long token to the next row when it judges that costs no extra
-    // rows — but it reasons with a single uniform width, and our continuation rows are `indent`
-    // columns narrower, so here it can cost a row *and* leave `  key:` sitting alone beside a
-    // blank. When the token is too long for a continuation row it gets split there anyway, so
-    // moving it buys nothing: fill this row instead.
-    if (stringWidth(row) < rowWidth) {
-      const remainder = stripAnsi(sliceAnsi(rest, stringWidth(row))).replace(/^[ \t]+/, '');
-      if (stringWidth(/^\S*/.exec(remainder)![0]) > nextRowWidth) {
-        row = sliceAnsi(rest, 0, rowWidth);
-      }
-    }
-    const consumed = stringWidth(row);
-    if (consumed === 0) {
-      break; // no progress possible (e.g. a wide glyph that can't fit) — emit the remainder as-is
-    }
-    rows.push(row);
-    rest = sliceAnsi(rest, consumed);
-    rowWidth = nextRowWidth;
-  }
-  rows.push(rest);
-  return rows;
-}
-
-/**
  * Owns the lifecycle of every package's dev process: spawning, streaming and
  * filtering their output, tracking status, and tearing everything down
  * cleanly on exit. Framework-agnostic — the interactive (Ink) and plain
@@ -231,6 +194,8 @@ export class ProcessManager implements ControlManager {
   private processes = new Map<string, ManagedProcess>();
   /** Rendered width of `"[name] "`, used to align wrapped continuation lines. */
   private prefixWidth: number;
+  /** Rendered width of each distinct line prefix, measured once (see {@link gutterWidth}). */
+  private prefixWidths = new Map<string, number>();
   /** Default on-screen timestamp visibility (top-level `logs.timestamps`); a package can override. */
   private defaultShowTimestamps: boolean;
   /** Per-package resolved on-screen timestamp visibility, keyed by the line's `searchName`. */
@@ -1325,8 +1290,41 @@ export class ProcessManager implements ControlManager {
       line.rowCountTime = undefined;
     }
     const slot = mode === 'time' && line.showTs ? 'rowCountTime' : 'rowCountDate';
-    line[slot] ??= this.wrapLine(line, cols, mode).length;
+    line[slot] ??= this.computeRowCount(line, cols, mode);
     return line[slot];
+  }
+
+  /**
+   * `wrapLineRows(line, cols, mode).length`, without wrapping the line. A change of terminal
+   * width asks this of every buffered line at once, so it must not build a row — let alone a
+   * timestamp — to answer.
+   */
+  private computeRowCount(line: BufferedLine, cols: number, mode: TsMode): number {
+    const contentWidth = cols - this.gutterWidth(line, mode);
+    const indent = this.wrapIndent(line, contentWidth);
+    if (indent === null) {
+      return 1;
+    }
+    return countWrappedRows(line.text, this.measure(line), contentWidth, indent);
+  }
+
+  /** The line's width-independent measurements, taken on first use and kept on the line. */
+  private measure(line: BufferedLine): TextMeasure {
+    return (line.measure ??= measureText(line.text));
+  }
+
+  /**
+   * The hanging indent a line's continuation rows take when its text is wrapped to
+   * `contentWidth` columns, or `null` when it stays on one row. The one place that decides
+   * whether a line wraps, so that counting its rows and rendering them can't disagree.
+   */
+  private wrapIndent(line: BufferedLine, contentWidth: number): number | null {
+    if (contentWidth <= MIN_CONTENT_WIDTH || this.measure(line).width <= contentWidth) {
+      return null;
+    }
+    line.hangingIndent ??= hangingIndent(line.text);
+    // Cap the indent so continuation rows always keep a usable amount of room.
+    return Math.min(line.hangingIndent, contentWidth - MIN_CONTENT_WIDTH);
   }
 
   /**
@@ -1346,7 +1344,12 @@ export class ProcessManager implements ControlManager {
    * are then truncated, losing text).
    */
   private gutterWidth(line: BufferedLine, mode: TsMode): number {
-    return stringWidth(line.prefix) + (line.showTs ? timestampGutterWidth(mode) : 0);
+    let width = this.prefixWidths.get(line.prefix);
+    if (width === undefined) {
+      width = stringWidth(line.prefix);
+      this.prefixWidths.set(line.prefix, width);
+    }
+    return width + (line.showTs ? timestampGutterWidth(mode) : 0);
   }
 
   /**
@@ -1375,11 +1378,10 @@ export class ProcessManager implements ControlManager {
     const gutter = this.gutterWidth(line, mode);
     const head = `${this.tsPrefix(line, mode)}${line.prefix}`;
     const contentWidth = cols - gutter;
-    if (contentWidth <= MIN_CONTENT_WIDTH || stringWidth(line.text) <= contentWidth) {
+    const indent = this.wrapIndent(line, contentWidth);
+    if (indent === null) {
       return [{ text: `${head}${line.text}`, contentStart: gutter }];
     }
-    // Cap the indent so continuation rows always keep a usable amount of room.
-    const indent = Math.min(hangingIndent(line.text), contentWidth - MIN_CONTENT_WIDTH);
     const pad = ' '.repeat(indent);
     return wrapRows(line.text, contentWidth, indent).map((row, i) => ({
       text: `${head}${i === 0 ? '' : pad}${row}`,
