@@ -98,9 +98,9 @@ recorded pid is also its group id — and the group outlives its leader. A dev c
 real worker (`env-cmd -- tsx watch …`, a package manager, any `foo -- bar` shim) exits as soon as it
 has spawned, leaving the worker running in that group with no parent. Checking whether the recorded
 pid is still alive would skip exactly those. Before anything is signalled, at least one live member
-of the group must still be running in the directory the record was written with, so a recycled
-number can't take an unrelated process with it, and a group containing devtooie itself is never
-touched.
+of the group must still be running in the directory the record was written with, or below it, so
+a recycled number can't take an unrelated process with it, and a group containing devtooie itself
+is never touched.
 
 This sweep reaches packages that never bind a port, which the port check below cannot.
 

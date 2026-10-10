@@ -2,11 +2,11 @@ import pg from 'pg';
 
 // The connection string is assembled in the workspace's `.env.<mode>` file (from the same
 // DB_* values docker-compose.yaml reads) and injected by devtooie — into the backend's process,
-// into `devtooie cmd`, and into the infra callbacks that run the scripts in this package.
+// into `devtooie exec`, and into the infra callbacks that run the scripts in this package.
 const connectionString = process.env.DATABASE_URI;
 if (!connectionString) {
   throw new Error(
-    'DATABASE_URI is not set. Run this through devtooie (`pnpm dev`, or `pnpm devtooie cmd -- …`) so the .env files are loaded.',
+    'DATABASE_URI is not set. Run this through devtooie (`pnpm dev`, or `pnpm devtooie exec -- …`) so the .env files are loaded.',
   );
 }
 

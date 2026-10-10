@@ -11,6 +11,7 @@ import { debugLog } from './debug-log.js';
 import { envFileNames, packageEnvLayer, type EnvOverride } from './env.js';
 import { watchEnvFiles, type WatchTarget } from './env-watch.js';
 import {
+  exitCodeOf,
   getDefaultLogFile,
   getExecArgs,
   getRebuildCommands,
@@ -591,10 +592,15 @@ export class ProcessManager implements ControlManager {
     }
 
     const pfx = managed.prefix;
-    const [cmd, args] = getExecArgs(managed.pkg, getDevScript(managed.pkg));
+    const { cmd, args, env } = getExecArgs(
+      managed.pkg,
+      getDevScript(managed.pkg),
+      [],
+      this.packageEnv(managed.pkg),
+    );
     const proc = execa(cmd, args, {
       cwd: managed.pkg.absoluteDir,
-      env: this.packageEnv(managed.pkg),
+      env,
       stdin: 'ignore',
       stdout: 'pipe',
       stderr: 'pipe',
@@ -635,7 +641,7 @@ export class ProcessManager implements ControlManager {
         m.status = 'stopped';
         m.proc = null;
         this.syncProbes();
-        this.addLine(pfx, `exited with code ${String(result.exitCode)}`, searchName, false);
+        this.addLine(pfx, `exited with code ${String(exitCodeOf(result))}`, searchName, false);
       }
     });
 
@@ -800,11 +806,12 @@ export class ProcessManager implements ControlManager {
       await this.stop(name);
       this.addLine(managed.prefix, chalk.yellow('rebuilding...'), managed.searchName, false);
       // A clean rebuild is `build:clean`, or `clean` then `build` sequentially when the
-      // package has no combined script/target — resolved identically for pnpm and make.
-      for (const [cmd, args] of getRebuildCommands(managed.pkg)) {
+      // package has no combined script/target — resolved identically for scripts and make.
+      const commands = getRebuildCommands(managed.pkg, this.packageEnv(managed.pkg));
+      for (const { cmd, args, env } of commands) {
         const buildProc = execa(cmd, args, {
           cwd: managed.pkg.absoluteDir,
-          env: this.packageEnv(managed.pkg),
+          env,
           stdin: 'ignore',
           reject: false,
           detached: true,
@@ -823,7 +830,7 @@ export class ProcessManager implements ControlManager {
         if (result.exitCode !== 0) {
           this.addLine(
             managed.prefix,
-            chalk.red(`rebuild failed (exit ${String(result.exitCode)})`),
+            chalk.red(`rebuild failed (exit ${String(exitCodeOf(result))})`),
             managed.searchName,
             true,
           );
@@ -854,8 +861,13 @@ export class ProcessManager implements ControlManager {
     if (!managed) {
       return;
     }
-    const [cmd, args] = getExecArgs(managed.pkg, scriptName);
-    this.spawnExtra(managed, cmd, args, scriptName, false);
+    const { cmd, args, env } = getExecArgs(
+      managed.pkg,
+      scriptName,
+      [],
+      this.packageEnv(managed.pkg),
+    );
+    this.spawnExtra(managed, cmd, args, env, scriptName, false);
   }
 
   /** Run an arbitrary shell command string for a package (pipes/redirects allowed). */
@@ -864,7 +876,7 @@ export class ProcessManager implements ControlManager {
     if (!managed) {
       return;
     }
-    this.spawnExtra(managed, commandString, [], commandString, true);
+    this.spawnExtra(managed, commandString, [], this.packageEnv(managed.pkg), commandString, true);
   }
 
   /**
@@ -872,14 +884,15 @@ export class ProcessManager implements ControlManager {
    * `runCommand` and `runCustomCommand`. Output interleaves with the
    * package's regular logs (same prefix/searchName/filtering); demarcated
    * with `▶ running:` / `✔ finished` / `✘ exited` lines. Tracked in
-   * `extraProcs` so shutdown can clean it up. Only custom commands run
-   * through a shell — named scripts avoid it to sidestep the extra process
-   * (and potential EMFILE pressure) a shell wrapper adds.
+   * `extraProcs` so shutdown can clean it up. `useShell` is for a custom
+   * command string, which needs a shell to parse it; a named script already
+   * arrives as a complete command (see `getExecArgs`).
    */
   private spawnExtra(
     managed: ManagedProcess,
     cmd: string,
     args: string[],
+    env: NodeJS.ProcessEnv,
     displayLabel: string,
     useShell: boolean,
   ): void {
@@ -890,7 +903,7 @@ export class ProcessManager implements ControlManager {
 
     const proc = execa(cmd, args, {
       cwd: managed.pkg.absoluteDir,
-      env: this.packageEnv(managed.pkg),
+      env,
       stdin: 'ignore',
       stdout: 'pipe',
       stderr: 'pipe',
@@ -930,7 +943,7 @@ export class ProcessManager implements ControlManager {
         pfx,
         ok
           ? chalk.green(`✔ ${displayLabel} finished`)
-          : chalk.red(`✘ ${displayLabel} exited with code ${String(result.exitCode)}`),
+          : chalk.red(`✘ ${displayLabel} exited with code ${String(exitCodeOf(result))}`),
         searchName,
         !ok,
       );
@@ -1094,7 +1107,7 @@ export class ProcessManager implements ControlManager {
    * process is inert.
    *
    * Best-effort throughout: `updateRunning` is a no-op unless this process owns the workspace's
-   * `running.json`, so a session that never wrote one (tests, `devtooie run`) simply records
+   * `running.json`, so a session that never wrote one (tests) simply records
    * nothing. Never let a bookkeeping failure interfere with actually running the package.
    */
   private trackChild(proc: ResultPromise, cwd: string): void {

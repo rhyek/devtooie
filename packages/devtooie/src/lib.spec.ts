@@ -2,7 +2,9 @@ import { describe, it, test, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execa } from 'execa';
 import {
+  exitCodeOf,
   getCommandRunner,
   getExecArgs,
   hasScript,
@@ -22,6 +24,7 @@ import {
   buildRunnerArgs,
   canRebuild,
   getRebuildCommands,
+  runScript,
   getTsconfigBuildPackages,
   getMakeTargets,
   findAncestorPackage,
@@ -79,15 +82,18 @@ describe('findAncestorPackage', () => {
 });
 
 describe('runner detection', () => {
-  it('detects pnpm for a package.json pkg', () => {
-    expect(getCommandRunner(pkg({ absoluteDir: dir }))).toBe('pnpm');
-    expect(getExecArgs(pkg({ absoluteDir: dir }), 'dev')).toEqual(['pnpm', ['run', 'dev']]);
+  test('runs a package.json script as its own text, through /bin/sh', () => {
+    expect(getCommandRunner(pkg({ absoluteDir: dir }))).toBe('sh');
+    expect(getExecArgs(pkg({ absoluteDir: dir }), 'dev')).toMatchObject({
+      cmd: '/bin/sh',
+      args: ['-c', 'x'],
+    });
   });
-  it('forwards extra args after the script/target name (no `--` separator)', () => {
-    expect(getExecArgs(pkg({ absoluteDir: dir }), 'start', ['--bank-key=x', 'foo'])).toEqual([
-      'pnpm',
-      ['run', 'start', '--bank-key=x', 'foo'],
-    ]);
+  test('hands extra args to the shell as positional parameters, appended to the script', () => {
+    expect(getExecArgs(pkg({ absoluteDir: dir }), 'build', ['--bank-key=x', 'foo'])).toMatchObject({
+      cmd: '/bin/sh',
+      args: ['-c', 'x "$@"', 'sh', '--bank-key=x', 'foo'],
+    });
   });
   it('reads scripts', () => {
     expect(hasScript(pkg({ absoluteDir: dir }), 'build')).toBe(true);
@@ -99,10 +105,176 @@ describe('runner detection', () => {
   it('excludes runner-managed scripts from extra commands', () => {
     expect(getExtraCommands(pkg({ absoluteDir: dir }))).toEqual(['codegen']);
   });
-  it('falls back to pnpm when nothing present', () => {
+  test('falls back to sh when nothing present', () => {
     const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-empty-'));
-    expect(getCommandRunner(pkg({ absoluteDir: empty }))).toBe('pnpm');
+    expect(getCommandRunner(pkg({ absoluteDir: empty }))).toBe('sh');
     fs.rmSync(empty, { recursive: true, force: true });
+  });
+});
+
+describe('package script spawn spec', () => {
+  let ws: string;
+  let app: string; // named + versioned, with its own node_modules/.bin
+  let bare: string; // no name, no version, no node_modules
+  const run = (p: AnyPackageConfig, script: string, args: string[] = [], env = process.env) => {
+    const spec = getExecArgs(p, script, args, env);
+    return execa(spec.cmd, spec.args, { cwd: p.absoluteDir, env: spec.env, reject: false });
+  };
+  const PRINT_ARGV = 'node -e "console.log(JSON.stringify(process.argv.slice(1)))" x';
+
+  beforeAll(() => {
+    ws = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-spawn-')));
+    app = path.join(ws, 'packages', 'app');
+    bare = path.join(ws, 'packages', 'bare');
+    fs.mkdirSync(path.join(ws, 'node_modules', '.bin'), { recursive: true });
+    fs.mkdirSync(path.join(app, 'node_modules', '.bin'), { recursive: true });
+    fs.mkdirSync(bare, { recursive: true });
+    fs.writeFileSync(
+      path.join(app, 'package.json'),
+      JSON.stringify({
+        name: 'app',
+        version: '1.2.3',
+        scripts: {
+          argv: PRINT_ARGV,
+          fail: 'exit 7',
+          version: 'node -e "console.log(String(process.env.npm_package_version))"',
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(bare, 'package.json'),
+      JSON.stringify({
+        scripts: { version: 'node -e "console.log(String(process.env.npm_package_version))"' },
+      }),
+    );
+  });
+  afterAll(() => fs.rmSync(ws, { recursive: true, force: true }));
+
+  test("puts each ancestor's node_modules/.bin on PATH, nearest first, ahead of the given PATH", () => {
+    const { env } = getExecArgs(pkg({ absoluteDir: app }), 'argv', [], { PATH: '/usr/bin:/bin' });
+    const entries = env.PATH!.split(':');
+    expect(entries.slice(0, 2)).toEqual([
+      path.join(app, 'node_modules', '.bin'),
+      path.join(ws, 'node_modules', '.bin'),
+    ]);
+    expect(entries.slice(-2)).toEqual(['/usr/bin', '/bin']);
+  });
+
+  test('leaves out ancestors that have no node_modules/.bin', () => {
+    const { env } = getExecArgs(pkg({ absoluteDir: bare }), 'version', [], { PATH: '/usr/bin' });
+    expect(env.PATH!.split(':')[0]).toBe(path.join(ws, 'node_modules', '.bin'));
+  });
+
+  test('keeps the given environment, without modifying it', () => {
+    const given = { PATH: '/usr/bin', FOO: 'bar' };
+    const { env } = getExecArgs(pkg({ absoluteDir: app }), 'argv', [], given);
+    expect(env.FOO).toBe('bar');
+    expect(given).toEqual({ PATH: '/usr/bin', FOO: 'bar' });
+  });
+
+  test('describes the package and script being run', () => {
+    const { env } = getExecArgs(pkg({ absoluteDir: app }), 'fail', [], {});
+    expect(env).toMatchObject({
+      npm_package_name: 'app',
+      npm_package_version: '1.2.3',
+      npm_package_json: path.join(app, 'package.json'),
+      npm_lifecycle_event: 'fail',
+      npm_lifecycle_script: 'exit 7',
+      INIT_CWD: app,
+      PNPM_SCRIPT_SRC_DIR: app,
+    });
+  });
+
+  test("does not let another package's version reach a script whose package has none", async () => {
+    const result = await run(pkg({ absoluteDir: bare }), 'version', [], {
+      ...process.env,
+      npm_package_version: '9.9.9',
+    });
+    expect(result.stdout).toBe('undefined');
+  });
+
+  test('extra args reach the script intact, whatever shell syntax they contain', async () => {
+    const args = ['a b', '--c=$HOME', "it's", '*', '"q"', ''];
+    const result = await run(pkg({ absoluteDir: app }), 'argv', args);
+    expect(JSON.parse(result.stdout)).toEqual(['x', ...args]);
+  });
+
+  test("the script's exit code is the spawned command's exit code", async () => {
+    expect((await run(pkg({ absoluteDir: app }), 'fail')).exitCode).toBe(7);
+  });
+
+  test('a script that does not exist fails with exit code 1, naming it', async () => {
+    const result = await run(pkg({ absoluteDir: app }), 'nope');
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toBe('Missing script: "nope"');
+  });
+
+  test('a make target gets the given environment unchanged', () => {
+    const mkdir = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-spawn-mk-'));
+    fs.writeFileSync(path.join(mkdir, 'Makefile'), 'start:\n\t@true\n');
+    const given = { PATH: '/usr/bin', FOO: 'bar' };
+    expect(getExecArgs(pkg({ absoluteDir: mkdir }), 'start', [], given).env).toEqual(given);
+    fs.rmSync(mkdir, { recursive: true, force: true });
+  });
+});
+
+describe('runScript', () => {
+  let ws: string;
+  let app: string;
+
+  beforeAll(() => {
+    ws = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-runscript-')));
+    app = path.join(ws, 'packages', 'app');
+    for (const [dir, name] of [
+      [app, 'appbin'],
+      [ws, 'rootbin'],
+    ] as const) {
+      const bin = path.join(dir, 'node_modules', '.bin');
+      fs.mkdirSync(bin, { recursive: true });
+      fs.writeFileSync(path.join(bin, name), `#!/bin/sh\necho ${name}-OK\n`, { mode: 0o755 });
+    }
+    fs.writeFileSync(
+      path.join(app, 'package.json'),
+      JSON.stringify({
+        scripts: {
+          build: 'appbin && rootbin && node -e "console.log(process.cwd())"',
+          fail: 'exit 2',
+          kill: 'node -e "process.kill(process.pid,\'SIGKILL\')"',
+        },
+      }),
+    );
+  });
+  afterAll(() => fs.rmSync(ws, { recursive: true, force: true }));
+
+  test("runs the script in the package directory, with the package's and the workspace root's node_modules/.bin on PATH", async () => {
+    const result = await runScript(pkg({ absoluteDir: app }), 'build', 'pipe');
+    expect(result.stdout.split('\n')).toEqual(['appbin-OK', 'rootbin-OK', app]);
+  });
+
+  test('rejects when the script exits with a non-zero code', async () => {
+    await expect(runScript(pkg({ absoluteDir: app }), 'fail', 'pipe')).rejects.toMatchObject({
+      exitCode: 2,
+    });
+  });
+
+  test('rejects when a signal kills the script', async () => {
+    await expect(runScript(pkg({ absoluteDir: app }), 'kill', 'pipe')).rejects.toThrow();
+  });
+});
+
+describe('exitCodeOf', () => {
+  test("is the process's own exit code when it exited", () => {
+    expect(exitCodeOf({ exitCode: 0 })).toBe(0);
+    expect(exitCodeOf({ exitCode: 7 })).toBe(7);
+  });
+
+  test('is 128 + the signal number when a signal killed it', () => {
+    expect(exitCodeOf({ signal: 'SIGKILL' })).toBe(137);
+    expect(exitCodeOf({ signal: 'SIGTERM' })).toBe(143);
+  });
+
+  test('is 1 when the process never ran', () => {
+    expect(exitCodeOf({})).toBe(1);
   });
 });
 
@@ -229,11 +401,14 @@ describe('make targets', () => {
   });
 
   it('getExecArgs uses `make <target>` and forwards extra args', () => {
-    expect(getExecArgs(pkg({ absoluteDir: mkdir }), 'start')).toEqual(['make', ['start']]);
-    expect(getExecArgs(pkg({ absoluteDir: mkdir }), 'start', ['--bank-key=x'])).toEqual([
-      'make',
-      ['start', '--bank-key=x'],
-    ]);
+    expect(getExecArgs(pkg({ absoluteDir: mkdir }), 'start')).toMatchObject({
+      cmd: 'make',
+      args: ['start'],
+    });
+    expect(getExecArgs(pkg({ absoluteDir: mkdir }), 'start', ['--bank-key=x'])).toMatchObject({
+      cmd: 'make',
+      args: ['start', '--bank-key=x'],
+    });
   });
 
   it('getExtraCommands does not surface .PHONY (nor the configured dev target)', () => {
@@ -564,15 +739,15 @@ describe('rebuild resolution', () => {
   });
 
   it('getRebuildCommands: a single build:clean when the package defines it', () => {
-    expect(getRebuildCommands(pkg({ absoluteDir: bc }))).toEqual([
-      ['pnpm', ['run', 'build:clean']],
+    expect(getRebuildCommands(pkg({ absoluteDir: bc }))).toMatchObject([
+      { cmd: '/bin/sh', args: ['-c', 'x'], env: { npm_lifecycle_event: 'build:clean' } },
     ]);
   });
 
   it('getRebuildCommands: clean then build when there is no build:clean', () => {
-    expect(getRebuildCommands(pkg({ absoluteDir: cb }))).toEqual([
-      ['pnpm', ['run', 'clean']],
-      ['pnpm', ['run', 'build']],
+    expect(getRebuildCommands(pkg({ absoluteDir: cb }))).toMatchObject([
+      { cmd: '/bin/sh', args: ['-c', 'x'], env: { npm_lifecycle_event: 'clean' } },
+      { cmd: '/bin/sh', args: ['-c', 'x'], env: { npm_lifecycle_event: 'build' } },
     ]);
   });
 
@@ -582,9 +757,9 @@ describe('rebuild resolution', () => {
 
   it('getRebuildCommands: make clean then make build for a Makefile package', () => {
     expect(canRebuild(pkg({ absoluteDir: mk }))).toBe(true);
-    expect(getRebuildCommands(pkg({ absoluteDir: mk }))).toEqual([
-      ['make', ['clean']],
-      ['make', ['build']],
+    expect(getRebuildCommands(pkg({ absoluteDir: mk }))).toMatchObject([
+      { cmd: 'make', args: ['clean'] },
+      { cmd: 'make', args: ['build'] },
     ]);
   });
 });

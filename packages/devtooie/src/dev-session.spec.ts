@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, test, expect, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -9,6 +9,7 @@ import {
   buildKillSet,
   dedupePorts,
   isProcessAlive,
+  processCwd,
   parseLsofCwd,
   isInsideWorkspace,
   resolveRealPath,
@@ -207,5 +208,55 @@ describe.skipIf(os.platform() === 'win32')('sweepRecordedOrphans owner liveness'
 
     const swept = await sweepRecordedOrphans({ port: 1, pid: deadPid, children: [record] });
     expect(swept).toContain(record.pid);
+  });
+
+  /** A pid that is no longer running — what a session killed outright leaves in its record. */
+  async function deadSessionPid(): Promise<number> {
+    const dead = spawn('true', { stdio: 'ignore' });
+    await new Promise((r) => dead.on('exit', r));
+    return dead.pid!;
+  }
+
+  /**
+   * A recorded package whose script is `cd <to> && sleep 30`: the whole group, shell included,
+   * ends up in `<to>`, leaving nothing in the package directory the record names.
+   */
+  async function spawnRecordedChildThatMoves(to: string): Promise<{ pid: number; cwd: string }> {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-sweep-')));
+    dir = base;
+    const pkgDir = path.join(base, 'pkg');
+    fs.mkdirSync(path.join(pkgDir, 'src'), { recursive: true });
+    child = spawn('/bin/sh', ['-c', `cd ${to} && sleep 30`], {
+      cwd: pkgDir,
+      detached: true,
+      stdio: 'ignore',
+    });
+    const pid = child.pid!;
+    const moved = path.resolve(pkgDir, to);
+    for (let i = 0; i < 40 && resolveRealPath((await processCwd(pid)) ?? '') !== moved; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return { pid, cwd: pkgDir };
+  }
+
+  test('sweeps a recorded group whose script moved into a subdirectory of the package', async () => {
+    const record = await spawnRecordedChildThatMoves('src');
+    const swept = await sweepRecordedOrphans({
+      port: 1,
+      pid: await deadSessionPid(),
+      children: [record],
+    });
+    expect(swept).toContain(record.pid);
+  });
+
+  test('leaves a recorded group alone when none of it is in or under the package directory', async () => {
+    const record = await spawnRecordedChildThatMoves('..');
+    const swept = await sweepRecordedOrphans({
+      port: 1,
+      pid: await deadSessionPid(),
+      children: [record],
+    });
+    expect(swept).toEqual([]);
+    expect(isProcessAlive(record.pid)).toBe(true);
   });
 });

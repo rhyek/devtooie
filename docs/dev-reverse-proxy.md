@@ -135,7 +135,7 @@ never appear here) and the port follows the [`urlScheme` rule](#config): the pro
 no `PUBLIC_ORIGIN` at all.
 
 Apps use it for things like Vite's `server.allowedHosts` and `server.hmr` without repeating the
-subdomain in their own config. `devtooie cmd` hands the same variable to a one-off command.
+subdomain in their own config. `devtooie exec` and `devtooie run` hand the same variable to a one-off command.
 
 ## Footer links and the resolved config
 
@@ -157,7 +157,7 @@ config.packages.web.urls; // ['https://web.myproject.example.test', 'https://web
 ## Lifecycle
 
 The proxy starts **before any package**, in both the TUI and `--plain` modes, whenever the
-loaded config has `devReverseProxy`. `devtooie cmd`, `logs`, `env`, and `init` never start it.
+loaded config has `devReverseProxy`. `devtooie exec`, `run`, `logs`, `env`, and `init` never start it.
 On shutdown it closes and destroys every open socket, proxied websockets included, so a
 lingering connection can't hold the exit.
 

@@ -195,8 +195,9 @@ export function groupMembers(procs: { pid: number; pgid: number }[]): Map<number
  * either, which is how a `tsc --watch` / codegen generation survives every subsequent session.
  *
  * Before signalling, at least one live member of the group must still be running in the directory
- * the record was written with. A group id can only be created by a process whose pid equals it, so
- * combined with that check a recycled number can't take an unrelated process down with it. Groups
+ * the record was written with, or below it — a script that opens with `cd src && …` takes its
+ * whole group there. A group id can only be created by a process whose pid equals it, so combined
+ * with that check a recycled number can't take an unrelated process down with it. Groups
  * containing this process are never touched.
  *
  * Nor is anything touched while the session that wrote the record is **still running**. Reaching
@@ -234,7 +235,7 @@ export async function sweepRecordedOrphans(
     let confirmed = false;
     for (const member of members) {
       const memberCwd = await processCwd(member);
-      if (memberCwd && resolveRealPath(memberCwd) === cwd) {
+      if (memberCwd && isInsideWorkspace(cwd, resolveRealPath(memberCwd))) {
         confirmed = true;
         break;
       }

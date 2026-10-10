@@ -26,7 +26,7 @@ describe('findPassthrough', () => {
   });
 
   test('is -1 when the words sit after a bare `--`, where they belong to a wrapped command', () => {
-    expect(findPassthrough(argv('cmd', '--', 'infra', 'docker-compose', 'ps'))).toBe(-1);
+    expect(findPassthrough(argv('exec', '--', 'infra', 'docker-compose', 'ps'))).toBe(-1);
   });
 });
 

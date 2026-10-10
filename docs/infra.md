@@ -71,7 +71,7 @@ cwd: example  git: main
 - The footer dots are a record of startup, not a monitor: nothing watches the containers
   afterwards.
 
-`--build`, `devtooie cmd`, `show-config`, `logs` and the other subcommands never touch infra.
+`--build`, `devtooie exec`, `run`, `show-config`, `logs` and the other subcommands never touch infra.
 
 ## Config
 

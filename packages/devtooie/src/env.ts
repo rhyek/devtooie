@@ -43,7 +43,7 @@ export function assertValidMode(mode: string): string {
  * is loaded (and its `port`/`urls` callbacks resolve env) earlier than that.
  *
  * **Stops at the first bare `--`.** Everything after it belongs to the command being run:
- * `devtooie cmd -- vitest --mode watch` passes `--mode watch` to vitest, and must not silently
+ * `devtooie exec -- vitest --mode watch` passes `--mode watch` to vitest, and must not silently
  * load `.env.watch` here.
  *
  * **And at an `infra <provider>` passthrough**, for the same reason:
@@ -255,7 +255,7 @@ export function resolveEnv(opts: ResolveEnvOptions): EnvResolution {
  * `port` as `PORT` and, under the dev reverse proxy, its public origin as `PUBLIC_ORIGIN` (an
  * explicit `.env` value for either still wins), then its resolved `.env` files.
  * Excludes `process.env` — merge this over it at spawn time (`Object.assign({}, process.env,
- * layer)`). Shared by the TUI/plain session and `devtooie cmd` so both build the same env.
+ * layer)`). Shared by the TUI/plain session and `devtooie exec` so both build the same env.
  */
 export function packageEnvLayer(
   pkg: AnyPackageConfig,

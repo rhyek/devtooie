@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import path from 'node:path';
-import { execa } from 'execa';
 import { Box, Text, useApp, useWindowSize } from 'ink';
 import Spinner from 'ink-spinner';
 import { findPackage, getRegisteredPackages, getLoadedConfig } from '../config.js';
@@ -12,7 +11,7 @@ import type { DevReverseProxyServer } from '../dev-reverse-proxy.js';
 import { runSessionInfra } from '../infra/session.js';
 import { findConfigPath } from '../load-config.js';
 import { pickRandomPort } from '../running.js';
-import { buildRunnerArgs, getExecArgs, hasScript, resolveDeps } from '../lib.js';
+import { buildRunnerArgs, hasScript, resolveDeps, runScript } from '../lib.js';
 import type { RunnerArgs, SessionInfra } from '../runners/types.js';
 import { applyInfraEvent, InfraProgress, type InfraRow } from './InfraProgress.js';
 
@@ -173,8 +172,7 @@ export function BuildProgress({
             name: pkg.name,
           });
           try {
-            const [cmd, args] = getExecArgs(pkg, 'build');
-            await execa(cmd, args, { stdio: 'pipe', cwd: pkg.absoluteDir });
+            await runScript(pkg, 'build', 'pipe');
           } catch (error) {
             if (cancelled) {
               return;

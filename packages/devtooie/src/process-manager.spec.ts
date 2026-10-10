@@ -1,4 +1,5 @@
 import { describe, it, test, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -44,9 +45,9 @@ afterEach(() => {
 
 /**
  * Wait until a line in `file` matches `needle` (or `timeoutMs` passes). The spawn-based tests used
- * to sleep a fixed 1.5s before stopping the child, which is not enough for `pnpm run` + node to
- * start when the whole suite is loading the machine. Match the child's *output* — text right
- * after the `[name] ` prefix — not the echoed command line, which contains the same script source.
+ * to sleep a fixed 1.5s before stopping the child, which is not enough for node to start when
+ * the whole suite is loading the machine. Match the child's *output* — text right after the
+ * `[name] ` prefix.
  */
 async function waitForLog(file: string, needle: RegExp, timeoutMs = 8000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -403,7 +404,7 @@ describe('ProcessManager', () => {
     manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
 
     manager.start('fixture');
-    // Give execa (via the package manager) time to actually spawn the child.
+    // Give execa time to actually spawn the child.
     await new Promise((resolve) => setTimeout(resolve, 1500));
     expect(manager.getRunning()).toContain('fixture');
     expect(manager.getStatus('fixture')).toBe('running');
@@ -717,9 +718,7 @@ describe('ProcessManager child NODE_ENV inheritance', () => {
         name: 'nodeenvfix',
         version: '1.0.0',
         scripts: {
-          // Print the child's NODE_ENV bracketed so an unset value is visible as `[]`. The
-          // bracketed literal value (e.g. `[development]`) never appears in pnpm's echo of the
-          // script *source*, so `toContain` can't match the wrong line.
+          // Print the child's NODE_ENV bracketed so an unset value is visible as `[]`.
           dev: "node -e \"console.log('NODE_ENV=['+(process.env.NODE_ENV||'')+']');setInterval(()=>{},1e9)\"",
         },
       }),
@@ -1414,4 +1413,232 @@ describe('infra startup output', () => {
     expect(written.join('\n')).not.toMatch(/migrations applied/);
     expect(fs.readFileSync(logFile, 'utf8')).toMatch(/\[infra:db\] 2 migrations applied/);
   });
+});
+
+describe('ProcessManager package script execution', () => {
+  let root: string;
+  let pkgDir: string;
+  let log: string;
+  let mgr: ProcessManager | undefined;
+  let seq = 0;
+
+  const IDLE = 'node -e "setInterval(()=>{},1e9)"';
+
+  /** An executable in `<dir>/node_modules/.bin` that prints `<name>-OK`. */
+  function fakeBin(dir: string, name: string): void {
+    const bin = path.join(dir, 'node_modules', '.bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, name), `#!/bin/sh\necho ${name}-OK\n`, { mode: 0o755 });
+  }
+
+  /** Starts a session over a fresh package (inside a workspace root) with these `scripts`. */
+  function session(scripts: Record<string, string>, rebuildable = false): ProcessManager {
+    seq += 1;
+    pkgDir = path.join(root, `pkg${String(seq)}`);
+    fs.mkdirSync(pkgDir);
+    fs.writeFileSync(
+      path.join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'scriptfix', version: '4.5.6', scripts }),
+    );
+    fakeBin(pkgDir, 'localbin');
+    log = path.join(pkgDir, 'devlog.txt');
+    const a: AnyPackageConfig = {
+      name: 'scriptfix',
+      relativeDir: path.basename(pkgDir),
+      absoluteDir: pkgDir,
+    };
+    mgr = new ProcessManager(
+      {
+        sortedPackages: [a],
+        selectedSet: new Set([a.name]),
+        buildDepSet: new Set(),
+        rebuildableSet: new Set(rebuildable ? [a.name] : []),
+        waitForMap: {},
+        healthchecks: {},
+        extraCommandsMap: {},
+        logFile: log,
+        cwd: root,
+      },
+      { plain: true },
+    );
+    return mgr;
+  }
+
+  const logged = () => fs.readFileSync(log, 'utf8');
+
+  beforeAll(() => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-pm-script-')));
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'wsroot' }));
+    fs.writeFileSync(path.join(root, 'pnpm-workspace.yaml'), "packages:\n  - 'pkg*'\n");
+    fakeBin(root, 'rootbin');
+  });
+  afterEach(async () => {
+    // Wait the dev process out before the next test opens its log: an exit line written after
+    // `dispose()` closed this log would land in whichever file reuses the descriptor.
+    await mgr?.stop('scriptfix');
+    disposeManager(mgr);
+    mgr = undefined;
+    vi.unstubAllEnvs();
+  });
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test("resolves a binary from the package's own node_modules/.bin", async () => {
+    const m = session({ dev: `localbin && ${IDLE}` });
+    m.start('scriptfix');
+    await waitForLog(log, /\]\s+localbin-OK/);
+    expect(logged()).toMatch(/\]\s+localbin-OK/);
+  }, 15_000);
+
+  test("resolves a binary from the workspace root's node_modules/.bin", async () => {
+    const m = session({ dev: `rootbin && ${IDLE}` });
+    m.start('scriptfix');
+    await waitForLog(log, /\]\s+rootbin-OK/);
+    expect(logged()).toMatch(/\]\s+rootbin-OK/);
+  }, 15_000);
+
+  test('runs the script in the package directory', async () => {
+    const m = session({
+      dev: 'node -e "console.log(\'CWD=\'+process.cwd());setInterval(()=>{},1e9)"',
+    });
+    m.start('scriptfix');
+    await waitForLog(log, /\]\s+CWD=/);
+    expect(logged()).toContain(`CWD=${pkgDir}`);
+  }, 15_000);
+
+  test('tells the script which package and script it is, over any inherited values', async () => {
+    // What a session started from a root `pnpm dev` script inherits: the *root* package's values.
+    vi.stubEnv('npm_package_name', 'wsroot');
+    vi.stubEnv('npm_package_version', '0.0.1');
+    vi.stubEnv('npm_package_json', path.join(root, 'package.json'));
+    vi.stubEnv('npm_lifecycle_event', 'outer');
+    vi.stubEnv('npm_lifecycle_script', 'devtooie');
+    vi.stubEnv('INIT_CWD', root);
+    vi.stubEnv('PNPM_SCRIPT_SRC_DIR', root);
+    const keys = [
+      'npm_package_name',
+      'npm_package_version',
+      'npm_package_json',
+      'npm_lifecycle_event',
+      'INIT_CWD',
+      'PNPM_SCRIPT_SRC_DIR',
+    ];
+    const m = session({
+      dev: `node -e "console.log('IDENT='+JSON.stringify(${JSON.stringify(keys).replaceAll('"', "'")}.map(k=>process.env[k])));setInterval(()=>{},1e9)"`,
+    });
+    m.start('scriptfix');
+    await waitForLog(log, /\]\s+IDENT=/);
+    const ident = JSON.parse(/\]\s+IDENT=(.*)/.exec(logged())![1]!) as string[];
+    expect(ident).toEqual([
+      'scriptfix',
+      '4.5.6',
+      path.join(pkgDir, 'package.json'),
+      'dev',
+      pkgDir,
+      pkgDir,
+    ]);
+  }, 15_000);
+
+  test("reports a dev script's own exit code", async () => {
+    const m = session({ dev: 'node -e "process.exit(7)"' });
+    m.start('scriptfix');
+    await waitForLog(log, /exited with code/);
+    expect(logged()).toContain('exited with code 7');
+    expect(m.getStatus('scriptfix')).toBe('stopped');
+  }, 15_000);
+
+  test('reports a dev script killed by a signal as 128 + the signal number', async () => {
+    const m = session({ dev: 'node -e "process.kill(process.pid,\'SIGKILL\')"' });
+    m.start('scriptfix');
+    await waitForLog(log, /exited with code/);
+    expect(logged()).toContain('exited with code 137');
+  }, 15_000);
+
+  test('stops every process of a script that chains commands', async () => {
+    const m = session({
+      dev: 'node -e "console.log(\'CHILD=\'+process.pid);setInterval(()=>{},1e9)" && echo never',
+    });
+    m.start('scriptfix');
+    await waitForLog(log, /\]\s+CHILD=\d+/);
+    const child = Number(/\]\s+CHILD=(\d+)/.exec(logged())![1]);
+    expect(() => process.kill(child, 0)).not.toThrow();
+
+    await m.stop('scriptfix');
+    expect(() => process.kill(child, 0)).toThrow();
+  }, 15_000);
+
+  test('a one-off command reports success', async () => {
+    const m = session({ dev: IDLE, ok: 'localbin' });
+    m.runCommand('scriptfix', 'ok');
+    await waitForLog(log, /✔ ok finished/);
+    expect(logged()).toMatch(/\]\s+localbin-OK/);
+    expect(logged()).toContain('✔ ok finished');
+  }, 15_000);
+
+  test("a one-off command reports the script's own exit code", async () => {
+    const m = session({ dev: IDLE, bad: 'node -e "process.exit(3)"' });
+    m.runCommand('scriptfix', 'bad');
+    await waitForLog(log, /✘ bad exited/);
+    expect(logged()).toContain('✘ bad exited with code 3');
+  }, 15_000);
+
+  test('a one-off command killed by a signal is reported as failed, with 128 + the signal number', async () => {
+    const m = session({ dev: IDLE, killed: 'node -e "process.kill(process.pid,\'SIGKILL\')"' });
+    m.runCommand('scriptfix', 'killed');
+    await waitForLog(log, /✘ killed exited/);
+    expect(logged()).toContain('✘ killed exited with code 137');
+  }, 15_000);
+
+  test('a one-off command naming a script that does not exist fails, saying so', async () => {
+    const m = session({ dev: IDLE });
+    m.runCommand('scriptfix', 'nope');
+    await waitForLog(log, /✘ nope exited/);
+    expect(logged()).toMatch(/Missing script: "?nope/);
+    expect(logged()).toContain('✘ nope exited with code 1');
+  }, 15_000);
+
+  test('a rebuild whose build fails reports the exit code and leaves the package stopped', async () => {
+    const m = session({ dev: IDLE, 'build:clean': 'localbin && node -e "process.exit(2)"' }, true);
+    expect(m.rebuild('scriptfix')).toBe(true);
+    await waitForLog(log, /rebuild failed/);
+    expect(logged()).toContain('rebuild failed (exit 2)');
+    expect(m.getStatus('scriptfix')).toBe('stopped');
+  }, 15_000);
+
+  test('a rebuild whose build is killed by a signal fails instead of restarting', async () => {
+    const m = session(
+      { dev: IDLE, 'build:clean': 'node -e "process.kill(process.pid,\'SIGKILL\')"' },
+      true,
+    );
+    expect(m.rebuild('scriptfix')).toBe(true);
+    await waitForLog(log, /rebuild (failed|complete)/);
+    expect(logged()).toContain('rebuild failed (exit 137)');
+    expect(m.getStatus('scriptfix')).toBe('stopped');
+  }, 15_000);
+
+  test("a rebuild's build script resolves binaries from node_modules/.bin", async () => {
+    const m = session({ dev: IDLE, 'build:clean': 'localbin && rootbin' }, true);
+    expect(m.rebuild('scriptfix')).toBe(true);
+    await waitForLog(log, /rebuild (failed|complete)/);
+    expect(logged()).toContain('rebuild complete');
+  }, 15_000);
+
+  test('puts nothing but a shell, at most, between devtooie and a single-command dev script', async () => {
+    const m = session({
+      dev: 'node -e "console.log(\'PPID=\'+process.ppid);setInterval(()=>{},1e9)"',
+    });
+    m.start('scriptfix');
+    await waitForLog(log, /\]\s+PPID=\d+/);
+    const parent = Number(/\]\s+PPID=(\d+)/.exec(logged())![1]);
+    // Most `/bin/sh` replace themselves with a lone command, making the script our direct child;
+    // dash (Debian, Ubuntu) stays as its parent instead.
+    const between =
+      parent === process.pid
+        ? null
+        : path.basename(
+            execFileSync('ps', ['-o', 'comm=', '-p', String(parent)], { encoding: 'utf8' }).trim(),
+          );
+    expect([null, 'sh', 'dash']).toContain(between);
+  }, 15_000);
 });

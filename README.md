@@ -27,10 +27,10 @@ picked.
   app, and nothing to configure. See [Logging](docs/logging.md).
 - **Two run modes.** An interactive terminal UI to pick and watch packages, or a
   `--plain` log-streaming mode for coding agents.
-- **One-off commands.** `devtooie cmd` runs a single command (or a package
-  script/target) in a package's directory with that package's resolved environment —
-  for migrations, seeds, scrapers, or an agent driving your project. See
-  [Running one-off commands](#running-one-off-commands-devtooie-cmd).
+- **One-off commands.** `devtooie exec` runs a single command, and `devtooie run` one of a
+  package's scripts/targets, in a package's directory with that package's resolved
+  environment — for migrations, seeds, scrapers, or an agent driving your project. See
+  [Running one-off commands](#running-one-off-commands-devtooie-exec-devtooie-run).
 - **Per-package hierarchical `.env` loading.** Each package's `.env` files (workspace- and
   package-scoped) are resolved and injected into its process automatically — and
   live-reloaded, restarting the affected package when a file changes.
@@ -66,9 +66,8 @@ starts, so running it needs Docker.
 - **Node ≥22.18.** `devtooie.config.ts` is imported directly, so it needs Node's native
   TypeScript type-stripping — unflagged in 22.18 (and, on the 23.x line, 23.6).
 - **Unix only** (macOS/Linux). Windows is not supported.
-- **pnpm.** Node packages are run with `pnpm run <script>`, and packages that depend
-  on each other are resolved through pnpm workspace links (`workspace:*`). (Makefile
-  packages are run with `make` instead.)
+- **pnpm.** Packages that depend on each other are resolved through pnpm workspace links
+  (`workspace:*`).
 - A `package.json` (or `Makefile`) per package with the scripts devtooie drives
   (`dev`, `build`, ...) — see [Package supporting scripts](#package-supporting-scripts) below.
 - **Docker with Compose v2** — only if the config declares [`infra`](docs/infra.md).
@@ -157,7 +156,7 @@ pnpm devtooie
 
 devtooie drives each package through named scripts — a **Node** package declares them in its
 `package.json` `scripts`; a package in any other language (Go, Rust, …) declares the equivalent
-**`make` targets** in a `Makefile`. devtooie invokes them as `pnpm run <name>` or `make <name>`.
+**`make` targets** in a `Makefile`. See [How a script is run](#how-a-script-is-run).
 
 - **`dev`** — the long-running process devtooie starts and streams. An **application** usually
   needs only this; devtooie builds its dependencies for it.
@@ -206,23 +205,47 @@ An app can add `build` + `clean` too, for the occasional case where you need to 
 scratch to clear stale build output — those enable the rebuild command (the `b` hotkey /
 `POST /command/rebuild`); see [Package lifecycle](docs/package-lifecycle.md).
 
-## Running one-off commands (`devtooie cmd`)
+### How a script is run
+
+devtooie runs a `package.json` script itself: the script's text goes to `/bin/sh` in the package's
+directory, with no package manager in between. A script that is a single command (`vite dev`)
+usually becomes the package's process directly, since most shells replace themselves with it;
+Debian's and Ubuntu's `/bin/sh` stays as a small parent process. A Makefile target is run as
+`make <name>`.
+
+- **`PATH`** starts with the package's `node_modules/.bin`, then that of each parent directory, so
+  a script can name a binary installed in the package or at the workspace root.
+- **Variables naming the package and script** are set: `npm_package_name`, `npm_package_version`,
+  `npm_package_json`, `npm_lifecycle_event`, `npm_lifecycle_script`, plus `INIT_CWD` and
+  `PNPM_SCRIPT_SRC_DIR` (both the package's directory). Every other `npm_*` variable is whatever
+  devtooie itself was started with.
+- **`pre<name>` and `post<name>` scripts are not run.** Put the step in the script itself:
+  `"dev": "node codegen.ts && vite dev"`.
+- **A package manager's script settings have no effect** (pnpm's `scriptShell`,
+  `shellEmulator`, `verifyDepsBeforeRun`, …).
+- **Exit code** — a script's exit code is reported as-is; one killed by a signal is reported as
+  128 + the signal number (`137` for `SIGKILL`).
+
+## Running one-off commands (`devtooie exec`, `devtooie run`)
 
 Sometimes you don't want the whole session — you just need to run **one** command with a
-package's exact environment: a migration, a seed script, a scraper, a REPL. `devtooie cmd`
-does that. It runs a command in a package's directory with that package's resolved env vars injected — the same environment the TUI would give it:
+package's exact environment: a migration, a seed script, a scraper, a REPL. `devtooie exec`
+runs a command, and `devtooie run` one of the package's scripts or make targets, in a package's
+directory with that package's resolved env vars injected — the same environment the TUI would
+give it:
 
 ```bash
 cd packages/api
-devtooie cmd -- pnpm run migrate     # a literal command, in api's dir with api's env
-devtooie cmd -c seed -- --rows=100   # run api's `seed` script/target, forwarding args
+devtooie exec -- node src/migrate.ts   # a command, in api's dir with api's env
+devtooie run seed -- --rows=100        # api's `seed` script/target, forwarding args
 cd ../..
-devtooie cmd -p api -- pnpm start    # or target a package by name, from anywhere
+devtooie run -p api seed               # or target a package by name, from anywhere
 ```
 
 The package is inferred from your current directory (or named explicitly with `-p`). Output
 streams to your terminal and is also written to a logfile. It's especially handy for a coding
-agent driving your project. Full reference: [`devtooie cmd`](docs/cli.md#devtooie-cmd).
+agent driving your project. Full reference:
+[`devtooie exec` and `devtooie run`](docs/cli.md#devtooie-exec-and-devtooie-run).
 
 ## Configuration options
 
@@ -343,14 +366,14 @@ appear) and restarts the affected package(s)** on change — editing a
 workspace-level file restarts every running package that uses it.
 
 The same resolution is available as a standalone command: from inside a package's directory,
-`devtooie cmd -- <command>` runs a one-off command **in** that package's dir with its resolved
-env (or invoke one of its scripts/targets with `-c`) — see
-[`devtooie cmd`](docs/cli.md#devtooie-cmd).
+`devtooie exec -- <command>` runs a one-off command **in** that package's dir with its resolved
+env, and `devtooie run <script>` one of its scripts/targets — see
+[`devtooie exec` and `devtooie run`](docs/cli.md#devtooie-exec-and-devtooie-run).
 
 ## Advanced CLI usage
 
-Every flag and subcommand — plus `devtooie cmd` for running a command in a package's
-environment on demand, `devtooie show-config` for printing the fully resolved config as JSON
+Every flag and subcommand — plus `devtooie exec` and `devtooie run` for running a command or a
+script in a package's environment on demand, `devtooie show-config` for printing the fully resolved config as JSON
 without a session, and `devtooie infra` for the project's [infrastructure](docs/infra.md) — is
 documented in **[docs/cli.md](docs/cli.md)**.
 

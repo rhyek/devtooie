@@ -74,20 +74,20 @@ describe('resolveMode', () => {
   });
 
   it('accepts the flag before or after a subcommand', () => {
-    expect(resolveMode(['node', 'cli', '--mode', 'test', 'cmd'])).toBe('test');
-    expect(resolveMode(['node', 'cli', 'cmd', '--mode', 'test'])).toBe('test');
+    expect(resolveMode(['node', 'cli', '--mode', 'test', 'exec'])).toBe('test');
+    expect(resolveMode(['node', 'cli', 'exec', '--mode', 'test'])).toBe('test');
   });
 
   it('stops at the first `--` so the wrapped command keeps its own flags', () => {
     // `--mode watch` here belongs to vitest, not devtooie.
     withAmbient({}, () => {
       delete process.env.DEVTOOIE_MODE;
-      expect(resolveMode(['node', 'cli', 'cmd', '--', 'vitest', '--mode', 'watch'])).toBe(
+      expect(resolveMode(['node', 'cli', 'exec', '--', 'vitest', '--mode', 'watch'])).toBe(
         'development',
       );
       // ...but a mode before the `--` still counts.
       expect(
-        resolveMode(['node', 'cli', '--mode', 'test', 'cmd', '--', 'vitest', '--mode', 'watch']),
+        resolveMode(['node', 'cli', '--mode', 'test', 'exec', '--', 'vitest', '--mode', 'watch']),
       ).toBe('test');
     });
   });
@@ -109,7 +109,7 @@ describe('resolveMode', () => {
       expect(
         resolveMode(['node', 'cli', 'infra', '-m', 'test', 'docker-compose', '--mode', 'x']),
       ).toBe('test');
-      // The other infra subcommands take the mode anywhere, like `cmd`.
+      // The other infra subcommands take the mode anywhere, like `exec`.
       expect(resolveMode(['node', 'cli', 'infra', 'up', '--mode', 'test'])).toBe('test');
     });
   });

@@ -39,6 +39,7 @@ import {
 import {
   DepType,
   buildRunnerArgs,
+  exitCodeOf,
   findAncestorPackage,
   getDefaultLogFile,
   getExecArgs,
@@ -48,6 +49,7 @@ import {
   resetSelection,
   resolveDeps,
   resolveSelectedNames,
+  runScript,
   resolveLogFile,
   saveSelection,
   stripAnsi,
@@ -76,7 +78,8 @@ interface RootOptions {
 
 /**
  * The directory devtooie was invoked from, captured before {@link anchorAtConfigRoot} may
- * `chdir` us to the config root. `cmd` uses it to figure out which package you're "inside".
+ * `chdir` us to the config root. `exec` and `run` use it to figure out which package you're
+ * "inside".
  */
 const INVOCATION_CWD = process.cwd();
 
@@ -212,7 +215,7 @@ async function clearDist(pkg: AnyPackageConfig): Promise<void> {
 async function runCommand(
   cmd: string,
   args: string[],
-  opts: { cwd: string; env: Record<string, string>; logFile: string },
+  opts: { cwd: string; env: NodeJS.ProcessEnv; logFile: string },
 ): Promise<number> {
   const logFd = fs.openSync(opts.logFile, 'w');
   // Tee one child stream: raw bytes to the terminal, then line-buffered timestamped+stripped
@@ -251,14 +254,14 @@ async function runCommand(
     const result = await child;
     flushOut();
     flushErr();
-    return result.exitCode ?? 1;
+    return exitCodeOf(result);
   } finally {
     fs.closeSync(logFd);
   }
 }
 
 /**
- * Resolves the target for the `cmd` subcommand. With an explicit `-p/--package` name, that
+ * Resolves the target for the `exec` and `run` subcommands. With an explicit `-p/--package` name, that
  * configured package is the target. Otherwise it's inferred from the directory devtooie was
  * invoked in: the nearest **ancestor package** of the invocation dir, or — below the root but
  * inside no package — the root itself (working dir = root, workspace-scope vars only). For a
@@ -266,7 +269,7 @@ async function runCommand(
  * TUI would spawn it with. Exits if there's no config, or if `--package` names an unknown one.
  * Returns the working dir and the env layer to merge over `process.env`.
  */
-async function resolveCmdTargetOrExit(
+async function resolveOneOffTargetOrExit(
   invocationCwd: string,
   explicitName: string | undefined,
 ): Promise<{ dir: string; envLayer: Record<string, string> }> {
@@ -400,8 +403,7 @@ async function runPlainInfraOrExit(): Promise<SessionInfra | undefined> {
 }
 
 async function buildOne(pkg: AnyPackageConfig, script: string): Promise<void> {
-  const [cmd, args] = getExecArgs(pkg, script);
-  await execa(cmd, args, { stdio: 'inherit', cwd: pkg.absoluteDir });
+  await runScript(pkg, script, 'inherit');
 }
 
 /** Builds every buildable dep in `deps.buildSet`, in dependency order, with console output. */
@@ -459,7 +461,7 @@ async function runBuildPhase(names: string[], rebuild: boolean): Promise<void> {
 // ---------------------------------------------------------------------------
 
 // `--mode`, declared on the root and again on each subcommand that takes it (see the note on
-// `cmd` for why both).
+// `exec` for why both).
 const MODE_FLAGS = '-m, --mode <name>';
 const MODE_HELP =
   'environment mode selecting the .env.<mode> files to load (default: "development")';
@@ -547,7 +549,7 @@ program
   .description(
     'print the fully resolved config as JSON (what a running session reports on GET /query/status) — no session needed',
   )
-  // Declared here too so `devtooie show-config --mode test` works (see `cmd`); the config
+  // Declared here too so `devtooie show-config --mode test` works (see `exec`); the config
   // resolves against that mode's `.env` files, which is what a callback `port` reads.
   .option(MODE_FLAGS, MODE_HELP)
   .action(async () => {
@@ -567,59 +569,77 @@ program
     process.exit(0);
   });
 
+/** The one package `exec`/`run` targets: its dir and env layer, from `-p` or the invocation dir. */
+async function oneOffTargetOrExit(
+  subcommand: 'exec' | 'run',
+): Promise<{ dir: string; envLayer: Record<string, string> }> {
+  // Explicit target via the root `-p/--package` global (reused rather than redeclared — see
+  // the `resolvedeps` note); if omitted, the package is inferred from the directory devtooie
+  // was invoked in (not the config root we may have chdir'd to — see anchorAtConfigRoot).
+  const packageNames = program.opts<RootOptions>().package;
+  if (packageNames.length > 1) {
+    console.error(`${subcommand} targets a single package — pass --package at most once.`);
+    process.exit(1);
+  }
+  return resolveOneOffTargetOrExit(INVOCATION_CWD, packageNames[0]);
+}
+
+/**
+ * Runs a one-off command to completion and exits with its exit code. No preamble: `exec` and
+ * `run` are meant to be composable, so their output is only the command's own (the run is still
+ * teed to a logfile, which `devtooie logs --path` can point at).
+ */
+async function runOneOffAndExit(
+  cmd: string,
+  args: string[],
+  opts: { cwd: string; env: NodeJS.ProcessEnv },
+): Promise<never> {
+  const logFile = getDefaultLogFile(program.opts<RootOptions>().logDir);
+  process.exit(await runCommand(cmd, args, { ...opts, logFile }));
+}
+
 program
-  .command('cmd')
+  .command('exec')
   .description(
     "run a one-off command with a package's environment (its dir + resolved .env); package inferred from the cwd or named with -p/--package",
   )
-  .option(
-    '-c, --cmd <script>',
-    'run this package script / make target instead of a literal command; args after `--` are forwarded to it',
-  )
   // Also declared on the root, but Commander rejects a root-only option that appears after a
-  // subcommand — so both `devtooie --mode test cmd …` and `devtooie cmd --mode test …` work.
+  // subcommand — so both `devtooie --mode test exec …` and `devtooie exec --mode test …` work.
   // resolveMode already read it off raw argv; this declaration is for --help and validation.
   .option(MODE_FLAGS, MODE_HELP)
-  .argument(
-    '[args...]',
-    'a literal command to run (after `--`), or — with -c/--cmd — the args forwarded to that script',
-  )
-  .action(async (args: string[], opts: { cmd?: string }) => {
-    // Explicit target via the root `-p/--package` global (reused rather than redeclared — see
-    // the `resolvedeps` note); if omitted, the package is inferred from the directory devtooie
-    // was invoked in (not the config root we may have chdir'd to — see anchorAtConfigRoot).
-    const packageNames = program.opts<RootOptions>().package;
-    if (packageNames.length > 1) {
-      console.error('cmd targets a single package — pass --package at most once.');
+  .argument('[command...]', 'the command to run, after `--`')
+  .action(async (command: string[]) => {
+    const { dir, envLayer } = await oneOffTargetOrExit('exec');
+    const [cmd, ...args] = command;
+    if (cmd === undefined) {
+      console.error('exec requires a command (after `--`).');
       process.exit(1);
     }
-    const { dir, envLayer } = await resolveCmdTargetOrExit(INVOCATION_CWD, packageNames[0]);
+    await runOneOffAndExit(cmd, args, {
+      cwd: dir,
+      env: Object.assign({}, process.env, envLayer),
+    });
+  });
 
-    let cmd: string;
-    let cmdArgs: string[];
-    if (opts.cmd !== undefined) {
-      // `-c` names a package script / make target: resolve how to invoke it in this dir, then
-      // forward the operands as its args. getExecArgs/hasScript key off `.absoluteDir` only, so a
-      // minimal package view over the resolved dir suffices.
-      const pkgAtDir = { absoluteDir: dir } as AnyPackageConfig;
-      if (!hasScript(pkgAtDir, opts.cmd)) {
-        console.error(`No "${opts.cmd}" script or make target found in ${dir}.`);
-        process.exit(1);
-      }
-      [cmd, cmdArgs] = getExecArgs(pkgAtDir, opts.cmd, args);
-    } else {
-      // No `-c`: the operands are a literal command.
-      if (args.length === 0) {
-        console.error('cmd requires a command (after `--`) or a -c/--cmd script name.');
-        process.exit(1);
-      }
-      [cmd, ...cmdArgs] = args as [string, ...string[]];
+program
+  .command('run')
+  .description(
+    "run one of a package's scripts or make targets with its environment (its dir + resolved .env); package inferred from the cwd or named with -p/--package",
+  )
+  .option(MODE_FLAGS, MODE_HELP) // see `exec`
+  .argument('<script>', 'the package.json script or make target to run')
+  .argument('[args...]', 'arguments forwarded to it, after `--`')
+  .action(async (script: string, args: string[]) => {
+    const { dir, envLayer } = await oneOffTargetOrExit('run');
+    // getExecArgs/hasScript key off `.absoluteDir` only, so a minimal package view over the
+    // resolved dir suffices.
+    const pkgAtDir = { absoluteDir: dir } as AnyPackageConfig;
+    if (!hasScript(pkgAtDir, script)) {
+      console.error(`No "${script}" script or make target found in ${dir}.`);
+      process.exit(1);
     }
-
-    // No preamble: `cmd` is meant to be composable, so its output is only the command's own
-    // (the run is still teed to `logFile`, which `devtooie logs --path` can point at).
-    const logFile = getDefaultLogFile(program.opts<RootOptions>().logDir);
-    process.exit(await runCommand(cmd, cmdArgs, { cwd: dir, env: envLayer, logFile }));
+    const spec = getExecArgs(pkgAtDir, script, args, Object.assign({}, process.env, envLayer));
+    await runOneOffAndExit(spec.cmd, spec.args, { cwd: dir, env: spec.env });
   });
 
 program

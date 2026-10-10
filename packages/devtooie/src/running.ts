@@ -14,7 +14,7 @@ export const CONTROL_PORT_COUNT = 100;
  * A package process devtooie spawned. Recorded so the *next* session can clean up after a
  * devtooie that died without running any shutdown path (SIGKILL, a crashed terminal emulator, a
  * hard machine sleep). Each is spawned `detached: true`, so its pid doubles as its process-group
- * id and `kill(-pid)` reaches the whole `pnpm → node → …` tree beneath it.
+ * id and `kill(-pid)` reaches the whole `node → node → …` tree beneath it.
  */
 export interface ChildRecord {
   pid: number;

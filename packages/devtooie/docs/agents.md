@@ -36,9 +36,9 @@ It's a good reference for how a real workspace is wired: project-reference build
   matching is case- and accent-insensitive).
 - **Two run modes.** An interactive terminal UI, or a `--plain` log-streaming mode for
   coding agents.
-- **One-off commands.** `devtooie cmd` runs a single command (or a package script/target) in a
-  package's directory with that package's resolved environment — for migrations, seeds,
-  scrapers, or an agent driving your project.
+- **One-off commands.** `devtooie exec` runs a single command, and `devtooie run` one of a
+  package's scripts/targets, in a package's directory with that package's resolved environment
+  — for migrations, seeds, scrapers, or an agent driving your project.
 - **Per-package hierarchical `.env` loading.** Each package's `.env` files (workspace- and
   package-scoped) are resolved and injected into its process — and live-reloaded, restarting
   the affected package on change.
@@ -117,9 +117,8 @@ mode's `.env` files, so pass the same `--mode` the session runs with.
   TypeScript type-stripping — unflagged in 22.18 (and, on the 23.x line, 23.6). On older Node
   every command fails with `ERR_UNKNOWN_FILE_EXTENSION` for the config file.
 - **Unix only** (macOS/Linux). Windows is not supported.
-- **pnpm.** Node packages are run with `pnpm run <script>`, and packages that depend on each
-  other are resolved through pnpm workspace links (`workspace:*`). (Makefile packages are run
-  with `make` instead.)
+- **pnpm.** Packages that depend on each other are resolved through pnpm workspace links
+  (`workspace:*`).
 - A `package.json` (or `Makefile`) per package with the scripts devtooie drives
   (`dev`, `build`, …) — see [Package supporting scripts](#package-supporting-scripts).
 - **Docker with Compose v2** — only if the config declares [`infra`](#infra). The
@@ -198,7 +197,7 @@ export default defineConfig({
 
 devtooie drives each package through named scripts — a **Node** package declares them in its
 `package.json` `scripts`; a package in any other language (Go, Rust, …) declares the equivalent
-**`make` targets** in a `Makefile`. devtooie invokes them as `pnpm run <name>` or `make <name>`.
+**`make` targets** in a `Makefile`. See [How a script is run](#how-a-script-is-run).
 
 - **`dev`** — the long-running process devtooie starts and streams. An **application** usually
   needs only this; devtooie builds its dependencies for it.
@@ -244,6 +243,27 @@ dev:
 An app can add `build` + `clean` too, for the occasional case where you need to rebuild it from
 scratch to clear stale build output — those enable the rebuild command (the `b` hotkey /
 `POST /command/rebuild`); see [Package lifecycle](#package-lifecycle-when-you-change-code).
+
+### How a script is run
+
+devtooie runs a `package.json` script itself: the script's text goes to `/bin/sh` in the package's
+directory, with no package manager in between. A script that is a single command (`vite dev`)
+usually becomes the package's process directly, since most shells replace themselves with it;
+Debian's and Ubuntu's `/bin/sh` stays as a small parent process. A Makefile target is run as
+`make <name>`.
+
+- **`PATH`** starts with the package's `node_modules/.bin`, then that of each parent directory, so
+  a script can name a binary installed in the package or at the workspace root.
+- **Variables naming the package and script** are set: `npm_package_name`, `npm_package_version`,
+  `npm_package_json`, `npm_lifecycle_event`, `npm_lifecycle_script`, plus `INIT_CWD` and
+  `PNPM_SCRIPT_SRC_DIR` (both the package's directory). Every other `npm_*` variable is whatever
+  devtooie itself was started with.
+- **`pre<name>` and `post<name>` scripts are not run.** Put the step in the script itself:
+  `"dev": "node codegen.ts && vite dev"`.
+- **A package manager's script settings have no effect** (pnpm's `scriptShell`,
+  `shellEmulator`, `verifyDepsBeforeRun`, …).
+- **Exit code** — a script's exit code is reported as-is; one killed by a signal is reported as
+  128 + the signal number (`137` for `SIGKILL`).
 
 ## Configuration options
 
@@ -797,7 +817,7 @@ never appear here) and the port follows the [`urlScheme` rule](#config): the pro
 no `PUBLIC_ORIGIN` at all.
 
 Apps use it for things like Vite's `server.allowedHosts` and `server.hmr` without repeating the
-subdomain in their own config. `devtooie cmd` hands the same variable to a one-off command.
+subdomain in their own config. `devtooie exec` and `devtooie run` hand the same variable to a one-off command.
 
 ### Footer links and the resolved config
 
@@ -819,7 +839,7 @@ config.packages.web.urls; // ['https://web.myproject.example.test', 'https://web
 ### Lifecycle
 
 The proxy starts **before any package**, in both the TUI and `--plain` modes, whenever the
-loaded config has `devReverseProxy`. `devtooie cmd`, `logs`, `env`, and `init` never start it.
+loaded config has `devReverseProxy`. `devtooie exec`, `run`, `logs`, `env`, and `init` never start it.
 On shutdown it closes and destroys every open socket, proxied websockets included, so a
 lingering connection can't hold the exit.
 
@@ -951,7 +971,7 @@ cwd: example  git: main
 - The footer dots are a record of startup, not a monitor: nothing watches the containers
   afterwards.
 
-`--build`, `devtooie cmd`, `show-config`, `logs` and the other subcommands never touch infra.
+`--build`, `devtooie exec`, `run`, `show-config`, `logs` and the other subcommands never touch infra.
 
 ### Infra config
 
@@ -1417,8 +1437,8 @@ devtooie infra up         # bring the config's infra up, wait until ready, exit
 
 Every command works from **anywhere in the repo**: as a first step devtooie walks up to the
 nearest `devtooie.config.*`, switches to that directory, and loads its workspace-scope `.env` —
-so running from a subdirectory behaves the same as from the root. (`devtooie cmd` additionally
-uses your original directory to decide which package you're inside.)
+so running from a subdirectory behaves the same as from the root. (`devtooie exec` and `devtooie run`
+additionally use your original directory to decide which package you're inside.)
 
 Common options:
 
@@ -1431,7 +1451,7 @@ Common options:
 | `--last-answers`       | Skip selection; reuse the last saved selection. If a saved name is no longer a package (a renamed key), the picker opens instead with the surviving names preselected; `--plain`/`--build` refuse with a message naming the stale ones.                                                                                                                                                            |
 | `--build`              | Build the selected packages and their build-time deps, then exit (no run phase).                                                                                                                           |
 | `--rebuild`            | Like `--build`, but first clears `dist/` for every build target.                                                                                                                                           |
-| `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/`. Each run gets a fresh `<timestamp>.log`; previous sessions' logs are kept. Also used by `devtooie cmd`. |
+| `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/`. Each run gets a fresh `<timestamp>.log`; previous sessions' logs are kept. Also used by `devtooie exec` and `devtooie run`. |
 | `--kill-others`        | Quit a devtooie session already running for this project instead of asking. **Never pass this on your own initiative** — see [Taking over a running session](#taking-over-a-running-session).              |
 
 Subcommands:
@@ -1443,9 +1463,11 @@ Subcommands:
   `devReverseProxy` block. Takes `--mode`. See [Reach a package](#reach-a-package-devtooie-show-config).
 - **`devtooie resolvedeps <package>`** — print the resolved build/dev/runtime dependency
   sets for a single package as JSON.
-- **`devtooie cmd`** — run a **one-off command** with a package's environment (its dir +
+- **`devtooie exec`** — run a **one-off command** with a package's environment (its dir +
   resolved `.env`); package inferred from the cwd or named with `-p`; see
   [Run a one-off command in a package's dir](#run-a-one-off-command-in-a-packages-dir-with-its-environment).
+- **`devtooie run <script>`** — run one of a package's **scripts or make targets** with that
+  same environment; see the same section.
 - **`devtooie logs`** — print the current session's logfile (or `-f/--follow` to stream it);
   read-only, never disturbs the session; see
   [Read running-package logs for debugging](#read-running-package-logs-for-debugging).
@@ -1520,7 +1542,7 @@ and `LOG_LEVEL=warn` in `packages/api/.env`:
 
 When a variable doesn't have the value you expect in a package, work down that table: check
 whether the shell that started devtooie exports it, then which files define it —
-`devtooie cmd -p <package> -- printenv NAME` prints what the package gets. Don't work around a
+`devtooie exec -p <package> -- printenv NAME` prints what the package gets. Don't work around a
 workspace value by inventing a second variable name: put the value in the package's own `.env`
 file.
 
@@ -1533,8 +1555,8 @@ A package's `port` is also injected as `PORT` (an explicit `.env` `PORT` still o
 
 ```sh
 devtooie --mode test                  # loads .env.test / .env.test.local
-devtooie --mode test cmd -- vitest    # the same environment, for a one-off command
-devtooie cmd --mode test -- vitest    # equivalent — both flag positions work
+devtooie --mode test exec -- vitest   # the same environment, for a one-off command
+devtooie exec --mode test -- vitest   # equivalent — both flag positions work
 ```
 
 Any name is valid (`test`, `staging`, `e2e.ci`); a name can't be empty, `.`/`..`, or contain a
@@ -1557,32 +1579,33 @@ running package that uses it.
 
 ### Run a one-off command in a package's dir with its environment
 
-`devtooie cmd` runs a **single one-off command with a package's environment** — without starting
-a session. The command runs in the package's directory with that package's resolved `.env` and
+`devtooie exec` runs a **single one-off command with a package's environment** — without
+starting a session — and `devtooie run` does the same for one of the package's scripts or make
+targets. The command runs in the package's directory with that package's resolved `.env` and
 its `port` as `PORT` injected — the exact environment the TUI would spawn it with. Use it to
 drive scripts, migrations, or scrapers. The package is chosen by **where you run it**: by default
 there's no package argument — `cd` into the package's directory (or any subdirectory of it) and
 run (or name one explicitly with `-p`, below):
 
 ```sh
-devtooie cmd -- <command> [args...]         # run a literal command in the package dir
-devtooie cmd -c <script> -- [args...]       # run the package's script/make target
-devtooie cmd -p <name> -c <script> -- ...   # target <name> explicitly (from anywhere)
+devtooie exec -- <command> [args...]        # run a literal command in the package dir
+devtooie run <script> [-- args...]          # run the package's script/make target
+devtooie run -p <name> <script> -- ...      # target <name> explicitly (from anywhere)
 ```
 
 - **Which package**: the nearest **ancestor** directory that is a configured package. Below the
   config root but inside no package, it falls back to the **root** (working dir = root, only
   workspace-scope vars). Errors only if there's no `devtooie.config.*` at all (any supported
   extension: `.ts`/`.mts`/`.js`/`.mjs`). Pass `-p, --package <name>` to target a package
-  explicitly (overrides the cwd inference), e.g. `devtooie cmd -p api -c start -- …`.
-- `-c, --cmd <script>` — run a package **script or make target** (resolved the way devtooie runs
-  a package: `pnpm run <script>` or `make <target>`, found in that dir's `package.json`/`Makefile`),
+  explicitly (overrides the cwd inference), e.g. `devtooie run -p api start -- …`.
+- `devtooie run <script>` — runs a package **script or make target**, found in that dir's
+  `package.json`/`Makefile` and run [the way devtooie runs a package](#how-a-script-is-run),
   forwarding anything after `--` to it as arguments. Errors if there's no such script/target.
-- Without `-c`, a literal command after `--` is required.
-- The command's exit code is propagated, and `devtooie cmd` exits as soon as the command does.
+- `devtooie exec` — runs the literal command after `--`, which is required.
+- The command's exit code is propagated, and devtooie exits as soon as the command does.
 - Output streams to your terminal **and** is teed to a fresh timestamped logfile under
   `node_modules/.devtooie/logs/` (or `--log-dir`). devtooie prints nothing of its own around it —
-  the output you see is exactly the command's, so `devtooie cmd` is safe to pipe or capture.
+  the output you see is exactly the command's, so both are safe to pipe or capture.
 
 You do not need this for packages devtooie is already running (their env is injected
 automatically) — it's for driving commands yourself.
@@ -1764,9 +1787,9 @@ recorded pid is also its group id — and the group outlives its leader. A dev c
 real worker (`env-cmd -- tsx watch …`, a package manager, any `foo -- bar` shim) exits as soon as it
 has spawned, leaving the worker running in that group with no parent. Checking whether the recorded
 pid is still alive would skip exactly those. Before anything is signalled, at least one live member
-of the group must still be running in the directory the record was written with, so a recycled
-number can't take an unrelated process with it, and a group containing devtooie itself is never
-touched.
+of the group must still be running in the directory the record was written with, or below it, so
+a recycled number can't take an unrelated process with it, and a group containing devtooie itself
+is never touched.
 
 This sweep reaches packages that never bind a port, which the port check below cannot.
 
@@ -1793,7 +1816,7 @@ devtooie logs --path # print just the resolved logfile path (for piping), then e
 resolves the current logfile in order of precedence: (1) ask the running instance over the control
 API (`GET /query/status` → `logFile`); (2) the `logFile` recorded in `running.json` (kept current
 across in-session log rotation — the `t` hotkey — and more precise than scanning the dir, where a
-stray `devtooie cmd` log could be newer), if it still exists; (3) the newest logfile in the
+stray `devtooie exec` log could be newer), if it still exists; (3) the newest logfile in the
 session's log directory. (`-f` uses the Unix `tail`/`cat`, so macOS/Linux only; `--path` is
 mutually exclusive with `-f`.)
 
@@ -1801,7 +1824,7 @@ To locate the file yourself instead (e.g. to `grep` an earlier run), the directo
 into is recorded in `node_modules/.devtooie/running.json` as **`logDir`**; it defaults to
 `node_modules/.devtooie/logs/` and only differs when the session was started with `--log-dir`.
 Each session (and each in-session log rotation) writes a **fresh** file named `<timestamp>.log`;
-`devtooie cmd` writes one too. devtooie never truncates or overwrites an existing log, so logs
+`devtooie exec` and `devtooie run` write one too. devtooie never truncates or overwrites an existing log, so logs
 from earlier sessions stay on disk.
 
 ```sh
@@ -1843,8 +1866,9 @@ _running_ session writes into — and because that directory is recorded in `run
 When asked to add, configure, or onboard one of the user's packages into devtooie:
 
 1. **Ensure the package exposes the entry points devtooie drives.** devtooie chooses how to run a
-   package from what's in its directory: with a `package.json` it runs npm scripts
-   (`pnpm run <name>`); with a `Makefile` and no `package.json` it runs `make <target>`.
+   package from what's in its directory: with a `package.json` it runs that file's scripts
+   ([through `/bin/sh`](#how-a-script-is-run)); with a `Makefile` and no `package.json` it runs
+   `make <target>`.
    (`package.json` wins if a package somehow has both.)
 
    Only the **dev entry point** is always required. `build` and `clean` are situational:

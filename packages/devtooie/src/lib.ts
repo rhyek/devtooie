@@ -1,7 +1,8 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { execaSync } from 'execa';
+import { execa, execaSync, type ResultPromise } from 'execa';
 import type { AnyPackageConfig, ResolvedHealthcheck } from './config.js';
 import {
   getRegisteredPackages,
@@ -106,7 +107,7 @@ export function pickNewestLog(dir: string): string | null {
  *
  * 1. the running instance's current (rotation-aware) logfile, when it can be queried;
  * 2. the logfile recorded in `running.json` (`recordedLogFile`), when it still exists — more
- *    precise than scanning the dir, since a stray `devtooie cmd` log could be newer;
+ *    precise than scanning the dir, since a stray `devtooie exec` log could be newer;
  * 3. the newest `*.log` in `fallbackDir`.
  *
  * Returns null when none yields one. Purely read-only — it never touches the running session.
@@ -184,7 +185,9 @@ export function findAncestorPackage(
   }
 }
 
-function readPackageJson(pkg: AnyPackageConfig): { scripts?: Record<string, string> } | null {
+function readPackageJson(
+  pkg: AnyPackageConfig,
+): { name?: string; version?: string; scripts?: Record<string, string> } | null {
   try {
     return JSON.parse(fs.readFileSync(path.join(pkg.absoluteDir, 'package.json'), 'utf8'));
   } catch {
@@ -200,26 +203,112 @@ export function getScriptText(pkg: AnyPackageConfig, script: string): string | n
   return readPackageJson(pkg)?.scripts?.[script] ?? null;
 }
 
-export function getCommandRunner(pkg: AnyPackageConfig): 'pnpm' | 'make' {
+export function getCommandRunner(pkg: AnyPackageConfig): 'sh' | 'make' {
   if (fs.existsSync(path.join(pkg.absoluteDir, 'package.json'))) {
-    return 'pnpm';
+    return 'sh';
   }
   if (fs.existsSync(path.join(pkg.absoluteDir, 'Makefile'))) {
     return 'make';
   }
-  return 'pnpm';
+  return 'sh';
 }
 
+/** How to spawn a package script or make target: the command, its args, and its environment. */
+export interface ExecSpec {
+  cmd: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+}
+
+/** `node_modules/.bin` of `dir` and of each of its ancestors that has one, nearest first. */
+function binDirs(dir: string): string[] {
+  const dirs: string[] = [];
+  for (let current = path.resolve(dir); ; current = path.dirname(current)) {
+    const bin = path.join(current, 'node_modules', '.bin');
+    if (fs.statSync(bin, { throwIfNoEntry: false })?.isDirectory()) {
+      dirs.push(bin);
+    }
+    if (path.dirname(current) === current) {
+      return dirs;
+    }
+  }
+}
+
+/**
+ * How to spawn `script` for a package, with `extraArgs` forwarded to it. Spawn the result with
+ * the package's directory as cwd and with its `env` — `env` (the environment the caller would
+ * otherwise spawn with) plus whatever the script needs on top.
+ *
+ * A `package.json` script is run as its own text through `/bin/sh`, with no package manager in
+ * between. Most shells replace themselves with a script that is a single command (bash and
+ * busybox do; dash stays as its parent), so the spawned process is usually the script itself —
+ * which is why a fatal signal can surface either as a signal or as a 128+n exit code; see
+ * {@link exitCodeOf}. The package's `node_modules/.bin` and every ancestor's go on `PATH`, and
+ * the variables naming the package and script are set for it — over any inherited from a
+ * package manager that started devtooie, which describe the workspace root instead.
+ */
 export function getExecArgs(
   pkg: AnyPackageConfig,
   script: string,
   extraArgs: string[] = [],
-): [string, string[]] {
-  // pnpm and make both forward args that follow the script/target name straight to it — no `--`
-  // separator (which pnpm would pass through literally).
-  return getCommandRunner(pkg) === 'make'
-    ? ['make', [script, ...extraArgs]]
-    : ['pnpm', ['run', script, ...extraArgs]];
+  env: NodeJS.ProcessEnv = process.env,
+): ExecSpec {
+  if (getCommandRunner(pkg) === 'make') {
+    // make forwards args that follow the target name straight to it.
+    return { cmd: 'make', args: [script, ...extraArgs], env };
+  }
+  const text = getScriptText(pkg, script);
+  if (text === null) {
+    return {
+      cmd: '/bin/sh',
+      args: ['-c', 'echo "Missing script: \\"$1\\"" >&2; exit 1', 'sh', script],
+      env,
+    };
+  }
+  const packageJson = readPackageJson(pkg);
+  return {
+    cmd: '/bin/sh',
+    // Extra args ride along as positional parameters, so the shell quotes them, not us.
+    args: extraArgs.length > 0 ? ['-c', `${text} "$@"`, 'sh', ...extraArgs] : ['-c', text],
+    env: {
+      ...env,
+      PATH: [...binDirs(pkg.absoluteDir), ...(env.PATH ? [env.PATH] : [])].join(path.delimiter),
+      // An absent name/version stays `undefined`, which leaves an inherited one out of the child.
+      npm_package_name: packageJson?.name,
+      npm_package_version: packageJson?.version,
+      npm_package_json: path.join(pkg.absoluteDir, 'package.json'),
+      npm_lifecycle_event: script,
+      npm_lifecycle_script: text,
+      INIT_CWD: pkg.absoluteDir,
+      PNPM_SCRIPT_SRC_DIR: pkg.absoluteDir,
+    },
+  };
+}
+
+/**
+ * Runs a package script (or make target) to completion in the package's directory, with its
+ * output inherited or captured. Rejects when the script fails — a non-zero exit code and a fatal
+ * signal alike.
+ */
+export function runScript(
+  pkg: AnyPackageConfig,
+  script: string,
+  stdio: 'inherit' | 'pipe',
+): ResultPromise {
+  const { cmd, args, env } = getExecArgs(pkg, script);
+  return execa(cmd, args, { stdio, cwd: pkg.absoluteDir, env });
+}
+
+/**
+ * The exit code of a finished child process, by shell convention: its own code when it exited,
+ * 128 + the signal number when a signal killed it, and 1 when it never ran.
+ */
+export function exitCodeOf(result: { exitCode?: number; signal?: string }): number {
+  if (result.exitCode !== undefined) {
+    return result.exitCode;
+  }
+  const signal = os.constants.signals[result.signal as NodeJS.Signals] as number | undefined;
+  return signal === undefined ? 1 : 128 + signal;
 }
 
 export function hasScript(pkg: AnyPackageConfig, script: string): boolean {
@@ -249,12 +338,15 @@ export function canRebuild(pkg: AnyPackageConfig): boolean {
  * package can't rebuild, or its dev command self-cleans (`command.cleans`), in which case a
  * rebuild is just a restart (no pre-commands). See {@link canRebuild}.
  */
-export function getRebuildCommands(pkg: AnyPackageConfig): [string, string[]][] {
+export function getRebuildCommands(
+  pkg: AnyPackageConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): ExecSpec[] {
   if (hasScript(pkg, 'build:clean')) {
-    return [getExecArgs(pkg, 'build:clean')];
+    return [getExecArgs(pkg, 'build:clean', [], env)];
   }
   if (hasScript(pkg, 'clean') && hasScript(pkg, 'build')) {
-    return [getExecArgs(pkg, 'clean'), getExecArgs(pkg, 'build')];
+    return [getExecArgs(pkg, 'clean', [], env), getExecArgs(pkg, 'build', [], env)];
   }
   return [];
 }

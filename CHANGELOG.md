@@ -12,17 +12,22 @@
 - **A `urls` entry or `healthcheck` can be a path** like `'/todos'` (or `''` for the origin itself): a link is based on the package's public origin under the dev reverse proxy, else on `http://localhost:<port>`; a healthcheck always on `http://localhost:<port>`. See [docs/configuration.md](docs/configuration.md).
 - **Packages can declare a `subdomain` again**, exposed on the resolved config and handed to the package's callbacks. See [docs/configuration.md](docs/configuration.md#callbacks-instead-of-interpolation).
 - **Log lines carry a timestamp by default — just the time while everything on screen is from the same day**, the full date once two days are visible together. Set `logs.timestamps: false` to hide them. See [docs/logging.md](docs/logging.md#timestamps).
+- **Each running package uses roughly 75 MB less memory and starts faster**, with no package-manager process kept alongside it. See [How a script is run](README.md#how-a-script-is-run).
 
 ### Fixes
 
 - **A saved selection naming a package that no longer exists no longer crashes the picker.**
 - **Resizing the terminal redraws the TUI right away, even with a long log.**
 - **A package's `.env` files override the workspace's for the same variable**, with no `env.override` entry needed. See [Environment loading](README.md#environment-env-loading).
+- **`devtooie run` and the session log show only a script's own output**, without pnpm's command echo around it.
 
 ### Breaking changes
 
 - **`relativeDir` is required unless the config sets `packageRootDir`** — the implicit `packages/<key>` default is gone; add `packageRootDir: 'packages'` to keep it.
 - **The resolved package's `path` is now `absoluteDir`**, next to `relativeDir`.
+- **`devtooie cmd` is now `devtooie exec`, and `devtooie cmd -c <script>` is `devtooie run <script>`** — update any script or alias that calls it. See [docs/cli.md](docs/cli.md#devtooie-exec-and-devtooie-run).
+- **`pre<name>` and `post<name>` scripts no longer run for the scripts devtooie starts** — chain the step into the script itself, like `"dev": "node codegen.ts && vite dev"`.
+- **pnpm's script settings (`scriptShell`, `shellEmulator`, `verifyDepsBeforeRun`) no longer apply to the scripts devtooie starts** — run `pnpm install` yourself when dependencies change. See [How a script is run](README.md#how-a-script-is-run).
 
 ## 0.7.1 (2026-08-16)
 
