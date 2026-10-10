@@ -9,7 +9,7 @@
 | `packages`     | Your package definitions, **keyed by package name** (see below).                            |
 | `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.            |
 | `packageRootDir` | The directory the packages live under, e.g. `'packages'`: each package's directory is inferred as `<packageRootDir>/<key>`, and `relativeDir` becomes an optional override. Without it, every package must set `relativeDir`. **Recommended.** |
-| `env`          | Environment-loading options — currently just `override`, below. Which files load is chosen with `--mode`; see [Environment loading](../README.md#environment-env-loading). |
+| `env`          | Environment-loading options: `override`, below. Which files load is chosen with `--mode`; see [Environment loading](../README.md#environment-env-loading). |
 | `logs`         | Top-level log options (`{ timestamps? }`); timestamps + structured-log formatting — see [Logging](./logging.md). |
 | `apiPort`      | Pin the [control API](./control-api.md) port (otherwise chosen automatically).              |
 | `urls`         | Workspace-wide footer links, not tied to a package. Same shape as a package's `urls`, but a callback here gets only `{ envs, tokens }`. |
@@ -79,7 +79,7 @@ lib):
   URL, a `{ label, url }`, or an **array** of those (rendered on the same line,
   space-separated). Any URL may be a callback, and any may be a **path** (`'/todos'`, or
   `'todos'`; `''` is the origin itself), based on the package's public origin under the
-  [dev reverse proxy](./dev-reverse-proxy.md) — one link, not a localhost one too — or on
+  [dev reverse proxy](./dev-reverse-proxy.md), or on
   `http://localhost:<port>` without one. A path on a package with no `port` is an error.
   devtooie adds no links of its own.
 - **`healthcheck`** — a URL polled for readiness; also required by anything
@@ -132,8 +132,6 @@ and `LOG_LEVEL=warn` in `packages/api/.env`:
 | `LOG_LEVEL=debug` | `['LOG_LEVEL']` | `warn` — the files win, the package's over the workspace's |
 | nothing           | not set         | `warn`                                                     |
 | nothing           | `['LOG_LEVEL']` | `warn`                                                     |
-
-A package file needs no `env.override` entry to replace a variable the workspace's files define.
 
 Which **files** load isn't configured here — that's [`--mode`](./cli.md).
 
@@ -304,7 +302,7 @@ Three independent categories, resolved when you select a package:
 - **`deps.build`** — extends the build-time deps devtooie already infers from your
   TypeScript [project references](#typescript-project-references--shared-libraries).
   Resolved transitively.
-- **`deps.dev`** — compiled before running (currently behaves like a build dep).
+- **`deps.dev`** — compiled before running (behaves like a build dep).
 - **`deps.runtime`** — other packages that must be _running_ alongside this
   one. **Not transitive**: only the packages you explicitly select have
   their runtime deps expanded. If a runtime dep needs its own runtime deps

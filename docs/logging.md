@@ -185,15 +185,13 @@ sees the whole raw line and assumes nothing about its format, so it's what you u
 **isn't** JSON — or when it is, but you want a rendering the built-in formatter can't express.
 
 A formatter owns the presentation of the lines it actually **rewrites**. One you return unchanged is
-rendered exactly as it would be with no formatter configured — plain for stdout, **red for stderr** —
-so passing a line through never costs it its color.
+rendered exactly as it would be with no formatter configured — plain for stdout, **red for stderr**.
 
 A formatter that throws or returns a non-string falls back to the raw
 line, so a bug can't take down the session. The returned string is what's buffered, shown, **and
 written to the log file** (ANSI color allowed, stripped for the file); a multi-line result is split
 into separate log lines, which devtooie keeps grouped as **one entry** — so a filter matching any of
-them shows the whole block. That grouping comes from the split itself, not from how the lines look,
-so you don't have to indent them to hold an entry together. **devtooie owns the timestamp** (shown per `logs.timestamps`, always in
+them shows the whole block. **devtooie owns the timestamp** (shown per `logs.timestamps`, always in
 the log file), so drop the log's own time field rather than printing it. `z` (zod) is re-exported
 by devtooie, so a hand-written formatter can validate shapes without a dependency.
 

@@ -35,8 +35,7 @@ it says where a session _would_ answer, not that one is running — query the po
   a person, detected from the environment variables agents set (`CLAUDECODE`, `CURSOR_AGENT`,
   `AGENT`, and friends); it decides whether a starting session may quit this one without
   asking — see [Taking over a running session](./cli.md#taking-over-a-running-session).
-  Instances older than 0.7.0 omit the field, which reads as `false`. `packages` and `config`
-  are `null` until the process manager attaches — after the build and after the config's
+  `packages` and `config` are `null` until the process manager attaches — after the build and after the config's
   [infra](./infra.md) is up — then populated. `config` is fully
   **resolved** (defaults applied, `command` normalized to `{ name, watches, builds, cleans }`)
   as loaded at startup — restart devtooie to pick up edits. `logFile` tracks in-session

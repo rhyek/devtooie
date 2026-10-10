@@ -254,7 +254,7 @@ scratch to clear stale build output — those enable the rebuild command (the `b
 | `packages`     | Your package definitions, **keyed by package name** (see below).                                                                                                                              |
 | `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.                                                                                   |
 | `packageRootDir` | The directory the packages live under, e.g. `'packages'`: each package's directory is inferred as `<packageRootDir>/<key>`, and `relativeDir` becomes an optional override. Without it, every package must set `relativeDir`. **Always set it** and omit `relativeDir` unless a package really lives elsewhere. |
-| `env`          | Environment-loading options — currently just `override` (which variables a `.env` file may win over the ambient environment for). Which files load is chosen with `--mode`. See [Environment loading](#environment-env-loading). |
+| `env`          | Environment-loading options: `override` (which variables a `.env` file may win over the ambient environment for). Which files load is chosen with `--mode`. See [Environment loading](#environment-env-loading). |
 | `logs`         | Log display options: `{ timestamps?: boolean }` (default `true`) — see [Log timestamps](#log-timestamps).                                                          |
 | `apiPort`      | Pin the [control API](#drive-a-running-session-via-the-control-api) port (otherwise chosen automatically).                                                         |
 | `urls`         | Workspace-wide footer links, not tied to a package. Same shape as a package's `urls`, but a callback here gets only `{ envs, tokens }` (no package, so no `port`). |
@@ -314,9 +314,9 @@ lib):
 - **`urls`** — links shown in the running footer, one entry per line. Each entry is a URL, a
   `{ label, url }`, or an **array** of those (rendered on the same line, space-separated). Any
   URL may be a callback, and any may be a **path** (`'/todos'`, or `'todos'`; `''` is the origin
-  itself), based on the package's public origin under the [dev reverse proxy](#dev-reverse-proxy)
-  — one link, not a localhost one too — or on `http://localhost:<port>` without one. A path on a
-  package with no `port` is an error. devtooie adds no links of its own.
+  itself), based on the package's public origin under the [dev reverse proxy](#dev-reverse-proxy),
+  or on `http://localhost:<port>` without one. A path on a package with no `port` is an error.
+  devtooie adds no links of its own.
 - **`healthcheck`** — a URL polled for readiness; also required by anything that lists this
   package in its `waitFor`. A **path** (`'/health'`, or `'health'`) is probed at `http://localhost:<port>/health`
   — always the package itself, never through the dev reverse proxy. May be a callback, or
@@ -623,13 +623,11 @@ needs a rendering the built-in formatter can't express): `logs.formatter` is jus
 `(line: string) => string` — return the display
 string, or the line unchanged to pass it through. A formatter owns the presentation of the lines it
 actually **rewrites**; one returned unchanged is rendered exactly as it would be with no formatter
-configured — plain for stdout, **red for stderr** — so passing a line through never costs it its
-color. A formatter that throws or returns a non-string
+configured — plain for stdout, **red for stderr**. A formatter that throws or returns a non-string
 falls back to the raw line, so a bug can't take down the session. The returned string is what's
 buffered, shown, **and written to the log file** (ANSI color allowed, stripped for the file); a
 multi-line result is split into separate log lines, which devtooie keeps grouped as **one entry** —
-so a filter matching any of them shows the whole block. That grouping comes from the split itself,
-not from how the lines look, so you don't have to indent them to hold an entry together.
+so a filter matching any of them shows the whole block.
 **devtooie owns the timestamp** (shown per
 `logs.timestamps`, always in the log file), so drop the log's own time field rather than printing
 it. `z` (zod) is re-exported by devtooie, so a hand-written formatter can validate shapes without a
@@ -646,7 +644,7 @@ Three independent categories, resolved when you select a package:
 
 - **`deps.build`** — extends the build-time deps devtooie already infers from your TypeScript
   [project references](#typescript-project-references--shared-libraries). Resolved transitively.
-- **`deps.dev`** — compiled before running (currently behaves like a build dep).
+- **`deps.dev`** — compiled before running (behaves like a build dep).
 - **`deps.runtime`** — other packages that must be _running_ alongside this one. **Not
   transitive**: only the packages you explicitly select have their runtime deps expanded. If a
   runtime dep needs its own runtime deps too, select it explicitly (or add it to your selection).
@@ -1278,10 +1276,10 @@ done
 Nothing anywhere up the tree → devtooie doesn't manage anything here; skip to
 [Apps devtooie doesn't manage](#apps-devtooie-doesnt-manage).
 
-**2. Is this app one of its packages?** Read the `packages` array in that config. Each entry's
-`name` is what devtooie knows the package by, and it's what you pass to `-p` and to the control
+**2. Is this app one of its packages?** Read the `packages` object in that config. Each key is
+the name devtooie knows a package by, and it's what you pass to `-p` and to the control
 API — it need not match the directory name or the `package.json` name, and a repo may well hold
-apps devtooie was never taught about. If the app isn't in that array, it is **not devtooie-managed**;
+apps devtooie was never taught about. If the app isn't a key there, it is **not devtooie-managed**;
 that's a legitimate answer to report, then check it directly with the fallback below.
 
 **3. Is a session live right now?** `node_modules/.devtooie/running.json` (under the config's
@@ -1519,8 +1517,6 @@ and `LOG_LEVEL=warn` in `packages/api/.env`:
 | nothing           | not set         | `warn`                                                     |
 | nothing           | `['LOG_LEVEL']` | `warn`                                                     |
 
-A package file needs no `env.override` entry to replace a variable the workspace's files define.
-
 When a variable doesn't have the value you expect in a package, work down that table: check
 whether the shell that started devtooie exports it, then which files define it —
 `devtooie cmd -p <package> -- printenv NAME` prints what the package gets. Don't work around a
@@ -1679,8 +1675,7 @@ Endpoints (all plain HTTP, no auth — localhost-only):
     was started with; available immediately, even while the session is still building.
   - `startedByAgent` — whether a coding agent started this session rather than a person. Decides
     whether a starting session may quit it without asking; see
-    [Taking over a running session](#taking-over-a-running-session). Omitted by instances older
-    than 0.7.0, which reads as `false`.
+    [Taking over a running session](#taking-over-a-running-session).
   - `logFile` — absolute path to the logfile currently being written (tracks in-session rotation).
   - `packages` — per-package status map (e.g. `{ "web": "running" }`), one of `running`,
     `stopped`, `waiting`, `restarting`, `rebuilding`; `null` until the build and the infra step
@@ -1900,8 +1895,7 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
    }
    ```
 
-   All package fields are flat (there is no `run` nesting). Infer them from what the package
-   actually is:
+   Infer the fields from what the package actually is:
    - Set **`packageRootDir`** (e.g. `'packages'`) once at the top level and **omit
      `relativeDir`** on every package: its directory is `<packageRootDir>/<key>`. Give a package
      a `relativeDir` only when it lives somewhere else (or its key is scoped).
@@ -1915,8 +1909,8 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
      can't drift, and the same config is right with or without the proxy. Write a full URL only
      for something that isn't this package (`https://status.example.test`), and a **callback**
      over `{ envs, tokens, port, subdomain }` only when the value genuinely depends on the
-     environment (see [Callbacks](#callbacks-instead-of-interpolation)). **There is no
-     `$port`/`$name` interpolation** — a `$` in a config string is a literal `$`. Each `urls`
+     environment (see [Callbacks](#callbacks-instead-of-interpolation)). **devtooie does no
+     string interpolation** — a `$` in a config string is a literal `$`. Each `urls`
      entry is a URL, a `{ label, url }`, or an array of those (an array entry's links render on
      one footer line, space-separated). `healthcheck` also takes `{ url, timeout }` when the
      package is slow to answer on a cold start — see [Readiness probing](#readiness-probing).

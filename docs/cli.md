@@ -46,8 +46,7 @@ Subcommands:
 ## Taking over a running session
 
 Only one devtooie session can run a project at a time, so starting a second one has to
-quit the first — along with every dev process under it. Since 0.7.0 devtooie asks before
-doing that:
+quit the first — along with every dev process under it. devtooie asks before doing that:
 
 | Situation                                    | What happens                           |
 | -------------------------------------------- | -------------------------------------- |

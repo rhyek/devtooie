@@ -107,7 +107,7 @@ This is an interactive, idempotent setup flow. It will:
 
 Pass `-y`/`--yes` to accept the defaults non-interactively.
 
-After that, fill in the scaffolded config's `packages` array with your real
+After that, fill in the scaffolded config's `packages` object with your real
 packages (see below) and run `pnpm devtooie`.
 
 ## `devtooie.config.ts`
@@ -287,7 +287,7 @@ and the ambient environment.
 `node --env-file` — so `FOO=bar devtooie` overrides a file for one run. Ambient
 means the environment devtooie was started with: a variable only the files define
 takes its highest-ranked file's value, so a package's file replaces the
-workspace's with no further setup. Name the exceptions with `env.override` when a
+workspace's. Name the exceptions with `env.override` when a
 file needs to *extend* an inherited value:
 
 ```ts
