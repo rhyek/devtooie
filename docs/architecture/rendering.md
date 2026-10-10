@@ -41,9 +41,10 @@ package-select  ->  building  ->  running
 Everything below is the **running** phase (`NativeRunner`). `renderApp` mounts the
 whole tree with `exitOnCtrlC: false` (each phase owns Ctrl+C) and `maxFps: 120`.
 
-**Every phase fills the viewport.** Each phase component's root is sized to
-`useWindowSize()` (`width={columns} height={rows}`) — `NativeRunner`, but also the
-short pre-run phases (`PackageSelector`, `BuildProgress`). This is load-bearing,
+**Every phase fills the viewport.** Each phase component's root is sized to the
+terminal (`width="100%" height={rows}`, `rows` from `useWindowSize()`) —
+`NativeRunner`, but also the short pre-run phases (`PackageSelector`,
+`BuildProgress`). This is load-bearing,
 not cosmetic: Ink only anchors a frame at the top when it detects it as
 _fullscreen_ (`outputHeight >= viewportRows`). Entering the alternate screen
 (`ESC[?1049h`) does **not** home the cursor, so a short, non-fullscreen frame is
@@ -52,12 +53,15 @@ the shell prompt + the `▶ devtooie started` line — leaving a large blank gap
 above it. Giving these phases a full-height root makes them fullscreen and
 top-aligned. Any new phase must do the same.
 
+The width is `"100%"` rather than `columns` because of how a resize reaches the
+screen — see [Resizing](#resizing).
+
 ## Layout
 
 `NativeRunner` renders a full-height flex column (`components/NativeRunner.tsx`):
 
 ```
-<Box flexDirection="column" width={columns} height={rows}>   // useWindowSize()
+<Box flexDirection="column" width="100%" height={rows}>      // rows: useWindowSize()
   <Box ref={topRef} flexShrink={0}>       // measured -> topHeight
     {↑ N older lines, when content is hidden above}
   </Box>
@@ -86,9 +90,12 @@ top-aligned. Any new phase must do the same.
 - `LogPane` is always rendered (never gated on the measurement), so flexbox pins
   the footer to the bottom from the first frame; `paneHeight` is briefly the full
   height until the chrome is measured, which is harmless (the run-phase buffer
-  starts empty).
+  starts empty, or with only the few lines infra printed while the session
+  started).
 - The footer content is unchanged from before (package dots, hotkey hints, URL
   links, `git:(branch)` / `logfile:`); it's simply no longer hand-positioned.
+  A config with `infra` adds one row above `cwd:` — `infra:` and a green dot per
+  service — which is static: it records what was ready at startup.
 
 ## Virtualized log viewport
 
@@ -112,7 +119,8 @@ hook (`components/LogPane.tsx`).
 1. Subscribes to the manager with `useSyncExternalStore` (snapshot = the buffer
    `version`).
 2. Reads the filtered visible lines, gets each line's row count (memoized on the
-   line, recomputed only when the width changes), runs `computeWindow`, and
+   line, recomputed only when the width changes — and then **counted, not
+   wrapped**; see [Resizing](#resizing)), runs `computeWindow`, and
    materializes only the visible rows with `windowRows` — **never more than
    `height` `<Text>` nodes**, regardless of buffer size.
 3. Holds the scroll position and exposes `scrollLines` / `scrollPages` /
@@ -138,8 +146,9 @@ line buffer (capped at `MAX_BUFFER_LINES`). What changed:
   flushes listeners on a **microtask**, coalescing a burst of log lines into one
   re-render.
 - **Buffer queries**: `getVisibleLines()` (group-aware filter result, memoized per
-  version), `countRows(line, width)` (memoized per line), and
-  `wrapLine(line, width)` (rendered rows for one line).
+  version), `countRows(line, width)` (memoized per line; works the count out
+  without wrapping the line), and `wrapLine(line, width)` (rendered rows for one
+  line).
 - **Wrapping** (`wrapLine`, and plain mode's `formatLine`, which just joins its rows so both
   paths lay out identically). Three things it has to get right, each of which was once wrong:
   - **Every** row carries the timestamp + `[name]` prefix, not just the first, so a wrapped line
@@ -176,6 +185,72 @@ line buffer (capped at `MAX_BUFFER_LINES`). What changed:
   stamped onto each `BufferedLine` as `showTs`, so `tsPrefix`/`gutterWidth` render
   (and align) each line by its own package's setting. The logfile is always
   timestamped regardless.
+- **Timestamp layout (`timestamp-mode.ts`)**: a shown stamp is rendered in one of two
+  layouts — `time` (`HH:MM:SS`, 9 columns of gutter) while every timestamped line **on
+  screen** falls on one day, `date` (the full stamp, 20 columns) once two days are visible
+  together. `useLogViewport` decides per render: it lays the buffer out in **both** modes
+  (`countRows(line, cols, mode)` keeps one memo slot per mode, since evicting would thrash),
+  tries the `time` window first and keeps it if `spansOneDay` holds over its visible range,
+  else renders the `date` window. The choice is a pure function of the stored scroll
+  position, so it can't oscillate. Because the narrower gutter reflows wrapped lines, the
+  scroll offset is **stored in the `date` layout's row space** (the reference layout, where
+  no line takes fewer rows) and translated into the rendered layout through a bottom
+  **anchor** — the line at the bottom edge plus its rows clipped below (`bottomAnchor` /
+  `anchorOffset` / `convertOffset` in `log-window.ts`). `scrollLines`/`scrollPages` move in
+  rendered rows and translate back; `onContentResized` measures the buffer's growth in the
+  `date` layout so a layout flip contributes no delta. A flip is a re-flow, so `NativeRunner`
+  clears the selection on `viewport.tsMode` like it does on resize. Plain mode and the
+  logfile always use the full stamp.
+
+## Resizing
+
+A resize reaches the screen in two steps, and both have to be cheap.
+
+1. **Ink repaints on its own, immediately**, from its `resize` listener — which
+   runs before `useWindowSize()` has re-rendered anything. That frame is the
+   _previous_ React tree laid out again, so whatever the tree pins to the old size
+   is drawn at the old size. This is why every phase's root is `width="100%"`: Ink
+   sets its own root to the new terminal width before laying out, so a root that
+   follows it puts the footer at the new width in this very frame. With
+   `width={columns}` the frame came out at the old width, and a terminal that had
+   just become narrower wrapped the footer's box into garbage until step 2. The
+   log rows in this frame are still the old wrap (truncated if now too long), and
+   `height={rows}` is still the old height — Ink's root has no height to follow.
+   When the width shrank, Ink also erases the previous frame before this one,
+   outside its synchronized-output bracket.
+2. **The React commit follows** with the new `columns`/`rows`: `useLogViewport`
+   re-flows the buffer and the final frame is painted. `NativeRunner` re-measures
+   the chrome from its own `resize` listener so that `paneHeight` is right in this
+   same commit: step 1 has already laid the footer out at the new width, so a
+   footer that now wraps differently has its new height before React renders.
+   Left to the per-render measurement alone, that height arrives one commit late
+   and costs a third frame with a pane of the wrong height.
+
+Step 2 is where the cost is. `useLogViewport` needs the row count of **every**
+buffered line — the scroll offset, `hiddenAbove` and the selection's flat rows
+are all sums over the whole buffer — and a new width invalidates every memoized
+count at once. So `countRows` must not wrap a line to count its rows: wrapping
+(`wrap-ansi` + `slice-ansi`, re-run for every row) costs about a thousand times
+what counting does, and at `MAX_BUFFER_LINES` it turned one resize step into
+seconds. Instead (`wrap-rows.ts`):
+
+- `measureText(text)` runs once per line and is kept on it: the display width,
+  and `cells` — the text with its colors stripped, when every character left is
+  one column wide and its own grapheme, so that a column offset is a string index.
+- A line no wider than its content width is one row: a comparison.
+- A line that wraps is counted by `countWrappedRows`, which walks `cells` with
+  `indexOf(' ')` and applies the same decisions `wrapRows` makes — `wrap-ansi`'s
+  word wrap (`hard`, `trim: false`) and the over-long-token rule — to offsets
+  instead of strings.
+- Anything `cells` can't express (a wide glyph, a combining mark, a tab, an
+  escape sequence that isn't a color) is `null` and is counted the old way, by
+  wrapping. Such a line costs what every line used to, so a buffer with many
+  **wrapping** CJK or emoji lines still re-flows slowly; a short one never wraps
+  and costs nothing.
+
+Only the lines on screen are ever wrapped for real, by `wrapLineRows`. The two
+share `wrapIndent`, the one place that decides whether a line wraps and by what
+hanging indent.
 
 ## Scrolling & input
 
@@ -454,6 +529,7 @@ machinery is gated on `!plain`. Don't regress this path.
 | Fullscreen layout, input, scroll/mouse wiring        | `components/NativeRunner.tsx` |
 | Viewport hook, drag-select hook, presentational pane | `components/LogPane.tsx`      |
 | Virtualization math (`computeWindow`/`windowRows`)   | `log-window.ts`               |
+| Wrapping a line into rows; counting a line's rows    | `wrap-rows.ts`                |
 | Scroll position + transitions                        | `scroll.ts`                   |
 | SGR mouse escapes + `parseMouseEvents` decoder       | `mouse.ts`                    |
 | Selection geometry/text math (highlight, copy text)  | `selection.ts`                |
@@ -470,6 +546,13 @@ machinery is gated on `!plain`. Don't regress this path.
   function of the buffer + scroll state, rendered by Ink.
 - `LogPane` renders at most `paneHeight` rows; keep the windowing
   (`computeWindow`/`windowRows`) as the single source of what's on screen.
+- `countRows(line, cols, mode)` equals `wrapLineRows(line, cols, mode).length`,
+  always. The count is worked out separately from the wrap (see
+  [Resizing](#resizing)), so nothing but the specs holds the two together — and a
+  count that is off by one shifts every row below it, in the window, the scroll
+  offset and the selection alike. `countWrappedRows` reproduces `wrap-ansi`'s
+  rules as of the pinned major; `wrap-rows.spec.ts` and the row-count cases in
+  `process-manager.spec.ts` are what catch an upgrade that changes them.
 - The `plain` path stays a plain line printer with none of the Ink rendering.
 - SGR mouse **reporting** (`?1002h`+`?1006h`) is enabled while the run phase is
   mounted and **must be disabled on every exit path** or the terminal is left

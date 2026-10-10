@@ -6,7 +6,10 @@
   // source is re-checked inside the backend's program.
   "extends": "../../tsconfig.common.json",
   "compilerOptions": {
-    "types": ["node"]
+    "types": ["node"],
+    // The files here import each other by their real `.ts` name, which is what Node's native
+    // type-stripping needs at runtime (there's no emit to rewrite the extension).
+    "allowImportingTsExtensions": true
   },
   "include": ["src"]
 }

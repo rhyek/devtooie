@@ -11,6 +11,7 @@ import {
   useWindowSize,
 } from 'ink';
 import type { startCommandServer } from '../command-server.js';
+import type { DevReverseProxyServer } from '../dev-reverse-proxy.js';
 import { normalizeUrlEntry, type UrlLine } from '../config.js';
 import {
   ACCENT_COLOR,
@@ -43,6 +44,12 @@ export type NativeRunnerProps = {
   args: RunnerArgs;
   /** Control API server, already listening, started by the caller before this component mounts. */
   server: Awaited<ReturnType<typeof startCommandServer>>;
+  /**
+   * The session's dev reverse proxy, already listening, or `null` when the config declares
+   * none. Attached to the process manager here so it can answer by package status, and closed
+   * with the session.
+   */
+  devReverseProxy?: DevReverseProxyServer | null;
   /** Kept in sync with the active logfile path so `renderApp`'s exit line can print it. */
   logFileRef?: { current: string | undefined };
 };
@@ -348,7 +355,12 @@ function usePackageStatuses(args: RunnerArgs, manager: ProcessManager) {
  * back into the manager so its scrollback-clearing logic never clears rows
  * the footer itself occupies.
  */
-export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
+export function NativeRunner({
+  args,
+  server,
+  devReverseProxy = null,
+  logFileRef,
+}: NativeRunnerProps) {
   const { exit } = useApp();
 
   const [gitBranch] = useState(getGitBranch);
@@ -382,6 +394,9 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
   const topLevelUrls = useMemo<UrlLine[]>(() => args.topLevelUrls ?? [], [args.topLevelUrls]);
 
   const [manager] = useState(() => new ProcessManager(args));
+  useEffect(() => {
+    devReverseProxy?.attach(manager);
+  }, [devReverseProxy, manager]);
   // Current logfile path shown in the footer; updated when the log is rotated (`t`).
   const [logFilePath, setLogFilePath] = useState(args.logFile);
   // Mirror the active logfile into the shared holder so `renderApp`'s exit line —
@@ -456,6 +471,9 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
       manager.shutdownAll(),
       new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_TIMEOUT_MS)),
     ]);
+    // The proxy first: it destroys every open socket (proxied websockets included), so a
+    // lingering connection can't hold the exit.
+    await devReverseProxy?.close();
     // Packages are down and their ports freed — ack any blocking `/command/quit`
     // now (e.g. a newer session handing off), before we close the server below.
     server.ackQuit();
@@ -463,13 +481,13 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
     manager.dispose();
     // Ink's teardown drives the exit from here: `exit()` unmounts, restores the
     // primary screen, and resolves `waitUntilExit` in renderApp, which prints the
-    // "exited after Ns" line on the restored screen and exits the process.
+    // "exited after …" line on the restored screen and exits the process.
     exit();
     // Safety net: force-exit if that teardown ever stalls, so a fully-cleaned-up
     // session (every child already killed above) can't leave a lingering parent
     // process. In the normal path renderApp exits first and this never fires.
     setTimeout(() => process.exit(0), 1500);
-  }, [manager, server, exit, markAllStopped]);
+  }, [manager, server, devReverseProxy, exit, markAllStopped]);
 
   // Terminal-delivered signals route to the same graceful shutdown as Ctrl+C. Ctrl+C itself
   // arrives as a keystroke (the TUI runs the terminal in raw mode, so ISIG is off) and is handled
@@ -493,16 +511,18 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
   // which are swallowed whole (see the input handler). True only in the brief
   // window after a terminal reattach drops our SGR encoding mode.
   const swallowLegacyPayloadRef = useRef(false);
-  // Runs every render to re-measure the chrome (top indicator + footer) as its
-  // content changes; the setState calls bail on unchanged values, so no loop.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useLayoutEffect(() => {
+  const measureChrome = useCallback(() => {
     if (bottomRef.current) {
       setBottomHeight(measureElement(bottomRef.current).height);
     }
     if (topRef.current) {
       setTopHeight(measureElement(topRef.current).height);
     }
+  }, []);
+  // Runs every render to re-measure the chrome (top indicator + footer) as its
+  // content changes; the setState calls bail on unchanged values, so no loop.
+  useLayoutEffect(() => {
+    measureChrome();
     if (!startedRef.current) {
       startedRef.current = true;
       manager.startAll();
@@ -556,6 +576,18 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
     stdout.write(MOUSE_ENABLE);
   }, [stdout, columns, rows]);
 
+  // On a resize, re-measure the chrome in the same commit as the new size. By the time this
+  // listener runs Ink has laid the tree out at the new width (see "Resizing" in
+  // docs/architecture/rendering.md), so a footer that now wraps differently already has its
+  // new height — and taking it here, not after the commit, spares a frame whose pane is the
+  // wrong height.
+  useEffect(() => {
+    stdout.on('resize', measureChrome);
+    return () => {
+      stdout.off('resize', measureChrome);
+    };
+  }, [stdout, measureChrome]);
+
   // Reporting takes over the mouse from the terminal while active, so it MUST be
   // disabled on unmount — and defensively in `shutdown()` — to hand the mouse back.
   useEffect(() => {
@@ -564,12 +596,12 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
     };
   }, [stdout]);
 
-  // A resize (wrapping changes) or a filter change re-flows the visible content,
-  // invalidating the flat-row/column coordinates a selection is anchored to — so
-  // drop any active selection.
+  // A resize (wrapping changes), a filter change, or the timestamp column changing
+  // width re-flows the visible content, invalidating the flat-row/column coordinates
+  // a selection is anchored to — so drop any active selection.
   useEffect(() => {
     clearSelection();
-  }, [columns, rows, activeFilter, clearSelection]);
+  }, [columns, rows, activeFilter, viewport.tsMode, clearSelection]);
 
   // Kill every child process when this run phase unmounts.
   useEffect(() => {
@@ -969,6 +1001,7 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
 
   const isFilter = mode === 'filter';
   const isCommands = mode === 'commands';
+  const infraServices = args.infra?.services ?? [];
 
   const topSection = shuttingDown ? (
     <Text color={WARN_COLOR}>Shutting down... (press Ctrl+C again to force kill)</Text>
@@ -1039,8 +1072,12 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
         ? FOCUS_COLOR
         : MUTED_COLOR;
 
+  // `width="100%"` rather than `columns`: on a resize Ink repaints once on its own, before this
+  // component has re-rendered at the new size. A root pinned to the old `columns` draws that
+  // frame — the footer's box with it — at the old width, which a narrower terminal wraps into
+  // garbage; a root that follows Ink's own root is laid out at the new width straight away.
   return (
-    <Box flexDirection="column" width={columns} height={rows} overflow="hidden">
+    <Box flexDirection="column" width="100%" height={rows} overflow="hidden">
       {/* Centered: the indicators are addressed to the whole viewport, not to the
           left-aligned log rows they sit against. */}
       <Box ref={topRef} flexShrink={0} justifyContent="center">
@@ -1052,7 +1089,8 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
       </Box>
       {/* Always rendered so flexGrow pins the footer to the bottom from the first
           frame; paneHeight is briefly the full height until the footer is measured,
-          which is harmless (the run-phase buffer starts empty). */}
+          which is harmless (the run-phase buffer starts empty, or with only the few
+          lines infra printed while the session started). */}
       <LogPane rows={viewport.rows} highlights={highlights} />
       <BottomChrome
         ref={bottomRef}
@@ -1066,6 +1104,19 @@ export function NativeRunner({ args, server, logFileRef }: NativeRunnerProps) {
           <Box marginTop={1}>{packageStatusDots}</Box>
           {isNormal && <HotkeyHints hints={packageHints} />}
           <Box flexDirection="column" marginTop={1}>
+            {infraServices.length > 0 && (
+              // The session's infra, listed like the packages above it. Every dot is green:
+              // these were ready when the session started, and nothing watches them after.
+              <Box flexWrap="wrap" columnGap={2}>
+                <Text color={ACCENT_COLOR}>infra:</Text>
+                {infraServices.map((service) => (
+                  <Box key={`${service.provider}/${service.name}`} flexShrink={0}>
+                    <Text color={OK_COLOR}>●</Text>
+                    <Text> {service.name}</Text>
+                  </Box>
+                ))}
+              </Box>
+            )}
             <Box columnGap={2}>
               <Text>
                 <Text color={ACCENT_COLOR}>cwd: </Text>

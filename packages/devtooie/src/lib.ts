@@ -1,7 +1,8 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { execaSync } from 'execa';
+import { execa, execaSync, type ResultPromise } from 'execa';
 import type { AnyPackageConfig, ResolvedHealthcheck } from './config.js';
 import {
   getRegisteredPackages,
@@ -47,6 +48,31 @@ export function displayLogFile(file: string): string {
 }
 
 /**
+ * A duration in words for the exit line: `3 days 2 hours 3 minutes`. Units that are zero
+ * are left out, and seconds appear only while the whole duration is under a minute. Rounds
+ * down, so a unit never reads as the next one up.
+ */
+export function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  if (totalSeconds < 60) {
+    return plural(totalSeconds, 'second');
+  }
+  const units: [number, string][] = [
+    [Math.floor(totalSeconds / 86_400), 'day'],
+    [Math.floor((totalSeconds % 86_400) / 3600), 'hour'],
+    [Math.floor((totalSeconds % 3600) / 60), 'minute'],
+  ];
+  return units
+    .filter(([count]) => count > 0)
+    .map(([count, unit]) => plural(count, unit))
+    .join(' ');
+}
+
+function plural(count: number, unit: string): string {
+  return `${count} ${unit}${count === 1 ? '' : 's'}`;
+}
+
+/**
  * The most recently modified `*.log` file in `dir` (absolute path), or null when `dir` is
  * missing or holds no logfiles. Used by `devtooie logs` to locate the current session's log
  * when a live instance can't be queried for it.
@@ -81,7 +107,7 @@ export function pickNewestLog(dir: string): string | null {
  *
  * 1. the running instance's current (rotation-aware) logfile, when it can be queried;
  * 2. the logfile recorded in `running.json` (`recordedLogFile`), when it still exists — more
- *    precise than scanning the dir, since a stray `devtooie cmd` log could be newer;
+ *    precise than scanning the dir, since a stray `devtooie exec` log could be newer;
  * 3. the newest `*.log` in `fallbackDir`.
  *
  * Returns null when none yields one. Purely read-only — it never touches the running session.
@@ -140,7 +166,7 @@ export function findAncestorPackage(
   packages: AnyPackageConfig[],
   root: string,
 ): AnyPackageConfig | null {
-  const byPath = new Map(packages.map((p) => [path.resolve(p.path), p]));
+  const byPath = new Map(packages.map((p) => [path.resolve(p.absoluteDir), p]));
   const stop = path.resolve(root);
   let dir = path.resolve(startDir);
   for (;;) {
@@ -159,9 +185,11 @@ export function findAncestorPackage(
   }
 }
 
-function readPackageJson(pkg: AnyPackageConfig): { scripts?: Record<string, string> } | null {
+function readPackageJson(
+  pkg: AnyPackageConfig,
+): { name?: string; version?: string; scripts?: Record<string, string> } | null {
   try {
-    return JSON.parse(fs.readFileSync(path.join(pkg.path, 'package.json'), 'utf8'));
+    return JSON.parse(fs.readFileSync(path.join(pkg.absoluteDir, 'package.json'), 'utf8'));
   } catch {
     return null;
   }
@@ -175,26 +203,112 @@ export function getScriptText(pkg: AnyPackageConfig, script: string): string | n
   return readPackageJson(pkg)?.scripts?.[script] ?? null;
 }
 
-export function getCommandRunner(pkg: AnyPackageConfig): 'pnpm' | 'make' {
-  if (fs.existsSync(path.join(pkg.path, 'package.json'))) {
-    return 'pnpm';
+export function getCommandRunner(pkg: AnyPackageConfig): 'sh' | 'make' {
+  if (fs.existsSync(path.join(pkg.absoluteDir, 'package.json'))) {
+    return 'sh';
   }
-  if (fs.existsSync(path.join(pkg.path, 'Makefile'))) {
+  if (fs.existsSync(path.join(pkg.absoluteDir, 'Makefile'))) {
     return 'make';
   }
-  return 'pnpm';
+  return 'sh';
 }
 
+/** How to spawn a package script or make target: the command, its args, and its environment. */
+export interface ExecSpec {
+  cmd: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+}
+
+/** `node_modules/.bin` of `dir` and of each of its ancestors that has one, nearest first. */
+function binDirs(dir: string): string[] {
+  const dirs: string[] = [];
+  for (let current = path.resolve(dir); ; current = path.dirname(current)) {
+    const bin = path.join(current, 'node_modules', '.bin');
+    if (fs.statSync(bin, { throwIfNoEntry: false })?.isDirectory()) {
+      dirs.push(bin);
+    }
+    if (path.dirname(current) === current) {
+      return dirs;
+    }
+  }
+}
+
+/**
+ * How to spawn `script` for a package, with `extraArgs` forwarded to it. Spawn the result with
+ * the package's directory as cwd and with its `env` — `env` (the environment the caller would
+ * otherwise spawn with) plus whatever the script needs on top.
+ *
+ * A `package.json` script is run as its own text through `/bin/sh`, with no package manager in
+ * between. Most shells replace themselves with a script that is a single command (bash and
+ * busybox do; dash stays as its parent), so the spawned process is usually the script itself —
+ * which is why a fatal signal can surface either as a signal or as a 128+n exit code; see
+ * {@link exitCodeOf}. The package's `node_modules/.bin` and every ancestor's go on `PATH`, and
+ * the variables naming the package and script are set for it — over any inherited from a
+ * package manager that started devtooie, which describe the workspace root instead.
+ */
 export function getExecArgs(
   pkg: AnyPackageConfig,
   script: string,
   extraArgs: string[] = [],
-): [string, string[]] {
-  // pnpm and make both forward args that follow the script/target name straight to it — no `--`
-  // separator (which pnpm would pass through literally).
-  return getCommandRunner(pkg) === 'make'
-    ? ['make', [script, ...extraArgs]]
-    : ['pnpm', ['run', script, ...extraArgs]];
+  env: NodeJS.ProcessEnv = process.env,
+): ExecSpec {
+  if (getCommandRunner(pkg) === 'make') {
+    // make forwards args that follow the target name straight to it.
+    return { cmd: 'make', args: [script, ...extraArgs], env };
+  }
+  const text = getScriptText(pkg, script);
+  if (text === null) {
+    return {
+      cmd: '/bin/sh',
+      args: ['-c', 'echo "Missing script: \\"$1\\"" >&2; exit 1', 'sh', script],
+      env,
+    };
+  }
+  const packageJson = readPackageJson(pkg);
+  return {
+    cmd: '/bin/sh',
+    // Extra args ride along as positional parameters, so the shell quotes them, not us.
+    args: extraArgs.length > 0 ? ['-c', `${text} "$@"`, 'sh', ...extraArgs] : ['-c', text],
+    env: {
+      ...env,
+      PATH: [...binDirs(pkg.absoluteDir), ...(env.PATH ? [env.PATH] : [])].join(path.delimiter),
+      // An absent name/version stays `undefined`, which leaves an inherited one out of the child.
+      npm_package_name: packageJson?.name,
+      npm_package_version: packageJson?.version,
+      npm_package_json: path.join(pkg.absoluteDir, 'package.json'),
+      npm_lifecycle_event: script,
+      npm_lifecycle_script: text,
+      INIT_CWD: pkg.absoluteDir,
+      PNPM_SCRIPT_SRC_DIR: pkg.absoluteDir,
+    },
+  };
+}
+
+/**
+ * Runs a package script (or make target) to completion in the package's directory, with its
+ * output inherited or captured. Rejects when the script fails — a non-zero exit code and a fatal
+ * signal alike.
+ */
+export function runScript(
+  pkg: AnyPackageConfig,
+  script: string,
+  stdio: 'inherit' | 'pipe',
+): ResultPromise {
+  const { cmd, args, env } = getExecArgs(pkg, script);
+  return execa(cmd, args, { stdio, cwd: pkg.absoluteDir, env });
+}
+
+/**
+ * The exit code of a finished child process, by shell convention: its own code when it exited,
+ * 128 + the signal number when a signal killed it, and 1 when it never ran.
+ */
+export function exitCodeOf(result: { exitCode?: number; signal?: string }): number {
+  if (result.exitCode !== undefined) {
+    return result.exitCode;
+  }
+  const signal = os.constants.signals[result.signal as NodeJS.Signals] as number | undefined;
+  return signal === undefined ? 1 : 128 + signal;
 }
 
 export function hasScript(pkg: AnyPackageConfig, script: string): boolean {
@@ -224,12 +338,15 @@ export function canRebuild(pkg: AnyPackageConfig): boolean {
  * package can't rebuild, or its dev command self-cleans (`command.cleans`), in which case a
  * rebuild is just a restart (no pre-commands). See {@link canRebuild}.
  */
-export function getRebuildCommands(pkg: AnyPackageConfig): [string, string[]][] {
+export function getRebuildCommands(
+  pkg: AnyPackageConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): ExecSpec[] {
   if (hasScript(pkg, 'build:clean')) {
-    return [getExecArgs(pkg, 'build:clean')];
+    return [getExecArgs(pkg, 'build:clean', [], env)];
   }
   if (hasScript(pkg, 'clean') && hasScript(pkg, 'build')) {
-    return [getExecArgs(pkg, 'clean'), getExecArgs(pkg, 'build')];
+    return [getExecArgs(pkg, 'clean', [], env), getExecArgs(pkg, 'build', [], env)];
   }
   return [];
 }
@@ -245,7 +362,7 @@ export function hasDevScript(pkg: AnyPackageConfig): boolean {
 
 export function getMakeTargets(pkg: AnyPackageConfig): string[] {
   try {
-    const mk = fs.readFileSync(path.join(pkg.path, 'Makefile'), 'utf8');
+    const mk = fs.readFileSync(path.join(pkg.absoluteDir, 'Makefile'), 'utf8');
     // Exclude make's special targets (`.PHONY`, `.DEFAULT`, …) — they start with `.` and aren't
     // runnable targets, so they must not surface as commands.
     return [...mk.matchAll(/^([a-zA-Z0-9_.-]+):/gm)]
@@ -300,7 +417,7 @@ export function getTsconfigBuildPackages(pkg: AnyPackageConfig): AnyPackageConfi
     return [];
   }
   const registered = getRegisteredPackages();
-  const byPath = new Map(registered.map((a) => [path.resolve(a.path), a]));
+  const byPath = new Map(registered.map((a) => [path.resolve(a.absoluteDir), a]));
   const seen = new Set<string>();
   const result: AnyPackageConfig[] = [];
   const visit = (dir: string) => {
@@ -324,7 +441,7 @@ export function getTsconfigBuildPackages(pkg: AnyPackageConfig): AnyPackageConfi
       visit(refDir);
     }
   };
-  visit(pkg.path);
+  visit(pkg.absoluteDir);
   return result;
 }
 
@@ -391,16 +508,107 @@ export function resolveDeps(
 
 const selectionFile = () => path.join(getStateDir(), 'selection.json');
 
-export function saveSelection(names: string[]): void {
-  fs.writeFileSync(selectionFile(), JSON.stringify(names));
+/**
+ * Keeps only the names that are packages of the loaded config. A saved selection outlives
+ * package renames, and a stale name must never reach the picker or `findPackage` (which throws
+ * — inside a React render, that took the whole TUI down), nor be written back to recur on every
+ * run. With no config loaded there is nothing to check against, so the names pass through.
+ */
+function onlyCurrentPackages(names: string[]): string[] {
+  if (!getLoadedConfig()) {
+    return names;
+  }
+  const known = new Set(getRegisteredPackages().map((p) => p.name));
+  return names.filter((name) => known.has(name));
 }
 
-export function loadSelection(): string[] | null {
+/** Persists the selection for `--last-answers`; a name that isn't a current package is dropped. */
+export function saveSelection(names: string[]): void {
+  fs.writeFileSync(selectionFile(), JSON.stringify(onlyCurrentPackages(names)));
+}
+
+/**
+ * The saved selection split into the names that are still packages of the loaded config and
+ * the ones that aren't (a package key was renamed or removed since); `null` when nothing was
+ * ever saved. The pruned list is written back, so a stale name is gone after the first run that
+ * reads it — but the caller still learns it was there, since a stale name is what sends the TUI
+ * back to the picker instead of replaying the selection.
+ */
+export function readSelection(): { names: string[]; stale: string[] } | null {
+  let saved: string[];
   try {
-    return JSON.parse(fs.readFileSync(selectionFile(), 'utf8')) as string[];
+    saved = JSON.parse(fs.readFileSync(selectionFile(), 'utf8')) as string[];
   } catch {
     return null;
   }
+  const names = onlyCurrentPackages(saved);
+  const stale = saved.filter((name) => !names.includes(name));
+  if (stale.length) {
+    try {
+      fs.writeFileSync(selectionFile(), JSON.stringify(names));
+    } catch {
+      // best-effort: the pruned list is still what the caller gets
+    }
+  }
+  return { names, stale };
+}
+
+/** The saved selection's current package names (see {@link readSelection}), or `null`. */
+export function loadSelection(): string[] | null {
+  return readSelection()?.names ?? null;
+}
+
+/** Where the interactive session starts, from the CLI flags and the saved selection. */
+export type InitialPhase =
+  | { type: 'package-select'; initialSelected: string[] }
+  | { type: 'building'; selectedNames: string[] };
+
+/**
+ * Picks where the TUI's phase machine starts: an explicit `--package` list goes straight to the
+ * build; so does `--last-answers` with a saved selection whose every name is still a package.
+ * A saved selection naming a package that no longer exists shows the picker instead, with the
+ * names that survived preselected — renamed package keys must never stop devtooie from running.
+ */
+export function initialPhaseFor(opts: { packages: string[]; lastAnswers: boolean }): InitialPhase {
+  if (opts.packages.length > 0) {
+    return { type: 'building', selectedNames: opts.packages };
+  }
+  const saved = readSelection();
+  if (opts.lastAnswers && saved && saved.names.length > 0 && saved.stale.length === 0) {
+    return { type: 'building', selectedNames: saved.names };
+  }
+  return { type: 'package-select', initialSelected: saved?.names ?? [] };
+}
+
+/**
+ * The package names for a non-interactive phase (build/plain), which — unlike the UI — has no
+ * selector to fall back on: an explicit `--package` wins, then a saved `--last-answers`
+ * selection, otherwise an error naming `usage`. Unknown `--package` names are the caller's to
+ * validate.
+ */
+export function resolveSelectedNames(
+  opts: { package: string[]; lastAnswers: boolean },
+  usage: string,
+): { names: string[] } | { error: string } {
+  if (opts.package.length > 0) {
+    return { names: opts.package };
+  }
+  if (opts.lastAnswers) {
+    const saved = readSelection();
+    // No picker to fall back on here, so a selection with stale names is refused outright
+    // rather than run on whatever survived.
+    if (saved?.stale.length) {
+      return {
+        error:
+          `The saved selection names packages that no longer exist (${saved.stale.join(', ')}) — ` +
+          'run once without --last-answers to pick again.',
+      };
+    }
+    return !saved || saved.names.length === 0
+      ? { error: 'No saved selection found — run once without --last-answers first.' }
+      : { names: saved.names };
+  }
+  return { error: `${usage} requires --package or --last-answers.` };
 }
 
 export function resetSelection(): void {
@@ -548,7 +756,7 @@ export function buildRunnerArgs(
     topLevelUrls: config?.urls?.map(normalizeUrlEntry),
     envFiles: config?.envFiles ?? envFileNames(),
     envOverride: config?.envOverride,
-    logTimestamps: config?.logTimestamps ?? false,
+    logTimestamps: config?.logTimestamps ?? true,
     cwd: process.cwd(),
   };
 }

@@ -1,9 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { describe, it, test, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import chalk from 'chalk';
+import stringWidth from 'string-width';
 import { ProcessManager, resolveColorSpec, packagePrefixColor } from './process-manager.js';
 import { createFormatter } from './log-formatter.js';
 import {
@@ -40,6 +42,22 @@ afterEach(() => {
   disposeManager(manager);
   manager = undefined;
 });
+
+/**
+ * Wait until a line in `file` matches `needle` (or `timeoutMs` passes). The spawn-based tests used
+ * to sleep a fixed 1.5s before stopping the child, which is not enough for node to start when
+ * the whole suite is loading the machine. Match the child's *output* — text right after the
+ * `[name] ` prefix.
+ */
+async function waitForLog(file: string, needle: RegExp, timeoutMs = 8000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(file) && needle.test(fs.readFileSync(file, 'utf8'))) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
 
 beforeAll(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-process-manager-'));
@@ -101,7 +119,7 @@ describe('package prefix colors', () => {
 });
 
 function pkg(): AnyPackageConfig {
-  return { name: 'fixture', relativeDir: '.', path: dir };
+  return { name: 'fixture', relativeDir: '.', absoluteDir: dir };
 }
 
 function runnerArgs(a: AnyPackageConfig): RunnerArgs {
@@ -134,8 +152,16 @@ describe('on-screen log timestamps', () => {
     expect(row).toContain('hello world');
   });
 
-  it('leaves rows un-timestamped by default', () => {
+  it('timestamps rows by default', () => {
     manager = new ProcessManager(runnerArgs(pkg()));
+    manager.logSystem('hello world');
+    const row = lastRow(manager);
+    expect(row).toMatch(TS);
+    expect(row).toContain('hello world');
+  });
+
+  it('leaves rows un-timestamped with logs.timestamps: false', () => {
+    manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: false });
     manager.logSystem('hello world');
     const row = lastRow(manager);
     expect(row).not.toMatch(TS);
@@ -151,14 +177,14 @@ describe('on-screen log timestamps', () => {
   // A control line tagged with a package's name shares that package's timestamp resolution,
   // so it's a spawn-free way to observe the per-package override.
   it("a package's logs.timestamps: true overrides a top-level default of false", () => {
-    const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', path: dir, logs: { timestamps: true } }; // prettier-ignore
+    const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', absoluteDir: dir, logs: { timestamps: true } }; // prettier-ignore
     manager = new ProcessManager({ ...runnerArgs(p), logTimestamps: false });
     manager.logControl('hi', { package: 'fixture' });
     expect(lastRow(manager)).toMatch(TS);
   });
 
   it("a package's logs.timestamps: false overrides a top-level default of true", () => {
-    const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', path: dir, logs: { timestamps: false } }; // prettier-ignore
+    const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', absoluteDir: dir, logs: { timestamps: false } }; // prettier-ignore
     manager = new ProcessManager({ ...runnerArgs(p), logTimestamps: true });
     manager.logControl('hi', { package: 'fixture' });
     expect(lastRow(manager)).not.toMatch(TS);
@@ -168,6 +194,40 @@ describe('on-screen log timestamps', () => {
     manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: true });
     manager.logControl('hi', { package: 'fixture' });
     expect(lastRow(manager)).toMatch(TS);
+  });
+
+  // The viewport asks for the `time` layout while every stamp on screen is from the same day.
+  test("renders only `HH:MM:SS` in the 'time' layout", () => {
+    manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: true });
+    manager.logSystem('hello world');
+    const lines = manager.getVisibleLines();
+    const row = stripAnsi(manager.wrapLine(lines[lines.length - 1]!, 200, 'time')[0]!);
+    expect(row).toMatch(/^\d{2}:\d{2}:\d{2} \[/);
+    expect(row).not.toMatch(TS);
+  });
+
+  test('the time layout reclaims the date column, so a long line wraps into fewer rows', () => {
+    manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: true });
+    manager.logSystem('x'.repeat(150));
+    const lines = manager.getVisibleLines();
+    const line = lines[lines.length - 1]!;
+    // 90 columns: 20 of gutter leave 70 → 3 rows; 9 of gutter leave 81 → 2 rows.
+    const cols = 90 + stringWidth(line.prefix);
+    expect(manager.countRows(line, cols, 'date')).toBe(3);
+    expect(manager.countRows(line, cols, 'time')).toBe(2);
+    expect(manager.wrapLine(line, cols, 'time')).toHaveLength(2);
+    // Both counts stay memoized side by side rather than evicting each other.
+    expect(manager.countRows(line, cols, 'date')).toBe(3);
+    expect(manager.countRows(line, cols, 'time')).toBe(2);
+  });
+
+  test('a line with its timestamp hidden lays out the same in either mode', () => {
+    manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: false });
+    manager.logSystem('x'.repeat(150));
+    const lines = manager.getVisibleLines();
+    const line = lines[lines.length - 1]!;
+    expect(manager.countRows(line, 100, 'time')).toBe(manager.countRows(line, 100, 'date'));
+    expect(manager.wrapLine(line, 100, 'time')).toEqual(manager.wrapLine(line, 100, 'date'));
   });
 });
 
@@ -301,7 +361,7 @@ describe('wrapping a line too wide for the terminal', () => {
   });
 
   it('still wraps a plain line with no property key, aligned at the gutter', () => {
-    manager = new ProcessManager(runnerArgs(pkg()));
+    manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: false });
     manager.logSystem('x'.repeat(300));
     const wrapped = rows(manager);
     expect(wrapped.length).toBeGreaterThan(1);
@@ -310,6 +370,33 @@ describe('wrapping a line too wide for the terminal', () => {
       expect(row.length).toBeLessThanOrEqual(COLS);
     }
   });
+
+  // The viewport counts every buffered line's rows without wrapping it, then wraps only the few
+  // on screen — so the count has to be the wrap's length for whatever a line looks like, at any
+  // width, in either timestamp layout, or every row below the disagreement lands a row off.
+  for (const timestamps of [true, false]) {
+    test(`counts the rows a line wraps into without wrapping it (timestamps ${timestamps ? 'on' : 'off'})`, () => {
+      manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: timestamps });
+      const words = 'lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor';
+      manager.logControl('asset-fetch', { content_url: LONG, note: `${words} ${words}` });
+      manager.logControl('short');
+      manager.logSystem('x'.repeat(300));
+      manager.logSystem(`${words} ${chalk.red(LONG)} ${words}`);
+      manager.logSystem(`    indented ${words} ${words}`);
+      manager.logSystem(`✓ built … ➜ ${words} ${words}`);
+      manager.logSystem(`wide 漢字 🚀 ${words} ${words}`);
+      const lines = manager.getVisibleLines();
+      for (let cols = 30; cols <= 150; cols += 7) {
+        for (const mode of ['date', 'time'] as const) {
+          for (const line of lines) {
+            expect(manager.countRows(line, cols, mode), `cols=${cols} ${mode} ${line.text}`).toBe(
+              manager.wrapLineRows(line, cols, mode).length,
+            );
+          }
+        }
+      }
+    });
+  }
 });
 
 describe('ProcessManager', () => {
@@ -317,7 +404,7 @@ describe('ProcessManager', () => {
     manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
 
     manager.start('fixture');
-    // Give execa (via the package manager) time to actually spawn the child.
+    // Give execa time to actually spawn the child.
     await new Promise((resolve) => setTimeout(resolve, 1500));
     expect(manager.getRunning()).toContain('fixture');
     expect(manager.getStatus('fixture')).toBe('running');
@@ -364,7 +451,7 @@ describe('ProcessManager', () => {
     const wide: AnyPackageConfig = {
       name: 'payments-worker',
       relativeDir: '.',
-      path: dir,
+      absoluteDir: dir,
     };
     manager = new ProcessManager(runnerArgs(wide), { plain: true });
     manager.logControl('restart', { package: 'payments-worker' });
@@ -531,7 +618,7 @@ describe('ProcessManager env injection', () => {
   });
 
   it('injects resolved .env vars into the spawned dev process', async () => {
-    const a: AnyPackageConfig = { name: 'envfixture', relativeDir: '.', path: envDir };
+    const a: AnyPackageConfig = { name: 'envfixture', relativeDir: '.', absoluteDir: envDir };
     mgr = new ProcessManager(
       {
         sortedPackages: [a],
@@ -549,7 +636,7 @@ describe('ProcessManager env injection', () => {
     );
 
     mgr.start('envfixture');
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await waitForLog(envLog, /\]\s+VAL=/);
     await mgr.stop('envfixture');
 
     expect(fs.readFileSync(envLog, 'utf8')).toContain('VAL=injected123');
@@ -584,7 +671,7 @@ describe('ProcessManager PORT injection', () => {
     const a: AnyPackageConfig = {
       name: 'portfix',
       relativeDir: '.',
-      path: portDir,
+      absoluteDir: portDir,
       port: 4321,
       command: { name: 'dev', watches: true, builds: true },
     };
@@ -604,7 +691,7 @@ describe('ProcessManager PORT injection', () => {
     );
 
     mgr.start('portfix');
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await waitForLog(portLog, /\]\s+PORT=/);
     await mgr.stop('portfix');
 
     expect(fs.readFileSync(portLog, 'utf8')).toContain('PORT=4321');
@@ -631,9 +718,7 @@ describe('ProcessManager child NODE_ENV inheritance', () => {
         name: 'nodeenvfix',
         version: '1.0.0',
         scripts: {
-          // Print the child's NODE_ENV bracketed so an unset value is visible as `[]`. The
-          // bracketed literal value (e.g. `[development]`) never appears in pnpm's echo of the
-          // script *source*, so `toContain` can't match the wrong line.
+          // Print the child's NODE_ENV bracketed so an unset value is visible as `[]`.
           dev: "node -e \"console.log('NODE_ENV=['+(process.env.NODE_ENV||'')+']');setInterval(()=>{},1e9)\"",
         },
       }),
@@ -654,7 +739,7 @@ describe('ProcessManager child NODE_ENV inheritance', () => {
   });
 
   function makeManager(): ProcessManager {
-    const a: AnyPackageConfig = { name: 'nodeenvfix', relativeDir: '.', path: dir };
+    const a: AnyPackageConfig = { name: 'nodeenvfix', relativeDir: '.', absoluteDir: dir };
     return new ProcessManager(
       {
         sortedPackages: [a],
@@ -675,7 +760,7 @@ describe('ProcessManager child NODE_ENV inheritance', () => {
     fs.writeFileSync(log, '');
     mgr = makeManager();
     mgr.start('nodeenvfix');
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await waitForLog(log, /\]\s+NODE_ENV=\[/);
     await mgr.stop('nodeenvfix');
     return fs.readFileSync(log, 'utf8');
   }
@@ -733,7 +818,7 @@ describe('ProcessManager NODE_ENV from a .env file', () => {
 
   it("uses the package's .env.development NODE_ENV even when the shell leaves it unset", async () => {
     delete process.env.NODE_ENV; // shell has no NODE_ENV
-    const a: AnyPackageConfig = { name: 'nodeenvdotenv', relativeDir: '.', path: dir };
+    const a: AnyPackageConfig = { name: 'nodeenvdotenv', relativeDir: '.', absoluteDir: dir };
     mgr = new ProcessManager(
       {
         sortedPackages: [a],
@@ -785,7 +870,7 @@ describe('ProcessManager env-change restart', () => {
   });
 
   it('restarts a running package when its .env changes, picking up the new value', async () => {
-    const a: AnyPackageConfig = { name: 'wfixture', relativeDir: '.', path: d };
+    const a: AnyPackageConfig = { name: 'wfixture', relativeDir: '.', absoluteDir: d };
     m = new ProcessManager(
       {
         sortedPackages: [a],
@@ -844,7 +929,7 @@ describe('ProcessManager logs.formatter', () => {
     const a: AnyPackageConfig = {
       name: 'fmtfix',
       relativeDir: '.',
-      path: fmtDir,
+      absoluteDir: fmtDir,
       ...(formatter ? { logs: { formatter } } : {}),
     };
     return {
@@ -1001,7 +1086,7 @@ describe('ProcessManager stderr color through a formatter', () => {
     const a: AnyPackageConfig = {
       name: 'errfix',
       relativeDir: '.',
-      path: errDir,
+      absoluteDir: errDir,
       ...(formatter ? { logs: { formatter } } : {}),
     };
     return {
@@ -1083,7 +1168,7 @@ describe('ProcessManager healthcheck probing', () => {
     const packages: AnyPackageConfig[] = names.map((name) => ({
       name,
       relativeDir: '.',
-      path: hcDir,
+      absoluteDir: hcDir,
     }));
     return new ProcessManager(
       {
@@ -1239,7 +1324,7 @@ describe('ProcessManager rebuild (clean + build)', () => {
   });
 
   it('runs clean then build (in order) and restarts when there is no build:clean', async () => {
-    const a: AnyPackageConfig = { name: 'rbfix', relativeDir: '.', path: rbDir };
+    const a: AnyPackageConfig = { name: 'rbfix', relativeDir: '.', absoluteDir: rbDir };
     mgr = new ProcessManager(
       {
         sortedPackages: [a],
@@ -1270,5 +1355,290 @@ describe('ProcessManager rebuild (clean + build)', () => {
     expect(mgr.getStatus('rbfix')).toBe('running'); // restarted after the rebuild
 
     await mgr.stop('rbfix');
+  }, 15_000);
+});
+
+describe('infra startup output', () => {
+  const infra: RunnerArgs['infra'] = {
+    services: [{ provider: 'docker-compose', name: 'db' }],
+    log: [
+      { text: 'Container example-db-1 Started', isError: false },
+      { service: 'db', text: '2 migrations applied', isError: false },
+      { service: 'db', text: 'psql: warning', isError: true },
+    ],
+  };
+
+  test('lands at the top of the session log, prefixed by service, before anything else', () => {
+    manager = new ProcessManager({ ...runnerArgs(pkg()), infra });
+    manager.logSystem('later');
+    const rows = manager.getVisibleLines().map((l) => `${stripAnsi(l.prefix)}${stripAnsi(l.text)}`);
+    expect(rows.slice(0, 3)).toEqual([
+      '[infra   ] Container example-db-1 Started',
+      '[infra:db] 2 migrations applied',
+      '[infra:db] psql: warning',
+    ]);
+    // stderr keeps its red, as a package's does.
+    expect(manager.getVisibleLines()[2]!.isError).toBe(true);
+    expect(manager.getVisibleLines()[2]!.text).toBe(chalk.red('psql: warning'));
+    expect(manager.getVisibleLines()[1]!.text).toBe('2 migrations applied');
+    const file = fs.readFileSync(logFile, 'utf8').split('\n');
+    expect(file[0]).toMatch(
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[infra {3}\] Container example-db-1 Started$/,
+    );
+    expect(file[1]).toMatch(/\[infra:db\] 2 migrations applied$/);
+  });
+
+  test('is searchable as "infra" under a filter', () => {
+    manager = new ProcessManager({ ...runnerArgs(pkg()), infra });
+    manager.logSystem('unrelated');
+    manager.setFilter(['infra']);
+    expect(manager.getVisibleLines()).toHaveLength(3);
+  });
+
+  test('is not printed again in plain mode, where the reporter already showed it', () => {
+    const written: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      written.push(args.join(' '));
+    });
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      written.push(String(chunk));
+      return true;
+    });
+    try {
+      manager = new ProcessManager({ ...runnerArgs(pkg()), infra }, { plain: true });
+    } finally {
+      spy.mockRestore();
+      stdout.mockRestore();
+    }
+    expect(written.join('\n')).not.toMatch(/migrations applied/);
+    expect(fs.readFileSync(logFile, 'utf8')).toMatch(/\[infra:db\] 2 migrations applied/);
+  });
+});
+
+describe('ProcessManager package script execution', () => {
+  let root: string;
+  let pkgDir: string;
+  let log: string;
+  let mgr: ProcessManager | undefined;
+  let seq = 0;
+
+  const IDLE = 'node -e "setInterval(()=>{},1e9)"';
+
+  /** An executable in `<dir>/node_modules/.bin` that prints `<name>-OK`. */
+  function fakeBin(dir: string, name: string): void {
+    const bin = path.join(dir, 'node_modules', '.bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, name), `#!/bin/sh\necho ${name}-OK\n`, { mode: 0o755 });
+  }
+
+  /** Starts a session over a fresh package (inside a workspace root) with these `scripts`. */
+  function session(scripts: Record<string, string>, rebuildable = false): ProcessManager {
+    seq += 1;
+    pkgDir = path.join(root, `pkg${String(seq)}`);
+    fs.mkdirSync(pkgDir);
+    fs.writeFileSync(
+      path.join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'scriptfix', version: '4.5.6', scripts }),
+    );
+    fakeBin(pkgDir, 'localbin');
+    log = path.join(pkgDir, 'devlog.txt');
+    const a: AnyPackageConfig = {
+      name: 'scriptfix',
+      relativeDir: path.basename(pkgDir),
+      absoluteDir: pkgDir,
+    };
+    mgr = new ProcessManager(
+      {
+        sortedPackages: [a],
+        selectedSet: new Set([a.name]),
+        buildDepSet: new Set(),
+        rebuildableSet: new Set(rebuildable ? [a.name] : []),
+        waitForMap: {},
+        healthchecks: {},
+        extraCommandsMap: {},
+        logFile: log,
+        cwd: root,
+      },
+      { plain: true },
+    );
+    return mgr;
+  }
+
+  const logged = () => fs.readFileSync(log, 'utf8');
+
+  beforeAll(() => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-pm-script-')));
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'wsroot' }));
+    fs.writeFileSync(path.join(root, 'pnpm-workspace.yaml'), "packages:\n  - 'pkg*'\n");
+    fakeBin(root, 'rootbin');
+  });
+  afterEach(async () => {
+    // Wait the dev process out before the next test opens its log: an exit line written after
+    // `dispose()` closed this log would land in whichever file reuses the descriptor.
+    await mgr?.stop('scriptfix');
+    disposeManager(mgr);
+    mgr = undefined;
+    vi.unstubAllEnvs();
+  });
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test("resolves a binary from the package's own node_modules/.bin", async () => {
+    const m = session({ dev: `localbin && ${IDLE}` });
+    m.start('scriptfix');
+    await waitForLog(log, /\]\s+localbin-OK/);
+    expect(logged()).toMatch(/\]\s+localbin-OK/);
+  }, 15_000);
+
+  test("resolves a binary from the workspace root's node_modules/.bin", async () => {
+    const m = session({ dev: `rootbin && ${IDLE}` });
+    m.start('scriptfix');
+    await waitForLog(log, /\]\s+rootbin-OK/);
+    expect(logged()).toMatch(/\]\s+rootbin-OK/);
+  }, 15_000);
+
+  test('runs the script in the package directory', async () => {
+    const m = session({
+      dev: 'node -e "console.log(\'CWD=\'+process.cwd());setInterval(()=>{},1e9)"',
+    });
+    m.start('scriptfix');
+    await waitForLog(log, /\]\s+CWD=/);
+    expect(logged()).toContain(`CWD=${pkgDir}`);
+  }, 15_000);
+
+  test('tells the script which package and script it is, over any inherited values', async () => {
+    // What a session started from a root `pnpm dev` script inherits: the *root* package's values.
+    vi.stubEnv('npm_package_name', 'wsroot');
+    vi.stubEnv('npm_package_version', '0.0.1');
+    vi.stubEnv('npm_package_json', path.join(root, 'package.json'));
+    vi.stubEnv('npm_lifecycle_event', 'outer');
+    vi.stubEnv('npm_lifecycle_script', 'devtooie');
+    vi.stubEnv('INIT_CWD', root);
+    vi.stubEnv('PNPM_SCRIPT_SRC_DIR', root);
+    const keys = [
+      'npm_package_name',
+      'npm_package_version',
+      'npm_package_json',
+      'npm_lifecycle_event',
+      'INIT_CWD',
+      'PNPM_SCRIPT_SRC_DIR',
+    ];
+    const m = session({
+      dev: `node -e "console.log('IDENT='+JSON.stringify(${JSON.stringify(keys).replaceAll('"', "'")}.map(k=>process.env[k])));setInterval(()=>{},1e9)"`,
+    });
+    m.start('scriptfix');
+    await waitForLog(log, /\]\s+IDENT=/);
+    const ident = JSON.parse(/\]\s+IDENT=(.*)/.exec(logged())![1]!) as string[];
+    expect(ident).toEqual([
+      'scriptfix',
+      '4.5.6',
+      path.join(pkgDir, 'package.json'),
+      'dev',
+      pkgDir,
+      pkgDir,
+    ]);
+  }, 15_000);
+
+  test("reports a dev script's own exit code", async () => {
+    const m = session({ dev: 'node -e "process.exit(7)"' });
+    m.start('scriptfix');
+    await waitForLog(log, /exited with code/);
+    expect(logged()).toContain('exited with code 7');
+    expect(m.getStatus('scriptfix')).toBe('stopped');
+  }, 15_000);
+
+  test('reports a dev script killed by a signal as 128 + the signal number', async () => {
+    const m = session({ dev: 'node -e "process.kill(process.pid,\'SIGKILL\')"' });
+    m.start('scriptfix');
+    await waitForLog(log, /exited with code/);
+    expect(logged()).toContain('exited with code 137');
+  }, 15_000);
+
+  test('stops every process of a script that chains commands', async () => {
+    const m = session({
+      dev: 'node -e "console.log(\'CHILD=\'+process.pid);setInterval(()=>{},1e9)" && echo never',
+    });
+    m.start('scriptfix');
+    await waitForLog(log, /\]\s+CHILD=\d+/);
+    const child = Number(/\]\s+CHILD=(\d+)/.exec(logged())![1]);
+    expect(() => process.kill(child, 0)).not.toThrow();
+
+    await m.stop('scriptfix');
+    expect(() => process.kill(child, 0)).toThrow();
+  }, 15_000);
+
+  test('a one-off command reports success', async () => {
+    const m = session({ dev: IDLE, ok: 'localbin' });
+    m.runCommand('scriptfix', 'ok');
+    await waitForLog(log, /✔ ok finished/);
+    expect(logged()).toMatch(/\]\s+localbin-OK/);
+    expect(logged()).toContain('✔ ok finished');
+  }, 15_000);
+
+  test("a one-off command reports the script's own exit code", async () => {
+    const m = session({ dev: IDLE, bad: 'node -e "process.exit(3)"' });
+    m.runCommand('scriptfix', 'bad');
+    await waitForLog(log, /✘ bad exited/);
+    expect(logged()).toContain('✘ bad exited with code 3');
+  }, 15_000);
+
+  test('a one-off command killed by a signal is reported as failed, with 128 + the signal number', async () => {
+    const m = session({ dev: IDLE, killed: 'node -e "process.kill(process.pid,\'SIGKILL\')"' });
+    m.runCommand('scriptfix', 'killed');
+    await waitForLog(log, /✘ killed exited/);
+    expect(logged()).toContain('✘ killed exited with code 137');
+  }, 15_000);
+
+  test('a one-off command naming a script that does not exist fails, saying so', async () => {
+    const m = session({ dev: IDLE });
+    m.runCommand('scriptfix', 'nope');
+    await waitForLog(log, /✘ nope exited/);
+    expect(logged()).toMatch(/Missing script: "?nope/);
+    expect(logged()).toContain('✘ nope exited with code 1');
+  }, 15_000);
+
+  test('a rebuild whose build fails reports the exit code and leaves the package stopped', async () => {
+    const m = session({ dev: IDLE, 'build:clean': 'localbin && node -e "process.exit(2)"' }, true);
+    expect(m.rebuild('scriptfix')).toBe(true);
+    await waitForLog(log, /rebuild failed/);
+    expect(logged()).toContain('rebuild failed (exit 2)');
+    expect(m.getStatus('scriptfix')).toBe('stopped');
+  }, 15_000);
+
+  test('a rebuild whose build is killed by a signal fails instead of restarting', async () => {
+    const m = session(
+      { dev: IDLE, 'build:clean': 'node -e "process.kill(process.pid,\'SIGKILL\')"' },
+      true,
+    );
+    expect(m.rebuild('scriptfix')).toBe(true);
+    await waitForLog(log, /rebuild (failed|complete)/);
+    expect(logged()).toContain('rebuild failed (exit 137)');
+    expect(m.getStatus('scriptfix')).toBe('stopped');
+  }, 15_000);
+
+  test("a rebuild's build script resolves binaries from node_modules/.bin", async () => {
+    const m = session({ dev: IDLE, 'build:clean': 'localbin && rootbin' }, true);
+    expect(m.rebuild('scriptfix')).toBe(true);
+    await waitForLog(log, /rebuild (failed|complete)/);
+    expect(logged()).toContain('rebuild complete');
+  }, 15_000);
+
+  test('puts nothing but a shell, at most, between devtooie and a single-command dev script', async () => {
+    const m = session({
+      dev: 'node -e "console.log(\'PPID=\'+process.ppid);setInterval(()=>{},1e9)"',
+    });
+    m.start('scriptfix');
+    await waitForLog(log, /\]\s+PPID=\d+/);
+    const parent = Number(/\]\s+PPID=(\d+)/.exec(logged())![1]);
+    // Most `/bin/sh` replace themselves with a lone command, making the script our direct child;
+    // dash (Debian, Ubuntu) stays as its parent instead.
+    const between =
+      parent === process.pid
+        ? null
+        : path.basename(
+            execFileSync('ps', ['-o', 'comm=', '-p', String(parent)], { encoding: 'utf8' }).trim(),
+          );
+    expect([null, 'sh', 'dash']).toContain(between);
   }, 15_000);
 });

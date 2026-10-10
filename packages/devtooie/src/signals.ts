@@ -6,7 +6,7 @@
  * takes the default disposition and dies immediately: `process.on('exit')` does **not** run, so
  * `ProcessManager`'s exit hook never fires and nothing kills the packages. And because packages
  * are spawned `detached: true` — each in its own process group — the terminal's hangup never
- * reaches them either. Detaching, which is what lets devtooie kill a whole `pnpm → node → node`
+ * reaches them either. Detaching, which is what lets devtooie kill a whole `sh → node → node`
  * tree by process group, also shields that tree from the hangup that killed its parent.
  *
  * The result is the entire subtree reparenting to PID 1, one fresh generation of orphans per

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, test } from 'vitest';
 import { startCommandServer, type ControlManager } from './command-server.js';
 
 let server: Awaited<ReturnType<typeof startCommandServer>> | null = null;
@@ -37,6 +37,34 @@ describe('command-server', () => {
       logFile: '/ws/logs/1.log',
       packages: null,
       config: null,
+      devReverseProxy: null,
+    });
+  });
+
+  test('GET /query/status reports the dev reverse proxy routes from the start', async () => {
+    server = await startCommandServer({
+      onQuit: () => {},
+      port: 0,
+      devReverseProxy: {
+        port: 4000,
+        rootDomain: 'example.test',
+        routes: [
+          { host: 'web.example.test', package: 'web', port: 3000 },
+          { host: 'example.test', package: 'web', port: 3000 },
+        ],
+      },
+    });
+    const res = await fetch(`http://127.0.0.1:${server.port}/query/status`);
+    expect(res.status).toBe(200);
+    // Present before any manager attaches, and only the routing-relevant fields of a route.
+    const body = (await res.json()) as { devReverseProxy: unknown };
+    expect(body.devReverseProxy).toEqual({
+      port: 4000,
+      rootDomain: 'example.test',
+      routes: [
+        { host: 'web.example.test', package: 'web', port: 3000 },
+        { host: 'example.test', package: 'web', port: 3000 },
+      ],
     });
   });
 
@@ -63,6 +91,7 @@ describe('command-server', () => {
       logFile: '/ws/logs/2-rotated.log',
       packages: { web: 'running' },
       config: { packages: [] },
+      devReverseProxy: null,
     });
   });
 

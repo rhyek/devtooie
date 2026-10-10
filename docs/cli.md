@@ -9,6 +9,7 @@ devtooie -p web -p api    # repeatable -p: run multiple named packages
 devtooie --build -p web   # build `web` + its build-time deps, then exit
 devtooie --rebuild -p web # like --build, but clears dist/ first
 devtooie --mode test      # load .env.test instead of .env.development
+devtooie infra up         # bring the config's infra up, wait until ready, exit
 ```
 
 Every command works from **anywhere in the repo**: as a first step devtooie walks up to the
@@ -17,17 +18,17 @@ nearest `devtooie.config.*`, switches to that directory, and loads its workspace
 
 Common options:
 
-| Option                 | Description                                                                                                  |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `-p, --package <name>` | Repeatable. Package(s) to run, bypassing the interactive selector.                                           |
-| `-m, --mode <name>`    | Environment mode selecting the `.env.<mode>` files to load. Defaults to `development`. Also accepted after a subcommand (`devtooie cmd --mode test`). See [Environment loading](../README.md#environment-env-loading). |
-| `--ui`                 | Interactive terminal UI (default). Mutually exclusive with `--plain`.                                        |
-| `--plain`              | No TUI — stream logs to stdout with colored name prefixes. Requires `-p` or `--last-answers`.                |
-| `--last-answers`       | Skip selection; reuse the last saved selection.                                                              |
-| `--build`              | Build the selected packages and their build-time deps, then exit (no run phase).                             |
-| `--rebuild`            | Like `--build`, but first clears `dist/` for every build target.                                             |
-| `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/`. Each run gets a fresh `<timestamp>.log`; previous sessions' logs are kept. Also used by [`devtooie cmd`](#devtooie-cmd). |
-| `--kill-others`        | Quit a devtooie session already running for this project instead of asking. See [Taking over a running session](#taking-over-a-running-session). |
+| Option                 | Description                                                                                                                                                                                                                             |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-p, --package <name>` | Repeatable. Package(s) to run, bypassing the interactive selector.                                                                                                                                                                      |
+| `-m, --mode <name>`    | Environment mode selecting the `.env.<mode>` files to load. Defaults to `development`. Also accepted after a subcommand (`devtooie exec --mode test`). See [Environment loading](../README.md#environment-env-loading).                  |
+| `--ui`                 | Interactive terminal UI (default). Mutually exclusive with `--plain`.                                                                                                                                                                   |
+| `--plain`              | No TUI — stream logs to stdout with colored name prefixes. Requires `-p` or `--last-answers`.                                                                                                                                           |
+| `--last-answers`       | Skip selection; reuse the last saved selection. If a saved name is no longer a package (a renamed key), the picker opens instead with the surviving names preselected; `--plain`/`--build` refuse with a message naming the stale ones. |
+| `--build`              | Build the selected packages and their build-time deps, then exit (no run phase).                                                                                                                                                        |
+| `--rebuild`            | Like `--build`, but first clears `dist/` for every build target.                                                                                                                                                                        |
+| `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/`. Each run gets a fresh `<timestamp>.log`; previous sessions' logs are kept. Also used by [`devtooie exec` and `devtooie run`](#devtooie-exec-and-devtooie-run).             |
+| `--kill-others`        | Quit a devtooie session already running for this project instead of asking. See [Taking over a running session](#taking-over-a-running-session).                                                                                        |
 
 Subcommands:
 
@@ -35,23 +36,26 @@ Subcommands:
 - **`devtooie reset`** — clear the saved package selection.
 - **`devtooie resolvedeps <package>`** — print the resolved
   build/dev/runtime dependency sets for a single package as JSON.
-- **`devtooie cmd`** — run a **one-off command** with a package's environment (its dir +
-  resolved `.env`); see [below](#devtooie-cmd).
+- **`devtooie exec`** — run a **one-off command** with a package's environment (its dir +
+  resolved `.env`); see [below](#devtooie-exec-and-devtooie-run).
+- **`devtooie run <script>`** — run one of a package's **scripts or make targets** with that
+  same environment; see [below](#devtooie-exec-and-devtooie-run).
 - **`devtooie logs`** — print (or `-f/--follow`) the current dev session's logfile; see
   [below](#devtooie-logs).
+- **`devtooie infra`** — bring up, tear down, or drive the infrastructure the config declares
+  under `infra`; see [below](#devtooie-infra).
 
 ## Taking over a running session
 
 Only one devtooie session can run a project at a time, so starting a second one has to
-quit the first — along with every dev process under it. Since 0.7.0 devtooie asks before
-doing that:
+quit the first — along with every dev process under it. devtooie asks before doing that:
 
-| Situation                                             | What happens                          |
-| ----------------------------------------------------- | ------------------------------------- |
-| `--kill-others` passed                                | Quits the running session, no question |
-| Both sessions were started by a coding agent          | Quits it, no question                  |
-| A terminal is attached                                | Asks you to confirm (default **yes**)  |
-| No terminal to ask in                                 | Refuses, exits `1`, leaves it running  |
+| Situation                                    | What happens                           |
+| -------------------------------------------- | -------------------------------------- |
+| `--kill-others` passed                       | Quits the running session, no question |
+| Both sessions were started by a coding agent | Quits it, no question                  |
+| A terminal is attached                       | Asks you to confirm (default **yes**)  |
+| No terminal to ask in                        | Refuses, exits `1`, leaves it running  |
 
 The agent rule keeps agents unblocked without letting one interrupt you: an agent may
 replace a session another agent started, but a session **you** started is never taken over
@@ -64,11 +68,47 @@ shell where it guesses wrong.
 A session's own answer is published as `startedByAgent` on
 [`GET /query/status`](./control-api.md).
 
-## `devtooie cmd`
+## `devtooie show-config`
+
+Print the **fully resolved config** as prettified JSON — the same object a running session serves
+as `config` on [`GET /query/status`](./control-api.md) — **without a session**. Callbacks have run,
+defaults are applied, `command` is normalized, and every package carries its `relativeDir`
+(as written, or inferred from `packageRootDir`) and `absoluteDir`, its resolved `port`,
+`urls`, `healthcheck`, and — under the [dev reverse proxy](./dev-reverse-proxy.md) — its
+`publicOrigin` (`<urlScheme>://<subdomain>.<rootDomain>[:<port>]`). The `devReverseProxy` block
+itself, port included, is there too.
+
+```bash
+devtooie show-config                          # the whole resolved config
+devtooie show-config --mode test              # resolved against that mode's .env files
+devtooie show-config | jq '.packages.api.publicOrigin'
+devtooie show-config | jq '.packages | map_values(.port)'
+```
+
+`--mode` selects the `.env.<mode>` files the config resolves against, exactly as for a session or
+`devtooie exec`; it defaults to `development`. The config is resolved exactly once per devtooie
+process, when the file loads, so this prints what a session started with the same mode runs with.
+Function-valued fields (`logs.formatter`, the [`infra`](./infra.md) callbacks) have no JSON form
+and are omitted, as on the control API. The `infra` block carries what was resolved — the compose
+`file`, `readyTimeout`, the mode's `projectName`, and each configured service's `enabled`:
+
+```bash
+devtooie show-config | jq -r '.infra["docker-compose"].projectName'   # example-development
+```
+
+## `devtooie exec` and `devtooie run`
 
 Run a **single one-off command with a package's exact environment** — without starting a whole
-session. Think migrations, seed scripts, scrapers, or a REPL. The command runs in the package's
-directory with that package's resolved `.env` injected and its configured `port` as `PORT` —
+session. Think migrations, seed scripts, scrapers, or a REPL. There are two ways to say **what**
+to run:
+
+- **`devtooie exec -- <command> [args...]`** — a literal command.
+- **`devtooie run <script> [-- args...]`** — a package **script or make target**, found in that
+  dir's `package.json` or `Makefile` and run [the way devtooie runs a
+  package](../README.md#how-a-script-is-run). Anything after `--` is forwarded to it as
+  arguments. Errors if it has no such script/target.
+
+Either way the command runs in the package's directory with that package's resolved `.env` injected and its configured `port` as `PORT` (plus `PUBLIC_ORIGIN` under the [dev reverse proxy](./dev-reverse-proxy.md)) —
 exactly the environment the TUI would give it (its `.env` files per
 [Environment loading](../README.md#environment-env-loading)).
 
@@ -77,10 +117,10 @@ there's no package argument — run it from a package's directory, or any subdir
 
 ```bash
 cd packages/api
-devtooie cmd -- pnpm start                # run a literal command in the api package's dir
-devtooie cmd -- npm run migrate
-devtooie cmd -c start                      # run the api package's `start` script/target
-devtooie cmd -c start -- --port=3001      # ...forwarding args to that script
+devtooie exec -- node src/migrate.ts      # run a literal command in the api package's dir
+devtooie exec -- psql "$DATABASE_URI"
+devtooie run start                        # run the api package's `start` script/target
+devtooie run start -- --port=3001         # ...forwarding args to that script
 ```
 
 **Which package** is the nearest **ancestor** directory that is a configured package (so it works
@@ -93,23 +133,50 @@ To target a package **explicitly** instead of by location, pass `-p, --package <
 overrides the cwd inference, so you can run it from anywhere:
 
 ```bash
-devtooie cmd -p api -c start -- --port=3001    # target `api` regardless of where you are
-devtooie cmd -p api -- pnpm start
+devtooie run -p api start -- --port=3001    # target `api` regardless of where you are
+devtooie exec -p api -- node src/migrate.ts
 ```
 
-There are two ways to say **what** to run:
-
-- **A literal command** after `--` (e.g. `-- pnpm start`) — required unless `-c` is given.
-- **`-c, --cmd <script>`** — a package **script or make target** (resolved the way devtooie runs
-  a package: `pnpm run <script>` or `make <target>`), found in that dir's `package.json` or
-  `Makefile`. Anything after `--` is forwarded to it as arguments. Errors if it has no such
-  script/target.
-
-The command's exit code is propagated, and `devtooie cmd` exits as soon as the command does.
+The command's exit code is propagated, and devtooie exits as soon as the command does.
 Output is streamed to your terminal **and** teed to a fresh timestamped logfile under
 `node_modules/.devtooie/logs/` (or `--log-dir`), the same place a `--plain` session logs.
-Nothing else is printed — the terminal shows only the command's own output, so `devtooie cmd`
-composes in a pipeline.
+Nothing else is printed — the terminal shows only the command's own output, so both compose in
+a pipeline.
+
+## `devtooie infra`
+
+Drive the infrastructure the config declares under [`infra`](./infra.md) — the databases,
+caches and brokers your packages need. Every subcommand **exits when it's done**, and none
+disturbs a running dev session. (A session runs `infra up` itself, before starting the packages.)
+
+```bash
+devtooie infra up                     # start every service, wait until ready, then exit
+devtooie infra up db                  # only `db`
+devtooie infra up --reset             # destroy the services first, then start them clean
+devtooie infra up --reset db          # destroy and restart only `db`
+devtooie infra down [services...]     # stop and remove containers; data is kept
+devtooie infra destroy [services...]  # remove containers and their data
+devtooie infra docker-compose ps      # Compose itself, bound to this project and mode
+```
+
+| Subcommand                 | What it does                                                                                                                                                                                                                                                |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `up [services...]`         | Starts the services (default: every [enabled](./infra.md#turning-a-service-off) one), waits until each is ready, runs its `afterReady` callback, exits `0` — or `1` if any didn't make it. They keep running. `--reset` destroys the targets first.         |
+| `down [services...]`       | `docker compose down`, with Compose's output: removes the containers (and, with no services named, the network). Volumes are kept.                                                                                                                          |
+| `destroy [services...]`    | Removes the services **and their data**, then runs `afterDestroy`. With services named, only what those services own; with none, the whole project — containers, volumes, networks.                                                                         |
+| `docker-compose [args...]` | Runs `docker compose <args>` against this project and mode, with the terminal handed over: `logs -f`, `exec db psql`, and the exit code all behave as they do with Compose directly. Runs in your current directory, so relative paths mean what you typed. |
+
+`-m/--mode` selects the mode's `.env` files **and** its Compose project
+(`<workspace directory>-<mode>`), so `devtooie --mode test infra up` runs next to the development
+one. It's accepted before or after `up`/`down`/`destroy` — but for the passthrough it has to
+come **before** `docker-compose`, because everything after that word is Compose's:
+
+```bash
+devtooie -m test infra docker-compose ps         # test mode's project
+devtooie infra docker-compose build -m 2g        # -m here is Compose's memory limit
+```
+
+Readiness, the callbacks, and exactly what `destroy` removes are in [Infra](./infra.md).
 
 ## `devtooie logs`
 
@@ -129,7 +196,7 @@ It finds the logfile without disturbing the session, in order of precedence:
    in-session log rotation (the `t` hotkey).
 2. Otherwise, the `logFile` recorded in `node_modules/.devtooie/running.json` — the last logfile
    the session was writing (kept current across rotation) — if it still exists. This is more
-   precise than scanning the directory, where a stray `devtooie cmd` log could be newer.
+   precise than scanning the directory, where a stray `devtooie exec` log could be newer.
 3. Failing that, the **newest** `*.log` in the session's log directory (`logDir` from
    `running.json`, else `node_modules/.devtooie/logs/`).
 

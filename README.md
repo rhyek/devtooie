@@ -27,15 +27,24 @@ picked.
   app, and nothing to configure. See [Logging](docs/logging.md).
 - **Two run modes.** An interactive terminal UI to pick and watch packages, or a
   `--plain` log-streaming mode for coding agents.
-- **One-off commands.** `devtooie cmd` runs a single command (or a package
-  script/target) in a package's directory with that package's resolved environment —
-  for migrations, seeds, scrapers, or an agent driving your project. See
-  [Running one-off commands](#running-one-off-commands-devtooie-cmd).
+- **One-off commands.** `devtooie exec` runs a single command, and `devtooie run` one of a
+  package's scripts/targets, in a package's directory with that package's resolved
+  environment — for migrations, seeds, scrapers, or an agent driving your project. See
+  [Running one-off commands](#running-one-off-commands-devtooie-exec-devtooie-run).
 - **Per-package hierarchical `.env` loading.** Each package's `.env` files (workspace- and
   package-scoped) are resolved and injected into its process automatically — and
   live-reloaded, restarting the affected package when a file changes.
 - **Readiness ordering.** `healthcheck` + `waitFor` hold a package until the
   services it needs are actually up.
+- **Infra included.** Point devtooie at your `docker-compose.yaml` and it brings the database,
+  cache or broker up before the packages start, waits for their healthchecks, and runs your
+  migrations — per mode, so a test database never lands on the dev port. `devtooie infra up`
+  does the same on its own. See [Infra](docs/infra.md).
+- **One hostname per package.** Optionally, devtooie runs the dev reverse proxy itself:
+  give a package a `subdomain` and reach it at `http://api.localhost:4000` — or
+  `https://api.myproject.test` behind a TLS terminator — instead of a bare port, with a
+  status page while the package is stopped or still starting. Vite HMR works through it.
+  See [Dev reverse proxy](docs/dev-reverse-proxy.md).
 - **Lifecycle-aware.** Each package declares whether its dev process watches or
   just builds, so you (or an agent) know exactly what to do after a code edit.
 - **Control API + agent skill.** A localhost HTTP API drives a running session
@@ -48,24 +57,37 @@ A complete, runnable example monorepo lives in
 [`example/`](https://github.com/rhyek/devtooie/tree/main/example): four packages — a shared
 TypeScript library (`isomorphic`), a Node API (`backend`), a Go worker driven through a
 `Makefile` (`worker`), and a web `frontend` — wired up with dependency-aware builds, `.env`
-loading, healthchecks, and `waitFor` readiness ordering.
+loading, healthchecks, and `waitFor` readiness ordering. Its Postgres database is a Compose
+service that devtooie's [infra](docs/infra.md) brings up and migrates before the backend
+starts, so running it needs Docker.
 
 ## Requirements
 
 - **Node ≥22.18.** `devtooie.config.ts` is imported directly, so it needs Node's native
   TypeScript type-stripping — unflagged in 22.18 (and, on the 23.x line, 23.6).
 - **Unix only** (macOS/Linux). Windows is not supported.
-- **pnpm.** Node packages are run with `pnpm run <script>`, and packages that depend
-  on each other are resolved through pnpm workspace links (`workspace:*`). (Makefile
-  packages are run with `make` instead.)
+- **pnpm.** Packages that depend on each other are resolved through pnpm workspace links
+  (`workspace:*`).
 - A `package.json` (or `Makefile`) per package with the scripts devtooie drives
   (`dev`, `build`, ...) — see [Package supporting scripts](#package-supporting-scripts) below.
+- **Docker with Compose v2** — only if the config declares [`infra`](docs/infra.md).
 
 ## Install
 
 ```bash
 pnpm add -D devtooie
 ```
+
+devtooie's `postinstall` sets the project up as it installs. A project with no
+`devtooie.config.ts` yet gets `devtooie init --yes` — the config scaffold, the tsconfig
+reconcile, and the [agent skill](#agent-skill); one that already has a config gets the agent
+skill (re)written, so a fresh clone or an upgrade always carries the guide matching the installed
+version. It acts only for the project that installed devtooie, is skipped in CI, and never fails
+an install. Package managers run it when devtooie is installed or upgraded — not on an `install`
+that changes nothing — and `devtooie init` does the same by hand at any time.
+
+pnpm 10+ runs a dependency's scripts only once you allow it: run `pnpm approve-builds`, or add
+`"pnpm": { "onlyBuiltDependencies": ["devtooie"] }` to the root `package.json`.
 
 ## Getting started: `devtooie init`
 
@@ -84,7 +106,7 @@ This is an interactive, idempotent setup flow. It will:
 
 Pass `-y`/`--yes` to accept the defaults non-interactively.
 
-After that, fill in the scaffolded config's `packages` array with your real
+After that, fill in the scaffolded config's `packages` object with your real
 packages (see below) and run `pnpm devtooie`.
 
 ## `devtooie.config.ts`
@@ -96,13 +118,15 @@ on every run.
 import { defineConfig } from 'devtooie';
 
 export default defineConfig({
+  packageRootDir: 'packages',
   // keyed by package name — the key is the name, so there's no `name` field
   packages: {
     'core-api': {
       port: 3001, // is provided as PORT environment variable to the process
-      // `healthcheck` and `urls` take a string or a callback over this package's
-      // `{ envs, tokens, port }` — devtooie does no string interpolation of its own.
-      healthcheck: ({ port }) => `http://localhost:${port}/health`,
+      // A relative path is resolved against this package's port (or its public origin under
+      // the dev reverse proxy); `healthcheck` and `urls` also take a full URL or a callback over
+      // `{ envs, tokens, port, subdomain }` — devtooie does no string interpolation of its own.
+      healthcheck: '/health',
     },
     worker: {
       // a dev process that doesn't watch files: it builds once, then runs. devtooie
@@ -132,7 +156,7 @@ pnpm devtooie
 
 devtooie drives each package through named scripts — a **Node** package declares them in its
 `package.json` `scripts`; a package in any other language (Go, Rust, …) declares the equivalent
-**`make` targets** in a `Makefile`. devtooie invokes them as `pnpm run <name>` or `make <name>`.
+**`make` targets** in a `Makefile`. See [How a script is run](#how-a-script-is-run).
 
 - **`dev`** — the long-running process devtooie starts and streams. An **application** usually
   needs only this; devtooie builds its dependencies for it.
@@ -181,23 +205,47 @@ An app can add `build` + `clean` too, for the occasional case where you need to 
 scratch to clear stale build output — those enable the rebuild command (the `b` hotkey /
 `POST /command/rebuild`); see [Package lifecycle](docs/package-lifecycle.md).
 
-## Running one-off commands (`devtooie cmd`)
+### How a script is run
+
+devtooie runs a `package.json` script itself: the script's text goes to `/bin/sh` in the package's
+directory, with no package manager in between. A script that is a single command (`vite dev`)
+usually becomes the package's process directly, since most shells replace themselves with it;
+Debian's and Ubuntu's `/bin/sh` stays as a small parent process. A Makefile target is run as
+`make <name>`.
+
+- **`PATH`** starts with the package's `node_modules/.bin`, then that of each parent directory, so
+  a script can name a binary installed in the package or at the workspace root.
+- **Variables naming the package and script** are set: `npm_package_name`, `npm_package_version`,
+  `npm_package_json`, `npm_lifecycle_event`, `npm_lifecycle_script`, plus `INIT_CWD` and
+  `PNPM_SCRIPT_SRC_DIR` (both the package's directory). Every other `npm_*` variable is whatever
+  devtooie itself was started with.
+- **`pre<name>` and `post<name>` scripts are not run.** Put the step in the script itself:
+  `"dev": "node codegen.ts && vite dev"`.
+- **A package manager's script settings have no effect** (pnpm's `scriptShell`,
+  `shellEmulator`, `verifyDepsBeforeRun`, …).
+- **Exit code** — a script's exit code is reported as-is; one killed by a signal is reported as
+  128 + the signal number (`137` for `SIGKILL`).
+
+## Running one-off commands (`devtooie exec`, `devtooie run`)
 
 Sometimes you don't want the whole session — you just need to run **one** command with a
-package's exact environment: a migration, a seed script, a scraper, a REPL. `devtooie cmd`
-does that. It runs a command in a package's directory with that package's resolved env vars injected — the same environment the TUI would give it:
+package's exact environment: a migration, a seed script, a scraper, a REPL. `devtooie exec`
+runs a command, and `devtooie run` one of the package's scripts or make targets, in a package's
+directory with that package's resolved env vars injected — the same environment the TUI would
+give it:
 
 ```bash
 cd packages/api
-devtooie cmd -- pnpm run migrate     # a literal command, in api's dir with api's env
-devtooie cmd -c seed -- --rows=100   # run api's `seed` script/target, forwarding args
+devtooie exec -- node src/migrate.ts   # a command, in api's dir with api's env
+devtooie run seed -- --rows=100        # api's `seed` script/target, forwarding args
 cd ../..
-devtooie cmd -p api -- pnpm start    # or target a package by name, from anywhere
+devtooie run -p api seed               # or target a package by name, from anywhere
 ```
 
 The package is inferred from your current directory (or named explicitly with `-p`). Output
 streams to your terminal and is also written to a logfile. It's especially handy for a coding
-agent driving your project. Full reference: [`devtooie cmd`](docs/cli.md#devtooie-cmd).
+agent driving your project. Full reference:
+[`devtooie exec` and `devtooie run`](docs/cli.md#devtooie-exec-and-devtooie-run).
 
 ## Configuration options
 
@@ -208,9 +256,9 @@ TypeScript project references, and typed package names — lives in
 ## Logging
 
 devtooie **auto-formats structured (JSON) logs** — from Go `slog`, pino, winston, … — into a
-colored `[LEVEL] message` for local dev, with no `NODE_ENV` branching and nothing to configure. You
-can add on-screen timestamps, and customize that JSON rendering per package with the `logging`
-helpers — or, for output that **isn't** JSON, write a `logs.formatter` over the raw line yourself.
+colored `[LEVEL] message` for local dev, with no `NODE_ENV` branching and nothing to configure.
+Every line carries a timestamp (just the time, until two days share the screen), and you can
+customize that JSON rendering per package with the `logging` helpers — or, for output that **isn't** JSON, write a `logs.formatter` over the raw line yourself.
 See **[docs/logging.md](docs/logging.md)**.
 
 Every session is also teed to a timestamped logfile. Read the current one from another terminal
@@ -256,14 +304,18 @@ The two `.local` files are the personal tier — commit `.env` and `.env.<mode>`
 
 **Package scope overrides workspace scope**, and within a scope a later file
 overrides an earlier one. `${VAR}` references expand against already-loaded files
-and the current environment.
+and the ambient environment.
 
 **The ambient environment wins over the files**, as in Next.js, Vite and
-`node --env-file` — so `FOO=bar devtooie` overrides a file for one run. Name the
-exceptions with `env.override` when a file needs to *extend* an inherited value:
+`node --env-file` — so `FOO=bar devtooie` overrides a file for one run. Ambient
+means the environment devtooie was started with: a variable only the files define
+takes its highest-ranked file's value, so a package's file replaces the
+workspace's. Name the exceptions with `env.override` when a
+file needs to *extend* an inherited value:
 
 ```ts
 defineConfig({
+  packageRootDir: 'packages',
   env: { override: ['NODE_OPTIONS'] },   // or `true` for every variable
   packages: {/* … */},
 });
@@ -291,6 +343,10 @@ load `.env.development` — so values shared across modes belong in `.env` and
 `NODE_ENV` isn't). Set it from the mode's own file if you want it:
 `NODE_ENV=test` in `.env.test`.
 
+With a [dev reverse proxy](docs/dev-reverse-proxy.md) configured, a routable package also gets
+`PUBLIC_ORIGIN` (its public `<urlScheme>://<subdomain>.<rootDomain>[:<port>]`), under the same
+rule.
+
 A package's `port` is also injected as `PORT` (an explicit `.env` `PORT`
 still overrides it). The reverse direction works too — `port` may be a callback
 that reads these same resolved files to decide the port:
@@ -310,14 +366,16 @@ appear) and restarts the affected package(s)** on change — editing a
 workspace-level file restarts every running package that uses it.
 
 The same resolution is available as a standalone command: from inside a package's directory,
-`devtooie cmd -- <command>` runs a one-off command **in** that package's dir with its resolved
-env (or invoke one of its scripts/targets with `-c`) — see
-[`devtooie cmd`](docs/cli.md#devtooie-cmd).
+`devtooie exec -- <command>` runs a one-off command **in** that package's dir with its resolved
+env, and `devtooie run <script>` one of its scripts/targets — see
+[`devtooie exec` and `devtooie run`](docs/cli.md#devtooie-exec-and-devtooie-run).
 
 ## Advanced CLI usage
 
-Every flag and subcommand — plus `devtooie cmd` for running a command in a package's
-environment on demand — is documented in **[docs/cli.md](docs/cli.md)**.
+Every flag and subcommand — plus `devtooie exec` and `devtooie run` for running a command or a
+script in a package's environment on demand, `devtooie show-config` for printing the fully resolved config as JSON
+without a session, and `devtooie infra` for the project's [infrastructure](docs/infra.md) — is
+documented in **[docs/cli.md](docs/cli.md)**.
 
 ## Agent skill
 
@@ -325,8 +383,8 @@ If you opt in during `devtooie init`, devtooie installs an agent-facing skill
 file at `.claude/skills/devtooie/SKILL.md` (and, best-effort, under `.agents/` /
 `.cursor/` if those directories already exist). It teaches a coding agent how
 to check whether an app in the repo is already running, run devtooie headlessly
-(`--plain -p <package>`), drive a running session through the control API, read
-the logfile for debugging, and onboard a new package. The installed file is **managed** — treat it as generated, not something
+(`--plain -p <package>`), drive a running session through the control API, bring the project's
+[infra](docs/infra.md) up or reset it, read the logfile for debugging, and onboard a new package. The installed file is **managed** — treat it as generated, not something
 to hand-edit. `devtooie init` and every `devtooie` run refresh it to the
 installed version.
 
@@ -335,6 +393,31 @@ The skill points the agent at a single consolidated guide,
 material as this README plus how to drive devtooie headlessly, in one self-contained
 file. It's the one doc that ships inside the package (so the skill can load it from
 `node_modules`); the topic docs above live at the repo root.
+
+## Infra
+
+Databases, caches and brokers aren't packages, but your packages need them running. Declare
+them with a top-level `infra` block — `infra: { 'docker-compose': true }` is enough for a
+self-contained `docker-compose.yaml` — and devtooie brings them up and waits for their
+healthchecks **before starting the packages**, then leaves them running when you quit.
+
+```sh
+devtooie infra up              # the same step on its own: start, wait until ready, exit
+devtooie infra up --reset db   # wipe one service's data and start it clean
+devtooie infra docker-compose logs -f db   # Compose itself, bound to this project and mode
+```
+
+Per-service callbacks (`beforeUp`, `afterReady`, `afterDestroy`) run your migrations and seeds,
+`enabled` switches a service off by mode or by a missing variable, and each [mode](#modes)
+gets its own Compose project, so `--mode test` has its own containers and ports. See **[docs/infra.md](docs/infra.md)**.
+
+## Dev reverse proxy
+
+devtooie can run the project's dev reverse proxy itself: a loopback listener that routes
+`<subdomain>.<rootDomain>` to the package declaring that `subdomain`, answering with a status
+page for a package that is stopped or still starting. A TLS terminator (Caddy, say) forwards
+`*.<rootDomain>` to it. Enable it with a top-level `devReverseProxy` block — see
+**[docs/dev-reverse-proxy.md](docs/dev-reverse-proxy.md)**.
 
 ## Control API
 

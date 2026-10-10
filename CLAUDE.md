@@ -88,6 +88,9 @@ source the skill loads, so it must be self-contained: the full configuration/CLI
 reference **and** how to run devtooie headlessly, drive a running session, onboard a package,
 and read logs for debugging. **No internals** — no source layout, implementation details, or
 how features are built — and don't describe past/removed architecture, only the current surface.
+That last point holds for the README and the topic docs too; it is spelled out in
+[`.claude/rules/docs-no-history.md`](.claude/rules/docs-no-history.md), which loads whenever
+any of those files is read or edited.
 
 ## Building
 

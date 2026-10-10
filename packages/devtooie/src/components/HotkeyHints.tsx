@@ -15,10 +15,17 @@ export type HotkeyHintsProps = {
   gap?: number;
 };
 
-/** Reusable footer/header renderer for a row of `key: label` hotkey hints, wrapping as needed. */
+/**
+ * Reusable footer/header renderer for a row of `key: label` hotkey hints.
+ *
+ * The row never shrinks below its content (`flexShrink: 0`), so a hint is never broken
+ * across lines — a row parent squeezing it (the logfile path next to `t: rotate`) has to
+ * squeeze its other, wrappable children instead. Hints still wrap *between* items when a
+ * column parent stretches the row to a width narrower than all of them on one line.
+ */
 export function HotkeyHints({ hints, gap = 2 }: HotkeyHintsProps) {
   return (
-    <Box flexWrap="wrap" columnGap={gap}>
+    <Box flexWrap="wrap" columnGap={gap} flexShrink={0}>
       {hints.map((hint, i) => {
         if ('separator' in hint) {
           return (

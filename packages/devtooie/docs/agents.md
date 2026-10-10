@@ -10,12 +10,19 @@ already running, drive devtooie headlessly, control a running session over its H
 package, read logs for debugging, plus the full configuration/CLI/API reference. It consolidates everything a human
 reads across the README and the topic docs, so you only need this one file.
 
+> **To reach a package — call it with `curl`, open its URL, find its port or hostname — run
+> `devtooie show-config` first.** It prints the fully resolved config as JSON with no session
+> running: each package's `publicOrigin` (the hostname it's served at) and `port`. Never guess a
+> port or hostname from a config file or a `.env` — the resolved values are the truth. See
+> [Reach a package](#reach-a-package-devtooie-show-config).
+
 A complete, runnable example monorepo — a shared TypeScript library, a Node API, a Go worker
 driven through a `Makefile`, and a web frontend — lives at
 [`example/`](https://github.com/rhyek/devtooie/tree/main/example) in the devtooie repo (it's
 not shipped inside the installed package, so use that URL rather than a `node_modules` path).
 It's a good reference for how a real workspace is wired: project-reference build ordering,
-`.env` loading, healthchecks, and `waitFor`.
+`.env` loading, healthchecks, `waitFor`, and a Postgres database brought up and migrated by
+[`infra`](#infra).
 
 ## Overview
 
@@ -29,18 +36,80 @@ It's a good reference for how a real workspace is wired: project-reference build
   matching is case- and accent-insensitive).
 - **Two run modes.** An interactive terminal UI, or a `--plain` log-streaming mode for
   coding agents.
-- **One-off commands.** `devtooie cmd` runs a single command (or a package script/target) in a
-  package's directory with that package's resolved environment — for migrations, seeds,
-  scrapers, or an agent driving your project.
+- **One-off commands.** `devtooie exec` runs a single command, and `devtooie run` one of a
+  package's scripts/targets, in a package's directory with that package's resolved environment
+  — for migrations, seeds, scrapers, or an agent driving your project.
 - **Per-package hierarchical `.env` loading.** Each package's `.env` files (workspace- and
   package-scoped) are resolved and injected into its process — and live-reloaded, restarting
   the affected package on change.
 - **Readiness ordering.** `healthcheck` + `waitFor` hold a package until the services it
   needs are up.
+- **Infra included.** Point devtooie at a `docker-compose.yaml` and it brings the database,
+  cache or broker up before the packages start, waits for their healthchecks, and runs the
+  project's migrations — per mode, so a test database never lands on the dev port.
+  `devtooie infra up` does the same on its own. See [Infra](#infra).
+- **One hostname per package.** Optionally, devtooie runs the dev reverse proxy itself: give a
+  package a `subdomain` and reach it at `http://api.localhost:4000` — or
+  `https://api.myproject.test` behind a TLS terminator — instead of a bare port, with a status
+  page while the package is stopped or still starting. Vite HMR works through it. See
+  [Dev reverse proxy](#dev-reverse-proxy).
 - **Lifecycle-aware.** Each package declares whether its dev process watches or just builds,
   so you know exactly what to do after a code edit.
 - **Control API + agent skill.** A localhost HTTP API drives a running session headlessly and
   lets a second invocation hand off cleanly.
+
+## Reach a package (`devtooie show-config`)
+
+Before you `curl` a package, open it in a browser, or write code that calls it, ask devtooie
+where it is:
+
+```bash
+devtooie show-config                 # the whole resolved config, as JSON
+devtooie show-config --mode test     # resolved against .env.test files (default mode: development)
+devtooie show-config | jq '.packages | map_values({port, publicOrigin, healthcheck})'
+```
+
+This needs **no running session** — it loads `devtooie.config.ts` exactly as a session would
+(callbacks run, defaults applied, `command` normalized) and prints the same object a session
+reports as `config` on `GET /query/status`. For each package you get, among the rest:
+
+```jsonc
+{
+  "devReverseProxy": { "port": 4000, "rootDomain": "myproject.example.test", "defaultPackage": "web", "urlScheme": "https" },
+  "packages": {
+    "api": {
+      "name": "api",
+      "port": 3001, // what the package binds on localhost (injected as PORT)
+      "publicOrigin": "https://api.myproject.example.test", // where it is served (injected as PUBLIC_ORIGIN)
+      "healthcheck": { "url": "http://localhost:3001/health", "timeout": 1500 },
+      "urls": ["https://api.myproject.example.test/todos"], // from `urls: ['/todos']` in the config
+      "relativeDir": "packages/api", // as written, or <packageRootDir>/<key>
+      "absoluteDir": "/abs/packages/api"
+    }
+  }
+}
+```
+
+**Which URL to use:**
+
+- **`publicOrigin` present** → the package is routed by the [dev reverse proxy](#dev-reverse-proxy):
+  `curl https://api.myproject.example.test/todos`. That is the same origin a browser uses, and
+  the one the app itself is configured for (its `PUBLIC_ORIGIN`). If the session is down or the
+  package is still starting you get a **503 with `Retry-After`** naming the package and its status,
+  not a connection error — see [Status pages](#status-pages). With a plain `localhost` root the
+  origin already carries the proxy port (`http://api.localhost:21050`); `*.localhost` names
+  resolve in browsers but not for `curl`, so pass the host explicitly:
+  `curl -H 'Host: api.localhost' http://127.0.0.1:21050/todos`.
+- **No `publicOrigin`** → the package is not routed; talk to it directly on loopback at its
+  `port`: `curl http://localhost:3001/todos`. This works in every setup, proxy or not, but only
+  while the package is running.
+- **`healthcheck.url`** is the readiness probe devtooie itself polls — the right thing to hit to
+  find out whether the package is up, and what `packages.<name>` on `/query/status` reflects.
+- The `devReverseProxy.port` is the proxy's own listener, for the TLS terminator in front of it;
+  you normally don't call it directly unless the root is plain `localhost` (above).
+
+`--mode` matters: a `port` or `rootDomain` written as a callback over `envs` resolves against that
+mode's `.env` files, so pass the same `--mode` the session runs with.
 
 ## Requirements
 
@@ -48,17 +117,32 @@ It's a good reference for how a real workspace is wired: project-reference build
   TypeScript type-stripping — unflagged in 22.18 (and, on the 23.x line, 23.6). On older Node
   every command fails with `ERR_UNKNOWN_FILE_EXTENSION` for the config file.
 - **Unix only** (macOS/Linux). Windows is not supported.
-- **pnpm.** Node packages are run with `pnpm run <script>`, and packages that depend on each
-  other are resolved through pnpm workspace links (`workspace:*`). (Makefile packages are run
-  with `make` instead.)
+- **pnpm.** Packages that depend on each other are resolved through pnpm workspace links
+  (`workspace:*`).
 - A `package.json` (or `Makefile`) per package with the scripts devtooie drives
   (`dev`, `build`, …) — see [Package supporting scripts](#package-supporting-scripts).
+- **Docker with Compose v2** — only if the config declares [`infra`](#infra). The
+  `docker compose` command is needed whenever it does: devtooie asks it for the service list. A
+  running Docker daemon is needed only in a mode where at least one service is
+  [enabled](#turning-a-service-off); with none, `infra up` and a session's infra step have nothing
+  to start and succeed. With one, they fail at the infra step if the daemon isn't reachable.
 
 ## Install
 
 ```bash
 pnpm add -D devtooie
 ```
+
+devtooie's `postinstall` sets the project up as it installs. A project with no
+`devtooie.config.ts` yet gets `devtooie init --yes` — the config scaffold, the tsconfig
+reconcile, and the [agent skill](#agent-skill); one that already has a config gets the agent
+skill (re)written, so a fresh clone or an upgrade always carries the guide matching the installed
+version. It acts only for the project that installed devtooie, is skipped in CI, and never fails
+an install. Package managers run it when devtooie is installed or upgraded — not on an `install`
+that changes nothing — and `devtooie init` does the same by hand at any time.
+
+pnpm 10+ runs a dependency's scripts only once you allow it: run `pnpm approve-builds`, or add
+`"pnpm": { "onlyBuiltDependencies": ["devtooie"] }` to the root `package.json`.
 
 ## Getting started: `devtooie init`
 
@@ -84,13 +168,15 @@ The one file you author and commit — the single source of truth the CLI reads 
 import { defineConfig } from 'devtooie';
 
 export default defineConfig({
+  packageRootDir: 'packages',
   // Keyed by package name — the key IS the name, so there is no `name` field.
   packages: {
     'core-api': {
       port: 3001, // Is provided as PORT environment variable to the process
-      // `healthcheck` and `urls` take a string or a callback over this package's
-      // `{ envs, tokens, port }` — devtooie does no string interpolation of its own.
-      healthcheck: ({ port }) => `http://localhost:${port}/health`,
+      // A relative path is resolved against this package's port (or its public origin under
+      // the dev reverse proxy); `healthcheck` and `urls` also take a full URL or a callback over
+      // `{ envs, tokens, port, subdomain }` — devtooie does no string interpolation of its own.
+      healthcheck: '/health',
     },
     worker: {
       // A dev process that doesn't watch files: it builds once, then runs. devtooie
@@ -111,7 +197,7 @@ export default defineConfig({
 
 devtooie drives each package through named scripts — a **Node** package declares them in its
 `package.json` `scripts`; a package in any other language (Go, Rust, …) declares the equivalent
-**`make` targets** in a `Makefile`. devtooie invokes them as `pnpm run <name>` or `make <name>`.
+**`make` targets** in a `Makefile`. See [How a script is run](#how-a-script-is-run).
 
 - **`dev`** — the long-running process devtooie starts and streams. An **application** usually
   needs only this; devtooie builds its dependencies for it.
@@ -158,6 +244,27 @@ An app can add `build` + `clean` too, for the occasional case where you need to 
 scratch to clear stale build output — those enable the rebuild command (the `b` hotkey /
 `POST /command/rebuild`); see [Package lifecycle](#package-lifecycle-when-you-change-code).
 
+### How a script is run
+
+devtooie runs a `package.json` script itself: the script's text goes to `/bin/sh` in the package's
+directory, with no package manager in between. A script that is a single command (`vite dev`)
+usually becomes the package's process directly, since most shells replace themselves with it;
+Debian's and Ubuntu's `/bin/sh` stays as a small parent process. A Makefile target is run as
+`make <name>`.
+
+- **`PATH`** starts with the package's `node_modules/.bin`, then that of each parent directory, so
+  a script can name a binary installed in the package or at the workspace root.
+- **Variables naming the package and script** are set: `npm_package_name`, `npm_package_version`,
+  `npm_package_json`, `npm_lifecycle_event`, `npm_lifecycle_script`, plus `INIT_CWD` and
+  `PNPM_SCRIPT_SRC_DIR` (both the package's directory). Every other `npm_*` variable is whatever
+  devtooie itself was started with.
+- **`pre<name>` and `post<name>` scripts are not run.** Put the step in the script itself:
+  `"dev": "node codegen.ts && vite dev"`.
+- **A package manager's script settings have no effect** (pnpm's `scriptShell`,
+  `shellEmulator`, `verifyDepsBeforeRun`, …).
+- **Exit code** — a script's exit code is reported as-is; one killed by a signal is reported as
+  128 + the signal number (`137` for `SIGKILL`).
+
 ## Configuration options
 
 `defineConfig` accepts:
@@ -166,32 +273,38 @@ scratch to clear stale build output — those enable the rebuild command (the `b
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `packages`     | Your package definitions, **keyed by package name** (see below).                                                                                                                              |
 | `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.                                                                                   |
-| `env`          | Environment-loading options — currently just `override` (which variables a `.env` file may win over the ambient environment for). Which files load is chosen with `--mode`. See [Environment loading](#environment-env-loading). |
-| `logs`         | Log display options: `{ timestamps?: boolean }` (default `false`) — see [Log timestamps](#log-timestamps).                                                         |
+| `packageRootDir` | The directory the packages live under, e.g. `'packages'`: each package's directory is inferred as `<packageRootDir>/<key>`, and `relativeDir` becomes an optional override. Without it, every package must set `relativeDir`. **Always set it** and omit `relativeDir` unless a package really lives elsewhere. |
+| `env`          | Environment-loading options: `override` (which variables a `.env` file may win over the ambient environment for). Which files load is chosen with `--mode`. See [Environment loading](#environment-env-loading). |
+| `logs`         | Log display options: `{ timestamps?: boolean }` (default `true`) — see [Log timestamps](#log-timestamps).                                                          |
 | `apiPort`      | Pin the [control API](#drive-a-running-session-via-the-control-api) port (otherwise chosen automatically).                                                         |
 | `urls`         | Workspace-wide footer links, not tied to a package. Same shape as a package's `urls`, but a callback here gets only `{ envs, tokens }` (no package, so no `port`). |
 | `tokens`       | Values of your own, handed to every callback as `tokens` (a package's own `tokens` are merged on top) — see [Callbacks](#callbacks-instead-of-interpolation).      |
+| `infra`        | Infrastructure that isn't a package — databases, caches, brokers — keyed by provider: `{ 'docker-compose': { file?, readyTimeout?, services? } }`, where `services` gives a service its `enabled` and callbacks. Brought up, and waited on, before the packages start. See [Infra](#infra). |
+| `devReverseProxy` | Run devtooie's own dev reverse proxy, routing `<subdomain>.<rootDomain>` to packages by their `subdomain`. `{ port, rootDomain?, defaultPackage?, urlScheme? }`; present = enabled. See [Dev reverse proxy](#dev-reverse-proxy). |
 
 `packages` is an object **keyed by package name**:
 
 ```ts
 packages: {
-  api: { port: 3001, healthcheck: ({ port }) => `http://localhost:${port}/health` },
+  api: { port: 3001, healthcheck: '/health' },
   web: { port: 3000, waitFor: ['api'] },
   isomorphic: { selectable: false }, // a build-only lib needs no fields at all
 }
 ```
 
 The key is the package's name — what `-p <name>` takes, what `waitFor`/`deps` reference, and
-what `relativeDir` defaults from. **There is no `name` field**, names can't drift, and every
+what its directory is inferred from under `packageRootDir`. **There is no `name` field**, names can't drift, and every
 name reference is type-checked against the keys. Integer-like keys (`'2'`) are rejected at load
 time, since JavaScript reorders them and that would change start order.
 
 Each package's value has a flat set of fields, all optional (omit them all for a build-only
 lib):
 
-- **`relativeDir`** — directory containing the package, relative to `workspaceDir`. Defaults
-  to `packages/<key>`.
+- **`relativeDir`** — directory containing the package, relative to `workspaceDir`. Optional
+  when the config sets `packageRootDir` — then it's inferred as `<packageRootDir>/<key>` — and
+  required otherwise; TypeScript enforces both. **Prefer `packageRootDir` and omit this**; set
+  it only to override the inferred directory (a scoped key like `@scope/web-api` would
+  otherwise land at `packages/@scope/web-api`).
 - **`selectable`** (default `true`) — show in the interactive picker.
 - **`color`** — override the auto-assigned color of this package's log-prefix label. Any
   Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`),
@@ -205,12 +318,31 @@ lib):
   **`false`** to leave it stopped; start it with the **`s`** hotkey or a control-API `restart`
   (`POST /command/restart/<name>` starts a stopped package). Ignored when `command` is `null`.
 - **`port`** — the package's dev port; injected as `PORT`, handed to this package's `healthcheck`/`urls` callbacks, and swept on session handoff. May be a **callback** deriving it from the package's [environment](#environment-env-loading) — see [Callbacks instead of interpolation](#callbacks-instead-of-interpolation). Return `undefined` for "no port" (same as omitting the field); returning `NaN` — the usual sign of a missing variable — is an error naming the package and the env files that were loaded. Declaring a `port` is what lets this package's other callbacks use `port` — see [The `port` in a callback](#the-port-in-a-callback).
+- **`subdomain`** — the package's dev subdomain: a string, an array of them (the first is the
+  canonical subdomain, the rest are aliases), or **`true`** for the package's own name —
+  `api: { subdomain: true }` is `subdomain: 'api'`. (`true` needs a name that is itself a DNS
+  label; a scoped or uppercase key has to spell its subdomain out.) It is data for tooling that reads the exported
+  config — a reverse proxy building its routing table from each package's `subdomain` and
+  resolved `port` (`config.packages.api.subdomain`). With a
+  top-level [`devReverseProxy`](#dev-reverse-proxy), devtooie is that proxy: it routes
+  `<subdomain>.<rootDomain>` to this package's `port` (aliases too) and injects `PUBLIC_ORIGIN`
+  into its process. Without one, devtooie doesn't use it. Either way the canonical entry is
+  handed to this package's callbacks as `subdomain` — see
+  [Callbacks](#callbacks-instead-of-interpolation). Each entry must be a DNS label — lowercase
+  letters, digits, and hyphens, not starting or ending with a hyphen, at most 63 characters —
+  and no two packages may declare the same one, canonical or alias.
 - **`urls`** — links shown in the running footer, one entry per line. Each entry is a URL, a
   `{ label, url }`, or an **array** of those (rendered on the same line, space-separated). Any
-  URL may be a callback.
+  URL may be a callback, and any may be a **path** (`'/todos'`, or `'todos'`; `''` is the origin
+  itself), based on the package's public origin under the [dev reverse proxy](#dev-reverse-proxy),
+  or on `http://localhost:<port>` without one. A path's trailing slash is dropped: `'/todos/'`
+  is `'/todos'`, and `'/'` is `''`. A path on a package with no `port` is an error. devtooie adds
+  no links of its own.
 - **`healthcheck`** — a URL polled for readiness; also required by anything that lists this
-  package in its `waitFor`. May be a callback, or `{ url, timeout }` to give this package's
-  probes longer than the 1500 ms default. See [Readiness probing](#readiness-probing).
+  package in its `waitFor`. A **path** (`'/health'`, or `'health'`) is probed at `http://localhost:<port>/health`
+  — always the package itself, never through the dev reverse proxy — and its trailing slash is
+  dropped, as in `urls`. May be a callback, or `{ url, timeout }` to give this package's probes
+  longer than the 1500 ms default. See [Readiness probing](#readiness-probing).
 - **`waitFor`** — package names to wait on (each must define a `healthcheck`) before this
   package starts. Type-checked against the keys of `packages`.
 - **`tokens`** — values of your own for this package's callbacks, merged **over** the top-level
@@ -232,18 +364,22 @@ anything else is written as a plain function of it — ordinary TypeScript, chec
 with nothing to escape. A `$` in a config string is just a `$`.
 
 `port`, `healthcheck`, and every `urls` entry (including the `url` inside a `{ label, url }`)
-accept either a literal or a callback:
+accept either a literal or a callback — as do the top-level `devReverseProxy.port` and
+`rootDomain`, over the workspace context `{ envs, tokens }`. For a URL of this package's own,
+a **relative path** is the literal to reach for first: it needs no callback at all, since devtooie
+resolves it against the package's port (or its public origin under the dev reverse proxy).
 
 ```ts
 export default defineConfig({
+  packageRootDir: 'packages',
   tokens: { domain: 'example.test' },
   packages: {
     backend: {
       tokens: { region: 'us-east' },
       port: ({ envs }) => Number(envs.BACKEND_PORT),
-      healthcheck: ({ port }) => `http://localhost:${port}/health`,
+      healthcheck: '/health', // a path: resolved against this package's port, no callback needed
       urls: [
-        ({ port }) => `http://localhost:${port}/todos`,
+        '/todos',
         // `tokens` here is { domain, region } — both typed
         { label: 'public', url: ({ tokens }) => `https://${tokens.region}.${tokens.domain}` },
       ],
@@ -259,6 +395,7 @@ Each callback receives one object:
 | `envs`   | The package's `.env` files resolved and merged with `process.env` (which wins by default) — the same environment the dev process gets. See [Environment loading](#environment-env-loading). |
 | `tokens` | The top-level `tokens` with this package's own `tokens` merged **over** them. Typed from what you declared, so a typo is a compile error.                               |
 | `port`   | The package's resolved `port`, typed **`number`** (not `number \| undefined`) so it drops straight into a URL. A package that declares no `port` has nothing to give, which types can't express here — so reading `port` in that case throws when the config loads, naming the package. Not offered to `port` itself, nor to the workspace-wide `urls`. |
+| `subdomain` | The package's canonical `subdomain` — the first entry when it declared several — so a URL can be built from it without repeating it: `` urls: [({ subdomain, envs }) => `https://${subdomain}.${envs.LOCALDEV_DOMAIN}`] ``. Plain data, unlike `port`: `undefined` (in type and in value) for a package that declares none, so branch on it if a callback has to work either way. Not offered to `port`, nor to the workspace-wide `urls`. |
 
 Callbacks run **once**, while the config is being defined, and must be synchronous. A `port`
 callback returns a number (or `undefined`); the rest return a string.
@@ -274,6 +411,7 @@ Declare them only where you have them. A package with no tokens of its own write
 
 ```ts
 export default defineConfig({
+  packageRootDir: 'packages',
   tokens: { domain: 'example.test', proto: 'https' },
   packages: {
     api: {
@@ -327,7 +465,7 @@ packages: {
   api: {
     port: 3001,
     healthcheck: {
-      url: ({ port }) => `http://localhost:${port}/health`,
+      url: '/health', // a path: probed at http://localhost:<port>/health
       timeout: 10_000,
     },
   },
@@ -372,21 +510,27 @@ config.packages.api.port; // number | undefined
 
 ### Log timestamps
 
-By default log lines are shown without a timestamp. Set `logs.timestamps: true` to prefix
-every on-screen log line (both the interactive TUI and `--plain` output) with a
-`YYYY-MM-DD HH:MM:SS` local-time (24-hour) stamp:
+By default every on-screen log line (both the interactive TUI and `--plain` output) is
+prefixed with a local-time (24-hour) stamp. Set `logs.timestamps: false` to turn that off:
 
 ```ts
 export default defineConfig({
-  logs: { timestamps: true },
+  packageRootDir: 'packages',
+  logs: { timestamps: false },
   packages: {/* … */},
 });
 ```
 
 ```
-2026-07-13 13:53:32 [api]     backend ready, starting…
-2026-07-13 13:53:32 [web]     VITE ready in 431 ms
+13:53:32 [api]     backend ready, starting…
+13:53:32 [web]     VITE ready in 431 ms
 ```
+
+**The TUI shows the date only when it matters.** While every timestamped line on screen is from
+the same day, rows show just the time, as above; as soon as two days are visible together —
+scrolled back across midnight, or the first lines after it — the full `YYYY-MM-DD HH:MM:SS` stamp
+comes back so the rows can be told apart. `--plain` output and the log file always carry the full
+stamp.
 
 The on-disk session log file always records timestamps (in the same format) regardless of this
 setting; `logs.timestamps` only controls whether they're shown on screen.
@@ -397,6 +541,7 @@ package; when omitted, the package inherits the top-level value:
 
 ```ts
 export default defineConfig({
+  packageRootDir: 'packages',
   logs: { timestamps: false }, // top-level default
   packages: {
     api: {}, // inherits → no timestamps on screen
@@ -452,6 +597,7 @@ assumption.
 import { defineConfig, logging } from 'devtooie';
 
 export default defineConfig({
+  packageRootDir: 'packages',
   packages: {
     'go-svc': {}, // no config — slog's string levels just work via the default
     api: { logs: { formatter: logging.nodejs.pino.formatter() } }, // pino numeric levels
@@ -498,13 +644,11 @@ needs a rendering the built-in formatter can't express): `logs.formatter` is jus
 `(line: string) => string` — return the display
 string, or the line unchanged to pass it through. A formatter owns the presentation of the lines it
 actually **rewrites**; one returned unchanged is rendered exactly as it would be with no formatter
-configured — plain for stdout, **red for stderr** — so passing a line through never costs it its
-color. A formatter that throws or returns a non-string
+configured — plain for stdout, **red for stderr**. A formatter that throws or returns a non-string
 falls back to the raw line, so a bug can't take down the session. The returned string is what's
 buffered, shown, **and written to the log file** (ANSI color allowed, stripped for the file); a
 multi-line result is split into separate log lines, which devtooie keeps grouped as **one entry** —
-so a filter matching any of them shows the whole block. That grouping comes from the split itself,
-not from how the lines look, so you don't have to indent them to hold an entry together.
+so a filter matching any of them shows the whole block.
 **devtooie owns the timestamp** (shown per
 `logs.timestamps`, always in the log file), so drop the log's own time field rather than printing
 it. `z` (zod) is re-exported by devtooie, so a hand-written formatter can validate shapes without a
@@ -521,7 +665,7 @@ Three independent categories, resolved when you select a package:
 
 - **`deps.build`** — extends the build-time deps devtooie already infers from your TypeScript
   [project references](#typescript-project-references--shared-libraries). Resolved transitively.
-- **`deps.dev`** — compiled before running (currently behaves like a build dep).
+- **`deps.dev`** — compiled before running (behaves like a build dep).
 - **`deps.runtime`** — other packages that must be _running_ alongside this one. **Not
   transitive**: only the packages you explicitly select have their runtime deps expanded. If a
   runtime dep needs its own runtime deps too, select it explicitly (or add it to your selection).
@@ -537,6 +681,593 @@ building those deps first. Give a shared lib a watching `dev` (e.g. `tsc --watch
 `dist`) and it runs alongside the apps, so its edits propagate live. Keep each package's
 `dev`/`build` building only itself — the lib owns its watcher. See the
 [`example/`](https://github.com/rhyek/devtooie/tree/main/example) monorepo.
+
+## Dev reverse proxy
+
+devtooie can run the project's dev reverse proxy itself. A TLS terminator on the machine
+(Caddy, say — not devtooie's concern) forwards `*.<rootDomain>` to one loopback port per
+project; devtooie owns that port and routes each request by the first label of its `Host`
+header to the package that declares that `subdomain`, on that package's resolved `port`.
+
+Because devtooie also knows every package's live status, the proxy can **answer for a package
+that is stopped or still starting** — a page saying so, rather than a bare connection error.
+
+The proxy does no TLS, no path-based routing, and no auth.
+
+### Config
+
+```ts
+export default defineConfig({
+  packageRootDir: 'packages',
+  devReverseProxy: {
+    port: ({ envs }) => Number(envs.DEV_REVERSE_PROXY_PORT), // number | callback
+    rootDomain: ({ envs }) => `myproject.${envs.LOCALDEV_DOMAIN}`, // string | callback, default 'localhost'
+    defaultPackage: 'web', // optional: what the bare rootDomain routes to
+    urlScheme: 'https', // optional; defaults from rootDomain: http on localhost, https elsewhere
+  },
+  packages: {
+    web: { port: 3000, subdomain: ['web', 'www'] },
+    api: { port: 3001, subdomain: true, healthcheck: '/health' }, // true: the key, `api`
+    worker: { port: 3002 }, // a port but no subdomain: simply not routed
+  },
+});
+```
+
+- **The block's presence enables the proxy.** There is no `enabled` flag; remove the block to
+  turn it off.
+- **`port`** and **`rootDomain`** take a literal or a callback over the workspace-scope context
+  `{ envs, tokens }` (the same one the workspace-wide `urls` get), resolved once at load like a
+  package `port`. A callback returning `NaN` or an empty string is an error naming the field
+  and the env files that were loaded. `rootDomain` defaults to **`localhost`**, which browsers
+  resolve to loopback with nothing in front (see [No terminator](#no-terminator-plain-localhost)).
+- **`defaultPackage`** — the package the bare `rootDomain` routes to. Must declare a `port`.
+  Without it the bare root is a 404.
+- **`urlScheme`** — `'http' | 'https'`. The scheme of the public URLs devtooie derives (footer
+  links, `PUBLIC_ORIGIN`), and with it whether they carry a port. **Defaults from `rootDomain`**:
+  `http` on `localhost`, `https` on any other root. `http` means the browser hits the proxy
+  directly, so the URLs carry the proxy `port` — how a plain `localhost` setup works with nothing
+  in front; `https` means a TLS terminator sits in front, so they carry no port. So the same
+  package is `http://api.localhost:4000` under the default root and `https://api.myproject.test`
+  under a custom one, with nothing else to set.
+
+**Routable packages** are those declaring both `subdomain` and `port`. A package with a port
+but no subdomain is simply not routed. Validation, when the block is present:
+
+- `rootDomain` is a lowercase hostname (labels of `[a-z0-9-]`, no leading or trailing hyphen).
+- `defaultPackage` names a declared package that has a `port`.
+- A package that declares `subdomain` but no `port` is an error — it can't be routed.
+- The proxy `port` equals no package's port.
+
+Each error names the offender.
+
+### Routing
+
+The proxy strips any `:port` from the `Host` header, then:
+
+| Host                    | Routes to                                                                |
+| ----------------------- | ------------------------------------------------------------------------ |
+| `<rootDomain>`          | `defaultPackage`, or 404 when unset.                                     |
+| `<label>.<rootDomain>`  | The package whose canonical subdomain **or alias** is `<label>`.         |
+| anything else           | 404 — including multi-label prefixes (`a.web.<rootDomain>`) and hosts outside `rootDomain`. |
+
+The 404 is a small page listing every hostname that does exist, as public URLs you can click:
+`<subdomain>.<rootDomain>` for every routable package, aliases included, plus the bare root when
+`defaultPackage` is set.
+
+Requests are forwarded to the package's port on `localhost`, trying both loopback families
+(Vite on a modern Node listens on `[::1]` alone). The `Host` header is kept as received and every other request and response header passes through unchanged, except the
+hop-by-hop ones (`connection`, `keep-alive`, `proxy-*`, `te`, `trailer`, `transfer-encoding`,
+`upgrade`), which Node manages on each side. devtooie adds or rewrites no `X-Forwarded-*` —
+the TLS terminator in front already sets them. Bodies stream both ways; nothing is buffered,
+and the proxy has no request, response, or idle timeouts of its own, so SSE and long-lived
+connections survive.
+
+### Status pages
+
+The proxy asks the process manager before forwarding:
+
+| Package status                                      | Response                                                                                                                                                                 |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `stopped`, `waiting`, `rebuilding`, `restarting`    | **503** immediately: a small HTML page (when the request accepts `text/html`) or JSON otherwise, naming the package and its status and how to start it (`s` hotkey, or `POST /command/restart/<name>` on the [control API](#drive-a-running-session-via-the-control-api)). `Retry-After: 2`, `Cache-Control: no-store`; the HTML page refreshes itself. |
+| `running`, with a `healthcheck` not yet passing     | The request is **held** up to 15 s, re-checking readiness, then proxied. Past 15 s, the same 503 with status `starting`.                                               |
+| `running` and ready (or no `healthcheck`)           | Proxied. If the package refuses or resets the connection, a **502** page naming the package and port, `Retry-After: 1`.                                                 |
+| not part of the running session                     | **503**, saying so.                                                                                                                                                      |
+
+Before the session's process manager is up (during the build phase), every routable host
+answers 503 with status `starting`. If the client disconnects mid-request, the upstream request
+is aborted.
+
+### WebSockets and Vite HMR
+
+The proxy handles the `upgrade` event with the same `Host` routing, opens the upstream with the
+original headers, and once the package answers `101` splices the two sockets both ways. An
+upgrade to a package that is not `running` right now is **dropped** (the socket is destroyed)
+rather than held, and so is one the package fails to accept because it isn't listening yet:
+websocket clients reconnect on their own, and a real answer is there once the package is up.
+
+Vite HMR is the canonical client. Point its client at the TLS terminator's port and let the
+websocket ride the same connection as the page — no separate HMR port:
+
+```ts
+// vite.config.ts
+export default defineConfig({
+  server: {
+    // PUBLIC_ORIGIN is injected by devtooie — see below
+    allowedHosts: [new URL(process.env.PUBLIC_ORIGIN!).hostname],
+    // the public port: the TLS terminator's, or the proxy's own under plain localhost
+    hmr: { clientPort: Number(new URL(process.env.PUBLIC_ORIGIN!).port) || 443 },
+  },
+});
+```
+
+### `PUBLIC_ORIGIN`
+
+Every routable package's process — one declaring both `subdomain` and `port` — gets
+`PUBLIC_ORIGIN` injected next to `PORT`, under the same rule: an explicit `.env` `PUBLIC_ORIGIN`
+wins. It is built from the block as
+
+```
+<urlScheme>://<canonical subdomain>.<rootDomain>[:<port>]
+```
+
+where the canonical subdomain is the package's `subdomain` (the first entry of an array — aliases
+never appear here) and the port follows the [`urlScheme` rule](#config): the proxy `port` under
+`http`, none under `https`. So `https://web.myproject.test` behind a TLS terminator, and
+`http://web.localhost:21050` on plain `localhost`. A package with a port but no subdomain gets
+no `PUBLIC_ORIGIN` at all.
+
+Apps use it for things like Vite's `server.allowedHosts` and `server.hmr` without repeating the
+subdomain in their own config. `devtooie exec` and `devtooie run` hand the same variable to a one-off command.
+
+### Footer links and the resolved config
+
+devtooie adds no footer link of its own: `urls` holds exactly what the config lists. To show a
+package's public origin, list it — `''` (or `'/'`) is the origin itself, any other path is
+resolved against it (see [Configuration options](#configuration-options)). The origin is on the resolved
+config as `publicOrigin` (the same value injected as `PUBLIC_ORIGIN`), next to
+`config.devReverseProxy`:
+
+```ts
+// with `urls: ['', '/todos']` on web
+config.devReverseProxy; // { port: 4000, rootDomain: 'myproject.example.test', defaultPackage: 'web', urlScheme: 'https' } | undefined
+config.packages.web.publicOrigin; // 'https://web.myproject.example.test'
+config.packages.web.urls; // ['https://web.myproject.example.test', 'https://web.myproject.example.test/todos']
+```
+
+`devtooie show-config` prints all of this as JSON without starting a session.
+
+### Lifecycle
+
+The proxy starts **before any package**, in both the TUI and `--plain` modes, whenever the
+loaded config has `devReverseProxy`. `devtooie exec`, `run`, `logs`, `env`, and `init` never start it.
+On shutdown it closes and destroys every open socket, proxied websockets included, so a
+lingering connection can't hold the exit.
+
+Its port goes through the same conflict handling package ports get: a previous devtooie
+session being handed off releases it as it shuts down; anything still holding it after that is
+a startup error naming the port.
+
+At start, one `[devtooie]` log entry names the proxy port, with one indented line per route
+beneath it (`<host>: <package> :<port>`). The [control API](#drive-a-running-session-via-the-control-api)'s `GET /query/status` reports
+the same table under `devReverseProxy`.
+
+### No terminator: plain `localhost`
+
+With the default `rootDomain` (`localhost`) nothing needs to sit in front: browsers resolve
+every `*.localhost` name to the loopback address, so `http://web.localhost:<proxy port>` reaches
+the proxy, which routes it by the `web` label. `localhost` implies `urlScheme: 'http'`, under
+which the public URLs devtooie derives carry the proxy port, so footer links and
+`PUBLIC_ORIGIN` are right and Vite's HMR client (see above) connects to the same port the page
+came from.
+
+```ts
+devReverseProxy: {
+  port: ({ envs }) => Number(envs.DEV_REVERSE_PROXY_PORT),
+  defaultPackage: 'frontend', // http://localhost:<proxy port> is the app
+},
+```
+
+`*.localhost` resolution is a browser feature, not the OS resolver's: `curl` needs an explicit
+`Host` header (`curl -H 'Host: web.localhost' http://127.0.0.1:<proxy port>/`).
+
+### The TLS terminator
+
+Anything that terminates TLS and forwards to a loopback port works. Point `rootDomain` at its
+domain: a root other than `localhost` implies `urlScheme: 'https'`, so the public URLs point at
+the terminator with no port. With Caddy, one site block per project:
+
+```caddyfile
+*.myproject.example.test, myproject.example.test {
+  tls internal
+  reverse_proxy 127.0.0.1:4000
+}
+```
+
+where `4000` is the project's `devReverseProxy.port`. Caddy sets `X-Forwarded-*` itself, which
+is why devtooie doesn't.
+
+## Infra
+
+Your packages usually need things that aren't packages: a database, a cache, a message broker.
+Declare them under `infra` and devtooie brings them up, waits until they're ready, and runs your
+setup steps (migrations, seeding) — as a command, and at the start of every dev session.
+
+```ts
+// devtooie.config.ts
+export default defineConfig({
+  infra: {
+    'docker-compose': true,
+  },
+  packages: {/* … */},
+});
+```
+
+That is a complete config for a self-contained `docker-compose.yaml`; `true` is short for `{}`,
+the block the options below go in. `infra` is keyed by
+provider; `docker-compose` is the only one. It needs Docker with Compose v2.
+
+For a working setup to copy from, see the
+[`example/`](https://github.com/rhyek/devtooie/tree/main/example) monorepo (in the devtooie repo, not
+in `node_modules`): a Postgres service in
+`docker-compose.yaml` with a healthcheck, its connection values in the mode's `.env` file (read
+by Compose, and by the app as `DATABASE_URI`), and an `afterReady` in `devtooie.config.ts` that
+migrates on every start and seeds a fresh database.
+
+```sh
+devtooie infra up                     # start every service, wait until ready, then exit
+devtooie infra up db                  # only `db`
+devtooie infra up --reset             # destroy the services first, then start them clean
+devtooie infra up --reset db          # destroy and restart only `db`
+devtooie infra down [services...]     # stop and remove containers; data is kept
+devtooie infra destroy [services...]  # remove containers *and* their data
+devtooie infra docker-compose ps      # Compose itself, bound to this project and mode
+devtooie --mode test infra up         # the test mode's own project, ports and env
+```
+
+Every one of these exits when it's done. None stays up streaming logs.
+
+**When you are the one driving it:**
+
+- **A session brings the infra up itself.** `devtooie --plain -p <package>` runs `infra up` after
+  the build and before the packages start, so you don't run it first. It needs Docker running;
+  if a service doesn't come up the session exits `1` and prints the service, the reason, and the
+  tail of its logs.
+- **To prepare infra without starting packages** — before a test run, say — use
+  `devtooie infra up`, with `--mode test` for the test mode's own containers.
+- **Never run a bare `docker compose …` in the workspace.** devtooie puts the mode in the
+  Compose project name, so a bare command targets a different, empty project. Use
+  `devtooie infra docker-compose <args>`: it's the same Compose, bound to the right project.
+- **A service may be switched off for the current mode** (`enabled` in the config). Then it
+  isn't started and `devtooie infra up <name>` refuses it. Check with
+  `devtooie show-config | jq '.infra["docker-compose"].services'` before assuming it's broken.
+- **`infra up --reset` and `infra destroy` delete data.** Don't run either on your own
+  initiative — only when asked, or when the task plainly requires a clean database. `up --reset`
+  wipes the services it restarts; `destroy` with no service named wipes the whole project.
+- **To learn the Compose project name** without guessing:
+  `devtooie show-config | jq -r '.infra["docker-compose"].projectName'`.
+- **Don't spawn processes with inherited stdio from an infra callback** you write — use the
+  `run`, `compose` and `log` helpers the callback receives (see [Callbacks](#callbacks)).
+
+### In a dev session
+
+`devtooie` (the TUI or `--plain`) runs the same `up` **after building and before starting the
+packages**, for every enabled service. The startup screen shows a row per service while it happens, and
+the footer lists them once the session is running:
+
+```
+● api  ● web
+← →: select │ r: restart  b: rebuild  s: stop  m: commands
+
+infra:  ● db  ● redis
+cwd: example  git: main
+```
+
+- **Quitting devtooie leaves the services running**, so the next start finds them up and takes
+  well under a second.
+- **A service that doesn't come up stops the session.** The packages aren't started against
+  infrastructure that isn't there; you get the service, the reason, and the tail of its logs.
+- What infra printed on the way up is at the top of the session log, as `[infra:<service>]`
+  lines (type `infra` in the `f` filter to see only those).
+- The footer dots are a record of startup, not a monitor: nothing watches the containers
+  afterwards.
+
+`--build`, `devtooie exec`, `run`, `show-config`, `logs` and the other subcommands never touch infra.
+
+### Infra config
+
+```ts
+infra: {
+  'docker-compose': {
+    file: './docker-compose.yaml', // optional
+    readyTimeout: 300_000,         // optional, ms
+    services: {                    // optional — keys are Compose service names
+      db: {
+        enabled: ({ mode }) => mode !== 'test',
+        afterDestroy: async (ctx) => {},
+        beforeUp: async (ctx) => {},
+        afterReady: async (ctx) => {},
+      },
+    },
+  },
+}
+```
+
+| Field          | Meaning                                                                                                                                                                                                                                                               |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `file`         | The compose file, relative to `workspaceDir`. Omit it and Compose discovers the file itself (`compose.yaml`, `docker-compose.yaml`, plus any override file).                                                                                                          |
+| `readyTimeout` | How long `up` waits for the services to become ready, in ms. Default: 5 minutes.                                                                                                                                                                                      |
+| `services`     | Per-service options, keyed by Compose service name: [`enabled`](#turning-a-service-off) and the [callbacks](#callbacks). A service doesn't have to be listed to run. A key that isn't a service in the compose file is an error, reported before anything is started. |
+
+**Which services run:** all the services Compose reports for the file — minus any you
+[turn off](#turning-a-service-off) — or the ones you name on the command line.
+
+**Readiness, ports, images, volumes — all of it lives in the compose file.** devtooie hands
+Compose the mode's environment, so the file can interpolate it:
+
+```yaml
+services:
+  db:
+    image: postgres:18.6
+    ports:
+      - '${DB_PORT}:5432' # DB_PORT from .env.development, or .env.test under --mode test
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-h', '127.0.0.1']
+```
+
+### Turning a service off
+
+`enabled` decides whether devtooie runs a service. It's a boolean, or a callback over the mode
+and the environment:
+
+```ts
+services: {
+  // not in test mode
+  emulator: { enabled: ({ mode }) => mode !== 'test' },
+  // only when its API key is set
+  tracing: { enabled: ({ envs }) => Boolean(envs.TRACING_API_KEY) },
+}
+```
+
+The callback gets `{ mode, envs, tokens }` — `envs` being the mode's workspace-scope `.env` files
+and the ambient environment, where the ambient environment wins over the files — and must return
+a real boolean. Like the config's other
+callbacks (`port`, `urls`) it's synchronous and runs once, when the config loads, so
+`devtooie show-config` shows the answer:
+
+```sh
+devtooie --mode test show-config | jq '.infra["docker-compose"].services'
+# { "emulator": { "enabled": false }, "tracing": { "enabled": true } }
+```
+
+A disabled service is left out of `infra up` and of a dev session, isn't in the footer, and its
+callbacks don't run. Naming it — `devtooie infra up emulator` — is an error that says it's
+disabled. It can still be destroyed by name, to clean up after a mode where it ran.
+
+Two things `enabled` doesn't do:
+
+- **It doesn't override `depends_on`.** If an enabled service depends on a disabled one, Compose
+  starts both.
+- **It doesn't stop a container that's already running.** It only decides what devtooie starts.
+
+Compose's own [profiles](https://docs.docker.com/compose/how-tos/profiles/) are the other way
+to do this — `COMPOSE_PROFILES=…` in a mode's `.env` file — and they do hide a service from
+Compose entirely.
+
+### Callbacks
+
+Optional and async. They run **around** devtooie's built-in steps — they don't replace them —
+and each is named for when it runs:
+
+| Callback       | Runs                                                                                                                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `afterDestroy` | After the service's container and volumes are removed: on `infra destroy` and on `infra up --reset`. For state Compose can't see, such as a bind-mounted directory.                                                       |
+| `beforeUp`     | On every `infra up`, after any destroy and before the services are started. If one fails, nothing is started.                                                                                                             |
+| `afterReady`   | On every `infra up`, once the service is ready — **including when it was already running**, and so at every session start. For migrations, which have to be idempotent, and for seeding behind [`fresh`](#seeding-fresh). |
+
+`afterReady` runs every time on purpose: pull a branch with new migrations, start a session,
+and they're applied — even though the database never stopped.
+
+So the full order of `infra up --reset db` is: destroy → `afterDestroy` → `beforeUp` → start →
+wait until ready → `afterReady`.
+
+```ts
+db: {
+  afterReady: async ({ run, fresh }) => {
+    await run('pnpm', ['migrate'], { cwd: 'packages/db' }); // every time: idempotent
+    if (fresh) {
+      await run('pnpm', ['seed'], { cwd: 'packages/db' }); // only into a new database
+    }
+  },
+},
+```
+
+Each callback receives one object:
+
+| Field          | What it is                                                                                                                                                                                                                                                                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `service`      | The Compose service this callback belongs to.                                                                                                                                                                                                                                                                                                                                   |
+| `mode`         | The active mode (`development`, `test`, …).                                                                                                                                                                                                                                                                                                                                     |
+| `reset`        | `true` when this run is `infra up --reset`. Always `false` under `infra destroy`.                                                                                                                                                                                                                                                                                               |
+| `fresh`        | **`afterReady` only.** `true` when this run created the service's data — see [Seeding: `fresh`](#seeding-fresh).                                                                                                                                                                                                                                                                |
+| `workspaceDir` | The workspace root, absolute.                                                                                                                                                                                                                                                                                                                                                   |
+| `envs`         | This mode's environment: the workspace-scope `.env` files and the ambient environment — **the ambient environment wins over the files**, except for the variables `env.override` names ([Environment loading](#environment-env-loading)) — plus `COMPOSE_PROJECT_NAME`. It includes `DEVTOOIE_MODE`. It is the environment `run` and `compose` give their commands. |
+| `tokens`       | The config's top-level [`tokens`](#typed-tokens), typed from what you declared.                                                                                                                                                                                                                                                                               |
+| `compose`      | `compose(args, opts?)` — runs `docker compose <args>` against this project, with `envs` as its environment: `await compose(['exec', '-T', 'db', 'psql', '-c', …])`.                                                                                                                                                                                                             |
+| `run`          | `run(command, args?, opts?)` — runs any other command, with `envs` as its environment: a migration or seed script gets the mode's variables and `DEVTOOIE_MODE` with nothing passed by hand.                                                                                                                                                                                    |
+| `log`          | `log(message)` — writes a line to devtooie's infra output.                                                                                                                                                                                                                                                                                                                      |
+
+#### Seeding: `fresh`
+
+`afterReady` runs on every `up`, so a seeder needs to know whether the database is new.
+`fresh` says so: it's `true` when **this run created the service's data**.
+
+| What happened                     | `fresh` |
+| --------------------------------- | ------- |
+| The service's first start ever    | `true`  |
+| `infra up` again, already running | `false` |
+| `infra down`, then `infra up`     | `false` |
+| `infra destroy`, then `infra up`  | `true`  |
+| `infra up --reset`                | `true`  |
+
+devtooie goes by the service's **named volumes**: `fresh` means none of them existed before this
+run started the service. That's why `down` and `up` isn't fresh — the container is new, the data
+isn't. A service with no named volume keeps its data in the container, so it's fresh when it had
+no container. (Data in a bind-mounted host directory is invisible to devtooie: such a service
+goes by its container too.)
+
+`fresh` describes this run and nothing is remembered between runs. So **if `afterReady` fails on
+the run where `fresh` is `true`** — the migration errors before the seed — it's `false` the next
+time, and the seed doesn't run. Give the service a clean start with
+`devtooie infra up --reset <service>`.
+
+`reset` is narrower: it's `true` only when this run was `infra up --reset`. Use `fresh` to seed;
+`reset` is for the rare step that should follow a deliberate reset and nothing else.
+
+#### The helpers
+
+`compose` and `run` take `{ cwd?, env?, reject? }` and resolve with
+`{ exitCode, stdout, stderr }`:
+
+- `cwd` is relative to the workspace root, which is the default.
+- `env` adds to `envs`, or overrides it, for that one command.
+- A non-zero exit **rejects** — which fails the service — unless you pass `reject: false`.
+
+**A command started with `run` or `compose` gets `envs` as its whole environment**, with any `env`
+option merged on top. That includes `DEVTOOIE_MODE` and everything in the mode's workspace-scope
+`.env` files, so a migration or seed script sees the same `DATABASE_URL` and the same mode the
+packages do, with nothing passed by hand:
+
+```ts
+// DATABASE_URL and DEVTOOIE_MODE are already in the script's environment
+await run('pnpm', ['seed'], { cwd: 'packages/db' });
+```
+
+Two limits:
+
+- **It is the workspace scope only.** A variable defined in a package's own `.env` file isn't in
+  `envs` — setting `cwd` to that package doesn't add it — and neither are the `PORT` and
+  `PUBLIC_ORIGIN` devtooie injects into a package's process. Pass those with `env`, or keep what
+  a callback needs in the workspace-scope files.
+- **`compose` always runs against this project.** Its `env` option can't change
+  `COMPOSE_PROJECT_NAME`.
+
+**Use `compose`, `run` and `log` for anything a callback prints or spawns.** Their output goes
+where devtooie is showing infra output: the terminal for `infra up`, the startup screen and the
+session log for the TUI. A child process you spawn yourself with inherited stdio draws straight
+over the TUI.
+
+A callback that throws fails its service: an `afterReady` failure fails only that service, while
+an `afterDestroy` or `beforeUp` failure stops the run before anything is started.
+
+### Modes: one Compose project each
+
+devtooie sets the Compose project name to **`<workspace directory>-<mode>`** — `example-development`,
+`example-test` — so each [mode](#modes---mode) is its own project, with its own containers,
+volumes and network. `devtooie infra up` and `devtooie --mode test infra up` run side by side,
+each with the ports from its own `.env.<mode>` file.
+
+(Compose's default name is the directory alone. Two modes would then share one project, and
+bringing the test one up would recreate the development containers on the test ports.)
+
+To choose the name yourself, set `COMPOSE_PROJECT_NAME` in an `.env` file; devtooie uses it
+as is. A top-level `name:` in the compose file is overridden either way.
+
+Because the name isn't Compose's default, a bare `docker compose ps` in the directory won't find
+these containers. Use the [passthrough](#devtooie-infra-docker-compose-args).
+
+### Commands
+
+All of them accept `-m/--mode`, before or after the subcommand, and none disturbs a running dev
+session.
+
+#### `devtooie infra up [services...] [--reset]`
+
+Starts the services (all the enabled ones, or the ones named), waits until each is
+[ready](#readiness), runs `afterReady`, and exits — `0` if every service made it, `1` otherwise. The services keep
+running.
+
+```
+▶ infra (development): db, redis
+  redis  ready (0.4s)
+[db] 2 migrations applied
+  db     ready (3.1s)
+✔ infra ready (3.1s)
+```
+
+`--reset` [destroys](#what-destroy-removes) the targets first. Once the services are starting,
+one failing doesn't stop the others; a failed container's report includes the tail of its logs.
+
+#### `devtooie infra down [services...]`
+
+`docker compose down [services...]`, with Compose's own output. Removes the containers — and,
+with no services named, the project's network. **Volumes are kept**, so the data is there on
+the next `up`. No callbacks.
+
+#### `devtooie infra destroy [services...]`
+
+Removes the services **and their data**, then runs `afterDestroy`. See
+[What destroy removes](#what-destroy-removes).
+
+#### `devtooie infra docker-compose [args...]`
+
+Compose itself, against this project and mode. Everything after `docker-compose` is handed to
+`docker compose` untouched, with the terminal: `exec db psql`, `logs -f` and colors behave
+exactly as they do when you run Compose directly, and the exit code is Compose's.
+
+```sh
+devtooie infra docker-compose ps
+devtooie infra docker-compose logs -f db
+devtooie infra docker-compose exec db psql -U example
+cd packages/db && devtooie infra docker-compose cp ./dump.sql db:/tmp/  # relative to where you are
+```
+
+**The mode goes before `docker-compose`**: `devtooie -m test infra docker-compose ps`. After that
+word every flag is Compose's — `docker compose build -m` is a memory limit.
+
+### Readiness
+
+A service is ready when its container is:
+
+- `running` and **`healthy`**, if the compose file gives it a `healthcheck`;
+- `running`, if it has none;
+- `exited` with code **0** — a one-shot service (an init or migration container) that finished.
+
+It has failed when it is `unhealthy`, exited non-zero, or `dead`; and when it still isn't ready
+after `readyTimeout`.
+
+That's the whole definition: devtooie adds no probe of its own, so **give a service a
+`healthcheck`** when "the container is running" isn't the same as "it accepts connections". For
+anything beyond that, wait in `afterReady`.
+
+Only the service's own containers count: a one-off `docker compose run` container left open in
+another terminal is ignored.
+
+A container with no healthcheck that this run just started is only called ready the second time
+devtooie finds it running — one that crashes on startup still reads as `running` for a moment.
+One that was already running is ready on the first look, so a repeat `up` stays quick.
+
+### What destroy removes
+
+What `infra destroy` removes depends on whether you name services:
+
+| You name…   | What goes                                                                                                                                                                             |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| no services | **The whole project**, disabled services' leftovers included: every container, the named volumes the file declares, anonymous volumes, the project's networks, and orphan containers. |
+| services    | Those services' containers, their anonymous volumes, and the **named volumes only they mount**. The network stays — the other services are on it.                                     |
+
+When you name services, devtooie leaves alone — and tells you about — a volume another service
+also mounts, an `external` volume, and one a container outside the file still holds. It never
+runs `docker compose down <service> --volumes`, which would also delete the volumes of every
+other service whose container doesn't currently exist.
+
+`infra up --reset` always works the second way, on exactly the services it is about to start —
+all the enabled ones when you name none. It never takes the whole project, so a service that is
+[turned off](#turning-a-service-off) keeps its data through a reset; only `infra destroy` with no
+services named removes that too.
+
+Never removed: images, `external` volumes and networks, the volumes of services in a Compose
+profile that isn't active, and bind-mounted host directories. Clean the last of those up in
+`afterDestroy`.
 
 ## Is the app already running?
 
@@ -566,10 +1297,10 @@ done
 Nothing anywhere up the tree → devtooie doesn't manage anything here; skip to
 [Apps devtooie doesn't manage](#apps-devtooie-doesnt-manage).
 
-**2. Is this app one of its packages?** Read the `packages` array in that config. Each entry's
-`name` is what devtooie knows the package by, and it's what you pass to `-p` and to the control
+**2. Is this app one of its packages?** Read the `packages` object in that config. Each key is
+the name devtooie knows a package by, and it's what you pass to `-p` and to the control
 API — it need not match the directory name or the `package.json` name, and a repo may well hold
-apps devtooie was never taught about. If the app isn't in that array, it is **not devtooie-managed**;
+apps devtooie was never taught about. If the app isn't a key there, it is **not devtooie-managed**;
 that's a legitimate answer to report, then check it directly with the fallback below.
 
 **3. Is a session live right now?** `node_modules/.devtooie/running.json` (under the config's
@@ -685,6 +1416,9 @@ devtooie --plain -p <package> [-p <other-package> ...]
   command; never `kill`/`pkill`/`lsof … | kill` a devtooie process or its port.** A raw OS kill (or
   a stray signal) drops the process out from under devtooie and looks like the session died on its
   own — use `POST /command/quit` to stop, `POST /command/restart/<name>` to restart one package.
+- **Infra**: if the config declares [`infra`](#infra), the session starts it and waits for it
+  before starting the packages, and leaves it running when the session ends. You don't start
+  it yourself, and stopping a session doesn't stop it.
 - **Environment**: each package's `.env` files are loaded and injected into its process
   automatically (see [Environment loading](#environment-env-loading)), so you don't set env
   vars yourself. A running session also restarts a package when its `.env` files change — so an
@@ -698,12 +1432,13 @@ devtooie --plain -p web   # no TUI: run `web` (+ its deps), streaming logs
 devtooie -p web -p api    # repeatable -p: run multiple named packages
 devtooie --build -p web   # build `web` + its build-time deps, then exit
 devtooie --rebuild -p web # like --build, but clears dist/ first
+devtooie infra up         # bring the config's infra up, wait until ready, exit
 ```
 
 Every command works from **anywhere in the repo**: as a first step devtooie walks up to the
 nearest `devtooie.config.*`, switches to that directory, and loads its workspace-scope `.env` —
-so running from a subdirectory behaves the same as from the root. (`devtooie cmd` additionally
-uses your original directory to decide which package you're inside.)
+so running from a subdirectory behaves the same as from the root. (`devtooie exec` and `devtooie run`
+additionally use your original directory to decide which package you're inside.)
 
 Common options:
 
@@ -713,24 +1448,35 @@ Common options:
 | `-m, --mode <name>`    | Environment mode selecting the `.env.<mode>` files to load. Defaults to `development`; also accepted after a subcommand. See [Modes](#modes---mode).                                                        |
 | `--ui`                 | Interactive terminal UI (default). Mutually exclusive with `--plain`.                                                                                                                                      |
 | `--plain`              | No TUI — stream logs to stdout with colored name prefixes. Requires `-p` or `--last-answers`.                                                                                                              |
-| `--last-answers`       | Skip selection; reuse the last saved selection.                                                                                                                                                            |
+| `--last-answers`       | Skip selection; reuse the last saved selection. If a saved name is no longer a package (a renamed key), the picker opens instead with the surviving names preselected; `--plain`/`--build` refuse with a message naming the stale ones.                                                                                                                                                            |
 | `--build`              | Build the selected packages and their build-time deps, then exit (no run phase).                                                                                                                           |
 | `--rebuild`            | Like `--build`, but first clears `dist/` for every build target.                                                                                                                                           |
-| `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/`. Each run gets a fresh `<timestamp>.log`; previous sessions' logs are kept. Also used by `devtooie cmd`. |
+| `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/`. Each run gets a fresh `<timestamp>.log`; previous sessions' logs are kept. Also used by `devtooie exec` and `devtooie run`. |
 | `--kill-others`        | Quit a devtooie session already running for this project instead of asking. **Never pass this on your own initiative** — see [Taking over a running session](#taking-over-a-running-session).              |
 
 Subcommands:
 
 - **`devtooie init`** — interactive setup; see [Getting started](#getting-started-devtooie-init).
 - **`devtooie reset`** — clear the saved package selection.
+- **`devtooie show-config`** — print the **fully resolved config** as JSON, no session
+  needed: every package's `port`, `publicOrigin`, `healthcheck`, `urls`, and the
+  `devReverseProxy` block. Takes `--mode`. See [Reach a package](#reach-a-package-devtooie-show-config).
 - **`devtooie resolvedeps <package>`** — print the resolved build/dev/runtime dependency
   sets for a single package as JSON.
-- **`devtooie cmd`** — run a **one-off command** with a package's environment (its dir +
+- **`devtooie exec`** — run a **one-off command** with a package's environment (its dir +
   resolved `.env`); package inferred from the cwd or named with `-p`; see
   [Run a one-off command in a package's dir](#run-a-one-off-command-in-a-packages-dir-with-its-environment).
+- **`devtooie run <script>`** — run one of a package's **scripts or make targets** with that
+  same environment; see the same section.
 - **`devtooie logs`** — print the current session's logfile (or `-f/--follow` to stream it);
   read-only, never disturbs the session; see
   [Read running-package logs for debugging](#read-running-package-logs-for-debugging).
+- **`devtooie infra up|down|destroy [services...]`** and
+  **`devtooie infra docker-compose [args...]`** — bring up, stop, wipe, or drive the
+  infrastructure the config declares under `infra`. Each exits when it's done and none disturbs
+  a running session. `up --reset` and `destroy` delete data. For the passthrough, `--mode` goes
+  **before** `docker-compose`; everything after that word is Compose's. See
+  [Infra](#infra) and its [Commands](#commands).
 
 ## Environment (`.env`) loading
 
@@ -763,7 +1509,7 @@ The two `.local` files are the personal tier — commit `.env` and `.env.<mode>`
 `.env*.local` out of git.
 
 **Package scope overrides workspace scope**, and within a scope a later file overrides an earlier
-one. `${VAR}` references expand against already-loaded files and the current environment.
+one. `${VAR}` references expand against already-loaded files and the ambient environment.
 
 **The ambient environment wins over the files**, as in Next.js, Vite and `node --env-file` — so
 `FOO=bar devtooie` overrides a file for a single run. `env.override` names the exceptions, for
@@ -771,14 +1517,36 @@ when a file needs to *extend* an inherited value rather than lose to it:
 
 ```ts
 defineConfig({
+  packageRootDir: 'packages',
   env: { override: ['NODE_OPTIONS'] },   // or `true` for every variable
   packages: {/* … */},
 });
 ```
 
-With that, `NODE_OPTIONS=$NODE_OPTIONS --flag` appends to whatever the shell already set.
+With that, `NODE_OPTIONS=$NODE_OPTIONS --flag` appends to whatever the shell already set. Without
+it that line silently does nothing whenever the shell already sets `NODE_OPTIONS`, which VS Code's
+integrated terminal always does.
 
-A package's `port` is also injected as `PORT` (an explicit `.env` `PORT` still overrides it). The reverse direction works too: `port` may be a callback (`port: ({ envs }) => Number(envs.BACKEND_PORT)`) that reads these same resolved files to decide the port, and `healthcheck`/`urls` callbacks get the same `envs` — see [Callbacks instead of interpolation](#callbacks-instead-of-interpolation).
+**Ambient means the environment devtooie was started with** — what the shell (or a CI runner)
+exported. A value that comes from a `.env` file is never ambient, at either scope. So
+`env.override` only ever decides between the shell and the files; it never decides between two
+files, where the higher-ranked one always wins. With `LOG_LEVEL=info` in the workspace's `.env`
+and `LOG_LEVEL=warn` in `packages/api/.env`:
+
+| The shell has     | `env.override`  | `api` gets `LOG_LEVEL=`                                    |
+| ----------------- | --------------- | ---------------------------------------------------------- |
+| `LOG_LEVEL=debug` | not set         | `debug` — the shell wins                                   |
+| `LOG_LEVEL=debug` | `['LOG_LEVEL']` | `warn` — the files win, the package's over the workspace's |
+| nothing           | not set         | `warn`                                                     |
+| nothing           | `['LOG_LEVEL']` | `warn`                                                     |
+
+When a variable doesn't have the value you expect in a package, work down that table: check
+whether the shell that started devtooie exports it, then which files define it —
+`devtooie exec -p <package> -- printenv NAME` prints what the package gets. Don't work around a
+workspace value by inventing a second variable name: put the value in the package's own `.env`
+file.
+
+A package's `port` is also injected as `PORT` (an explicit `.env` `PORT` still overrides it), and under the [dev reverse proxy](#dev-reverse-proxy) a routable package also gets `PUBLIC_ORIGIN` (its public `https://<subdomain>.<rootDomain>`) under the same rule. The reverse direction works too: `port` may be a callback (`port: ({ envs }) => Number(envs.BACKEND_PORT)`) that reads these same resolved files to decide the port, and `healthcheck`/`urls` callbacks get the same `envs` — see [Callbacks instead of interpolation](#callbacks-instead-of-interpolation).
 
 ### Modes (`--mode`)
 
@@ -787,8 +1555,8 @@ A package's `port` is also injected as `PORT` (an explicit `.env` `PORT` still o
 
 ```sh
 devtooie --mode test                  # loads .env.test / .env.test.local
-devtooie --mode test cmd -- vitest    # the same environment, for a one-off command
-devtooie cmd --mode test -- vitest    # equivalent — both flag positions work
+devtooie --mode test exec -- vitest   # the same environment, for a one-off command
+devtooie exec --mode test -- vitest   # equivalent — both flag positions work
 ```
 
 Any name is valid (`test`, `staging`, `e2e.ci`); a name can't be empty, `.`/`..`, or contain a
@@ -811,32 +1579,33 @@ running package that uses it.
 
 ### Run a one-off command in a package's dir with its environment
 
-`devtooie cmd` runs a **single one-off command with a package's environment** — without starting
-a session. The command runs in the package's directory with that package's resolved `.env` and
+`devtooie exec` runs a **single one-off command with a package's environment** — without
+starting a session — and `devtooie run` does the same for one of the package's scripts or make
+targets. The command runs in the package's directory with that package's resolved `.env` and
 its `port` as `PORT` injected — the exact environment the TUI would spawn it with. Use it to
 drive scripts, migrations, or scrapers. The package is chosen by **where you run it**: by default
 there's no package argument — `cd` into the package's directory (or any subdirectory of it) and
 run (or name one explicitly with `-p`, below):
 
 ```sh
-devtooie cmd -- <command> [args...]         # run a literal command in the package dir
-devtooie cmd -c <script> -- [args...]       # run the package's script/make target
-devtooie cmd -p <name> -c <script> -- ...   # target <name> explicitly (from anywhere)
+devtooie exec -- <command> [args...]        # run a literal command in the package dir
+devtooie run <script> [-- args...]          # run the package's script/make target
+devtooie run -p <name> <script> -- ...      # target <name> explicitly (from anywhere)
 ```
 
 - **Which package**: the nearest **ancestor** directory that is a configured package. Below the
   config root but inside no package, it falls back to the **root** (working dir = root, only
   workspace-scope vars). Errors only if there's no `devtooie.config.*` at all (any supported
   extension: `.ts`/`.mts`/`.js`/`.mjs`). Pass `-p, --package <name>` to target a package
-  explicitly (overrides the cwd inference), e.g. `devtooie cmd -p api -c start -- …`.
-- `-c, --cmd <script>` — run a package **script or make target** (resolved the way devtooie runs
-  a package: `pnpm run <script>` or `make <target>`, found in that dir's `package.json`/`Makefile`),
+  explicitly (overrides the cwd inference), e.g. `devtooie run -p api start -- …`.
+- `devtooie run <script>` — runs a package **script or make target**, found in that dir's
+  `package.json`/`Makefile` and run [the way devtooie runs a package](#how-a-script-is-run),
   forwarding anything after `--` to it as arguments. Errors if there's no such script/target.
-- Without `-c`, a literal command after `--` is required.
-- The command's exit code is propagated, and `devtooie cmd` exits as soon as the command does.
+- `devtooie exec` — runs the literal command after `--`, which is required.
+- The command's exit code is propagated, and devtooie exits as soon as the command does.
 - Output streams to your terminal **and** is teed to a fresh timestamped logfile under
   `node_modules/.devtooie/logs/` (or `--log-dir`). devtooie prints nothing of its own around it —
-  the output you see is exactly the command's, so `devtooie cmd` is safe to pipe or capture.
+  the output you see is exactly the command's, so both are safe to pipe or capture.
 
 You do not need this for packages devtooie is already running (their env is injected
 automatically) — it's for driving commands yourself.
@@ -925,21 +1694,27 @@ removed when a session ends, so it says where a session _would_ answer, not that
 Endpoints (all plain HTTP, no auth — localhost-only):
 
 - `GET /query/status` — a single snapshot of the session,
-  `{ pid, configPath, startedByAgent, logFile, packages, config }`:
+  `{ pid, configPath, startedByAgent, logFile, packages, config, devReverseProxy }`:
   - `pid` / `configPath` — the session's PID and the absolute path to the `devtooie.config.*` it
     was started with; available immediately, even while the session is still building.
   - `startedByAgent` — whether a coding agent started this session rather than a person. Decides
     whether a starting session may quit it without asking; see
-    [Taking over a running session](#taking-over-a-running-session). Omitted by instances older
-    than 0.7.0, which reads as `false`.
+    [Taking over a running session](#taking-over-a-running-session).
   - `logFile` — absolute path to the logfile currently being written (tracks in-session rotation).
   - `packages` — per-package status map (e.g. `{ "web": "running" }`), one of `running`,
-    `stopped`, `waiting`, `restarting`, `rebuilding`; `null` until the build finishes. See
+    `stopped`, `waiting`, `restarting`, `rebuilding`; `null` until the build and the infra step
+    finish. See
     [Is the app already running?](#is-the-app-already-running) for what each value tells you.
   - `config` — the whole **resolved** config (defaults applied, `command` normalized to
     `{ name, watches, builds, cleans }`), as loaded at startup (restart devtooie to pick up edits);
-    `null` until the build finishes. Use it to decide package lifecycle — see
-    [Package lifecycle](#package-lifecycle-when-you-change-code).
+    `null` until the build and the infra step finish. Use it to decide package lifecycle — see
+    [Package lifecycle](#package-lifecycle-when-you-change-code). A config with
+    [`infra`](#infra) carries it resolved under `config.infra` (the mode's Compose `projectName`
+    among it); infra has no endpoints of its own — drive it with `devtooie infra`.
+  - `devReverseProxy` — `{ port, rootDomain, routes: [{ host, package, port }] }` for the
+    session's [dev reverse proxy](#dev-reverse-proxy), or `null` when the config declares none.
+    Present from the start (the proxy binds before anything else); `routes` lists every public
+    hostname and the package (and loopback port) it forwards to.
 - `POST /command/restart/<name>` — restart one package in place (`202` if accepted, `404` for an
   unknown package).
 - `POST /command/rebuild/<name>` — stop, clean-build, then start. Prefer this over `restart`
@@ -956,14 +1731,15 @@ is authorized, see [Taking over a running session](#taking-over-a-running-sessio
 `devtooie logs` finds the current logfile with, and what an external tool (or the agent skill)
 uses to drive a session headlessly.
 
-Do not hardcode package names. Discover them either from a running session (`GET /query/status`)
-or by asking devtooie directly:
+Do not hardcode package names, ports, or hostnames. Discover them either from a running session
+(`GET /query/status`) or by asking devtooie directly, no session needed:
 
 ```sh
-devtooie resolvedeps <package>
+devtooie show-config            # the whole resolved config: names, ports, public origins, healthchecks
+devtooie resolvedeps <package>  # that package's build/dev/runtime dependency names
 ```
 
-which prints that package's build/dev/runtime dependency names as JSON.
+See [Reach a package](#reach-a-package-devtooie-show-config).
 
 ### Graceful shutdown
 
@@ -1011,9 +1787,9 @@ recorded pid is also its group id — and the group outlives its leader. A dev c
 real worker (`env-cmd -- tsx watch …`, a package manager, any `foo -- bar` shim) exits as soon as it
 has spawned, leaving the worker running in that group with no parent. Checking whether the recorded
 pid is still alive would skip exactly those. Before anything is signalled, at least one live member
-of the group must still be running in the directory the record was written with, so a recycled
-number can't take an unrelated process with it, and a group containing devtooie itself is never
-touched.
+of the group must still be running in the directory the record was written with, or below it, so
+a recycled number can't take an unrelated process with it, and a group containing devtooie itself
+is never touched.
 
 This sweep reaches packages that never bind a port, which the port check below cannot.
 
@@ -1040,7 +1816,7 @@ devtooie logs --path # print just the resolved logfile path (for piping), then e
 resolves the current logfile in order of precedence: (1) ask the running instance over the control
 API (`GET /query/status` → `logFile`); (2) the `logFile` recorded in `running.json` (kept current
 across in-session log rotation — the `t` hotkey — and more precise than scanning the dir, where a
-stray `devtooie cmd` log could be newer), if it still exists; (3) the newest logfile in the
+stray `devtooie exec` log could be newer), if it still exists; (3) the newest logfile in the
 session's log directory. (`-f` uses the Unix `tail`/`cat`, so macOS/Linux only; `--path` is
 mutually exclusive with `-f`.)
 
@@ -1048,7 +1824,7 @@ To locate the file yourself instead (e.g. to `grep` an earlier run), the directo
 into is recorded in `node_modules/.devtooie/running.json` as **`logDir`**; it defaults to
 `node_modules/.devtooie/logs/` and only differs when the session was started with `--log-dir`.
 Each session (and each in-session log rotation) writes a **fresh** file named `<timestamp>.log`;
-`devtooie cmd` writes one too. devtooie never truncates or overwrites an existing log, so logs
+`devtooie exec` and `devtooie run` write one too. devtooie never truncates or overwrites an existing log, so logs
 from earlier sessions stay on disk.
 
 ```sh
@@ -1090,8 +1866,9 @@ _running_ session writes into — and because that directory is recorded in `run
 When asked to add, configure, or onboard one of the user's packages into devtooie:
 
 1. **Ensure the package exposes the entry points devtooie drives.** devtooie chooses how to run a
-   package from what's in its directory: with a `package.json` it runs npm scripts
-   (`pnpm run <name>`); with a `Makefile` and no `package.json` it runs `make <target>`.
+   package from what's in its directory: with a `package.json` it runs that file's scripts
+   ([through `/bin/sh`](#how-a-script-is-run)); with a `Makefile` and no `package.json` it runs
+   `make <target>`.
    (`package.json` wins if a package somehow has both.)
 
    Only the **dev entry point** is always required. `build` and `clean` are situational:
@@ -1137,25 +1914,31 @@ When asked to add, configure, or onboard one of the user's packages into devtooi
    ```ts
    'my-pkg': {
      port: 3001,
-     healthcheck: ({ port }) => `http://localhost:${port}/health`,
+     healthcheck: '/health',
      deps: { runtime: ['other-pkg'] },
      waitFor: ['other-pkg'],
    }
    ```
 
-   All package fields are flat (there is no `run` nesting). Infer them from what the package
-   actually is:
+   Infer the fields from what the package actually is:
+   - Set **`packageRootDir`** (e.g. `'packages'`) once at the top level and **omit
+     `relativeDir`** on every package: its directory is `<packageRootDir>/<key>`. Give a package
+     a `relativeDir` only when it lives somewhere else (or its key is scoped).
    - `port` — the dev port it listens on. devtooie injects this into the package's process as the
      `PORT` env var, so the app can read `process.env.PORT` without you duplicating it in a `.env`
      (an explicit `.env` `PORT` still wins).
-   - `healthcheck` / `urls` — a URL string, or a **callback** over this package's
-     `{ envs, tokens, port }` (see [Callbacks](#callbacks-instead-of-interpolation)). Write
-     ``healthcheck: ({ port }) => `http://localhost:${port}/health` `` rather than hardcoding the
-     port, so it can't drift. **There is no `$port`/`$name` interpolation** — a `$` in a config
-     string is a literal `$`. Each `urls` entry is a URL, a `{ label, url }`, or an array of those
-     (an array entry's links render on one footer line, space-separated), and any URL in them may
-     be a callback. `healthcheck` also takes `{ url, timeout }` when the package is slow to answer
-     on a cold start — see [Readiness probing](#readiness-probing).
+   - `healthcheck` / `urls` — **prefer a relative path**: `healthcheck: '/health'`,
+     `urls: ['/todos']`. devtooie resolves a path against the package's own `port`
+     (`http://localhost:<port>/health`), and a `urls` path against its public origin under the
+     [dev reverse proxy](#dev-reverse-proxy) when it has one — so the port is never repeated,
+     can't drift, and the same config is right with or without the proxy. Write a full URL only
+     for something that isn't this package (`https://status.example.test`), and a **callback**
+     over `{ envs, tokens, port, subdomain }` only when the value genuinely depends on the
+     environment (see [Callbacks](#callbacks-instead-of-interpolation)). **devtooie does no
+     string interpolation** — a `$` in a config string is a literal `$`. Each `urls`
+     entry is a URL, a `{ label, url }`, or an array of those (an array entry's links render on
+     one footer line, space-separated). `healthcheck` also takes `{ url, timeout }` when the
+     package is slow to answer on a cold start — see [Readiness probing](#readiness-probing).
    - `deps: { build, dev, runtime }` — names of other packages this one depends on; drives
      build/start ordering and what gets pulled in when this package is selected. For **TypeScript**
      deps you usually don't need `deps.build`: devtooie infers build-time deps from project
@@ -1230,9 +2013,10 @@ If you opt in during `devtooie init`, devtooie installs an agent-facing skill fi
 `.claude/skills/devtooie/SKILL.md` (and, best-effort, under `.agents/` / `.cursor/` if those
 directories already exist). It teaches a coding agent how to check whether an app in the repo is
 already running, run devtooie headlessly (`--plain -p <package>`), drive a running session through
-the control API, read the logfile for debugging, and onboard a new package. The installed file is **managed** — treat it as generated,
-not something to hand-edit. `devtooie init` and every `devtooie` run refresh it to the installed
-version. The skill points at this guide.
+the control API, bring the project's [infra](#infra) up or reset it, read the logfile for debugging,
+and onboard a new package. The installed file is **managed** — treat it as generated,
+not something to hand-edit. devtooie's `postinstall` (see [Install](#install)), `devtooie init`,
+and every `devtooie` run refresh it to the installed version. The skill points at this guide.
 
 ## Typed package names (advanced)
 
@@ -1243,6 +2027,7 @@ other scripts in your repo can import the resolved package type:
 import { defineConfig } from 'devtooie';
 
 const config = defineConfig({
+  packageRootDir: 'packages',
   packages: {/* … */},
 });
 export default config;

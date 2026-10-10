@@ -3,8 +3,6 @@ import path from 'node:path';
 import chalk from 'chalk';
 import { execa, type ResultPromise } from 'execa';
 import stringWidth from 'string-width';
-import wrapAnsi from 'wrap-ansi';
-import sliceAnsi from 'slice-ansi';
 import type { AnyPackageConfig, ResolvedHealthcheck } from './config.js';
 import { getDevScript, getLoadedConfig } from './config.js';
 import { defaultFormatter } from './log-formatter.js';
@@ -13,6 +11,7 @@ import { debugLog } from './debug-log.js';
 import { envFileNames, packageEnvLayer, type EnvOverride } from './env.js';
 import { watchEnvFiles, type WatchTarget } from './env-watch.js';
 import {
+  exitCodeOf,
   getDefaultLogFile,
   getExecArgs,
   getRebuildCommands,
@@ -24,6 +23,8 @@ import { updateRunning } from './running.js';
 import type { RunnerArgs } from './runners/types.js';
 import { SHUTDOWN_GRACE_MS } from './shutdown-timing.js';
 import { stripTitleSequences } from './terminal-title.js';
+import { displayTimestamp, timestampGutterWidth, type TsMode } from './timestamp-mode.js';
+import { countWrappedRows, measureText, wrapRows, type TextMeasure } from './wrap-rows.js';
 import { DEVTOOIE_LABEL_COLOR, PACKAGE_PALETTE } from './colors.js';
 import { createInternalLogger, formatInternalRecord } from './internal-logger.js';
 import type { Logger } from 'pino';
@@ -33,6 +34,9 @@ import type { Logger } from 'pino';
  * active color level into a style when it's built, and that level isn't settled at module load.
  */
 const devtooieLabel = (text: string) => chalk.hex(DEVTOOIE_LABEL_COLOR)(text);
+
+/** What infra's startup lines are filed under for the log filter: typing `infra` finds them. */
+const INFRA_SEARCH_NAME = 'infra';
 
 type ProcessState = 'running' | 'stopped' | 'waiting';
 type Status = ProcessState | 'rebuilding' | 'restarting';
@@ -64,9 +68,18 @@ export interface BufferedLine {
   groupId: number;
   /** Whether this line has already been written to the terminal (plain mode). */
   rendered: boolean;
-  /** Memoized rendered-row count for the fullscreen viewport, and the width it was computed at. */
-  rowCount?: number;
+  /**
+   * Memoized rendered-row counts for the fullscreen viewport at `rowCountWidth` columns, one per
+   * timestamp layout ({@link TsMode}): the viewport measures both every render, so they must sit
+   * side by side rather than evict each other.
+   */
   rowCountWidth?: number;
+  rowCountDate?: number;
+  rowCountTime?: number;
+  /** Memoized width-independent measurements of `text` — what a row count is worked out from. */
+  measure?: TextMeasure;
+  /** Memoized {@link hangingIndent} of `text`. */
+  hangingIndent?: number;
 }
 
 /**
@@ -141,8 +154,6 @@ const MAX_BUFFER_LINES = 50_000;
  * one entry per spawn forever.
  */
 const MAX_CHILD_RECORDS = 200;
-/** Rendered width of a displayed timestamp gutter: `"YYYY-MM-DD HH:MM:SS "` (19 chars + a space). */
-const TIMESTAMP_GUTTER_WIDTH = 20;
 const WAIT_FOR_POLL_MS = 2000;
 /**
  * Floor on a package's healthcheck cadence, measured from the **start** of the previous probe:
@@ -173,46 +184,6 @@ function hangingIndent(text: string): number {
 }
 
 /**
- * Wrap `text` into rows: the first `width` columns wide, every row after it `indent` columns
- * narrower to leave room for the hanging indent (which the caller applies). Rows are returned
- * without that indent.
- *
- * `wrap-ansi` only wraps to a single fixed width, so this walks the text one row at a time,
- * slicing off exactly what the previous row consumed. `trim: false` is essential — the default
- * strips a row's leading whitespace, which would eat the formatter's property indent and leave a
- * wrapped `  key:` sitting two columns left of every key short enough not to wrap.
- */
-function wrapRows(text: string, width: number, indent: number): string[] {
-  const rows: string[] = [];
-  const nextRowWidth = width - indent;
-  let rest = text;
-  let rowWidth = width;
-  while (stringWidth(rest) > rowWidth) {
-    let row = wrapAnsi(rest, rowWidth, { hard: true, trim: false }).split('\n')[0]!;
-    // `wrap-ansi` pushes an over-long token to the next row when it judges that costs no extra
-    // rows — but it reasons with a single uniform width, and our continuation rows are `indent`
-    // columns narrower, so here it can cost a row *and* leave `  key:` sitting alone beside a
-    // blank. When the token is too long for a continuation row it gets split there anyway, so
-    // moving it buys nothing: fill this row instead.
-    if (stringWidth(row) < rowWidth) {
-      const remainder = stripAnsi(sliceAnsi(rest, stringWidth(row))).replace(/^[ \t]+/, '');
-      if (stringWidth(/^\S*/.exec(remainder)![0]) > nextRowWidth) {
-        row = sliceAnsi(rest, 0, rowWidth);
-      }
-    }
-    const consumed = stringWidth(row);
-    if (consumed === 0) {
-      break; // no progress possible (e.g. a wide glyph that can't fit) — emit the remainder as-is
-    }
-    rows.push(row);
-    rest = sliceAnsi(rest, consumed);
-    rowWidth = nextRowWidth;
-  }
-  rows.push(rest);
-  return rows;
-}
-
-/**
  * Owns the lifecycle of every package's dev process: spawning, streaming and
  * filtering their output, tracking status, and tearing everything down
  * cleanly on exit. Framework-agnostic — the interactive (Ink) and plain
@@ -224,6 +195,8 @@ export class ProcessManager implements ControlManager {
   private processes = new Map<string, ManagedProcess>();
   /** Rendered width of `"[name] "`, used to align wrapped continuation lines. */
   private prefixWidth: number;
+  /** Rendered width of each distinct line prefix, measured once (see {@link gutterWidth}). */
+  private prefixWidths = new Map<string, number>();
   /** Default on-screen timestamp visibility (top-level `logs.timestamps`); a package can override. */
   private defaultShowTimestamps: boolean;
   /** Per-package resolved on-screen timestamp visibility, keyed by the line's `searchName`. */
@@ -250,6 +223,8 @@ export class ProcessManager implements ControlManager {
   private footerHeight = 3;
   /** Skip terminal clearing/scrollback tricks when there's no interactive UI on top. */
   private plain: boolean;
+  /** Probe every running package's healthcheck regardless of `plain` (see the constructor). */
+  private probeReadiness: boolean;
   /** devtooie's own lifecycle events; rendered under the gold `[devtooie]` prefix. */
   readonly systemLog: Logger;
   /** Control-API command notices; rendered under the gold `[dt:control]` prefix. */
@@ -296,11 +271,24 @@ export class ProcessManager implements ControlManager {
       envFiles,
       envOverride,
       cwd,
-      logTimestamps = false,
+      logTimestamps = true,
+      infra,
     }: RunnerArgs,
-    { plain = false }: { plain?: boolean } = {},
+    {
+      plain = false,
+      probeReadiness = false,
+    }: {
+      plain?: boolean;
+      /**
+       * Probe every running package's healthcheck even in plain mode, where nothing on screen
+       * shows readiness — for a consumer of {@link isReady} outside the UI (the dev reverse
+       * proxy, which holds requests until a package's healthcheck passes).
+       */
+      probeReadiness?: boolean;
+    } = {},
   ) {
     this.plain = plain;
+    this.probeReadiness = probeReadiness;
     this.defaultShowTimestamps = logTimestamps;
     this.rebuildableSet = rebuildableSet;
     this.waitForMap = waitForMap;
@@ -355,6 +343,23 @@ export class ProcessManager implements ControlManager {
     const internal = createInternalLogger((chunk) => this.ingestInternalLog(chunk));
     this.systemLog = internal.system;
     this.controlLog = internal.control;
+
+    // What infra printed while the session started, as the first lines of the log — it happened
+    // before any package did. Labelled by service (`[infra:db]`), or `[infra]` for the provider's
+    // own output; padded to line up with each other and with the package prefixes.
+    const infraLabel = (service?: string) => (service ? `infra:${service}` : 'infra');
+    const infraLines = infra?.log ?? [];
+    const infraWidth = infraLines.reduce(
+      (width, line) => Math.max(width, infraLabel(line.service).length),
+      maxNameLen,
+    );
+    for (const line of infraLines) {
+      const prefix = devtooieLabel(`[${infraLabel(line.service).padEnd(infraWidth)}]`) + ' ';
+      // A plain session already printed these as they happened (the infra reporter), so there
+      // they go to the buffer and the logfile only.
+      const text = line.isError ? chalk.red(line.text) : line.text;
+      this.addLine(prefix, text, INFRA_SEARCH_NAME, line.isError, false, true);
+    }
   }
 
   /**
@@ -478,7 +483,7 @@ export class ProcessManager implements ControlManager {
     if (!this.healthchecks[name]) {
       return false;
     }
-    if (!this.plain && this.processes.get(name)?.status === 'running') {
+    if ((!this.plain || this.probeReadiness) && this.processes.get(name)?.status === 'running') {
       return true;
     }
     return [...this.processes].some(
@@ -587,10 +592,15 @@ export class ProcessManager implements ControlManager {
     }
 
     const pfx = managed.prefix;
-    const [cmd, args] = getExecArgs(managed.pkg, getDevScript(managed.pkg));
+    const { cmd, args, env } = getExecArgs(
+      managed.pkg,
+      getDevScript(managed.pkg),
+      [],
+      this.packageEnv(managed.pkg),
+    );
     const proc = execa(cmd, args, {
-      cwd: managed.pkg.path,
-      env: this.packageEnv(managed.pkg),
+      cwd: managed.pkg.absoluteDir,
+      env,
       stdin: 'ignore',
       stdout: 'pipe',
       stderr: 'pipe',
@@ -601,7 +611,7 @@ export class ProcessManager implements ControlManager {
 
     managed.proc = proc;
     managed.status = 'running';
-    this.trackChild(proc, managed.pkg.path);
+    this.trackChild(proc, managed.pkg.absoluteDir);
 
     const { searchName } = managed;
 
@@ -631,7 +641,7 @@ export class ProcessManager implements ControlManager {
         m.status = 'stopped';
         m.proc = null;
         this.syncProbes();
-        this.addLine(pfx, `exited with code ${String(result.exitCode)}`, searchName, false);
+        this.addLine(pfx, `exited with code ${String(exitCodeOf(result))}`, searchName, false);
       }
     });
 
@@ -641,10 +651,10 @@ export class ProcessManager implements ControlManager {
 
   /**
    * Environment for a package's child processes: the current `process.env`, then the
-   * package's configured `run.port` as `PORT`, then its resolved `.env` files (later files /
-   * package scope win). So `PORT` defaults to the config port but an explicit `.env` `PORT`
-   * still wins. Re-resolved on every spawn so a restart picks up edited `.env` values. Never
-   * mutates `process.env`.
+   * package's configured `port` as `PORT` (and, under the dev reverse proxy, its public origin
+   * as `PUBLIC_ORIGIN`), then its resolved `.env` files (later files / package scope win). So
+   * `PORT` defaults to the config port but an explicit `.env` `PORT` still wins. Re-resolved on
+   * every spawn so a restart picks up edited `.env` values. Never mutates `process.env`.
    */
   private packageEnv(pkg: AnyPackageConfig): NodeJS.ProcessEnv {
     return Object.assign(
@@ -796,11 +806,12 @@ export class ProcessManager implements ControlManager {
       await this.stop(name);
       this.addLine(managed.prefix, chalk.yellow('rebuilding...'), managed.searchName, false);
       // A clean rebuild is `build:clean`, or `clean` then `build` sequentially when the
-      // package has no combined script/target — resolved identically for pnpm and make.
-      for (const [cmd, args] of getRebuildCommands(managed.pkg)) {
+      // package has no combined script/target — resolved identically for scripts and make.
+      const commands = getRebuildCommands(managed.pkg, this.packageEnv(managed.pkg));
+      for (const { cmd, args, env } of commands) {
         const buildProc = execa(cmd, args, {
-          cwd: managed.pkg.path,
-          env: this.packageEnv(managed.pkg),
+          cwd: managed.pkg.absoluteDir,
+          env,
           stdin: 'ignore',
           reject: false,
           detached: true,
@@ -809,7 +820,7 @@ export class ProcessManager implements ControlManager {
         // shutdownAll / forceKillAll can reach (and kill the group of) this
         // child even though it isn't the package's own long-running `proc`.
         managed.extraProcs.add(buildProc);
-        this.trackChild(buildProc, managed.pkg.path);
+        this.trackChild(buildProc, managed.pkg.absoluteDir);
         let result;
         try {
           result = await buildProc;
@@ -819,7 +830,7 @@ export class ProcessManager implements ControlManager {
         if (result.exitCode !== 0) {
           this.addLine(
             managed.prefix,
-            chalk.red(`rebuild failed (exit ${String(result.exitCode)})`),
+            chalk.red(`rebuild failed (exit ${String(exitCodeOf(result))})`),
             managed.searchName,
             true,
           );
@@ -850,8 +861,13 @@ export class ProcessManager implements ControlManager {
     if (!managed) {
       return;
     }
-    const [cmd, args] = getExecArgs(managed.pkg, scriptName);
-    this.spawnExtra(managed, cmd, args, scriptName, false);
+    const { cmd, args, env } = getExecArgs(
+      managed.pkg,
+      scriptName,
+      [],
+      this.packageEnv(managed.pkg),
+    );
+    this.spawnExtra(managed, cmd, args, env, scriptName, false);
   }
 
   /** Run an arbitrary shell command string for a package (pipes/redirects allowed). */
@@ -860,7 +876,7 @@ export class ProcessManager implements ControlManager {
     if (!managed) {
       return;
     }
-    this.spawnExtra(managed, commandString, [], commandString, true);
+    this.spawnExtra(managed, commandString, [], this.packageEnv(managed.pkg), commandString, true);
   }
 
   /**
@@ -868,14 +884,15 @@ export class ProcessManager implements ControlManager {
    * `runCommand` and `runCustomCommand`. Output interleaves with the
    * package's regular logs (same prefix/searchName/filtering); demarcated
    * with `▶ running:` / `✔ finished` / `✘ exited` lines. Tracked in
-   * `extraProcs` so shutdown can clean it up. Only custom commands run
-   * through a shell — named scripts avoid it to sidestep the extra process
-   * (and potential EMFILE pressure) a shell wrapper adds.
+   * `extraProcs` so shutdown can clean it up. `useShell` is for a custom
+   * command string, which needs a shell to parse it; a named script already
+   * arrives as a complete command (see `getExecArgs`).
    */
   private spawnExtra(
     managed: ManagedProcess,
     cmd: string,
     args: string[],
+    env: NodeJS.ProcessEnv,
     displayLabel: string,
     useShell: boolean,
   ): void {
@@ -885,8 +902,8 @@ export class ProcessManager implements ControlManager {
     this.addLine(pfx, chalk.cyan(`▶ running: ${displayLabel}`), searchName, false);
 
     const proc = execa(cmd, args, {
-      cwd: managed.pkg.path,
-      env: this.packageEnv(managed.pkg),
+      cwd: managed.pkg.absoluteDir,
+      env,
       stdin: 'ignore',
       stdout: 'pipe',
       stderr: 'pipe',
@@ -897,7 +914,7 @@ export class ProcessManager implements ControlManager {
     });
 
     managed.extraProcs.add(proc);
-    this.trackChild(proc, managed.pkg.path);
+    this.trackChild(proc, managed.pkg.absoluteDir);
 
     if (proc.stdout) {
       proc.stdout.on('data', (data: Buffer) => {
@@ -926,7 +943,7 @@ export class ProcessManager implements ControlManager {
         pfx,
         ok
           ? chalk.green(`✔ ${displayLabel} finished`)
-          : chalk.red(`✘ ${displayLabel} exited with code ${String(result.exitCode)}`),
+          : chalk.red(`✘ ${displayLabel} exited with code ${String(exitCodeOf(result))}`),
         searchName,
         !ok,
       );
@@ -1090,7 +1107,7 @@ export class ProcessManager implements ControlManager {
    * process is inert.
    *
    * Best-effort throughout: `updateRunning` is a no-op unless this process owns the workspace's
-   * `running.json`, so a session that never wrote one (tests, `devtooie run`) simply records
+   * `running.json`, so a session that never wrote one (tests) simply records
    * nothing. Never let a bookkeeping failure interfere with actually running the package.
    */
   private trackChild(proc: ResultPromise, cwd: string): void {
@@ -1274,20 +1291,61 @@ export class ProcessManager implements ControlManager {
     return lines;
   }
 
-  /** Rendered-row count of a line at the given terminal width (memoized on the line). */
-  countRows(line: BufferedLine, cols: number): number {
-    if (line.rowCountWidth === cols && line.rowCount !== undefined) {
-      return line.rowCount;
+  /**
+   * Rendered-row count of a line at the given terminal width and timestamp layout (memoized on
+   * the line). A line whose timestamp is hidden lays out the same in either mode and shares one
+   * slot.
+   */
+  countRows(line: BufferedLine, cols: number, mode: TsMode = 'date'): number {
+    if (line.rowCountWidth !== cols) {
+      line.rowCountWidth = cols;
+      line.rowCountDate = undefined;
+      line.rowCountTime = undefined;
     }
-    const rows = this.wrapLine(line, cols).length;
-    line.rowCount = rows;
-    line.rowCountWidth = cols;
-    return rows;
+    const slot = mode === 'time' && line.showTs ? 'rowCountTime' : 'rowCountDate';
+    line[slot] ??= this.computeRowCount(line, cols, mode);
+    return line[slot];
   }
 
-  /** Dimmed `"YYYY-MM-DD HH:MM:SS "` gutter for a line, or `''` when its timestamp is hidden. */
-  private tsPrefix(line: BufferedLine): string {
-    return line.showTs ? `${chalk.dim(line.ts)} ` : '';
+  /**
+   * `wrapLineRows(line, cols, mode).length`, without wrapping the line. A change of terminal
+   * width asks this of every buffered line at once, so it must not build a row — let alone a
+   * timestamp — to answer.
+   */
+  private computeRowCount(line: BufferedLine, cols: number, mode: TsMode): number {
+    const contentWidth = cols - this.gutterWidth(line, mode);
+    const indent = this.wrapIndent(line, contentWidth);
+    if (indent === null) {
+      return 1;
+    }
+    return countWrappedRows(line.text, this.measure(line), contentWidth, indent);
+  }
+
+  /** The line's width-independent measurements, taken on first use and kept on the line. */
+  private measure(line: BufferedLine): TextMeasure {
+    return (line.measure ??= measureText(line.text));
+  }
+
+  /**
+   * The hanging indent a line's continuation rows take when its text is wrapped to
+   * `contentWidth` columns, or `null` when it stays on one row. The one place that decides
+   * whether a line wraps, so that counting its rows and rendering them can't disagree.
+   */
+  private wrapIndent(line: BufferedLine, contentWidth: number): number | null {
+    if (contentWidth <= MIN_CONTENT_WIDTH || this.measure(line).width <= contentWidth) {
+      return null;
+    }
+    line.hangingIndent ??= hangingIndent(line.text);
+    // Cap the indent so continuation rows always keep a usable amount of room.
+    return Math.min(line.hangingIndent, contentWidth - MIN_CONTENT_WIDTH);
+  }
+
+  /**
+   * Dimmed timestamp gutter for a line — `"YYYY-MM-DD HH:MM:SS "`, or just `"HH:MM:SS "` in the
+   * `time` layout — or `''` when its timestamp is hidden.
+   */
+  private tsPrefix(line: BufferedLine, mode: TsMode): string {
+    return line.showTs ? `${chalk.dim(displayTimestamp(line.ts, mode))} ` : '';
   }
 
   /**
@@ -1298,8 +1356,13 @@ export class ProcessManager implements ControlManager {
    * nominal width there under-counts the gutter, and the wrapped rows overflow the terminal (and
    * are then truncated, losing text).
    */
-  private gutterWidth(line: BufferedLine): number {
-    return stringWidth(line.prefix) + (line.showTs ? TIMESTAMP_GUTTER_WIDTH : 0);
+  private gutterWidth(line: BufferedLine, mode: TsMode): number {
+    let width = this.prefixWidths.get(line.prefix);
+    if (width === undefined) {
+      width = stringWidth(line.prefix);
+      this.prefixWidths.set(line.prefix, width);
+    }
+    return width + (line.showTs ? timestampGutterWidth(mode) : 0);
   }
 
   /**
@@ -1307,10 +1370,11 @@ export class ProcessManager implements ControlManager {
    * the `[name]` prefix, so a line that wraps keeps an unbroken left gutter instead of leaving
    * blank space beside its continuations. Wrapped rows are additionally indented to line up under
    * the value of a `key: value` property (see {@link hangingIndent}), matching how the formatter
-   * aligns a value that contains newlines.
+   * aligns a value that contains newlines. `mode` picks the timestamp layout (see
+   * {@link TsMode}); plain mode and the specs take the full-date default.
    */
-  wrapLine(line: BufferedLine, cols: number): string[] {
-    return this.wrapLineRows(line, cols).map((row) => row.text);
+  wrapLine(line: BufferedLine, cols: number, mode: TsMode = 'date'): string[] {
+    return this.wrapLineRows(line, cols, mode).map((row) => row.text);
   }
 
   /**
@@ -1319,15 +1383,18 @@ export class ProcessManager implements ControlManager {
    * between presentation and text, which value-scoped selection needs to know to keep the gutter
    * off the clipboard.
    */
-  wrapLineRows(line: BufferedLine, cols: number): { text: string; contentStart: number }[] {
-    const gutter = this.gutterWidth(line);
-    const head = `${this.tsPrefix(line)}${line.prefix}`;
+  wrapLineRows(
+    line: BufferedLine,
+    cols: number,
+    mode: TsMode = 'date',
+  ): { text: string; contentStart: number }[] {
+    const gutter = this.gutterWidth(line, mode);
+    const head = `${this.tsPrefix(line, mode)}${line.prefix}`;
     const contentWidth = cols - gutter;
-    if (contentWidth <= MIN_CONTENT_WIDTH || stringWidth(line.text) <= contentWidth) {
+    const indent = this.wrapIndent(line, contentWidth);
+    if (indent === null) {
       return [{ text: `${head}${line.text}`, contentStart: gutter }];
     }
-    // Cap the indent so continuation rows always keep a usable amount of room.
-    const indent = Math.min(hangingIndent(line.text), contentWidth - MIN_CONTENT_WIDTH);
     const pad = ' '.repeat(indent);
     return wrapRows(line.text, contentWidth, indent).map((row, i) => ({
       text: `${head}${i === 0 ? '' : pad}${row}`,
@@ -1468,6 +1535,8 @@ export class ProcessManager implements ControlManager {
     searchName: string,
     isError: boolean,
     isContinuation?: boolean,
+    /** The line is already on the terminal: buffer and log it, but don't print it (plain mode). */
+    alreadyShown = false,
   ): void {
     // Consecutive lines from the same package are grouped: a continuation
     // line shares the group of the entry it belongs to, so filtering and
@@ -1486,7 +1555,16 @@ export class ProcessManager implements ControlManager {
     // screen is resolved per package (falling back to the top-level default).
     const ts = logTimestamp();
     const showTs = this.showTsBySearchName.get(searchName) ?? this.defaultShowTimestamps;
-    this.buffer.push({ prefix, text, ts, showTs, searchName, isError, groupId, rendered: false });
+    this.buffer.push({
+      prefix,
+      text,
+      ts,
+      showTs,
+      searchName,
+      isError,
+      groupId,
+      rendered: alreadyShown,
+    });
     if (this.buffer.length > MAX_BUFFER_LINES) {
       this.buffer.splice(0, this.buffer.length - MAX_BUFFER_LINES);
     }
@@ -1497,7 +1575,7 @@ export class ProcessManager implements ControlManager {
     debugLog(`addLine: visibleLineCount=${this.visibleLineCount} searchName="${searchName}"`);
     // Plain mode streams each line straight to stdout; the interactive
     // (fullscreen Ink) UI re-renders from the buffer when notified instead.
-    if (this.plain) {
+    if (this.plain && !alreadyShown) {
       this.renderNewLine();
     }
     this.notify();

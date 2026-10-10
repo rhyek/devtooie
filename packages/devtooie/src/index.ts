@@ -1,4 +1,4 @@
-export { defineConfig, PackageType, findPackage } from './config.js';
+export { defineConfig, PackageType, findPackage, proxyHostsFor } from './config.js';
 // devtooie's log utilities: `logging.formatter(config)` builds a structured-log formatter for a
 // package's `logs.formatter` (and is the default applied to every package); the ecosystem helpers
 // `logging.nodejs.{pino,winston}.formatter` are the same with adjusted defaults.
@@ -19,6 +19,8 @@ export type {
   ResolvedPackageConfig,
   AnyPackageConfig,
   Config,
+  DevReverseProxyInput,
+  ResolvedDevReverseProxy,
   PackageTypeValue,
   ConfigContext,
   PackageContext,
@@ -34,6 +36,21 @@ export type {
   Command,
 } from './config.js';
 export type { Register, PackageConfig, PackageName } from './register.js';
+export type {
+  InfraInput,
+  DockerComposeInfraInput,
+  InfraServiceInput,
+  InfraServiceCallbacks,
+  InfraEnabledContext,
+  InfraCallback,
+  InfraCallbackContext,
+  InfraReadyContext,
+  InfraRunOptions,
+  InfraRunResult,
+  ResolvedInfra,
+  ResolvedDockerComposeInfra,
+  ResolvedInfraService,
+} from './infra/types.js';
 export {
   resolveEnv,
   envCandidatePaths,
@@ -41,6 +58,7 @@ export {
   envFileNames,
   currentMode,
   DEFAULT_MODE,
+  type Mode,
   type EnvOverride,
 } from './env.js';
 export type { EnvResolution } from './env.js';

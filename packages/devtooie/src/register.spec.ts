@@ -12,13 +12,14 @@ describe('public exports', () => {
     // Compile-time assertion: a plain string is assignable to PackageName.
     const n: PackageName = 'anything';
     const pkg: AnyPackageConfig | undefined = Object.values(
-      defineConfig({ packages: { [n]: {} } }).packages,
+      defineConfig({ packageRootDir: 'packages', packages: { [n]: {} } }).packages,
     )[0];
     expect(pkg?.name).toBe('anything');
   });
 
   it('narrows PackageConfig by name, tokens included', () => {
     const config = defineConfig({
+      packageRootDir: 'packages',
       tokens: { domain: 'example.com' },
       packages: { api: { tokens: { region: 'us-east' } }, web: {} },
     });

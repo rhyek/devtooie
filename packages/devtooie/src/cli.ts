@@ -12,9 +12,22 @@ import {
   getRegisteredPackages,
   getLoadedConfig,
 } from './config.js';
-import { envFileNames, packageEnvLayer, resolveEnv, resolveMode } from './env.js';
-import { acquireDevSession } from './dev-session.js';
+import {
+  captureShellEnv,
+  currentMode,
+  envFileNames,
+  packageEnvLayer,
+  resolveEnv,
+  resolveMode,
+} from './env.js';
+import { acquireDevSession, startSessionDevReverseProxy } from './dev-session.js';
 import { handleShellError } from './errors.js';
+import { passthroughArgs } from './infra/argv.js';
+import { InfraManager } from './infra/manager.js';
+import type { InfraRunRequest } from './infra/provider.js';
+import { createInfraReporter } from './infra/report.js';
+import { InfraFailedError, runSessionInfra } from './infra/session.js';
+import { InfraError, type InfraRunSummary } from './infra/types.js';
 import { runInit } from './init.js';
 import {
   NoProjectConfigError,
@@ -26,15 +39,17 @@ import {
 import {
   DepType,
   buildRunnerArgs,
+  exitCodeOf,
   findAncestorPackage,
   getDefaultLogFile,
   getExecArgs,
   getLogDir,
   hasScript,
-  loadSelection,
   logTimestamp,
   resetSelection,
   resolveDeps,
+  resolveSelectedNames,
+  runScript,
   resolveLogFile,
   saveSelection,
   stripAnsi,
@@ -43,6 +58,7 @@ import { readRunning } from './running.js';
 import { createPlainStatusReporter } from './plain-status.js';
 import { renderAppInProduction } from './render-app-production.js';
 import { runPlain } from './runners/plain.js';
+import type { SessionInfra } from './runners/types.js';
 import { refreshSkillIfStale } from './skill.js';
 import { preflightTakeover } from './takeover.js';
 
@@ -62,7 +78,8 @@ interface RootOptions {
 
 /**
  * The directory devtooie was invoked from, captured before {@link anchorAtConfigRoot} may
- * `chdir` us to the config root. `cmd` uses it to figure out which package you're "inside".
+ * `chdir` us to the config root. `exec` and `run` use it to figure out which package you're
+ * "inside".
  */
 const INVOCATION_CWD = process.cwd();
 
@@ -92,16 +109,17 @@ async function anchorAtConfigRoot(invocationCwd: string): Promise<void> {
   if (root !== process.cwd()) {
     process.chdir(root);
   }
+  // Before the merge below puts file values into `process.env`: what is there now is what the
+  // shell handed us, and only that may win over a `.env` file (see captureShellEnv).
+  captureShellEnv();
   try {
     await loadConfig(root);
     const files = getLoadedConfig()?.envFiles ?? envFileNames();
-    // Deliberately resolved WITHOUT the config's `env.override`. An overriding variable is
-    // typically self-referential (`NODE_OPTIONS=$NODE_OPTIONS --flag`), and this merge is the
-    // base that every later per-package resolution expands against — applying the override here
-    // would fold the file's contribution into the ambient value, and the package-level pass
-    // would then append it a second time. Without it these keys resolve to their ambient value,
-    // so the assignment is a no-op for them and each child appends exactly once. (Nothing is
-    // lost for devtooie's own process: node reads NODE_OPTIONS at startup, long before this.)
+    // Deliberately resolved WITHOUT the config's `env.override`, so a variable the shell set
+    // keeps the shell's value here. An overriding variable is typically self-referential
+    // (`NODE_OPTIONS=$NODE_OPTIONS --flag`), and its file value is applied where a child's
+    // environment is built, not to devtooie's own. (Nothing is lost for devtooie's own process:
+    // node reads NODE_OPTIONS at startup, long before this.)
     const { env } = resolveEnv({ cwd: root, relativeDir: '.', files });
     Object.assign(process.env, env);
   } catch (err) {
@@ -165,34 +183,26 @@ function validatePackageNames(names: string[]): void {
 }
 
 /**
- * Resolves the package names for a non-interactive phase (build/plain), which — unlike
- * the UI — has no selector to fall back on: an explicit `--package` wins, then a saved
- * `--last-answers` selection, otherwise this exits with a hint naming `usage`.
+ * The package names for a non-interactive phase (see `resolveSelectedNames` in lib), exiting
+ * with the hint when there are none. An explicit `--package` was validated by the caller; a
+ * saved selection is already pruned of names that are no longer packages.
  */
-function resolveSelectedNames(
+function resolveSelectedNamesOrExit(
   opts: { package: string[]; lastAnswers: boolean },
   usage: string,
 ): string[] {
-  if (opts.package.length > 0) {
-    return opts.package;
+  const result = resolveSelectedNames(opts, usage);
+  if ('error' in result) {
+    console.error(result.error);
+    process.exit(1);
   }
-  if (opts.lastAnswers) {
-    const saved = loadSelection() ?? [];
-    if (saved.length === 0) {
-      console.error('No saved selection found — run once without --last-answers first.');
-      process.exit(1);
-    }
-    validatePackageNames(saved);
-    return saved;
-  }
-  console.error(`${usage} requires --package or --last-answers.`);
-  process.exit(1);
+  return result.names;
 }
 
 async function clearDist(pkg: AnyPackageConfig): Promise<void> {
-  const result = await execa('rm', ['-rf', path.join(pkg.path, 'dist')], { reject: false });
+  const result = await execa('rm', ['-rf', path.join(pkg.absoluteDir, 'dist')], { reject: false });
   if (result.exitCode !== 0) {
-    console.error(`warning: could not clear ${path.join(pkg.path, 'dist')}`);
+    console.error(`warning: could not clear ${path.join(pkg.absoluteDir, 'dist')}`);
   }
 }
 
@@ -205,7 +215,7 @@ async function clearDist(pkg: AnyPackageConfig): Promise<void> {
 async function runCommand(
   cmd: string,
   args: string[],
-  opts: { cwd: string; env: Record<string, string>; logFile: string },
+  opts: { cwd: string; env: NodeJS.ProcessEnv; logFile: string },
 ): Promise<number> {
   const logFd = fs.openSync(opts.logFile, 'w');
   // Tee one child stream: raw bytes to the terminal, then line-buffered timestamped+stripped
@@ -244,14 +254,14 @@ async function runCommand(
     const result = await child;
     flushOut();
     flushErr();
-    return result.exitCode ?? 1;
+    return exitCodeOf(result);
   } finally {
     fs.closeSync(logFd);
   }
 }
 
 /**
- * Resolves the target for the `cmd` subcommand. With an explicit `-p/--package` name, that
+ * Resolves the target for the `exec` and `run` subcommands. With an explicit `-p/--package` name, that
  * configured package is the target. Otherwise it's inferred from the directory devtooie was
  * invoked in: the nearest **ancestor package** of the invocation dir, or — below the root but
  * inside no package — the root itself (working dir = root, workspace-scope vars only). For a
@@ -259,7 +269,7 @@ async function runCommand(
  * TUI would spawn it with. Exits if there's no config, or if `--package` names an unknown one.
  * Returns the working dir and the env layer to merge over `process.env`.
  */
-async function resolveCmdTargetOrExit(
+async function resolveOneOffTargetOrExit(
   invocationCwd: string,
   explicitName: string | undefined,
 ): Promise<{ dir: string; envLayer: Record<string, string> }> {
@@ -289,25 +299,111 @@ async function resolveCmdTargetOrExit(
   const override = config.envOverride;
 
   const configPackages = Object.values(config.packages);
+  // The same layer the session spawns the package with: `PORT`, `PUBLIC_ORIGIN` under the dev
+  // reverse proxy, then its `.env` files.
+  const layerFor = (pkg: AnyPackageConfig) => packageEnvLayer(pkg, { cwd: root, files, override });
   if (explicitName !== undefined) {
     const pkg = configPackages.find((p) => p.name === explicitName);
     if (!pkg) {
       console.error(`Package "${explicitName}" not found in the devtooie config.`);
       process.exit(1);
     }
-    return { dir: pkg.path, envLayer: packageEnvLayer(pkg, { cwd: root, files, override }) };
+    return { dir: pkg.absoluteDir, envLayer: layerFor(pkg) };
   }
 
   const pkg = findAncestorPackage(invocationCwd, configPackages, root);
   if (pkg) {
-    return { dir: pkg.path, envLayer: packageEnvLayer(pkg, { cwd: root, files, override }) };
+    return { dir: pkg.absoluteDir, envLayer: layerFor(pkg) };
   }
   return { dir: root, envLayer: resolveEnv({ cwd: root, relativeDir: '.', files, override }).env };
 }
 
+/** The infra manager for the loaded config, exiting with a hint when it declares no `infra`. */
+async function loadInfraOrExit(): Promise<{ manager: InfraManager; mode: string }> {
+  await loadConfigOrExit();
+  const config = getLoadedConfig();
+  const manager = config ? InfraManager.fromConfig(config) : null;
+  if (!config || !manager) {
+    console.error(
+      "No `infra` in the devtooie config — add `infra: { 'docker-compose': true }` to use `devtooie infra`.",
+    );
+    process.exit(1);
+  }
+  return { manager, mode: config.envMode };
+}
+
+/**
+ * Runs an infra command to its exit code. An {@link InfraError} is a message for the user —
+ * an unknown service, Docker not running — so it prints as one line, not a stack trace.
+ */
+async function infraExitCode(run: () => Promise<number>): Promise<number> {
+  try {
+    return await run();
+  } catch (err) {
+    if (err instanceof InfraError) {
+      console.error(chalk.red(err.message));
+      return 1;
+    }
+    throw err;
+  }
+}
+
+/** `infra up` / `infra destroy`: run it with the plain reporter, exit 0 only if every service made it. */
+async function runInfraAction(
+  action: 'up' | 'destroy',
+  req: Pick<InfraRunRequest, 'services' | 'reset'>,
+): Promise<never> {
+  const { manager, mode } = await loadInfraOrExit();
+  const reporter = createInfraReporter({ mode });
+  process.exit(
+    await infraExitCode(async () => {
+      const run = { ...req, onEvent: reporter.onEvent };
+      const summary: InfraRunSummary =
+        action === 'up' ? await manager.up(run) : await manager.destroy(run);
+      reporter.finish(summary, action);
+      return summary.ok ? 0 : 1;
+    }),
+  );
+}
+
+/**
+ * `infra <provider> …`: the provider's own tool, bound to this project and mode. Runs in the
+ * directory devtooie was invoked from, so a relative path in the arguments means what the user
+ * typed, and exits with the tool's exit code.
+ */
+async function runInfraPassthrough(provider: string, args: string[]): Promise<never> {
+  const { manager } = await loadInfraOrExit();
+  process.exit(await infraExitCode(() => manager.passthrough(provider, args, INVOCATION_CWD)));
+}
+
+/**
+ * The infra step of a `--plain` session: the same `up` as `devtooie infra up`, reported the same
+ * way, between the build output and the first package line. Exits 1 if a service doesn't come
+ * up — the packages must not start against infrastructure that isn't there.
+ */
+async function runPlainInfraOrExit(): Promise<SessionInfra | undefined> {
+  const reporter = createInfraReporter({ mode: currentMode() });
+  try {
+    const infra = await runSessionInfra(reporter.onEvent);
+    if (infra) {
+      reporter.finish({ ok: true, services: [] }, 'up');
+    }
+    return infra;
+  } catch (err) {
+    if (err instanceof InfraFailedError) {
+      reporter.finish(err.summary, 'up');
+      process.exit(1);
+    }
+    if (err instanceof InfraError) {
+      console.error(chalk.red(err.message));
+      process.exit(1);
+    }
+    throw err;
+  }
+}
+
 async function buildOne(pkg: AnyPackageConfig, script: string): Promise<void> {
-  const [cmd, args] = getExecArgs(pkg, script);
-  await execa(cmd, args, { stdio: 'inherit', cwd: pkg.path });
+  await runScript(pkg, script, 'inherit');
 }
 
 /** Builds every buildable dep in `deps.buildSet`, in dependency order, with console output. */
@@ -364,6 +460,12 @@ async function runBuildPhase(names: string[], rebuild: boolean): Promise<void> {
 // Commander wiring
 // ---------------------------------------------------------------------------
 
+// `--mode`, declared on the root and again on each subcommand that takes it (see the note on
+// `exec` for why both).
+const MODE_FLAGS = '-m, --mode <name>';
+const MODE_HELP =
+  'environment mode selecting the .env.<mode> files to load (default: "development")';
+
 const program = new Command()
   .name('devtooie')
   .description("Dependency-aware CLI for a monorepo's local dev packages")
@@ -373,10 +475,7 @@ const program = new Command()
     collect,
     [],
   )
-  .option(
-    '-m, --mode <name>',
-    'environment mode selecting the .env.<mode> files to load (default: "development")',
-  )
+  .option(MODE_FLAGS, MODE_HELP)
   .option('--ui', 'run the interactive TUI (default)')
   .option('--plain', 'run without the TUI, streaming logs to stdout')
   .option('--last-answers', 'skip the selector and reuse the last saved selection', false)
@@ -446,61 +545,101 @@ program
   });
 
 program
-  .command('cmd')
+  .command('show-config')
+  .description(
+    'print the fully resolved config as JSON (what a running session reports on GET /query/status) — no session needed',
+  )
+  // Declared here too so `devtooie show-config --mode test` works (see `exec`); the config
+  // resolves against that mode's `.env` files, which is what a callback `port` reads.
+  .option(MODE_FLAGS, MODE_HELP)
+  .action(async () => {
+    await loadConfigOrExit();
+    const config = getLoadedConfig();
+    if (!config) {
+      console.error(
+        `${findConfigPath(process.cwd()) ?? 'devtooie.config.ts'} loaded but registered no config — ` +
+          'it must export a `defineConfig(...)` call as its default.',
+      );
+      process.exit(1);
+    }
+    // The config is resolved exactly once, when the file loads (callbacks run, defaults applied,
+    // `command` normalized); this is that object, serialized the way the control API serves it.
+    // Function-valued fields (`logs.formatter`) have no JSON form and are omitted, there too.
+    console.log(JSON.stringify(config, null, 2));
+    process.exit(0);
+  });
+
+/** The one package `exec`/`run` targets: its dir and env layer, from `-p` or the invocation dir. */
+async function oneOffTargetOrExit(
+  subcommand: 'exec' | 'run',
+): Promise<{ dir: string; envLayer: Record<string, string> }> {
+  // Explicit target via the root `-p/--package` global (reused rather than redeclared — see
+  // the `resolvedeps` note); if omitted, the package is inferred from the directory devtooie
+  // was invoked in (not the config root we may have chdir'd to — see anchorAtConfigRoot).
+  const packageNames = program.opts<RootOptions>().package;
+  if (packageNames.length > 1) {
+    console.error(`${subcommand} targets a single package — pass --package at most once.`);
+    process.exit(1);
+  }
+  return resolveOneOffTargetOrExit(INVOCATION_CWD, packageNames[0]);
+}
+
+/**
+ * Runs a one-off command to completion and exits with its exit code. No preamble: `exec` and
+ * `run` are meant to be composable, so their output is only the command's own (the run is still
+ * teed to a logfile, which `devtooie logs --path` can point at).
+ */
+async function runOneOffAndExit(
+  cmd: string,
+  args: string[],
+  opts: { cwd: string; env: NodeJS.ProcessEnv },
+): Promise<never> {
+  const logFile = getDefaultLogFile(program.opts<RootOptions>().logDir);
+  process.exit(await runCommand(cmd, args, { ...opts, logFile }));
+}
+
+program
+  .command('exec')
   .description(
     "run a one-off command with a package's environment (its dir + resolved .env); package inferred from the cwd or named with -p/--package",
   )
-  .option(
-    '-c, --cmd <script>',
-    'run this package script / make target instead of a literal command; args after `--` are forwarded to it',
-  )
   // Also declared on the root, but Commander rejects a root-only option that appears after a
-  // subcommand — so both `devtooie --mode test cmd …` and `devtooie cmd --mode test …` work.
+  // subcommand — so both `devtooie --mode test exec …` and `devtooie exec --mode test …` work.
   // resolveMode already read it off raw argv; this declaration is for --help and validation.
-  .option(
-    '-m, --mode <name>',
-    'environment mode selecting the .env.<mode> files to load (default: "development")',
-  )
-  .argument(
-    '[args...]',
-    'a literal command to run (after `--`), or — with -c/--cmd — the args forwarded to that script',
-  )
-  .action(async (args: string[], opts: { cmd?: string }) => {
-    // Explicit target via the root `-p/--package` global (reused rather than redeclared — see
-    // the `resolvedeps` note); if omitted, the package is inferred from the directory devtooie
-    // was invoked in (not the config root we may have chdir'd to — see anchorAtConfigRoot).
-    const packageNames = program.opts<RootOptions>().package;
-    if (packageNames.length > 1) {
-      console.error('cmd targets a single package — pass --package at most once.');
+  .option(MODE_FLAGS, MODE_HELP)
+  .argument('[command...]', 'the command to run, after `--`')
+  .action(async (command: string[]) => {
+    const { dir, envLayer } = await oneOffTargetOrExit('exec');
+    const [cmd, ...args] = command;
+    if (cmd === undefined) {
+      console.error('exec requires a command (after `--`).');
       process.exit(1);
     }
-    const { dir, envLayer } = await resolveCmdTargetOrExit(INVOCATION_CWD, packageNames[0]);
+    await runOneOffAndExit(cmd, args, {
+      cwd: dir,
+      env: Object.assign({}, process.env, envLayer),
+    });
+  });
 
-    let cmd: string;
-    let cmdArgs: string[];
-    if (opts.cmd !== undefined) {
-      // `-c` names a package script / make target: resolve how to invoke it in this dir, then
-      // forward the operands as its args. getExecArgs/hasScript key off `.path` only, so a
-      // minimal package view over the resolved dir suffices.
-      const pkgAtDir = { path: dir } as AnyPackageConfig;
-      if (!hasScript(pkgAtDir, opts.cmd)) {
-        console.error(`No "${opts.cmd}" script or make target found in ${dir}.`);
-        process.exit(1);
-      }
-      [cmd, cmdArgs] = getExecArgs(pkgAtDir, opts.cmd, args);
-    } else {
-      // No `-c`: the operands are a literal command.
-      if (args.length === 0) {
-        console.error('cmd requires a command (after `--`) or a -c/--cmd script name.');
-        process.exit(1);
-      }
-      [cmd, ...cmdArgs] = args as [string, ...string[]];
+program
+  .command('run')
+  .description(
+    "run one of a package's scripts or make targets with its environment (its dir + resolved .env); package inferred from the cwd or named with -p/--package",
+  )
+  .option(MODE_FLAGS, MODE_HELP) // see `exec`
+  .argument('<script>', 'the package.json script or make target to run')
+  .argument('[args...]', 'arguments forwarded to it, after `--`')
+  .action(async (script: string, args: string[]) => {
+    const { dir, envLayer } = await oneOffTargetOrExit('run');
+    // getExecArgs/hasScript key off `.absoluteDir` only, so a minimal package view over the
+    // resolved dir suffices.
+    const pkgAtDir = { absoluteDir: dir } as AnyPackageConfig;
+    if (!hasScript(pkgAtDir, script)) {
+      console.error(`No "${script}" script or make target found in ${dir}.`);
+      process.exit(1);
     }
-
-    // No preamble: `cmd` is meant to be composable, so its output is only the command's own
-    // (the run is still teed to `logFile`, which `devtooie logs --path` can point at).
-    const logFile = getDefaultLogFile(program.opts<RootOptions>().logDir);
-    process.exit(await runCommand(cmd, cmdArgs, { cwd: dir, env: envLayer, logFile }));
+    const spec = getExecArgs(pkgAtDir, script, args, Object.assign({}, process.env, envLayer));
+    await runOneOffAndExit(spec.cmd, spec.args, { cwd: dir, env: spec.env });
   });
 
 program
@@ -551,6 +690,65 @@ program
     process.exit(result.exitCode ?? (result.signal ? 0 : 1));
   });
 
+// `infra`: the services the packages need but that aren't packages. Every subcommand exits when
+// it's done — none stays up streaming logs — and none goes through session acquisition, so a
+// running dev session is never disturbed.
+const infra = program
+  .command('infra')
+  .description(
+    'bring up, tear down, or drive the infrastructure declared under `infra` (databases, caches, …)',
+  )
+  .option(MODE_FLAGS, MODE_HELP);
+
+infra
+  .command('up')
+  .description(
+    'start the services (all, or the ones named), wait until they are ready, then exit; they keep running',
+  )
+  .argument('[services...]', 'services to start (default: all)')
+  .option('--reset', 'destroy the services first, then start them clean', false)
+  .option(MODE_FLAGS, MODE_HELP)
+  .action(async (services: string[], opts: { reset: boolean }) => {
+    await runInfraAction('up', { services, reset: opts.reset });
+  });
+
+infra
+  .command('down')
+  .description('stop and remove the containers (all, or the ones named); their data is kept')
+  .argument('[services...]', 'services to stop (default: all)')
+  .option(MODE_FLAGS, MODE_HELP)
+  .action(async (services: string[]) => {
+    const { manager } = await loadInfraOrExit();
+    process.exit(await infraExitCode(() => manager.down(services)));
+  });
+
+infra
+  .command('destroy')
+  .description(
+    'remove the services and their data: the ones named, or — with none named — the whole project (containers, volumes, networks)',
+  )
+  .argument('[services...]', 'services to destroy (default: everything)')
+  .option(MODE_FLAGS, MODE_HELP)
+  .action(async (services: string[]) => {
+    await runInfraAction('destroy', { services });
+  });
+
+// Listed for --help. A real invocation never reaches this action: it's dispatched from raw argv
+// before Commander parses (see the bottom of this file), because nothing after the provider word
+// is devtooie's to interpret — not `-m`, not `-p`, not `--help`.
+infra
+  .command('docker-compose')
+  .description(
+    'run `docker compose` itself against this project and mode — everything after it goes to Compose untouched (put --mode before it)',
+  )
+  .argument('[args...]', 'arguments for `docker compose`')
+  .allowUnknownOption()
+  .allowExcessArguments()
+  .helpOption(false)
+  .action(async (args: string[]) => {
+    await runInfraPassthrough('docker-compose', args);
+  });
+
 // ---------------------------------------------------------------------------
 // Main flow (§6.5) — the default action, run only when no subcommand matched.
 // ---------------------------------------------------------------------------
@@ -584,7 +782,7 @@ program.action(async () => {
     opts.rebuild || opts.build ? 'build' : (opts.phase as 'dev' | 'build');
 
   if (phase === 'build') {
-    const names = resolveSelectedNames(opts, 'the build phase');
+    const names = resolveSelectedNamesOrExit(opts, 'the build phase');
     try {
       await runBuildPhase(names, opts.rebuild);
     } catch (err) {
@@ -600,7 +798,7 @@ program.action(async () => {
   // Resolved before the preflight below, so a `--plain` invocation that can't name its
   // packages fails with that usage error instead of first asking whether to quit a session
   // it was never going to start.
-  const plainNames = opts.plain ? resolveSelectedNames(opts, '--plain') : null;
+  const plainNames = opts.plain ? resolveSelectedNamesOrExit(opts, '--plain') : null;
 
   // Settle what happens to a session already running for this project *before* anything
   // starts. Acquisition frees the dev ports by killing whatever in this workspace holds
@@ -628,17 +826,26 @@ program.action(async () => {
         logFile,
         onStatus: (msg) => statusReporter.update(msg),
       });
+      // The dev reverse proxy (if configured) binds before anything else starts, so a foreign
+      // holder of its port fails the run here rather than after the packages are up.
+      const devReverseProxy = await startSessionDevReverseProxy({ controlApiPort: port });
       statusReporter.done();
       const server = await startCommandServer({
         onQuit: () => process.exit(0),
         port,
         configPath,
         logFile,
+        devReverseProxy,
       });
       const packages = names.map((n) => findPackage(n));
       const deps = resolveDeps(packages);
       await buildDeps(deps);
-      await runPlain({ ...buildRunnerArgs(packages, deps), logFile }, server);
+      const infra = await runPlainInfraOrExit();
+      await runPlain(
+        { ...buildRunnerArgs(packages, deps), logFile, infra },
+        server,
+        devReverseProxy,
+      );
     } catch (err) {
       handleShellError(err);
     }
@@ -655,4 +862,8 @@ program.action(async () => {
 // Anchor at the config root (chdir + load its workspace-scope env) before dispatching any
 // command, so devtooie behaves the same from anywhere in the tree.
 await anchorAtConfigRoot(INVOCATION_CWD);
+const passthrough = passthroughArgs(process.argv);
+if (passthrough) {
+  await runInfraPassthrough(passthrough.provider, passthrough.args);
+}
 await program.parseAsync(process.argv).catch((err: unknown) => handleShellError(err));

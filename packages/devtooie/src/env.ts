@@ -2,16 +2,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import dotenvx from '@dotenvx/dotenvx';
 import type { AnyPackageConfig } from './config.js';
+import { findPassthrough } from './infra/argv.js';
 
 /** The mode used when neither `--mode` nor `DEVTOOIE_MODE` says otherwise. */
 export const DEFAULT_MODE = 'development';
+
+/**
+ * A mode name, as a callback receives it. Any name is a valid mode — `--mode staging` loads
+ * `.env.staging` — so this is every string; the two literals are there so an editor offers the
+ * usual ones, `development` (the default) and `test`. `string & {}` is what keeps them from being
+ * absorbed into plain `string`.
+ */
+export type Mode = typeof DEFAULT_MODE | 'test' | (string & {});
 
 /**
  * The active mode. Set once at CLI startup (`resolveMode` writes `DEVTOOIE_MODE` before the
  * config is loaded) and read from the environment thereafter, so config callbacks and spawned
  * children agree on it without threading a parameter through every call site.
  */
-export function currentMode(): string {
+export function currentMode(): Mode {
   return process.env.DEVTOOIE_MODE || DEFAULT_MODE;
 }
 
@@ -34,11 +43,15 @@ export function assertValidMode(mode: string): string {
  * is loaded (and its `port`/`urls` callbacks resolve env) earlier than that.
  *
  * **Stops at the first bare `--`.** Everything after it belongs to the command being run:
- * `devtooie cmd -- vitest --mode watch` passes `--mode watch` to vitest, and must not silently
+ * `devtooie exec -- vitest --mode watch` passes `--mode watch` to vitest, and must not silently
  * load `.env.watch` here.
+ *
+ * **And at an `infra <provider>` passthrough**, for the same reason:
+ * `devtooie infra docker-compose build -m 2g` hands `-m 2g` to Compose.
  */
 export function resolveMode(argv: readonly string[]): string {
-  const end = argv.indexOf('--');
+  const passthrough = findPassthrough(argv);
+  const end = passthrough === -1 ? argv.indexOf('--') : passthrough;
   const args = end === -1 ? argv : argv.slice(0, end);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] ?? '';
@@ -89,6 +102,11 @@ interface ResolveEnvOptions {
   files?: string[];
   /** Variables the files may override the ambient environment for. */
   override?: EnvOverride;
+  /**
+   * The ambient environment to resolve against. Defaults to the one devtooie was started with
+   * (see {@link captureShellEnv}), or the live `process.env` when none was recorded.
+   */
+  ambient?: Record<string, string>;
 }
 
 /**
@@ -101,7 +119,7 @@ export function envCandidatePaths({
   cwd,
   relativeDir,
   files = envFileNames(),
-}: Omit<ResolveEnvOptions, 'override'>): string[] {
+}: Omit<ResolveEnvOptions, 'override' | 'ambient'>): string[] {
   const workspaceDir = path.resolve(cwd);
   const pkgDir = path.resolve(cwd, relativeDir);
   const scopes = pkgDir === workspaceDir ? [workspaceDir] : [workspaceDir, pkgDir];
@@ -121,6 +139,23 @@ export function ambientEnv(): Record<string, string> {
     }
   }
   return env;
+}
+
+/** The environment devtooie was started with, once {@link captureShellEnv} has recorded it. */
+let shellEnv: Record<string, string> | undefined;
+
+/**
+ * Records the environment as it stands — the one devtooie was started with — as the **ambient
+ * environment** every later {@link resolveEnv} resolves against.
+ *
+ * The CLI calls this once, before it merges the workspace's `.env` files into its own
+ * `process.env`. From then on `process.env` holds file values next to the shell's, and nothing
+ * in it says which is which — but only a variable the shell set is entitled to win over a file.
+ * A workspace file's value that counted as ambient would beat the package file meant to
+ * override it, and would keep beating the workspace file itself after an edit.
+ */
+export function captureShellEnv(): void {
+  shellEnv = ambientEnv();
 }
 
 /**
@@ -161,12 +196,14 @@ export function literalizeForExpansion(ambient: Record<string, string>): Record<
  * The **ambient environment wins** over the files — matching Next.js, Vite, dotenv-flow and
  * `node --env-file`, so `FOO=bar devtooie` overrides a file for one run. `override` names the
  * exceptions: variables whose file value is allowed to win instead (or `true` for all of them).
+ * Ambient means what devtooie was started with: a variable only the files define is never
+ * ambient, so its highest-ranked file wins whatever `override` says.
  */
 export function resolveEnv(opts: ResolveEnvOptions): EnvResolution {
   const candidates = envCandidatePaths(opts);
   const files = candidates.filter((p) => fs.existsSync(p));
 
-  const ambient = ambientEnv();
+  const ambient = opts.ambient ?? shellEnv ?? ambientEnv();
   const source = files.map((p) => fs.readFileSync(p, 'utf8')).join('\n');
   if (!source) {
     return { env: {}, files, candidates };
@@ -215,9 +252,10 @@ export function resolveEnv(opts: ResolveEnvOptions): EnvResolution {
 
 /**
  * The `.env`-derived environment layer for a package's child process: the package's configured
- * `port` as `PORT` (an explicit `.env` `PORT` still wins), then its resolved `.env` files.
+ * `port` as `PORT` and, under the dev reverse proxy, its public origin as `PUBLIC_ORIGIN` (an
+ * explicit `.env` value for either still wins), then its resolved `.env` files.
  * Excludes `process.env` — merge this over it at spawn time (`Object.assign({}, process.env,
- * layer)`). Shared by the TUI/plain session and `devtooie cmd` so both build the same env.
+ * layer)`). Shared by the TUI/plain session and `devtooie exec` so both build the same env.
  */
 export function packageEnvLayer(
   pkg: AnyPackageConfig,
@@ -229,5 +267,12 @@ export function packageEnvLayer(
     files: opts.files,
     override: opts.override,
   });
-  return pkg.port !== undefined ? Object.assign({ PORT: String(pkg.port) }, env) : env;
+  const injected: Record<string, string> = {};
+  if (pkg.port !== undefined) {
+    injected.PORT = String(pkg.port);
+  }
+  if (pkg.publicOrigin !== undefined) {
+    injected.PUBLIC_ORIGIN = pkg.publicOrigin;
+  }
+  return Object.assign(injected, env);
 }

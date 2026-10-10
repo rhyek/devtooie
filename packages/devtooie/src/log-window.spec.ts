@@ -1,5 +1,11 @@
-import { describe, it, expect } from 'vitest';
-import { computeWindow, windowRows } from './log-window.js';
+import { describe, it, test, expect } from 'vitest';
+import {
+  anchorOffset,
+  bottomAnchor,
+  computeWindow,
+  convertOffset,
+  windowRows,
+} from './log-window.js';
 
 describe('computeWindow', () => {
   it('returns an empty window for an empty buffer', () => {
@@ -109,5 +115,65 @@ describe('windowRows', () => {
       0,
     );
     expect(windowRows(lines, w, wrap)).toHaveLength(12);
+  });
+});
+
+// The bottom edge of the viewport as a (line, rows-clipped-below) pair, and back to a row offset
+// in another layout of the same lines — how the scroll position survives a change of gutter
+// width (the timestamp switching between `HH:MM:SS` and the full date reflows wrapped lines).
+describe('bottomAnchor / anchorOffset', () => {
+  test('following (offset 0) anchors to the last line with nothing clipped', () => {
+    expect(bottomAnchor([1, 3, 2], 0)).toEqual({ line: 2, clip: 0 });
+  });
+
+  test('an offset inside a wrapped line records how many of its rows are hidden', () => {
+    // rows: line0=[0], line1=[1,2,3], line2=[4,5]; offset 3 hides rows 5,4,3 → edge is in line 1, 1 row of it hidden.
+    expect(bottomAnchor([1, 3, 2], 3)).toEqual({ line: 1, clip: 1 });
+    expect(bottomAnchor([1, 3, 2], 2)).toEqual({ line: 1, clip: 0 });
+  });
+
+  test('clamps an offset past the top to the oldest row', () => {
+    expect(bottomAnchor([1, 3, 2], 99)).toEqual({ line: 0, clip: 0 });
+  });
+
+  test('an empty buffer anchors nowhere', () => {
+    expect(bottomAnchor([], 5)).toEqual({ line: -1, clip: 0 });
+    expect(anchorOffset([], { line: -1, clip: 0 })).toBe(0);
+  });
+
+  test('anchorOffset inverts bottomAnchor in the same layout', () => {
+    const counts = [1, 3, 2, 1, 4];
+    const total = counts.reduce((a, b) => a + b, 0);
+    for (let offset = 0; offset < total; offset++) {
+      expect(anchorOffset(counts, bottomAnchor(counts, offset))).toBe(offset);
+    }
+  });
+
+  test('carries the same bottom edge into a layout where lines wrap differently', () => {
+    // Line 1 takes 3 rows in the wide-gutter layout but 2 in the narrow one.
+    const wide = [1, 3, 2];
+    const narrow = [1, 2, 2];
+    // Edge in line 1 with 1 row hidden → same in the narrow layout: offset = 2 (line 2) + 1.
+    expect(convertOffset(wide, narrow, 3)).toBe(3);
+    // Edge in line 1 with 2 rows hidden: the narrow line has only 2 rows, so the clip is capped at 1.
+    expect(convertOffset(wide, narrow, 4)).toBe(3);
+    // Following stays following.
+    expect(convertOffset(wide, narrow, 0)).toBe(0);
+    expect(convertOffset(narrow, wide, 0)).toBe(0);
+  });
+
+  test('scrolling one row at a time in the narrow layout never gets stuck', () => {
+    const wide = [1, 3, 2, 5];
+    const narrow = [1, 2, 1, 3];
+    const seen = new Set<number>();
+    for (let offset = 0; offset < 7; offset++) {
+      const back = convertOffset(narrow, wide, offset);
+      expect(seen.has(back), `offset ${String(offset)} maps onto an already-used wide offset`).toBe(
+        false,
+      );
+      seen.add(back);
+      // and round-trips
+      expect(convertOffset(wide, narrow, back)).toBe(offset);
+    }
   });
 });

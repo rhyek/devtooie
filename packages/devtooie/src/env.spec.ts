@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, test, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -74,21 +74,43 @@ describe('resolveMode', () => {
   });
 
   it('accepts the flag before or after a subcommand', () => {
-    expect(resolveMode(['node', 'cli', '--mode', 'test', 'cmd'])).toBe('test');
-    expect(resolveMode(['node', 'cli', 'cmd', '--mode', 'test'])).toBe('test');
+    expect(resolveMode(['node', 'cli', '--mode', 'test', 'exec'])).toBe('test');
+    expect(resolveMode(['node', 'cli', 'exec', '--mode', 'test'])).toBe('test');
   });
 
   it('stops at the first `--` so the wrapped command keeps its own flags', () => {
     // `--mode watch` here belongs to vitest, not devtooie.
     withAmbient({}, () => {
       delete process.env.DEVTOOIE_MODE;
-      expect(resolveMode(['node', 'cli', 'cmd', '--', 'vitest', '--mode', 'watch'])).toBe(
+      expect(resolveMode(['node', 'cli', 'exec', '--', 'vitest', '--mode', 'watch'])).toBe(
         'development',
       );
       // ...but a mode before the `--` still counts.
       expect(
-        resolveMode(['node', 'cli', '--mode', 'test', 'cmd', '--', 'vitest', '--mode', 'watch']),
+        resolveMode(['node', 'cli', '--mode', 'test', 'exec', '--', 'vitest', '--mode', 'watch']),
       ).toBe('test');
+    });
+  });
+
+  test('stops at an `infra <provider>` passthrough, whose flags belong to the provider', () => {
+    withAmbient({}, () => {
+      delete process.env.DEVTOOIE_MODE;
+      // `-m 2g` is `docker compose build`'s memory limit, not a devtooie mode.
+      expect(resolveMode(['node', 'cli', 'infra', 'docker-compose', 'build', '-m', '2g'])).toBe(
+        'development',
+      );
+      expect(resolveMode(['node', 'cli', 'infra', 'docker-compose', 'run', '--mode=x', 'db'])).toBe(
+        'development',
+      );
+      // ...but a mode before the provider word still counts, in either position.
+      expect(
+        resolveMode(['node', 'cli', '-m', 'test', 'infra', 'docker-compose', 'build', '-m', '2g']),
+      ).toBe('test');
+      expect(
+        resolveMode(['node', 'cli', 'infra', '-m', 'test', 'docker-compose', '--mode', 'x']),
+      ).toBe('test');
+      // The other infra subcommands take the mode anywhere, like `exec`.
+      expect(resolveMode(['node', 'cli', 'infra', 'up', '--mode', 'test'])).toBe('test');
     });
   });
 
@@ -305,26 +327,117 @@ describe('resolveEnv precedence against the ambient environment', () => {
 });
 
 describe('two-stage resolution (anchor merge, then per-package)', () => {
-  // The CLI resolves workspace-scope env once at startup and merges it into its own process.env,
-  // then resolves again per package. That first merge must NOT apply `override`, or a
-  // self-referential value folds the file's contribution into the ambient base and the second
-  // pass appends it again. Regression for a double-append that predates modes.
-  it('appends a self-referential override exactly once', () => {
+  /**
+   * What the CLI does at startup, for the duration of `fn`: note the environment the shell handed
+   * over, then merge the workspace's files into `process.env`. `fn` gets the shell's environment,
+   * to resolve against as the CLI's later resolutions do.
+   */
+  function anchored(fn: (shell: Record<string, string>) => void): void {
+    const shell = ambientEnv();
+    const { env } = resolveEnv({ cwd, relativeDir: '.', ambient: shell });
+    withAmbient(env, () => fn(shell));
+  }
+
+  // The merge puts workspace file values into `process.env`, where they look like the shell's.
+  // Only a variable the shell really set may win over a file — `override` is about those alone.
+  for (const { shell, override, expected } of [
+    { shell: undefined, override: [], expected: '3' },
+    { shell: undefined, override: ['DEVTOOIE_ENV_A'], expected: '3' },
+    { shell: '1', override: [], expected: '1' },
+    { shell: '1', override: ['DEVTOOIE_ENV_A'], expected: '3' },
+  ]) {
+    const given = shell === undefined ? 'unset in the shell' : `${shell} in the shell`;
+    const overriding = override.length > 0 ? 'overridden' : 'not overridden';
+    test(`a variable ${given} and ${overriding} resolves to ${expected}`, () => {
+      write('.env.development', 'DEVTOOIE_ENV_A=2\n');
+      write('packages/api/.env.development', 'DEVTOOIE_ENV_A=3\n');
+      withAmbient(shell === undefined ? {} : { DEVTOOIE_ENV_A: shell }, () => {
+        anchored((ambient) => {
+          const { env } = resolveEnv({ cwd, relativeDir: 'packages/api', override, ambient });
+          expect(env.DEVTOOIE_ENV_A).toBe(expected);
+        });
+      });
+    });
+  }
+
+  test('override: true lets the deepest file beat the shell', () => {
+    write('.env', 'DEVTOOIE_ENV_A=2\n');
+    write('packages/api/.env', 'DEVTOOIE_ENV_A=3\n');
+    withAmbient({ DEVTOOIE_ENV_A: '1' }, () => {
+      anchored((ambient) => {
+        const { env } = resolveEnv({ cwd, relativeDir: 'packages/api', override: true, ambient });
+        expect(env.DEVTOOIE_ENV_A).toBe('3');
+      });
+    });
+  });
+
+  // A session re-resolves on every restart; the value merged at startup must not shadow the file
+  // it came from.
+  test('picks up a workspace file edited after the merge', () => {
+    write('.env', 'DEVTOOIE_ENV_A=before\n');
+    anchored((ambient) => {
+      expect(process.env.DEVTOOIE_ENV_A).toBe('before');
+      write('.env', 'DEVTOOIE_ENV_A=after\n');
+      const { env } = resolveEnv({ cwd, relativeDir: 'packages/api', ambient });
+      expect(env.DEVTOOIE_ENV_A).toBe('after');
+    });
+  });
+
+  // The self-append pattern `env.override` exists for. The merge itself resolves without the
+  // override, and the package pass expands `$VAR` against the shell's value — never against what
+  // the merge left in `process.env` — so the flag is appended exactly once either way.
+  test('appends a self-referential override exactly once', () => {
+    write('.env', 'DEVTOOIE_ENV_TWOSTAGE=$DEVTOOIE_ENV_TWOSTAGE --flag\n');
     withAmbient({ DEVTOOIE_ENV_TWOSTAGE: '--require /boot.js' }, () => {
-      write('.env', 'DEVTOOIE_ENV_TWOSTAGE=$DEVTOOIE_ENV_TWOSTAGE --flag\n');
+      anchored((ambient) => {
+        expect(process.env.DEVTOOIE_ENV_TWOSTAGE).toBe('--require /boot.js');
+        const { env } = resolveEnv({
+          cwd,
+          relativeDir: 'packages/api',
+          override: ['DEVTOOIE_ENV_TWOSTAGE'],
+          ambient,
+        });
+        expect(env.DEVTOOIE_ENV_TWOSTAGE).toBe('--require /boot.js --flag');
+      });
+    });
+  });
 
-      // Stage 1: the anchor merge — no override, so this key resolves to its ambient value.
-      const anchor = resolveEnv({ cwd, relativeDir: '.' });
-      expect(anchor.env.DEVTOOIE_ENV_TWOSTAGE).toBe('--require /boot.js');
-      Object.assign(process.env, anchor.env);
-
-      // Stage 2: the package layer, which does apply the override.
+  test('appends a self-referential override exactly once when the shell has no value', () => {
+    write('.env', 'DEVTOOIE_ENV_TWOSTAGE="$DEVTOOIE_ENV_TWOSTAGE --flag"\n');
+    anchored((ambient) => {
       const { env } = resolveEnv({
         cwd,
         relativeDir: 'packages/api',
         override: ['DEVTOOIE_ENV_TWOSTAGE'],
+        ambient,
       });
-      expect(env.DEVTOOIE_ENV_TWOSTAGE).toBe('--require /boot.js --flag');
+      expect(env.DEVTOOIE_ENV_TWOSTAGE).toBe(' --flag');
+    });
+  });
+});
+
+describe('captureShellEnv', () => {
+  // A module of its own, so the recorded environment doesn't outlive the test.
+  test('makes the environment at that moment the ambient one for later resolutions', async () => {
+    vi.resetModules();
+    const fresh = await import('./env.js');
+    write('.env', 'DEVTOOIE_ENV_A=2\n');
+    write('packages/api/.env', 'DEVTOOIE_ENV_A=3\n');
+
+    fresh.captureShellEnv();
+    const merged = fresh.resolveEnv({ cwd, relativeDir: '.' }).env;
+    withAmbient(merged, () => {
+      expect(fresh.resolveEnv({ cwd, relativeDir: 'packages/api' }).env.DEVTOOIE_ENV_A).toBe('3');
+    });
+  });
+
+  test('keeps a variable the shell set winning over the files', async () => {
+    vi.resetModules();
+    const fresh = await import('./env.js');
+    write('packages/api/.env', 'DEVTOOIE_ENV_A=3\n');
+    withAmbient({ DEVTOOIE_ENV_A: '1' }, () => {
+      fresh.captureShellEnv();
+      expect(fresh.resolveEnv({ cwd, relativeDir: 'packages/api' }).env.DEVTOOIE_ENV_A).toBe('1');
     });
   });
 });
