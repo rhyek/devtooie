@@ -315,13 +315,14 @@ lib):
   `{ label, url }`, or an **array** of those (rendered on the same line, space-separated). Any
   URL may be a callback, and any may be a **path** (`'/todos'`, or `'todos'`; `''` is the origin
   itself), based on the package's public origin under the [dev reverse proxy](#dev-reverse-proxy),
-  or on `http://localhost:<port>` without one. A path on a package with no `port` is an error.
-  devtooie adds no links of its own.
+  or on `http://localhost:<port>` without one. A path's trailing slash is dropped: `'/todos/'`
+  is `'/todos'`, and `'/'` is `''`. A path on a package with no `port` is an error. devtooie adds
+  no links of its own.
 - **`healthcheck`** — a URL polled for readiness; also required by anything that lists this
   package in its `waitFor`. A **path** (`'/health'`, or `'health'`) is probed at `http://localhost:<port>/health`
-  — always the package itself, never through the dev reverse proxy. May be a callback, or
-  `{ url, timeout }` to give this package's probes longer than the 1500 ms default. See
-  [Readiness probing](#readiness-probing).
+  — always the package itself, never through the dev reverse proxy — and its trailing slash is
+  dropped, as in `urls`. May be a callback, or `{ url, timeout }` to give this package's probes
+  longer than the 1500 ms default. See [Readiness probing](#readiness-probing).
 - **`waitFor`** — package names to wait on (each must define a `healthcheck`) before this
   package starts. Type-checked against the keys of `packages`.
 - **`tokens`** — values of your own for this package's callbacks, merged **over** the top-level
@@ -801,7 +802,7 @@ subdomain in their own config. `devtooie cmd` hands the same variable to a one-o
 ### Footer links and the resolved config
 
 devtooie adds no footer link of its own: `urls` holds exactly what the config lists. To show a
-package's public origin, list it — `''` is the origin itself, `'/'` or any other path is
+package's public origin, list it — `''` (or `'/'`) is the origin itself, any other path is
 resolved against it (see [Configuration options](#configuration-options)). The origin is on the resolved
 config as `publicOrigin` (the same value injected as `PUBLIC_ORIGIN`), next to
 `config.devReverseProxy`:

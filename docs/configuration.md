@@ -80,13 +80,15 @@ lib):
   space-separated). Any URL may be a callback, and any may be a **path** (`'/todos'`, or
   `'todos'`; `''` is the origin itself), based on the package's public origin under the
   [dev reverse proxy](./dev-reverse-proxy.md), or on
-  `http://localhost:<port>` without one. A path on a package with no `port` is an error.
+  `http://localhost:<port>` without one. A path's trailing slash is dropped: `'/todos/'` is
+  `'/todos'`, and `'/'` is `''`. A path on a package with no `port` is an error.
   devtooie adds no links of its own.
 - **`healthcheck`** — a URL polled for readiness; also required by anything
   that lists this package in its `waitFor`. A **path** (`'/health'`, or `'health'`) is probed
   at `http://localhost:<port>/health` — always the package itself, never through the dev
-  reverse proxy. May be a callback, or `{ url, timeout }` to give this package's probes longer
-  than the 1500 ms default. See [Readiness probing](#readiness-probing).
+  reverse proxy — and its trailing slash is dropped, as in `urls`. May be a callback, or
+  `{ url, timeout }` to give this package's probes longer than the 1500 ms default. See
+  [Readiness probing](#readiness-probing).
 - **`tokens`** — values of your own for this package's callbacks, merged **over** the
   top-level `tokens`. Only declare it where the package has tokens — never `tokens: {}`. See
   [Typed tokens](#typed-tokens).

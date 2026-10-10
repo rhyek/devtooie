@@ -669,7 +669,8 @@ const ABSOLUTE_URL_RE = /^[a-z][a-z0-9+.-]*:/i;
 /**
  * A URL as written in the config, resolved into its {@link ResolvedUrlForms}: a literal or a
  * callback's return value, absolute as-is, or a relative path — with or without the leading
- * slash (`/todos` and `todos` alike), or `''` for the origin itself — based on the package.
+ * slash (`/todos` and `todos` alike), or `''` for the origin itself — based on the package. A
+ * path's trailing slash is dropped (`/todos/` is `/todos`), which makes `/` the origin too.
  */
 function resolveUrlForms(value: UrlValue, scope: UrlScope): ResolvedUrlForms {
   let url: unknown = value;
@@ -683,8 +684,12 @@ function resolveUrlForms(value: UrlValue, scope: UrlScope): ResolvedUrlForms {
   if (ABSOLUTE_URL_RE.test(text)) {
     return { public: text, private: text };
   }
-  // `''` is the origin itself; anything else is a path, leading slash optional.
-  const path = text === '' || text.startsWith('/') ? text : `/${text}`;
+  // `''` is the origin itself; anything else is a path, leading slash optional and trailing
+  // slash dropped — from the path alone, so a query or fragment stays exactly as written.
+  const suffixAt = text.search(/[?#]/);
+  const pathname = (suffixAt === -1 ? text : text.slice(0, suffixAt)).replace(/\/+$/, '');
+  const suffix = suffixAt === -1 ? '' : text.slice(suffixAt);
+  const path = `${pathname === '' || pathname.startsWith('/') ? pathname : `/${pathname}`}${suffix}`;
   if (scope.port === undefined) {
     throw new Error(
       scope.publicOrigin === undefined && scope.where === 'top-level url'

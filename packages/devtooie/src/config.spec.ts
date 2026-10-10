@@ -1309,7 +1309,7 @@ describe('devReverseProxy', () => {
     expect(cfg.packages.api.urls).toBeUndefined();
     expect(cfg.packages.worker.urls).toBeUndefined();
     expect(cfg.packages.lib.urls).toBeUndefined();
-    // The public origin is still there for a `'/'` entry (and PUBLIC_ORIGIN) to build on.
+    // The public origin is still there for a `''` entry (and PUBLIC_ORIGIN) to build on.
     expect(cfg.packages.web.publicOrigin).toBe('https://web.example.test');
   });
 
@@ -1320,7 +1320,7 @@ describe('devReverseProxy', () => {
       packages: { web: { port: 3000, subdomain: 'web', urls: ['/'] } },
     });
     expect(cfg.packages.web.publicOrigin).toBe('http://web.example.test:4000');
-    expect(cfg.packages.web.urls).toEqual(['http://web.example.test:4000/']);
+    expect(cfg.packages.web.urls).toEqual(['http://web.example.test:4000']);
   });
 
   test('exposes the public origin of a routable package on the resolved config, and nothing for the rest', () => {
@@ -1520,7 +1520,7 @@ describe('path healthchecks', () => {
       },
     });
     expect(cfg.packages.api.healthcheck).toEqual({ url: 'http://localhost:3001/health', timeout: 1500 }); // prettier-ignore
-    expect(cfg.packages.web.healthcheck).toEqual({ url: 'http://localhost:3000/', timeout: 5000 });
+    expect(cfg.packages.web.healthcheck).toEqual({ url: 'http://localhost:3000', timeout: 5000 });
   });
 
   test('ignore the public origin even for a package the proxy routes', () => {
@@ -1597,6 +1597,81 @@ describe('paths without a leading slash', () => {
     });
     expect(cfg.packages.api.healthcheck?.url).toBe('HTTP://127.0.0.1:3001/health');
     expect(cfg.packages.api.urls).toEqual(['ws://localhost:3001/socket']);
+  });
+});
+
+// A path's trailing slash is dropped, so `/todos/` is `/todos` and `/` is `''` — the origin.
+describe('paths with a trailing slash', () => {
+  test('urls: `/todos/` is `/todos`, with or without the proxy', () => {
+    const cfg = defineConfig({
+      packageRootDir: 'packages',
+      devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
+      packages: {
+        api: { port: 3001, subdomain: 'api', urls: ['/todos/', { label: 'x', url: 'a/b/' }] },
+        worker: { port: 3002, urls: ['/metrics/', ['jobs/', '/queues//']] },
+      },
+    });
+    expect(cfg.packages.api.urls).toEqual([
+      'https://api.myproject.example.test/todos',
+      { label: 'x', url: 'https://api.myproject.example.test/a/b' },
+    ]);
+    expect(cfg.packages.worker.urls).toEqual([
+      'http://localhost:3002/metrics',
+      ['http://localhost:3002/jobs', 'http://localhost:3002/queues'],
+    ]);
+  });
+
+  test("urls: `/` is `''`, the origin itself", () => {
+    const cfg = defineConfig({
+      packageRootDir: 'packages',
+      devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
+      packages: {
+        api: { port: 3001, subdomain: 'api', urls: ['/'] },
+        worker: { port: 3002, urls: ['/', '//'] },
+      },
+    });
+    expect(cfg.packages.api.urls).toEqual(['https://api.myproject.example.test']);
+    expect(cfg.packages.worker.urls).toEqual(['http://localhost:3002', 'http://localhost:3002']);
+  });
+
+  test('healthcheck: `/health/` is `/health`, and `/` the origin', () => {
+    const cfg = defineConfig({
+      packageRootDir: 'packages',
+      packages: {
+        api: { port: 3001, healthcheck: '/health/' },
+        web: { port: 3000, healthcheck: '/' },
+        worker: { port: 3002, healthcheck: () => 'ready/' },
+      },
+    });
+    expect(cfg.packages.api.healthcheck?.url).toBe('http://localhost:3001/health');
+    expect(cfg.packages.web.healthcheck?.url).toBe('http://localhost:3000');
+    expect(cfg.packages.worker.healthcheck?.url).toBe('http://localhost:3002/ready');
+  });
+
+  test('only the path loses its slash, never a query or fragment', () => {
+    const cfg = defineConfig({
+      packageRootDir: 'packages',
+      packages: {
+        api: { port: 3001, urls: ['/a/b/?c=1', '/login?next=/', '/docs/#intro/', '/?tab=/'] },
+      },
+    });
+    expect(cfg.packages.api.urls).toEqual([
+      'http://localhost:3001/a/b?c=1',
+      'http://localhost:3001/login?next=/',
+      'http://localhost:3001/docs#intro/',
+      'http://localhost:3001?tab=/',
+    ]);
+  });
+
+  test('an absolute url keeps its trailing slash', () => {
+    const cfg = defineConfig({
+      packageRootDir: 'packages',
+      packages: {
+        api: { port: 3001, healthcheck: 'http://127.0.0.1:3001/health/', urls: ['https://status.example.test/'] }, // prettier-ignore
+      },
+    });
+    expect(cfg.packages.api.healthcheck?.url).toBe('http://127.0.0.1:3001/health/');
+    expect(cfg.packages.api.urls).toEqual(['https://status.example.test/']);
   });
 });
 

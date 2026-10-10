@@ -140,7 +140,7 @@ subdomain in their own config. `devtooie cmd` hands the same variable to a one-o
 ## Footer links and the resolved config
 
 devtooie adds no footer link of its own: `urls` holds exactly what the config lists. To show a
-package's public origin, list it — `''` is the origin itself, `'/'` or any other path is
+package's public origin, list it — `''` (or `'/'`) is the origin itself, any other path is
 resolved against it (see [Configuration](./configuration.md)). The origin is on the resolved
 config as `publicOrigin` (the same value injected as `PUBLIC_ORIGIN`), next to
 `config.devReverseProxy`:
