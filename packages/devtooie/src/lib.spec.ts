@@ -248,7 +248,7 @@ describe('runScript', () => {
 
   test("runs the script in the package directory, with the package's and the workspace root's node_modules/.bin on PATH", async () => {
     const result = await runScript(pkg({ absoluteDir: app }), 'build', 'pipe');
-    expect(result.stdout.split('\n')).toEqual(['appbin-OK', 'rootbin-OK', app]);
+    expect(String(result.stdout).split('\n')).toEqual(['appbin-OK', 'rootbin-OK', app]);
   });
 
   test('rejects when the script exits with a non-zero code', async () => {
