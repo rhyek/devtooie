@@ -4,12 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   ambientEnv,
+  assignedNames,
   envCandidatePaths,
   envFileNames,
   literalizeForExpansion,
   packageEnvLayer,
   resolveEnv,
   resolveMode,
+  workspaceEnvLayer,
 } from './env.js';
 import type { AnyPackageConfig } from './config.js';
 
@@ -540,6 +542,203 @@ describe('packageEnvLayer', () => {
     write('packages/api/.env', 'PORT=9999\n');
     expect(packageEnvLayer(mkPkg({}), { cwd }).PORT).toBe('9999');
     expect(packageEnvLayer(mkPkg({ port: 3001 }), { cwd }).PORT).toBe('9999');
+  });
+
+  test("ranks the config's own vars as a file below the .env files", () => {
+    write('.env', 'A=1\nB=file\n');
+    const layer = packageEnvLayer(mkPkg({ port: 3001 }), {
+      cwd,
+      vars: { B: 'config', C: 'config' },
+    });
+    expect(layer).toEqual({ PORT: '3001', A: '1', B: 'file', C: 'config' });
+  });
+
+  test("keeps the injected PORT over one set workspace-wide: in a .env file or the config's vars", () => {
+    write('.env', 'PORT=9999\n');
+    expect(packageEnvLayer(mkPkg({ port: 3001 }), { cwd }).PORT).toBe('3001');
+    expect(packageEnvLayer(mkPkg({ port: 3001 }), { cwd, vars: { PORT: '4000' } }).PORT).toBe(
+      '3001',
+    );
+  });
+
+  test('passes a workspace-wide PORT on to a package that has no port of its own', () => {
+    write('.env', 'PORT=9999\n');
+    expect(packageEnvLayer(mkPkg({}), { cwd }).PORT).toBe('9999');
+  });
+
+  test("treats PUBLIC_ORIGIN the same way: only the package's own .env file replaces it", () => {
+    const pkg = mkPkg({ publicOrigin: 'http://api.localhost:4000' });
+    write('.env', 'PUBLIC_ORIGIN=https://workspace.example\n');
+    expect(packageEnvLayer(pkg, { cwd }).PUBLIC_ORIGIN).toBe('http://api.localhost:4000');
+    write('packages/api/.env', 'PUBLIC_ORIGIN=https://api.example\n');
+    expect(packageEnvLayer(pkg, { cwd }).PUBLIC_ORIGIN).toBe('https://api.example');
+  });
+
+  test("counts the workspace's .env file as the package's own when the package is the workspace", () => {
+    write('.env', 'PORT=9999\n');
+    expect(packageEnvLayer(mkPkg({ relativeDir: '.', port: 3001 }), { cwd }).PORT).toBe('9999');
+  });
+
+  test("is not fooled by a PORT line inside another variable's quoted value", () => {
+    write('packages/api/.env', 'NOTES="first line\nPORT=9999\nlast line"\n');
+    expect(packageEnvLayer(mkPkg({ port: 3001 }), { cwd }).PORT).toBe('3001');
+  });
+
+  test('lets the shell win a PORT only where a file of the package sets one', () => {
+    withAmbient({ PORT: '5000' }, () => {
+      expect(packageEnvLayer(mkPkg({ port: 3001 }), { cwd }).PORT).toBe('3001');
+      write('packages/api/.env', 'PORT=9999\n');
+      expect(packageEnvLayer(mkPkg({ port: 3001 }), { cwd }).PORT).toBe('5000');
+    });
+  });
+
+  test("lets the package's own .env file replace a config var the workspace's leaves alone", () => {
+    write('packages/api/.env', 'B=package\n');
+    const vars = { B: 'config' };
+    expect(packageEnvLayer(mkPkg({}), { cwd, vars })).toEqual({ B: 'package' });
+    expect(workspaceEnvLayer({ cwd, vars })).toEqual({ B: 'config' });
+  });
+});
+
+describe('assignedNames', () => {
+  test.each([
+    ['plain, exported and colon-separated assignments', 'A=1\nexport B=2\nC: 3\n  D = 4 # note\n'],
+    ['comments and blank lines', '# A=1\n\nB=2\n#C=3\n'],
+    ['a quoted value spanning lines', 'A="one\nB=2\nthree"\nC=\'x\nD=4\'\nE=`y\nF=6`\nG=7\n'],
+    ['windows line endings', 'A=1\r\nB="x\r\nC=3"\r\nD=4\r\n'],
+    ['an empty value and a repeated name', 'A=\nB=1\nB=2\n'],
+    ['an escaped quote inside a quoted value', 'A="say \\"hi\\"\nB=2"\nC=3\n'],
+  ])('reads the names dotenvx does, with %s', async (_what, source) => {
+    const { default: dotenvx } = await import('@dotenvx/dotenvx');
+    const parsed = dotenvx.parse(source, { processEnv: {} });
+    expect([...assignedNames(source)].sort()).toEqual(Object.keys(parsed).sort());
+  });
+});
+
+describe('workspaceEnvLayer', () => {
+  test("is the workspace-scope .env vars, never a package's", () => {
+    write('.env', 'A=1\n');
+    write('packages/api/.env', 'A=2\n');
+    expect(workspaceEnvLayer({ cwd })).toEqual({ A: '1' });
+  });
+
+  test("ranks the config's own vars below the .env files", () => {
+    write('.env', 'A=1\nB=file\n');
+    expect(workspaceEnvLayer({ cwd, vars: { B: 'config', C: 'config' } })).toEqual({
+      A: '1',
+      B: 'file',
+      C: 'config',
+    });
+  });
+});
+
+describe("resolveEnv with the config's own vars", () => {
+  const resolve = (vars: Record<string, string>, override?: boolean | string[]) =>
+    resolveEnv({ cwd, relativeDir: 'packages/api', vars, override }).env;
+
+  test('is just the vars when no file exists', () => {
+    expect(resolve({ A: 'config', B: '' })).toEqual({ A: 'config', B: '' });
+  });
+
+  test("lets any file replace a var: the workspace's, then the package's", () => {
+    write('.env', 'A=workspace\nB=workspace\n');
+    write('packages/api/.env', 'B=package\n');
+    expect(resolve({ A: 'config', B: 'config', C: 'config' })).toEqual({
+      A: 'workspace',
+      B: 'package',
+      C: 'config',
+    });
+  });
+
+  test('gives the ambient environment the win over a var, as over a file', () => {
+    withAmbient({ DEVTOOIE_TEST_AMBIENT: 'shell' }, () => {
+      expect(resolve({ DEVTOOIE_TEST_AMBIENT: 'config' })).toEqual({
+        DEVTOOIE_TEST_AMBIENT: 'shell',
+      });
+    });
+  });
+
+  test('lets env.override hand a var the win back, by name or for all', () => {
+    withAmbient({ DEVTOOIE_TEST_AMBIENT: 'shell' }, () => {
+      const vars = { DEVTOOIE_TEST_AMBIENT: 'config' };
+      expect(resolve(vars, ['DEVTOOIE_TEST_AMBIENT'])).toEqual(vars);
+      expect(resolve(vars, true)).toEqual(vars);
+      expect(resolve(vars, ['SOMETHING_ELSE'])).toEqual({ DEVTOOIE_TEST_AMBIENT: 'shell' });
+    });
+  });
+
+  test('gives the shell the variable when the shell, a file and the config all set it', () => {
+    write('.env', 'DEVTOOIE_TEST_AMBIENT=file\n');
+    const vars = { DEVTOOIE_TEST_AMBIENT: 'config' };
+    withAmbient({ DEVTOOIE_TEST_AMBIENT: 'shell' }, () => {
+      expect(resolve(vars)).toEqual({ DEVTOOIE_TEST_AMBIENT: 'shell' });
+      expect(resolve(vars, true)).toEqual({ DEVTOOIE_TEST_AMBIENT: 'file' });
+    });
+  });
+
+  test("expands a file's reference to a var", () => {
+    write('.env', 'UPLOADS=${DATA_DIR}/uploads\n');
+    write('packages/api/.env', 'CACHE="$DATA_DIR/cache"\n');
+    expect(resolve({ DATA_DIR: '/srv/data' })).toEqual({
+      DATA_DIR: '/srv/data',
+      UPLOADS: '/srv/data/uploads',
+      CACHE: '/srv/data/cache',
+    });
+  });
+
+  test("expands that reference to the shell's value when the shell wins the var", () => {
+    write('.env', 'UPLOADS=${DEVTOOIE_TEST_AMBIENT}/uploads\n');
+    withAmbient({ DEVTOOIE_TEST_AMBIENT: '/shell' }, () => {
+      expect(resolve({ DEVTOOIE_TEST_AMBIENT: '/srv/data' }).UPLOADS).toBe('/shell/uploads');
+    });
+  });
+
+  test.each([
+    ['a dollar reference', 'a$b ${c} ${DEVTOOIE_TEST_AMBIENT}'],
+    ['a command substitution', '$(echo pwned)'],
+    ['a command substitution next to a single quote', "it's $(echo pwned)"],
+    ['a trailing backslash', 'C:\\dir\\'],
+    ['a backslash before a single quote', "it\\'s"],
+    ['an escaped dollar', 'x\\$y'],
+    ['double quotes and backticks', '"q" `b`'],
+    ['a single quote', "it's"],
+    ['a single quote next to a dollar', "it's $5 ${c}"],
+    ['surrounding spaces', '  padded  '],
+    ['a hash', 'a #not-a-comment'],
+    ['a newline', 'line1\nline2'],
+    ['backslashes', 'c:\\n\\t\\\\'],
+    ['an equals sign', 'a=b'],
+    ['a line that looks like an assignment', "x\nOTHER='y'"],
+  ])('takes a value with %s literally', (_what, value) => {
+    write('.env', 'FROM_FILE=1\n');
+    withAmbient({ DEVTOOIE_TEST_AMBIENT: 'shell' }, () => {
+      expect(resolve({ TRICKY: value, AFTER: 'after' })).toEqual({
+        TRICKY: value,
+        AFTER: 'after',
+        FROM_FILE: '1',
+      });
+      expect(resolve({ TRICKY: value, AFTER: 'after' }, true)).toEqual({
+        TRICKY: value,
+        AFTER: 'after',
+        FROM_FILE: '1',
+      });
+    });
+  });
+
+  test.each([
+    ['', 'a$b ${c}'],
+    [' next to a single quote', "it's $b ${c} \\$d"],
+    [' in a command substitution next to a single quote', "it's $(echo pwned)"],
+  ])('keeps a dollar%s literal when a file references the var', (_what, value) => {
+    write('.env', 'COPY=${PRICE}!\n');
+    const expected = { PRICE: value, COPY: `${value}!` };
+    expect(resolve({ PRICE: value })).toEqual(expected);
+    expect(resolve({ PRICE: value }, true)).toEqual(expected);
+  });
+
+  test('lets a file replace a var whose value has a single quote and a dollar', () => {
+    write('.env', "PRICE='it\\'s \\$b'\n");
+    expect(resolve({ PRICE: "it's $b" }).PRICE).toBe("it\\'s \\$b");
   });
 });
 

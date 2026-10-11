@@ -109,7 +109,8 @@ to run:
   arguments. Errors if it has no such script/target.
 
 Either way the command runs in the package's directory with that package's resolved `.env` injected and its configured `port` as `PORT` (plus `PUBLIC_ORIGIN` under the [dev reverse proxy](./dev-reverse-proxy.md)) —
-exactly the environment the TUI would give it (its `.env` files per
+exactly the environment the TUI would give it (its `.env` files and the config's
+[`env.vars`](./configuration.md#envvars), per
 [Environment loading](../README.md#environment-env-loading)).
 
 The package is chosen by **where you run it** (or named explicitly with `-p`, below). By default
@@ -126,7 +127,7 @@ devtooie run start -- --port=3001         # ...forwarding args to that script
 **Which package** is the nearest **ancestor** directory that is a configured package (so it works
 from a package dir or anywhere below it). If you're below the config root but **not** inside any
 package, it falls back to the **root**: the working dir is the root and only workspace-scope
-`.env` vars are loaded. It errors only if there's no `devtooie.config.*` at all (any supported
+`.env` vars (and the config's `env.vars`) are loaded. It errors only if there's no `devtooie.config.*` at all (any supported
 extension — `.ts`, `.mts`, `.js`, `.mjs`).
 
 To target a package **explicitly** instead of by location, pass `-p, --package <name>` — it

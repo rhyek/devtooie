@@ -605,7 +605,7 @@ describe('ProcessManager env injection', () => {
         name: 'envfixture',
         version: '1.0.0',
         scripts: {
-          dev: 'node -e "console.log(\'VAL=\'+process.env.MY_ENV_VAR);setInterval(()=>{},1e9)"',
+          dev: "node -e \"console.log('VAL='+process.env.MY_ENV_VAR+' CFG='+process.env.FROM_CONFIG);setInterval(()=>{},1e9)\"",
         },
       }),
     );
@@ -640,6 +640,34 @@ describe('ProcessManager env injection', () => {
     await mgr.stop('envfixture');
 
     expect(fs.readFileSync(envLog, 'utf8')).toContain('VAL=injected123');
+  }, 10_000);
+
+  test("gives the spawned dev process the config's own vars, under its .env vars", async () => {
+    const varsLog = path.join(envDir, 'devlog-vars.txt');
+    const a: AnyPackageConfig = { name: 'envfixture', relativeDir: '.', absoluteDir: envDir };
+    disposeManager(mgr);
+    mgr = new ProcessManager(
+      {
+        sortedPackages: [a],
+        selectedSet: new Set([a.name]),
+        buildDepSet: new Set(),
+        rebuildableSet: new Set(),
+        waitForMap: {},
+        healthchecks: {},
+        extraCommandsMap: {},
+        logFile: varsLog,
+        envFiles: ['.env.local'],
+        envVars: { MY_ENV_VAR: 'from-config', FROM_CONFIG: 'yes' },
+        cwd: envDir,
+      },
+      { plain: true },
+    );
+
+    mgr.start('envfixture');
+    await waitForLog(varsLog, /\]\s+VAL=/);
+    await mgr.stop('envfixture');
+
+    expect(fs.readFileSync(varsLog, 'utf8')).toContain('VAL=injected123 CFG=yes');
   }, 10_000);
 });
 

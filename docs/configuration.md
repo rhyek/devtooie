@@ -9,7 +9,7 @@
 | `packages`     | Your package definitions, **keyed by package name** (see below).                            |
 | `workspaceDir` | Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`.            |
 | `packageRootDir` | The directory the packages live under, e.g. `'packages'`: each package's directory is inferred as `<packageRootDir>/<key>`, and `relativeDir` becomes an optional override. Without it, every package must set `relativeDir`. **Recommended.** |
-| `env`          | Environment-loading options: `override`, below. Which files load is chosen with `--mode`; see [Environment loading](../README.md#environment-env-loading). |
+| `env`          | Environment options: [`vars`](#envvars), variables of the config's own, and [`override`](#envoverride). Which files load is chosen with `--mode`; see [Environment loading](../README.md#environment-env-loading). |
 | `logs`         | Top-level log options (`{ timestamps? }`); timestamps + structured-log formatting — see [Logging](./logging.md). |
 | `apiPort`      | Pin the [control API](./control-api.md) port (otherwise chosen automatically).              |
 | `urls`         | Workspace-wide footer links, not tied to a package. Same shape as a package's `urls`, but a callback here gets only `{ envs, tokens }`. |
@@ -103,11 +103,57 @@ lib):
   omitted); `formatter` (`(line: string) => string`) **overrides the default structured-log
   formatter** that devtooie already applies to every package. See [Logging](./logging.md).
 
+## `env.vars`
+
+Environment variables of the config's own, for everything devtooie starts: every package's
+process, [`devtooie exec` and `devtooie run`](./cli.md#devtooie-exec-and-devtooie-run), build
+scripts, and [infra](./infra.md) — Compose and the commands its callbacks run. A record, or a
+callback over the workspace context `{ envs, tokens }`:
+
+```ts
+defineConfig({
+  packageRootDir: 'packages',
+  env: {
+    vars: ({ envs }) => ({
+      WORKSPACE_DIR: envs.DEVTOOIE_WORKSPACE_DIR,
+      UPLOADS_DIR: `${envs.DEVTOOIE_WORKSPACE_DIR}/.data/uploads`,
+    }),
+  },
+  packages: {/* … */},
+});
+```
+
+With nothing else to set under `env`, the callback can stand in for the whole option:
+`env: ({ envs }) => ({ … })` is `env: { vars: ({ envs }) => ({ … }) }`.
+
+- **It runs first.** The callback is invoked once when the config loads, before anything else in
+  it resolves, so every other callback — a package's `port`, `healthcheck` and `urls`,
+  `devReverseProxy`, an infra service's — finds the result in its own `envs`. What the callback
+  itself sees in `envs` is the workspace scope: the workspace's `.env` files and the ambient
+  environment, [the variables devtooie sets](../README.md#variables-devtooie-sets) included.
+- **It ranks as the first `.env` file.** A variable set here follows the rules of one from a
+  file read before `.env`, at the workspace scope. Every file that defines it replaces it — the
+  workspace's for everything, a package's own for that package. The ambient environment wins
+  over it, so `FOO=bar devtooie` overrides it for one run, unless [`env.override`](#envoverride)
+  names it. A `PORT` or `PUBLIC_ORIGIN` here, like one in a workspace `.env` file, does not
+  replace the one devtooie injects into each package; only the package's own file does.
+- **A `.env` file can reference it.** `${VAR}` in a file expands to a variable set here. The
+  callback runs before that, so what it sees of such a line is the reference left empty.
+- **Values are literal strings.** A `$` in a value is a `$`: nothing in it is expanded. A variable
+  whose value is `undefined` is left out; any other non-string is an error when the config
+  loads, naming the variable.
+- **It is evaluated once per run.** A variable set here keeps the value it had when the config
+  loaded, until devtooie is restarted — including when a `.env` file the callback read is
+  edited and the packages restart.
+- **It is part of the resolved config.** [`devtooie show-config`](./cli.md#devtooie-show-config)
+  and the [control API](./control-api.md)'s `GET /query/status` print the values as the config set them, so a
+  secret composed here shows up there.
+
 ## `env.override`
 
 The ambient environment wins over `.env` files, as in Next.js, Vite and `node --env-file` — so
 `FOO=bar devtooie` overrides a file for a single run. `env.override` names the variables where the
-file is allowed to win instead:
+file — or [`env.vars`](#envvars), which ranks as the first file — is allowed to win instead:
 
 ```ts
 defineConfig({
@@ -145,7 +191,7 @@ checks — nothing to learn, nothing to escape, and a `$` in a string is just a 
 
 `port`, `healthcheck`, and every `urls` entry (including the `url` inside a `{ label, url }`)
 accept either a literal or a callback — as do the top-level `devReverseProxy.port` and
-`rootDomain`, over the workspace context `{ envs, tokens }`. For a URL of this package's own,
+`rootDomain`, and [`env.vars`](#envvars), over the workspace context `{ envs, tokens }`. For a URL of this package's own,
 a **relative path** is the literal to reach for first: it needs no callback at all, since devtooie
 resolves it against the package's port (or its public origin under the dev reverse proxy).
 
@@ -172,7 +218,7 @@ Each callback receives one object:
 
 | Key      | What it is                                                                                                                  |
 | -------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `envs`   | The package's `.env` files resolved and merged with `process.env` (which wins by default) — the same environment the dev process gets. See [Environment loading](../README.md#environment-env-loading). |
+| `envs`   | The config's own [`env.vars`](#envvars) and the package's `.env` files, resolved and merged with `process.env` (which wins by default) — the same environment the dev process gets. See [Environment loading](../README.md#environment-env-loading). |
 | `tokens` | The top-level `tokens` with this package's own `tokens` merged **over** them. Typed from what you declared, so a typo is a compile error. |
 | `port`   | The package's resolved `port`, typed **`number`** (not `number \| undefined`) so it drops straight into a URL. A package that declares no `port` has nothing to give, which types can't express here — so reading `port` in that case throws when the config loads, naming the package. Not offered to `port` itself, nor to the workspace-wide `urls`. |
 | `subdomain` | The package's canonical `subdomain` — the first entry when it declared several — so a URL can be built from it without repeating it: `` urls: [({ subdomain, envs }) => `https://${subdomain}.${envs.LOCALDEV_DOMAIN}`] ``. Plain data, unlike `port`: `undefined` (in type and in value) for a package that declares none, so branch on it if a callback has to work either way. Not offered to `port`, nor to the workspace-wide `urls`. |

@@ -64,6 +64,25 @@ describe('InfraManager', () => {
     });
   });
 
+  test("runs Compose with the config's own vars, under the workspace env files", async () => {
+    fs.writeFileSync(path.join(ws, '.env.development'), 'DB_PORT=21051\nDATA_DIR=from-file\n');
+    const { exec, calls } = scriptedDocker();
+    const config = defineConfig({
+      workspaceDir: ws,
+      packageRootDir: 'packages',
+      env: { vars: { DATA_DIR: '/srv/data', CACHE_DIR: '/srv/cache' } },
+      infra: { 'docker-compose': {} },
+      packages: { web: {} },
+    });
+    const manager = InfraManager.fromConfig(config, { exec })!;
+    expect((await manager.up()).ok).toBe(true);
+    expect(calls[0]!.env).toMatchObject({
+      DB_PORT: '21051',
+      DATA_DIR: 'from-file',
+      CACHE_DIR: '/srv/cache',
+    });
+  });
+
   test('hands callbacks the config tokens, and brings up only the services named', async () => {
     const { exec, calls } = scriptedDocker();
     let seen: unknown;

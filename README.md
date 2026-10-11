@@ -324,6 +324,23 @@ defineConfig({
 With that, `NODE_OPTIONS=$NODE_OPTIONS --flag` appends to whatever the shell
 already set instead of losing to it.
 
+`env.vars` sets variables from the config itself — a record, or a callback that
+computes them from the environment — for every package, one-off command and
+[infra](docs/infra.md) service. They rank as a file read before `.env`: any file
+that defines the same variable overrides it, and so does the ambient environment
+(unless `env.override` names the variable):
+
+```ts
+defineConfig({
+  packageRootDir: 'packages',
+  // shorthand for `env: { vars: ({ envs }) => ({ … }) }`
+  env: ({ envs }) => ({ WORKSPACE_DIR: envs.DEVTOOIE_WORKSPACE_DIR }),
+  packages: {/* … */},
+});
+```
+
+See [`env.vars`](docs/configuration.md#envvars).
+
 ### Modes
 
 `--mode <name>` picks which `.env.<mode>` files load; it defaults to
@@ -347,8 +364,9 @@ With a [dev reverse proxy](docs/dev-reverse-proxy.md) configured, a routable pac
 `PUBLIC_ORIGIN` (its public `<urlScheme>://<subdomain>.<rootDomain>[:<port>]`), under the same
 rule.
 
-A package's `port` is also injected as `PORT` (an explicit `.env` `PORT`
-still overrides it). The reverse direction works too — `port` may be a callback
+A package's `port` is also injected as `PORT`. It wins over a `PORT` set
+workspace-wide — in a workspace `.env` file or `env.vars` — and only a `PORT` in
+the package's own `.env` file overrides it. The reverse direction works too — `port` may be a callback
 that reads these same resolved files to decide the port:
 
 ```ts
@@ -369,6 +387,22 @@ The same resolution is available as a standalone command: from inside a package'
 `devtooie exec -- <command>` runs a one-off command **in** that package's dir with its resolved
 env, and `devtooie run <script>` one of its scripts/targets — see
 [`devtooie exec` and `devtooie run`](docs/cli.md#devtooie-exec-and-devtooie-run).
+
+### Variables devtooie sets
+
+devtooie sets these in its own environment before the config loads, so they are in every
+callback's `envs`, in every process it starts, and open to a `${VAR}` reference in a `.env` file:
+
+| Variable                 | Value                                                                                                  |
+| ------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `DEVTOOIE_MODE`          | The active [mode](#modes).                                                                             |
+| `DEVTOOIE_CWD`           | The directory devtooie was invoked in: the workspace root, or wherever below it the command was typed. |
+| `DEVTOOIE_WORKSPACE_DIR` | The workspace root — the directory holding `devtooie.config.ts`.                                       |
+
+They are typed on a callback's `envs`, so an editor completes `envs.DEVTOOIE_WORKSPACE_DIR`.
+
+A script that imports the config without devtooie still finds all three in each callback's
+`envs`: the default mode, its own working directory, and the config's `workspaceDir`.
 
 ## Advanced CLI usage
 

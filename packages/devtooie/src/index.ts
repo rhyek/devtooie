@@ -60,5 +60,7 @@ export {
   DEFAULT_MODE,
   type Mode,
   type EnvOverride,
+  type Envs,
+  type DevtooieEnv,
 } from './env.js';
 export type { EnvResolution } from './env.js';

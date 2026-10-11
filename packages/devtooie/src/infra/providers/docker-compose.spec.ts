@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import type { Envs } from '../../env.js';
 import type { Exec, ExecResult } from '../exec.js';
 import { InfraError, type InfraEvent, type ResolvedDockerComposeInfra } from '../types.js';
 import {
@@ -56,7 +57,8 @@ function setup(
     {
       workspaceDir: WS,
       mode: 'test',
-      envs: { DB_PORT: '21052' },
+      // Only what the test reads: the variables devtooie sets come from the manager.
+      envs: { DB_PORT: '21052' } as Record<string, string> as Envs,
       tokens: {},
       exec,
       spawnInherit: async (command, args, opts) => {

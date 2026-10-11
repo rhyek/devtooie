@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { ambientEnv } from '../env.js';
+import { ambientEnv, baseEnvs } from '../env.js';
 import { execLines } from './exec.js';
 import { DockerComposeProvider } from './providers/docker-compose.js';
 import type { ResolvedInfraService } from './types.js';
@@ -69,7 +69,7 @@ function provider(
       {
         workspaceDir: ws,
         mode: 'test',
-        envs: ambientEnv(),
+        envs: baseEnvs(ws),
         tokens: {},
         exec: execLines,
         // Captured, not inherited: `down`'s output has no business in the test run's.

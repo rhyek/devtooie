@@ -75,8 +75,14 @@ beforeAll(async () => {
       "import { defineConfig } from 'devtooie';",
       'export default defineConfig({',
       "  packageRootDir: 'packages',",
+      '  env: ({ envs }) => ({',
+      '    ROOT_DIR: envs.DEVTOOIE_WORKSPACE_DIR,',
+      "    APP_PINNED: 'from-config',",
+      "    SHELL_SET: 'from-config',",
+      '  }),',
       '  packages: {',
       '    lib: {},',
+      '    envbuild: {},',
       "    app: { deps: { build: ['lib'] } },",
       '    broken: {},',
       '    killed: {},',
@@ -102,6 +108,7 @@ beforeAll(async () => {
     kill: script("process.kill(process.pid,'SIGKILL')"),
     cwd: script('console.log(process.cwd())'),
     env: script('console.log(process.env.APP_VAR)'),
+    rootdir: script('console.log(process.env.ROOT_DIR)'),
     whoami: script(
       "console.log(process.env.npm_package_name+' '+process.env.npm_package_version+' '+process.env.npm_lifecycle_event)",
     ),
@@ -111,7 +118,14 @@ beforeAll(async () => {
     posthook: 'echo POST',
   });
   fakeBin(app, 'localbin');
-  fs.writeFileSync(path.join(app, '.env.development'), 'APP_VAR=from-app-env-file\n');
+  fs.writeFileSync(
+    path.join(app, '.env.development'),
+    'APP_VAR=from-app-env-file\nAPP_PINNED=from-app-env-file\nAPP_DATA=${DEVTOOIE_WORKSPACE_DIR}/data\nAPP_ROOT_REF=${ROOT_DIR}/ref\n',
+  );
+  writePackage('envbuild', {
+    dev: 'true',
+    build: script("require('fs').appendFileSync('../../order.log',String(process.env.ROOT_DIR))"),
+  });
   writePackage('broken', { dev: 'true', build: 'exit 3' });
   writePackage('killed', { dev: 'true', build: script("process.kill(process.pid,'SIGKILL')") });
 }, 120_000);
@@ -230,6 +244,64 @@ describe('devtooie exec', () => {
     const result = await devtooie(['exec', '-p', 'app', '-c', 'hook']);
     expect(result.exitCode).not.toBe(0);
     expect(result.stdout).not.toContain('MAIN');
+  });
+});
+
+describe('environment variables', () => {
+  const print = (...names: string[]) => ['sh', '-c', names.map((n) => `echo "$${n}"`).join('; ')];
+
+  test('tells a command where devtooie was invoked and where the workspace root is', async () => {
+    const result = await devtooie(
+      ['exec', '--', ...print('DEVTOOIE_CWD', 'DEVTOOIE_WORKSPACE_DIR')],
+      { cwd: app },
+    );
+    expect(result.stdout).toBe(`${app}\n${ws}`);
+  });
+
+  test('replaces a DEVTOOIE_CWD inherited from whatever started devtooie', async () => {
+    const result = await devtooie(['exec', '--', ...print('DEVTOOIE_CWD')], {
+      cwd: app,
+      env: { DEVTOOIE_CWD: '/somewhere/else', DEVTOOIE_WORKSPACE_DIR: '/somewhere/else' },
+    });
+    expect(result.stdout).toBe(app);
+  });
+
+  test('expands a reference to the workspace root in a .env file', async () => {
+    const result = await devtooie(['exec', '-p', 'app', '--', ...print('APP_DATA')]);
+    expect(result.stdout).toBe(`${ws}/data`);
+  });
+
+  test("gives a package's command the config's own vars, under its .env file", async () => {
+    const result = await devtooie(['exec', '-p', 'app', '--', ...print('ROOT_DIR', 'APP_PINNED')]);
+    expect(result.stdout).toBe(`${ws}\nfrom-app-env-file`);
+  });
+
+  test("lets the shell win over one of the config's own vars", async () => {
+    const args = ['exec', '-p', 'app', '--', ...print('SHELL_SET')];
+    expect((await devtooie(args)).stdout).toBe('from-config');
+    expect((await devtooie(args, { env: { SHELL_SET: 'from-shell' } })).stdout).toBe('from-shell');
+  });
+
+  test("expands a .env file's reference to one of the config's own vars", async () => {
+    const result = await devtooie(['exec', '-p', 'app', '--', ...print('APP_ROOT_REF')]);
+    expect(result.stdout).toBe(`${ws}/ref`);
+  });
+
+  test("gives a package's script the config's own vars", async () => {
+    const result = await devtooie(['run', '-p', 'app', 'rootdir']);
+    expect(lastLine(result.stdout)).toBe(ws);
+  });
+
+  test("gives a command run outside every package the config's own vars", async () => {
+    const result = await devtooie(['exec', '--', ...print('ROOT_DIR', 'APP_PINNED')]);
+    expect(result.stdout).toBe(`${ws}\nfrom-config`);
+  });
+
+  test("gives a build script the config's own vars", async () => {
+    fs.writeFileSync(order, '');
+    const result = await devtooie(['--build', '-p', 'envbuild']);
+    expect(result.exitCode).toBe(0);
+    expect(fs.readFileSync(order, 'utf8')).toBe(ws);
   });
 });
 

@@ -190,7 +190,7 @@ Each callback receives one object:
 | `reset`        | `true` when this run is `infra up --reset`. Always `false` under `infra destroy`.                                                                                                                                                                                                                                                                                               |
 | `fresh`        | **`afterReady` only.** `true` when this run created the service's data — see [Seeding: `fresh`](#seeding-fresh).                                                                                                                                                                                                                                                                |
 | `workspaceDir` | The workspace root, absolute.                                                                                                                                                                                                                                                                                                                                                   |
-| `envs`         | This mode's environment: the workspace-scope `.env` files and the ambient environment — **the ambient environment wins over the files**, except for the variables `env.override` names ([Environment loading](../README.md#environment-env-loading)) — plus `COMPOSE_PROJECT_NAME`. It includes `DEVTOOIE_MODE`. It is the environment `run` and `compose` give their commands. |
+| `envs`         | This mode's environment: the config's own [`env.vars`](./configuration.md#envvars), the workspace-scope `.env` files and the ambient environment — **the ambient environment wins over the others**, except for the variables `env.override` names ([Environment loading](../README.md#environment-env-loading)) — plus `COMPOSE_PROJECT_NAME`. It includes `DEVTOOIE_MODE`. It is the environment `run` and `compose` give their commands. |
 | `tokens`       | The config's top-level [`tokens`](./configuration.md#typed-tokens), typed from what you declared.                                                                                                                                                                                                                                                                               |
 | `compose`      | `compose(args, opts?)` — runs `docker compose <args>` against this project, with `envs` as its environment: `await compose(['exec', '-T', 'db', 'psql', '-c', …])`.                                                                                                                                                                                                             |
 | `run`          | `run(command, args?, opts?)` — runs any other command, with `envs` as its environment: a migration or seed script gets the mode's variables and `DEVTOOIE_MODE` with nothing passed by hand.                                                                                                                                                                                    |
@@ -233,9 +233,9 @@ time, and the seed doesn't run. Give the service a clean start with
 - A non-zero exit **rejects** — which fails the service — unless you pass `reject: false`.
 
 **A command started with `run` or `compose` gets `envs` as its whole environment**, with any `env`
-option merged on top. That includes `DEVTOOIE_MODE` and everything in the mode's workspace-scope
-`.env` files, so a migration or seed script sees the same `DATABASE_URL` and the same mode the
-packages do, with nothing passed by hand:
+option merged on top. That includes `DEVTOOIE_MODE`, the config's `env.vars`, and everything in
+the mode's workspace-scope `.env` files, so a migration or seed script sees the same
+`DATABASE_URL` and the same mode the packages do, with nothing passed by hand:
 
 ```ts
 // DATABASE_URL and DEVTOOIE_MODE are already in the script's environment

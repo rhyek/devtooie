@@ -17,8 +17,8 @@ import {
   currentMode,
   envFileNames,
   packageEnvLayer,
-  resolveEnv,
   resolveMode,
+  workspaceEnvLayer,
 } from './env.js';
 import { acquireDevSession, startSessionDevReverseProxy } from './dev-session.js';
 import { handleShellError } from './errors.js';
@@ -95,6 +95,12 @@ try {
   process.exit(1);
 }
 
+// Published alongside it, for the config's callbacks and every child process: the directory
+// devtooie was invoked in and, once anchorAtConfigRoot finds it, the workspace root. Both describe
+// this invocation, so a value inherited from a devtooie that started this one is dropped.
+process.env.DEVTOOIE_CWD = INVOCATION_CWD;
+delete process.env.DEVTOOIE_WORKSPACE_DIR;
+
 /**
  * Very early step (runs for every command): find the workspace root (nearest ancestor with a
  * devtooie config), `chdir` into it so devtooie behaves identically from any subdirectory, and
@@ -109,6 +115,7 @@ async function anchorAtConfigRoot(invocationCwd: string): Promise<void> {
   if (root !== process.cwd()) {
     process.chdir(root);
   }
+  process.env.DEVTOOIE_WORKSPACE_DIR = root;
   // Before the merge below puts file values into `process.env`: what is there now is what the
   // shell handed us, and only that may win over a `.env` file (see captureShellEnv).
   captureShellEnv();
@@ -120,8 +127,10 @@ async function anchorAtConfigRoot(invocationCwd: string): Promise<void> {
     // (`NODE_OPTIONS=$NODE_OPTIONS --flag`), and its file value is applied where a child's
     // environment is built, not to devtooie's own. (Nothing is lost for devtooie's own process:
     // node reads NODE_OPTIONS at startup, long before this.)
-    const { env } = resolveEnv({ cwd: root, relativeDir: '.', files });
-    Object.assign(process.env, env);
+    // The config's own variables go in with the files, so whatever devtooie starts has them — a
+    // build script included, which is spawned with this environment alone.
+    const vars = getLoadedConfig()?.envVars;
+    Object.assign(process.env, workspaceEnvLayer({ cwd: root, files, vars }));
   } catch (err) {
     // Best-effort by design — this runs before *every* command (`init` included), so a config
     // that exists but won't load must not be fatal here; the commands that actually need it
@@ -295,13 +304,17 @@ async function resolveOneOffTargetOrExit(
     );
     process.exit(1);
   }
-  const files = config.envFiles ?? envFileNames();
-  const override = config.envOverride;
+  const layerOpts = {
+    cwd: root,
+    files: config.envFiles ?? envFileNames(),
+    override: config.envOverride,
+    vars: config.envVars,
+  };
 
   const configPackages = Object.values(config.packages);
   // The same layer the session spawns the package with: `PORT`, `PUBLIC_ORIGIN` under the dev
-  // reverse proxy, then its `.env` files.
-  const layerFor = (pkg: AnyPackageConfig) => packageEnvLayer(pkg, { cwd: root, files, override });
+  // reverse proxy, then the config's own variables and its `.env` files.
+  const layerFor = (pkg: AnyPackageConfig) => packageEnvLayer(pkg, layerOpts);
   if (explicitName !== undefined) {
     const pkg = configPackages.find((p) => p.name === explicitName);
     if (!pkg) {
@@ -315,7 +328,7 @@ async function resolveOneOffTargetOrExit(
   if (pkg) {
     return { dir: pkg.absoluteDir, envLayer: layerFor(pkg) };
   }
-  return { dir: root, envLayer: resolveEnv({ cwd: root, relativeDir: '.', files, override }).env };
+  return { dir: root, envLayer: workspaceEnvLayer(layerOpts) };
 }
 
 /** The infra manager for the loaded config, exiting with a hint when it declares no `infra`. */

@@ -1,5 +1,5 @@
 import type { TokenRecord } from '../config.js';
-import type { Mode } from '../env.js';
+import type { Envs, Mode } from '../env.js';
 
 /** How long `infra up` waits for the services to become ready, when the config doesn't say. */
 export const DEFAULT_READY_TIMEOUT_MS = 300_000;
@@ -43,7 +43,7 @@ export interface InfraCallbackContext<T = TokenRecord> {
    * scope only: a package's own `.env` files, and the `PORT`/`PUBLIC_ORIGIN` devtooie injects
    * into a package's process, aren't in it.
    */
-  envs: Record<string, string>;
+  envs: Envs;
   /** The config's top-level `tokens`, typed from what the config declares. */
   tokens: T;
   /**
@@ -110,7 +110,7 @@ export interface InfraEnabledContext<T = TokenRecord> {
    * The workspace-scope `.env` files for the mode and the ambient environment; the ambient
    * environment wins over the files, except for the variables `env.override` names.
    */
-  envs: Record<string, string>;
+  envs: Envs;
   /** The config's top-level `tokens`. */
   tokens: T;
 }

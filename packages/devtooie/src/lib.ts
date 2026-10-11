@@ -756,6 +756,7 @@ export function buildRunnerArgs(
     topLevelUrls: config?.urls?.map(normalizeUrlEntry),
     envFiles: config?.envFiles ?? envFileNames(),
     envOverride: config?.envOverride,
+    envVars: config?.envVars,
     logTimestamps: config?.logTimestamps ?? true,
     cwd: process.cwd(),
   };

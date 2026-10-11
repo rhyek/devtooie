@@ -585,6 +585,19 @@ describe('display sort + runner args', () => {
     expect(args.buildDepSet).toBe(deps.buildSet);
   });
 
+  test("buildRunnerArgs carries the loaded config's own env vars", () => {
+    const all = Object.values(
+      defineConfig({
+        packageRootDir: 'packages',
+        workspaceDir: '/repo',
+        env: { vars: { DATA_DIR: '/srv/data' } },
+        packages: { web: {} },
+      }).packages,
+    );
+    const web = all.find((a) => a.name === 'web')!;
+    expect(buildRunnerArgs([web], resolveDeps([web])).envVars).toEqual({ DATA_DIR: '/srv/data' });
+  });
+
   it('buildRunnerArgs surfaces top-level urls as normalized lines from the loaded config', () => {
     const all = Object.values(
       defineConfig({

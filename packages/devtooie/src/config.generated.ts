@@ -131,9 +131,9 @@ export type GeneratedDefineConfig = {
     tokens?: {
         [key: string]: string | undefined;
     } | undefined;
-    /** Environment-loading options. Which files load is chosen with `--mode`. */
     env?: {
-        /** Variables whose `.env` value may beat the ambient environment (`true` for all). By default the ambient environment wins, as in Next.js/Vite/`node --env-file`. */
+        vars?: any | undefined;
+        /** Variables whose `.env` or `env.vars` value may beat the ambient environment (`true` for all). By default the ambient environment wins, as in Next.js/Vite/`node --env-file`. */
         override?: (boolean | string[]) | undefined;
     } | undefined;
     /** Log display options. */

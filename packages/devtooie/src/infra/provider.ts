@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { TokenRecord } from '../config.js';
-import type { Mode } from '../env.js';
+import type { Envs, Mode } from '../env.js';
 import type { Exec, ExecOptions, ExecResult, SpawnInherit } from './exec.js';
 import {
   InfraError,
@@ -28,7 +28,7 @@ export interface ProviderRuntime {
    * The workspace-scope `.env` files for the mode and the ambient environment, the ambient
    * environment winning over the files except for the variables `env.override` names.
    */
-  envs: Record<string, string>;
+  envs: Envs;
   /** The config's top-level `tokens`. */
   tokens: TokenRecord;
   exec: Exec;

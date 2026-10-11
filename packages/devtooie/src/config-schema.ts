@@ -1,7 +1,7 @@
 import { z } from 'zod';
 // Type-only — erased at compile time, so `config-schema.ts` still imports nothing but `zod`
 // at runtime and `scripts/gen-config-types.ts` can keep executing it without a build.
-import type { ConfigContext, PortResolver, UrlResolver } from './config.js';
+import type { ConfigContext, EnvVars, EnvVarsResolver, PortResolver, UrlResolver } from './config.js'; // prettier-ignore
 
 // The Zod schemas — the single source of the config's shape, defaults, validation, AND field
 // docs (via `.describe()`). `scripts/gen-config-types.ts` reads this file (it imports only
@@ -276,19 +276,31 @@ export const DefineConfigSchema = z.object({
     .record(z.string(), z.string().optional())
     .optional()
     .describe('Arbitrary values handed to every `port`/`healthcheck`/`urls` callback as `tokens`.'),
+  // Overridden in config.ts (the `vars` callback erases to `any`); documented there.
   env: z
-    // Strict so a config still passing the removed `files` option fails loudly. Stripping it
-    // would leave the config looking fine while loading a different set of files than it asks for.
-    .strictObject({
-      override: z
-        .union([z.boolean(), z.array(z.string())])
-        .optional()
-        .describe(
-          'Variables whose `.env` value may beat the ambient environment (`true` for all). By default the ambient environment wins, as in Next.js/Vite/`node --env-file`.',
-        ),
-    })
-    .optional()
-    .describe('Environment-loading options. Which files load is chosen with `--mode`.'),
+    .preprocess(
+      // The callback on its own is shorthand for `{ vars: callback }`.
+      (value) => (typeof value === 'function' ? { vars: value } : value),
+      // Strict so a config still passing the removed `files` option fails loudly. Stripping it
+      // would leave the config looking fine while loading a different set of files than it asks for.
+      z.strictObject({
+        // The values are checked where a callback's result is, in `defineConfig`, so a bad one
+        // is reported the same way — by variable name — whichever form declared it.
+        vars: z
+          .custom<EnvVars | EnvVarsResolver>(
+            (v) => typeof v === 'function' || (typeof v === 'object' && v !== null && !Array.isArray(v)), // prettier-ignore
+            { message: 'env.vars must be an object of variables or a function' },
+          )
+          .optional(),
+        override: z
+          .union([z.boolean(), z.array(z.string())])
+          .optional()
+          .describe(
+            'Variables whose `.env` or `env.vars` value may beat the ambient environment (`true` for all). By default the ambient environment wins, as in Next.js/Vite/`node --env-file`.',
+          ),
+      }),
+    )
+    .optional(),
   logs: z
     .object({
       timestamps: z

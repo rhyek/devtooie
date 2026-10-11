@@ -1,5 +1,5 @@
 import { getConfigTokens, getWorkspaceDir, type Config } from '../config.js';
-import { ambientEnv, resolveEnv } from '../env.js';
+import { baseEnvs, workspaceEnvLayer } from '../env.js';
 import { execLines, spawnInherit, type Exec, type SpawnInherit } from './exec.js';
 import type { InfraProvider, InfraRunRequest, ProviderRuntime } from './provider.js';
 import { DockerComposeProvider } from './providers/docker-compose.js';
@@ -28,16 +28,17 @@ export class InfraManager {
     const runtime: ProviderRuntime = {
       workspaceDir,
       mode: config.envMode,
-      // The same environment a workspace-scope config callback sees: the mode's `.env` files
-      // and the ambient environment, which wins over the files except where `env.override` says.
+      // The same environment a workspace-scope config callback sees: the config's own variables
+      // and the mode's `.env` files, and the ambient environment, which wins over both except
+      // where `env.override` says.
       envs: Object.assign(
-        ambientEnv(),
-        resolveEnv({
+        baseEnvs(workspaceDir),
+        workspaceEnvLayer({
           cwd: workspaceDir,
-          relativeDir: '.',
           files: config.envFiles,
           override: config.envOverride,
-        }).env,
+          vars: config.envVars,
+        }),
       ),
       tokens: getConfigTokens(),
       exec: deps.exec ?? execLines,

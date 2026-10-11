@@ -91,6 +91,11 @@ export interface EnvResolution {
   files: string[];
   /** Every candidate path (whether or not it exists), ascending precedence. */
   candidates: string[];
+  /**
+   * The names the package's own files assign, as against the workspace's. When `relativeDir`
+   * is the workspace root the one scope is the package's, so this is every file's names.
+   */
+  packageNames: Set<string>;
 }
 
 interface ResolveEnvOptions {
@@ -102,6 +107,12 @@ interface ResolveEnvOptions {
   files?: string[];
   /** Variables the files may override the ambient environment for. */
   override?: EnvOverride;
+  /**
+   * The config's own variables (`env.vars`, resolved). They rank as a file read before every
+   * real one, under the same rules: any file replaces them, the ambient environment wins over
+   * them unless `override` says otherwise, and a file's `${VAR}` can reference them.
+   */
+  vars?: Record<string, string>;
   /**
    * The ambient environment to resolve against. Defaults to the one devtooie was started with
    * (see {@link captureShellEnv}), or the live `process.env` when none was recorded.
@@ -124,6 +135,35 @@ export function envCandidatePaths({
   const pkgDir = path.resolve(cwd, relativeDir);
   const scopes = pkgDir === workspaceDir ? [workspaceDir] : [workspaceDir, pkgDir];
   return scopes.flatMap((scope) => files.map((f) => path.join(scope, f)));
+}
+
+/** The variables devtooie sets itself, for the config's callbacks and every process it starts. */
+export interface DevtooieEnv {
+  /** The active mode: `development` unless `--mode` (or `DEVTOOIE_MODE`) says otherwise. */
+  DEVTOOIE_MODE: Mode;
+  /** The directory devtooie was invoked in: the workspace root, or wherever below it. */
+  DEVTOOIE_CWD: string;
+  /** The workspace root — the directory holding `devtooie.config.ts`. */
+  DEVTOOIE_WORKSPACE_DIR: string;
+}
+
+/**
+ * The environment a callback receives as `envs`. Any name can be read from it; the variables
+ * devtooie sets are spelled out so an editor offers them, and they are always there.
+ */
+export type Envs = DevtooieEnv & Record<string, string>;
+
+/**
+ * The ambient environment as a callback's `envs` starts from: with the variables the devtooie
+ * CLI publishes filled in for a process it didn't start — a script importing the config, say.
+ */
+export function baseEnvs(workspaceDir: string): Envs {
+  const fallback: DevtooieEnv = {
+    DEVTOOIE_MODE: currentMode(),
+    DEVTOOIE_CWD: process.cwd(),
+    DEVTOOIE_WORKSPACE_DIR: workspaceDir,
+  };
+  return Object.assign(fallback, ambientEnv());
 }
 
 /**
@@ -158,6 +198,9 @@ export function captureShellEnv(): void {
   shellEnv = ambientEnv();
 }
 
+/** Escapes `$` so dotenvx substitutes a value without scanning it for references. */
+const escapeDollars = (value: string) => value.replaceAll('$', '\\$');
+
 /**
  * Makes ambient values inert to `${VAR}` expansion by escaping the metacharacter.
  *
@@ -183,15 +226,77 @@ export function captureShellEnv(): void {
 export function literalizeForExpansion(ambient: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(ambient)) {
-    out[key] = value.includes('$') ? value.replaceAll('$', '\\$') : value;
+    out[key] = escapeDollars(value);
   }
   return out;
+}
+
+/** A name a `.env` line can carry: what dotenv's line grammar accepts on the left of `=`. */
+export const ENV_NAME_RE = /^[\w.-]+$/;
+
+/**
+ * dotenv's line grammar, as dotenvx reads it. A quoted value may span lines, and a line inside
+ * one assigns nothing — which is why this is the grammar and not a search for `NAME=`.
+ */
+const ENV_LINE_RE =
+  /(?:^|^)\s*(?:export\s+)?([\w.-]+)(?:\s*=\s*?|:\s+?)(\s*'(?:\\'|[^'])*'|\s*"(?:\\"|[^"])*"|\s*`(?:\\`|[^`])*`|[^#\r\n]+)?\s*(?:#.*)?(?:$|$)/gm;
+
+/**
+ * The names a `.env` source assigns, without resolving any value — dotenvx offers no parse
+ * that doesn't also expand references and run `$(command)` substitutions.
+ */
+export function assignedNames(source: string): Set<string> {
+  const lines = source.replace(/\r\n?/g, '\n').matchAll(ENV_LINE_RE);
+  return new Set(Array.from(lines, (line) => line[1] ?? ''));
+}
+
+/**
+ * The config's own variables as the source of a `.env` file, so they resolve by the very rules
+ * a file's do.
+ *
+ * A value is written single-quoted, which dotenvx takes literally: no `${VAR}` expansion, no
+ * `$(command)` substitution, and still literal when a later line references the variable.
+ *
+ * A value that itself contains a single quote can't be written that way, so its line references
+ * a placeholder holding it — `placeholders`, for the environment the source is expanded
+ * against. The placeholder's value is escaped twice: once for its own substitution, and once
+ * more so the variable stays inert when a later line references *it*. That leaves the variable
+ * itself one escape short of its value, which `restore` undoes after the parse.
+ */
+function varsAsEnvSource(vars: Record<string, string>): {
+  source: string;
+  placeholders: Record<string, string>;
+  restore: (env: Record<string, string>) => void;
+} {
+  const placeholders: Record<string, string> = {};
+  const indirect: [name: string, value: string][] = [];
+  const lines = Object.entries(vars).map(([name, value]) => {
+    if (!value.includes("'")) {
+      return `${name}='${value}'`;
+    }
+    const placeholder = `__DEVTOOIE_VAR_${String(indirect.length)}`;
+    placeholders[placeholder] = escapeDollars(escapeDollars(value));
+    indirect.push([name, value]);
+    return `${name}=\${${placeholder}}`;
+  });
+  return {
+    source: lines.join('\n'),
+    placeholders,
+    restore: (env) => {
+      for (const [name, value] of indirect) {
+        // Still the variable's own value — not the ambient environment's, nor a file's.
+        if (env[name] === escapeDollars(value)) {
+          env[name] = value;
+        }
+      }
+    },
+  };
 }
 
 /**
  * Resolves the `.env` files for a package into a flat, expanded variable map without touching
  * `process.env`. Only files that exist are loaded; a later file (or a package-scope file)
- * overrides an earlier one.
+ * overrides an earlier one, and every file overrides the config's own `vars`.
  *
  * The **ambient environment wins** over the files — matching Next.js, Vite, dotenv-flow and
  * `node --env-file`, so `FOO=bar devtooie` overrides a file for one run. `override` names the
@@ -204,9 +309,15 @@ export function resolveEnv(opts: ResolveEnvOptions): EnvResolution {
   const files = candidates.filter((p) => fs.existsSync(p));
 
   const ambient = opts.ambient ?? shellEnv ?? ambientEnv();
-  const source = files.map((p) => fs.readFileSync(p, 'utf8')).join('\n');
-  if (!source) {
-    return { env: {}, files, candidates };
+  const fromVars = varsAsEnvSource(opts.vars ?? {});
+  const texts = files.map((p) => fs.readFileSync(p, 'utf8'));
+  const source = [fromVars.source, ...texts].join('\n');
+  const pkgDir = path.resolve(opts.cwd, opts.relativeDir);
+  const packageNames = assignedNames(
+    texts.filter((_text, i) => path.dirname(files[i] ?? '') === pkgDir).join('\n'),
+  );
+  if (!source.trim()) {
+    return { env: {}, files, candidates, packageNames };
   }
 
   const { override } = opts;
@@ -217,7 +328,7 @@ export function resolveEnv(opts: ResolveEnvOptions): EnvResolution {
 
   // dotenvx reads from this snapshot for `$VAR` lookups but writes to neither it nor the real
   // process.env, so nothing is mutated.
-  const lit = literalizeForExpansion(ambient);
+  const lit = { ...fromVars.placeholders, ...literalizeForExpansion(ambient) };
 
   // Ambient wins for every key, and `${VAR}` expands against ambient — so a file's `BAZ=$FOO`
   // sees the ambient FOO rather than a file FOO that lost.
@@ -247,26 +358,36 @@ export function resolveEnv(opts: ResolveEnvOptions): EnvResolution {
     }
   }
 
-  return { env, files, candidates };
+  fromVars.restore(env);
+  return { env, files, candidates, packageNames };
+}
+
+/** What an environment layer is built from; see {@link packageEnvLayer}. */
+interface EnvLayerOptions {
+  /** Workspace root. */
+  cwd: string;
+  /** Filenames to look for at each scope (defaults to the active mode's {@link envFileNames}). */
+  files?: string[];
+  /** Variables the files may override the ambient environment for. */
+  override?: EnvOverride;
+  /** The config's own variables (`env.vars`, resolved); see {@link ResolveEnvOptions.vars}. */
+  vars?: Record<string, string>;
 }
 
 /**
- * The `.env`-derived environment layer for a package's child process: the package's configured
- * `port` as `PORT` and, under the dev reverse proxy, its public origin as `PUBLIC_ORIGIN` (an
- * explicit `.env` value for either still wins), then its resolved `.env` files.
- * Excludes `process.env` — merge this over it at spawn time (`Object.assign({}, process.env,
- * layer)`). Shared by the TUI/plain session and `devtooie exec` so both build the same env.
+ * The environment layer for a package's child process: the config's own variables and its
+ * `.env` files, resolved together, with the package's configured `port` as `PORT` and, under
+ * the dev reverse proxy, its public origin as `PUBLIC_ORIGIN`. Those two are the package's own,
+ * so they win over a value set workspace-wide — by the config's variables or a workspace `.env`
+ * file — and only a file of the package's own replaces them. Excludes `process.env` — merge
+ * this over it at spawn time (`Object.assign({}, process.env, layer)`). Shared by the TUI/plain
+ * session and `devtooie exec` so both build the same env.
  */
 export function packageEnvLayer(
   pkg: AnyPackageConfig,
-  opts: { cwd: string; files?: string[]; override?: EnvOverride },
+  opts: EnvLayerOptions,
 ): Record<string, string> {
-  const { env } = resolveEnv({
-    cwd: opts.cwd,
-    relativeDir: pkg.relativeDir,
-    files: opts.files,
-    override: opts.override,
-  });
+  const { env, packageNames } = resolveEnv({ ...opts, relativeDir: pkg.relativeDir });
   const injected: Record<string, string> = {};
   if (pkg.port !== undefined) {
     injected.PORT = String(pkg.port);
@@ -274,5 +395,19 @@ export function packageEnvLayer(
   if (pkg.publicOrigin !== undefined) {
     injected.PUBLIC_ORIGIN = pkg.publicOrigin;
   }
-  return Object.assign(injected, env);
+  for (const [name, value] of Object.entries(injected)) {
+    if (!packageNames.has(name)) {
+      env[name] = value;
+    }
+  }
+  return env;
+}
+
+/**
+ * The environment layer for what belongs to no package — infra, and `devtooie exec` / `run`
+ * outside every package: the config's own variables and the workspace-scope `.env` files,
+ * resolved together. Excludes `process.env`, like {@link packageEnvLayer}.
+ */
+export function workspaceEnvLayer(opts: EnvLayerOptions): Record<string, string> {
+  return resolveEnv({ ...opts, relativeDir: '.' }).env;
 }

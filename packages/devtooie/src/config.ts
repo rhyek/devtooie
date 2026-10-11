@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { z } from 'zod';
-import { ambientEnv, resolveEnv, envFileNames, currentMode, type EnvOverride, type Mode } from './env.js'; // prettier-ignore
+import { ENV_NAME_RE, baseEnvs, resolveEnv, envFileNames, currentMode, type Envs, type EnvOverride, type Mode } from './env.js'; // prettier-ignore
 import { type CommandSchema, type PackageConfigSchema, DefineConfigSchema, SubdomainLabelSchema, DEFAULT_HEALTHCHECK_TIMEOUT_MS } from './config-schema.js'; // prettier-ignore
 import type { GeneratedPackageConfig, GeneratedDefineConfig } from './config.generated.js';
 import { composeProjectName } from './infra/project-name.js';
@@ -51,8 +51,11 @@ export interface ConfigContext<T = TokenRecord> {
    * `PUBLIC_ORIGIN`) devtooie injects. File values win
    * over ambient ones, and package-scope files win over workspace-scope ones. (For the
    * workspace-wide `urls`, which belong to no package, this is the workspace scope alone.)
+   * The config's own `env.vars` are in it too, ranked as a file below every real one — except
+   * for the `env.vars` callback itself, which is what computes them. The variables devtooie
+   * sets (`DEVTOOIE_MODE`, `DEVTOOIE_CWD`, `DEVTOOIE_WORKSPACE_DIR`) are always in it, by name.
    */
-  envs: Record<string, string>;
+  envs: Envs;
   /**
    * The config's top-level `tokens` merged with this package's own `tokens` (the package's
    * win), **typed from what you declared** — so `tokens.domain` is known and a typo is a
@@ -123,6 +126,36 @@ export type PackageTokens<Top, Own> =
 
 /** A package `port` computed from the package's environment. */
 export type PortResolver<T = TokenRecord> = (ctx: ConfigContext<T>) => number | undefined;
+
+/** Environment variables a config declares; an `undefined` value leaves the variable out. */
+export type EnvVars = Record<string, string | undefined>;
+
+/** `env.vars` computed from the workspace's environment. */
+export type EnvVarsResolver<T = TokenRecord> = (ctx: ConfigContext<T>) => EnvVars;
+
+/**
+ * The config's `env`: its options, or the `vars` callback on its own —
+ * `env: ({ envs }) => ({ … })` is `env: { vars: ({ envs }) => ({ … }) }`.
+ */
+export type EnvInput<T = TokenRecord> =
+  | EnvVarsResolver<T>
+  | {
+      /**
+       * Environment variables of the config's own, for every package devtooie runs, `devtooie
+       * exec` / `run`, and infra. A record, or a callback over the workspace context
+       * `{ envs, tokens }` invoked once at load, before anything else in the config resolves —
+       * so every other callback finds the result in its `envs`. They rank as a `.env` file read
+       * before every real one, under the same rules: any file replaces them, the ambient
+       * environment wins over them unless `override` names them, and a file's `${VAR}` can
+       * reference them. A value is taken literally; one that is `undefined` is left out.
+       */
+      vars?: EnvVars | EnvVarsResolver<T>;
+      /**
+       * Variables whose `.env` or `env.vars` value may beat the ambient environment (`true` for all). By
+       * default the ambient environment wins, as in Next.js/Vite/`node --env-file`.
+       */
+      override?: EnvOverride;
+    };
 
 /** A URL computed from the package's environment. */
 export type UrlResolver<T = TokenRecord> = (ctx: PackageContext<T>) => string;
@@ -299,9 +332,9 @@ export type PackageConfigInput<
       formatter?: (line: string) => string;
     };
     /**
-     * The package's dev port. Injected into its dev process as `PORT` (an explicit `.env`
-     * `PORT` still wins), handed to this package's `healthcheck`/`urls` callbacks, and swept
-     * on session handoff.
+     * The package's dev port. Injected into its dev process as `PORT` (only a `PORT` in the
+     * package's own `.env` file overrides it), handed to this package's `healthcheck`/`urls`
+     * callbacks, and swept on session handoff.
      *
      * Pass a **callback** to derive it from the package's environment. It receives the
      * package's `.env` files already resolved and merged over `process.env` — the same
@@ -444,8 +477,14 @@ export type DefineConfigOptions<
   RootDir extends string | undefined = undefined,
 > = Omit<
   GeneratedDefineConfig,
-  'packages' | 'urls' | 'tokens' | 'devReverseProxy' | 'packageRootDir' | 'infra'
+  'packages' | 'urls' | 'tokens' | 'devReverseProxy' | 'packageRootDir' | 'infra' | 'env'
 > & {
+  /**
+   * Environment options: `vars`, variables of the config's own, and `override`, which `.env`
+   * values may beat the ambient environment. Which files load is chosen with `--mode`. A
+   * callback here is shorthand for `vars`. See {@link EnvInput}.
+   */
+  env?: EnvInput<Top>;
   /**
    * Infrastructure that isn't a package — a database, a cache, a broker — keyed by provider
    * (`'docker-compose'` is the only one). `devtooie infra up` brings it up and waits until it is
@@ -529,8 +568,8 @@ export type ResolvedPackageConfig<N extends string, T = TokenRecord> = Omit<
      * The package's public origin under the dev reverse proxy —
      * `<urlScheme>://<canonical subdomain>.<rootDomain>[:<port>]` — or `undefined` when the
      * config has no `devReverseProxy` or the proxy doesn't route this package (no `subdomain`
-     * or no `port`). Injected into the package's process as `PUBLIC_ORIGIN` (an explicit `.env`
-     * value still wins), and what the proxy's footer links are built from.
+     * or no `port`). Injected into the package's process as `PUBLIC_ORIGIN` (only one in the
+     * package's own `.env` file overrides it), and what the proxy's footer links are built from.
      */
     publicOrigin?: string;
   };
@@ -566,8 +605,10 @@ export interface Config<
   envFiles: string[];
   /** The active mode (`--mode`, else `DEVTOOIE_MODE`, else `development`). */
   envMode: Mode;
-  /** Variables whose `.env` value may beat the ambient environment. */
+  /** Variables whose `.env` or `env.vars` value may beat the ambient environment. */
   envOverride?: EnvOverride;
+  /** The config's own variables (`env.vars`), resolved, or `undefined` when it declares none. */
+  envVars?: Record<string, string>;
   /** Whether to prefix on-screen log lines with a timestamp (defaults to `false`). */
   logTimestamps: boolean;
 }
@@ -748,6 +789,61 @@ function formatConfigError(err: z.ZodError): string {
   return `invalid devtooie config:\n${lines.join('\n')}`;
 }
 
+/** Which `.env` files a failed callback had to read from, for its error message. */
+function envFilesNote(files: string[]): string {
+  return files.length ? `env files loaded: ${files.join(', ')}` : 'no env files were found';
+}
+
+/**
+ * The config's own variables: the `env.vars` record, or its callback's result. A value that
+ * isn't a string is an error naming the variable — and, for a callback, the env files loaded,
+ * in the style of a package `port`. An `undefined` one is left out.
+ */
+function resolveEnvVars(
+  vars: NonNullable<z.infer<typeof DefineConfigSchema>['env']>['vars'],
+  ctx: () => ConfigContext,
+  envFilesLoaded: () => string[],
+): Record<string, string> | undefined {
+  if (vars === undefined) {
+    return undefined;
+  }
+  const computed = typeof vars === 'function';
+  const fail = (problem: string): never => {
+    const where = computed ? `\n  ${envFilesNote(envFilesLoaded())}` : '';
+    throw new Error(`env.vars: ${problem}${where}`);
+  };
+  const result: unknown = typeof vars === 'function' ? vars(ctx()) : vars;
+  // A plain object only: a promise (an `async` callback) or a `Map` has no entries to read, and
+  // would otherwise resolve to no variables at all without a word.
+  const proto: unknown =
+    typeof result === 'object' && result !== null ? Object.getPrototypeOf(result) : undefined;
+  if (proto !== Object.prototype && proto !== null) {
+    const shown = typeof result === 'string' ? JSON.stringify(result) : String(result);
+    return fail(
+      `${computed ? 'callback returned' : 'got'} ${shown} (expected an object of variables)`,
+    );
+  }
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(result as object)) {
+    if (!ENV_NAME_RE.test(key)) {
+      throw new Error(
+        `env.vars: ${JSON.stringify(key)} is not a valid environment variable name ` +
+          '(letters, digits, "_", "." and "-")',
+      );
+    }
+    if (value === undefined) {
+      continue;
+    }
+    if (typeof value !== 'string') {
+      fail(
+        `${key} is ${String(value)} (a ${typeof value}) — an environment variable must be a string`,
+      );
+    }
+    resolved[key] = value;
+  }
+  return resolved;
+}
+
 /**
  * A package's effective port: the literal number, or the result of its `port` callback. The
  * callback can't see `port` itself, so it gets the base {@link ConfigContext}.
@@ -765,12 +861,8 @@ function resolvePort(
     return undefined;
   }
   if (typeof port !== 'number' || !Number.isFinite(port)) {
-    const files = envFilesLoaded();
-    const where = files.length
-      ? `env files loaded: ${files.join(', ')}`
-      : 'no env files were found';
     throw new Error(
-      `${pkg.name}: port callback returned ${String(port)} (check the env vars it reads)\n  ${where}`,
+      `${pkg.name}: port callback returned ${String(port)} (check the env vars it reads)\n  ${envFilesNote(envFilesLoaded())}`,
     );
   }
   return port;
@@ -884,12 +976,8 @@ function resolveDevReverseProxy(
   envFilesLoaded: () => string[],
 ): ResolvedDevReverseProxy {
   const fail = (field: string, value: unknown): never => {
-    const files = envFilesLoaded();
-    const where = files.length
-      ? `env files loaded: ${files.join(', ')}`
-      : 'no env files were found';
     throw new Error(
-      `devReverseProxy.${field}: callback returned ${typeof value === 'string' ? JSON.stringify(value) : String(value)} (check the env vars it reads)\n  ${where}`,
+      `devReverseProxy.${field}: callback returned ${typeof value === 'string' ? JSON.stringify(value) : String(value)} (check the env vars it reads)\n  ${envFilesNote(envFilesLoaded())}`,
     );
   };
   const port = typeof block.port === 'function' ? block.port(ctx()) : block.port;
@@ -1076,13 +1164,30 @@ export function defineConfig<
   const envFiles = envFileNames();
   const envOverride = parsed.env?.override;
 
-  /** A scope's `.env` files merged over `process.env` — the environment a callback sees. */
-  const envsFor = (relativeDir: string) => {
-    const load = once(() =>
-      resolveEnv({ cwd: workspaceDir, relativeDir, files: envFiles, override: envOverride }),
+  const baseEnv = () => baseEnvs(workspaceRoot);
+
+  const loadEnv = (relativeDir: string, vars?: Record<string, string>) =>
+    once(() =>
+      resolveEnv({ cwd: workspaceDir, relativeDir, files: envFiles, override: envOverride, vars }),
     );
+
+  // The config's own variables come first: every callback below finds them in its `envs`. Their
+  // callback sees the workspace environment as it resolves without them.
+  const workspaceFiles = loadEnv('.');
+  const envVars = resolveEnvVars(
+    parsed.env?.vars,
+    () => ({ envs: Object.assign(baseEnv(), workspaceFiles().env), tokens }),
+    () => workspaceFiles().files,
+  );
+
+  /**
+   * The environment a callback sees: a scope's `.env` files, with the config's own variables
+   * ranked as a file below them, merged over `process.env`.
+   */
+  const envsFor = (relativeDir: string) => {
+    const load = loadEnv(relativeDir, envVars);
     return {
-      envs: once(() => Object.assign(ambientEnv(), load().env)),
+      envs: once(() => Object.assign(baseEnv(), load().env)),
       files: () => load().files,
     };
   };
@@ -1208,6 +1313,7 @@ export function defineConfig<
     envFiles,
     envMode: currentMode(),
     envOverride,
+    envVars,
     logTimestamps: parsed.logs?.timestamps ?? true,
   };
   registeredPackages = packages as unknown as AnyPackageConfig[];

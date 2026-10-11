@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
 import type { Exec, ExecOptions, ExecResult } from './exec.js';
+import type { Envs } from '../env.js';
 import { InfraProvider, type ProviderRuntime } from './provider.js';
 import {
   InfraError,
@@ -39,7 +40,8 @@ class FakeProvider extends InfraProvider {
     const runtime: ProviderRuntime = {
       workspaceDir: '/ws',
       mode: 'test',
-      envs: { FROM_ENV: 'yes' },
+      // Only what the test reads: the variables devtooie sets come from the manager.
+      envs: { FROM_ENV: 'yes' } as Record<string, string> as Envs,
       tokens: { domain: 'example.test' },
       exec: o.exec ?? (async () => ({ exitCode: 0, stdout: '', stderr: '' })),
       spawnInherit: async () => 0,

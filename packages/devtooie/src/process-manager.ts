@@ -238,8 +238,10 @@ export class ProcessManager implements ControlManager {
   private logFilePath: string;
   /** `.env` filenames resolved (per package) and injected into each spawned child. */
   private envFiles: string[];
-  /** Variables whose `.env` value may beat the ambient environment. */
+  /** Variables whose `.env` or `env.vars` value may beat the ambient environment. */
   private envOverride?: EnvOverride;
+  /** The config's own variables, ranked as a file below the `.env` files. */
+  private envVars?: Record<string, string>;
   /** Workspace root that package `relativeDir`s resolve against for `.env` loading. */
   private cwd: string;
   /** Tears down the `.env` file watchers; null until `startAll` wires them up. */
@@ -270,6 +272,7 @@ export class ProcessManager implements ControlManager {
       logFile,
       envFiles,
       envOverride,
+      envVars,
       cwd,
       logTimestamps = true,
       infra,
@@ -295,6 +298,7 @@ export class ProcessManager implements ControlManager {
     this.healthchecks = healthchecks;
     this.envFiles = envFiles ?? envFileNames();
     this.envOverride = envOverride;
+    this.envVars = envVars;
     this.cwd = cwd ?? process.cwd();
 
     const displayName = (a: AnyPackageConfig) => a.shortName ?? a.name;
@@ -650,17 +654,22 @@ export class ProcessManager implements ControlManager {
   }
 
   /**
-   * Environment for a package's child processes: the current `process.env`, then the
+   * Environment for a package's child processes: the current `process.env`, then the config's
+   * own variables and its resolved `.env` files (later files / package scope win), with the
    * package's configured `port` as `PORT` (and, under the dev reverse proxy, its public origin
-   * as `PUBLIC_ORIGIN`), then its resolved `.env` files (later files / package scope win). So
-   * `PORT` defaults to the config port but an explicit `.env` `PORT` still wins. Re-resolved on
+   * as `PUBLIC_ORIGIN`) — which only a file of the package's own overrides. Re-resolved on
    * every spawn so a restart picks up edited `.env` values. Never mutates `process.env`.
    */
   private packageEnv(pkg: AnyPackageConfig): NodeJS.ProcessEnv {
     return Object.assign(
       {},
       process.env,
-      packageEnvLayer(pkg, { cwd: this.cwd, files: this.envFiles, override: this.envOverride }),
+      packageEnvLayer(pkg, {
+        cwd: this.cwd,
+        files: this.envFiles,
+        override: this.envOverride,
+        vars: this.envVars,
+      }),
     );
   }
 

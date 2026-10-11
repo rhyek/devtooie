@@ -14,7 +14,7 @@ import { describe, it, test, expectTypeOf } from 'vitest';
 import { defineConfig, type ResolvedDevReverseProxy } from './config.js';
 import type { PackageConfig } from './register.js';
 import type { InfraRunResult, ResolvedInfra } from './infra/types.js';
-import type { Mode } from './env.js';
+import type { Envs, Mode } from './env.js';
 
 describe('per-package tokens', () => {
   it('gives each package the config tokens plus its own, and nothing from a sibling', () => {
@@ -169,7 +169,7 @@ describe('envs', () => {
       packages: {
         api: {
           port: ({ envs }) => {
-            expectTypeOf(envs).toEqualTypeOf<Record<string, string>>();
+            expectTypeOf(envs).toEqualTypeOf<Envs>();
             return Number(envs.PORT);
           },
         },
@@ -305,7 +305,7 @@ describe('devReverseProxy', () => {
       tokens: { tld: 'test' },
       devReverseProxy: {
         port: (ctx) => {
-          expectTypeOf(ctx.envs).toEqualTypeOf<Record<string, string>>();
+          expectTypeOf(ctx.envs).toEqualTypeOf<Envs>();
           expectTypeOf(ctx.tokens.tld).toEqualTypeOf<'test'>();
           expectTypeOf(ctx).not.toHaveProperty('port');
           expectTypeOf(ctx).not.toHaveProperty('subdomain');
@@ -380,6 +380,7 @@ describe('infra callbacks', () => {
           services: {
             db: {
               afterReady: async (ctx) => {
+                expectTypeOf(ctx.envs).toEqualTypeOf<Envs>();
                 expectTypeOf(ctx.tokens.domain).toEqualTypeOf<'example.test'>();
                 expectTypeOf(ctx.tokens).not.toHaveProperty('region');
                 expectTypeOf(ctx.reset).toEqualTypeOf<boolean>();
@@ -398,7 +399,7 @@ describe('infra callbacks', () => {
               },
               enabled: (ctx) => {
                 expectTypeOf(ctx.mode).toEqualTypeOf<Mode>();
-                expectTypeOf(ctx.envs).toEqualTypeOf<Record<string, string>>();
+                expectTypeOf(ctx.envs).toEqualTypeOf<Envs>();
                 expectTypeOf(ctx.tokens.domain).toEqualTypeOf<'example.test'>();
                 // decided when the config loads: no service to act on, nothing to run
                 expectTypeOf(ctx).not.toHaveProperty('compose');
@@ -436,5 +437,64 @@ describe('shorthands', () => {
     // `true` never survives resolution: readers of the config get the label itself.
     expectTypeOf(config.packages.web.subdomain).toEqualTypeOf<string | string[] | undefined>();
     expectTypeOf(config.infra).toEqualTypeOf<ResolvedInfra | undefined>();
+  });
+});
+
+describe('env', () => {
+  test('types the shorthand callback over the workspace context', () => {
+    const config = defineConfig({
+      packageRootDir: 'packages',
+      tokens: { tier: 'dev' },
+      env: (ctx) => {
+        expectTypeOf(ctx.envs).toEqualTypeOf<Envs>();
+        // the variables devtooie sets are known by name, so an editor offers them
+        expectTypeOf(ctx.envs.DEVTOOIE_MODE).toEqualTypeOf<Mode>();
+        expectTypeOf(ctx.envs.DEVTOOIE_CWD).toEqualTypeOf<string>();
+        expectTypeOf(ctx.envs.DEVTOOIE_WORKSPACE_DIR).toEqualTypeOf<string>();
+        // any other name is still there to read, and may be unset
+        expectTypeOf(ctx.envs.ANYTHING_ELSE).toEqualTypeOf<string | undefined>();
+        expectTypeOf(ctx.tokens.tier).toEqualTypeOf<'dev'>();
+        expectTypeOf(ctx).not.toHaveProperty('port');
+        expectTypeOf(ctx).not.toHaveProperty('subdomain');
+        return { DATA_DIR: `/srv/${ctx.tokens.tier}`, MAYBE: ctx.envs.MAYBE as string | undefined };
+      },
+      packages: { api: { waitFor: ['web'] }, web: { healthcheck: 'http://localhost/health' } },
+    });
+    // The callback is context-sensitive; it must not cost the package names their narrowing.
+    expectTypeOf(config.packages).toHaveProperty('api');
+    expectTypeOf(config.packages).not.toHaveProperty('ghost');
+  });
+
+  test('types env.vars the same way, next to override', () => {
+    defineConfig({
+      packageRootDir: 'packages',
+      tokens: { tier: 'dev' },
+      env: {
+        vars: (ctx) => {
+          expectTypeOf(ctx.envs).toEqualTypeOf<Envs>();
+          expectTypeOf(ctx.tokens.tier).toEqualTypeOf<'dev'>();
+          return { DATA_DIR: '/srv/data' };
+        },
+        override: ['NODE_OPTIONS'],
+      },
+      packages: { api: {} },
+    });
+  });
+
+  test('accepts a record, an undefined value included, and only strings otherwise', () => {
+    type Opts = Parameters<typeof defineConfig<Record<never, never>, { api: unknown }>>[0];
+    type Vars = Exclude<NonNullable<Opts['env']>, (...args: never[]) => unknown>['vars'];
+    expectTypeOf<{ A: string; B: undefined }>().toExtend<Vars>();
+    expectTypeOf<{ A: number }>().not.toExtend<Vars>();
+    expectTypeOf<(ctx: { envs: Record<string, string> }) => { A: number }>().not.toExtend<Vars>();
+  });
+
+  test('exposes the resolved variables on the returned config', () => {
+    const config = defineConfig({
+      packageRootDir: 'packages',
+      env: { vars: { DATA_DIR: '/srv/data' } },
+      packages: { api: {} },
+    });
+    expectTypeOf(config.envVars).toEqualTypeOf<Record<string, string> | undefined>();
   });
 });

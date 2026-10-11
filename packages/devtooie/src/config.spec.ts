@@ -1801,3 +1801,309 @@ describe('infra', () => {
     ).toThrow(/enabled/);
   });
 });
+
+describe('env vars', () => {
+  let ws: string;
+
+  beforeEach(() => {
+    ws = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-env-vars-'));
+    fs.mkdirSync(path.join(ws, 'packages/api'), { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(ws, { recursive: true, force: true });
+    delete process.env.DEVTOOIE_TEST_AMBIENT;
+  });
+
+  const base = () => ({ packageRootDir: 'packages' as const, workspaceDir: ws });
+
+  test('stores a literal env.vars record on the resolved config', () => {
+    const cfg = defineConfig({
+      ...base(),
+      env: { vars: { DATA_DIR: '/srv/data' } },
+      packages: { api: {} },
+    });
+    expect(cfg.envVars).toEqual({ DATA_DIR: '/srv/data' });
+  });
+
+  test('is undefined on a config that declares none', () => {
+    const cfg = defineConfig({ ...base(), env: { override: true }, packages: { api: {} } });
+    expect(cfg.envVars).toBeUndefined();
+  });
+
+  test('hands an env.vars callback the workspace env and the top-level tokens', () => {
+    fs.writeFileSync(path.join(ws, '.env.development'), 'REGION=eu\n');
+    process.env.DEVTOOIE_TEST_AMBIENT = 'from-shell';
+    const cfg = defineConfig({
+      ...base(),
+      tokens: { tier: 'dev' },
+      env: {
+        vars: ({ envs, tokens }) => ({
+          BUCKET: `${tokens.tier}-${String(envs.REGION)}-${String(envs.DEVTOOIE_TEST_AMBIENT)}`,
+        }),
+      },
+      packages: { api: {} },
+    });
+    expect(cfg.envVars).toEqual({ BUCKET: 'dev-eu-from-shell' });
+  });
+
+  test('takes the callback itself as `env`, shorthand for `env.vars`', () => {
+    fs.writeFileSync(path.join(ws, '.env.development'), 'REGION=eu\n');
+    const cfg = defineConfig({
+      ...base(),
+      env: ({ envs }) => ({ BUCKET: `dev-${String(envs.REGION)}` }),
+      packages: { api: {} },
+    });
+    expect(cfg.envVars).toEqual({ BUCKET: 'dev-eu' });
+    expect(cfg.envOverride).toBeUndefined();
+  });
+
+  test('keeps env.override next to env.vars', () => {
+    const cfg = defineConfig({
+      ...base(),
+      env: { vars: { DATA_DIR: '/srv/data' }, override: ['NODE_OPTIONS'] },
+      packages: { api: {} },
+    });
+    expect(cfg.envOverride).toEqual(['NODE_OPTIONS']);
+  });
+
+  test('drops a variable whose value is undefined', () => {
+    const cfg = defineConfig({
+      ...base(),
+      env: ({ envs }) => ({ KEPT: 'yes', DROPPED: envs.DEVTOOIE_SPEC_NO_SUCH_VAR }),
+      packages: { api: {} },
+    });
+    expect(cfg.envVars).toEqual({ KEPT: 'yes' });
+  });
+
+  test('rejects a callback value that is not a string, naming the variable and the env files', () => {
+    fs.writeFileSync(path.join(ws, '.env.development'), 'DB_PORT=5432\n');
+    expect(() =>
+      defineConfig({
+        ...base(),
+        // @ts-expect-error - a variable's value must be a string (or undefined).
+        env: ({ envs }) => ({ DB_PORT: Number(envs.DB_PORT) }),
+        packages: { api: {} },
+      }),
+    ).toThrow(
+      /env\.vars: DB_PORT is 5432 \(a number\) — an environment variable must be a string[\s\S]*env files loaded: .*\.env\.development/,
+    );
+  });
+
+  test('rejects a literal value that is not a string, naming the variable', () => {
+    expect(() =>
+      defineConfig({
+        ...base(),
+        // @ts-expect-error - a variable's value must be a string (or undefined).
+        env: { vars: { DB_PORT: 5432 } },
+        packages: { api: {} },
+      }),
+    ).toThrow(
+      /env\.vars: DB_PORT is 5432 \(a number\) — an environment variable must be a string$/,
+    );
+  });
+
+  test('rejects an env.vars that is neither a record nor a callback', () => {
+    expect(() =>
+      defineConfig({
+        ...base(),
+        // @ts-expect-error - `vars` is a record of variables or a callback.
+        env: { vars: 'DATA_DIR=/srv/data' },
+        packages: { api: {} },
+      }),
+    ).toThrow(/env\.vars: env\.vars must be an object of variables or a function/);
+  });
+
+  test('rejects a callback that returns a promise rather than a record', () => {
+    expect(() =>
+      defineConfig({
+        ...base(),
+        // @ts-expect-error - callbacks are synchronous.
+        env: async () => ({ DATA_DIR: '/srv/data' }),
+        packages: { api: {} },
+      }),
+    ).toThrow(
+      /env\.vars: callback returned \[object Promise\] \(expected an object of variables\)/,
+    );
+  });
+
+  test('rejects a name no .env file could carry', () => {
+    expect(() =>
+      defineConfig({
+        ...base(),
+        env: { vars: { 'DATA DIR': '/srv/data' } },
+        packages: { api: {} },
+      }),
+    ).toThrow(/env\.vars: "DATA DIR" is not a valid environment variable name/);
+  });
+
+  describe('with no devtooie CLI around the config', () => {
+    const names = ['DEVTOOIE_MODE', 'DEVTOOIE_CWD', 'DEVTOOIE_WORKSPACE_DIR'] as const;
+    let before: (string | undefined)[];
+
+    beforeEach(() => {
+      before = names.map((name) => process.env[name]);
+      for (const name of names) {
+        delete process.env[name];
+      }
+    });
+
+    afterEach(() => {
+      names.forEach((name, i) => {
+        if (before[i] === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = before[i];
+        }
+      });
+    });
+
+    test('still hands a callback the variables devtooie sets', () => {
+      const cfg = defineConfig({
+        ...base(),
+        env: ({ envs }) => ({
+          SEEN: [envs.DEVTOOIE_MODE, envs.DEVTOOIE_CWD, envs.DEVTOOIE_WORKSPACE_DIR].join('|'),
+        }),
+        packages: {
+          api: { urls: [({ envs }) => `file://${String(envs.DEVTOOIE_WORKSPACE_DIR)}`] },
+        },
+      });
+      expect(cfg.envVars).toEqual({ SEEN: `development|${process.cwd()}|${path.resolve(ws)}` });
+      expect(cfg.packages.api.urls).toEqual([`file://${path.resolve(ws)}`]);
+    });
+
+    test('leaves the ones the environment already has as they are', () => {
+      process.env.DEVTOOIE_WORKSPACE_DIR = '/from/the/cli';
+      const cfg = defineConfig({
+        ...base(),
+        env: ({ envs }) => ({ SEEN: envs.DEVTOOIE_WORKSPACE_DIR }),
+        packages: { api: {} },
+      });
+      expect(cfg.envVars).toEqual({ SEEN: '/from/the/cli' });
+    });
+  });
+
+  test('rejects a callback that returns no record', () => {
+    expect(() =>
+      defineConfig({
+        ...base(),
+        // @ts-expect-error - the callback must return a record of variables.
+        env: () => 'DATA_DIR=/srv/data',
+        packages: { api: {} },
+      }),
+    ).toThrow(/env\.vars: callback returned "DATA_DIR=\/srv\/data" \(expected an object/);
+  });
+
+  test("puts the variables in every later callback's envs", () => {
+    const seen: Record<string, string | undefined> = {};
+    const cfg = defineConfig({
+      ...base(),
+      env: { vars: { BASE_PORT: '4100', HOST: 'dev.example' } },
+      devReverseProxy: {
+        port: ({ envs }) => Number(envs.BASE_PORT) + 50,
+        rootDomain: ({ envs }) => envs.HOST!,
+      },
+      urls: [({ envs }) => `https://docs.${envs.HOST!}`],
+      infra: {
+        'docker-compose': {
+          services: {
+            db: {
+              enabled: ({ envs }) => {
+                seen.infra = envs.HOST;
+                return true;
+              },
+            },
+          },
+        },
+      },
+      packages: {
+        api: {
+          port: ({ envs }) => Number(envs.BASE_PORT),
+          urls: [({ envs, port }) => `http://${envs.HOST!}:${String(port)}`],
+        },
+      },
+    });
+    expect(cfg.devReverseProxy).toMatchObject({ port: 4150, rootDomain: 'dev.example' });
+    expect(cfg.urls).toEqual(['https://docs.dev.example']);
+    expect(cfg.packages.api.port).toBe(4100);
+    expect(cfg.packages.api.urls).toEqual(['http://dev.example:4100']);
+    expect(seen.infra).toBe('dev.example');
+  });
+
+  test("loses to an env file in a later callback: the workspace's, then the package's", () => {
+    fs.writeFileSync(path.join(ws, '.env.development'), 'REGION=eu\nBACKEND_PORT=6666\n');
+    fs.writeFileSync(path.join(ws, 'packages/api/.env.development'), 'BACKEND_PORT=7777\n');
+    const seen: Record<string, string | undefined> = {};
+    const cfg = defineConfig({
+      ...base(),
+      env: { vars: { BACKEND_PORT: '4321', REGION: 'us', TIER: 'dev' } },
+      urls: [({ envs }) => `https://${envs.REGION!}.example:${envs.BACKEND_PORT!}`],
+      packages: {
+        api: {
+          port: ({ envs }) => {
+            seen.region = envs.REGION;
+            seen.tier = envs.TIER;
+            return Number(envs.BACKEND_PORT);
+          },
+        },
+      },
+    });
+    expect(cfg.urls).toEqual(['https://eu.example:6666']);
+    expect(cfg.packages.api.port).toBe(7777);
+    expect(seen).toEqual({ region: 'eu', tier: 'dev' });
+  });
+
+  test('loses to the ambient environment in a later callback, unless env.override names it', () => {
+    process.env.DEVTOOIE_TEST_AMBIENT = 'from-shell';
+    const seenBy = (override?: string[]) => {
+      let seen: string | undefined;
+      defineConfig({
+        ...base(),
+        env: { vars: { DEVTOOIE_TEST_AMBIENT: 'from-config' }, override },
+        packages: {
+          api: {
+            port: ({ envs }) => {
+              seen = envs.DEVTOOIE_TEST_AMBIENT;
+              return 4321;
+            },
+          },
+        },
+      });
+      return seen;
+    };
+    expect(seenBy()).toBe('from-shell');
+    expect(seenBy(['DEVTOOIE_TEST_AMBIENT'])).toBe('from-config');
+  });
+
+  test("expands an env file's reference to a variable, for a later callback", () => {
+    fs.writeFileSync(path.join(ws, '.env.development'), 'API_URL=http://${HOST}:4100\n');
+    const cfg = defineConfig({
+      ...base(),
+      env: { vars: { HOST: 'dev.example' } },
+      urls: [({ envs }) => envs.API_URL!],
+      packages: { api: {} },
+    });
+    expect(cfg.urls).toEqual(['http://dev.example:4100']);
+  });
+
+  test('names the compose project from a variable it sets', () => {
+    const cfg = defineConfig({
+      ...base(),
+      env: { vars: { COMPOSE_PROJECT_NAME: 'pinned' } },
+      infra: { 'docker-compose': true },
+      packages: { api: {} },
+    });
+    expect(cfg.infra?.['docker-compose']?.projectName).toBe('pinned');
+  });
+
+  test('still rejects an unknown key next to env.vars', () => {
+    expect(() =>
+      defineConfig({
+        ...base(),
+        // @ts-expect-error - `files` was removed; the schema must say so rather than strip it.
+        env: { vars: { DATA_DIR: '/srv/data' }, files: ['.env'] },
+        packages: { api: {} },
+      }),
+    ).toThrow(/Unrecognized key: "files"/);
+  });
+});

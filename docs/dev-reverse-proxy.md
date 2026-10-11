@@ -121,8 +121,8 @@ export default defineConfig({
 ## `PUBLIC_ORIGIN`
 
 Every routable package's process — one declaring both `subdomain` and `port` — gets
-`PUBLIC_ORIGIN` injected next to `PORT`, under the same rule: an explicit `.env` `PUBLIC_ORIGIN`
-wins. It is built from the block as
+`PUBLIC_ORIGIN` injected next to `PORT`, under the same rule: only a `PUBLIC_ORIGIN` in the
+package's own `.env` file overrides it. It is built from the block as
 
 ```
 <urlScheme>://<canonical subdomain>.<rootDomain>[:<port>]

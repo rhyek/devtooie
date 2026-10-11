@@ -34,8 +34,10 @@ export interface RunnerArgs {
   logFile?: string;
   /** `.env` filenames resolved per package (defaults to the active mode's set when omitted). */
   envFiles?: string[];
-  /** Variables whose `.env` value may beat the ambient environment. */
+  /** Variables whose `.env` or `env.vars` value may beat the ambient environment. */
   envOverride?: EnvOverride;
+  /** The config's own variables (`env.vars`, resolved), ranked as a file below the `.env` files. */
+  envVars?: Record<string, string>;
   /** Prefix each on-screen log line with a timestamp (default `true`). */
   logTimestamps?: boolean;
   /** Workspace root that package `relativeDir`s resolve against (defaults to `process.cwd()`). */

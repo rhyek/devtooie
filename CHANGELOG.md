@@ -8,6 +8,8 @@
 - **New top-level `infra` brings your `docker-compose.yaml` services up before the packages start** — waiting on their healthchecks and running your migrations — with `devtooie infra up|down|destroy` to drive them on their own. See [docs/infra.md](docs/infra.md).
 - **Installing devtooie sets the project up**: its `postinstall` runs `devtooie init` for a project with no config and (re)writes the agent skill for one that has it, so a fresh clone carries the guide for the installed version. pnpm 10+ needs `pnpm approve-builds` first. See [Install](README.md#install).
 - **New top-level `packageRootDir` infers each package's directory from its key**, so `relativeDir` is only ever an override. See [docs/configuration.md](docs/configuration.md).
+- **New `env.vars` sets environment variables from the config itself** — a record, or a callback computed from the environment — for every package, one-off command and infra service. See [docs/configuration.md](docs/configuration.md#envvars).
+- **Everything devtooie starts gets `DEVTOOIE_CWD` and `DEVTOOIE_WORKSPACE_DIR`**: where devtooie was invoked, and the workspace root. See [Variables devtooie sets](README.md#variables-devtooie-sets).
 - **New `devtooie show-config` prints the fully resolved config as JSON**, no session needed — including each package's public origin under the dev reverse proxy. See [docs/cli.md](docs/cli.md#devtooie-show-config).
 - **A `urls` entry or `healthcheck` can be a path** like `'/todos'` (or `''` for the origin itself): a link is based on the package's public origin under the dev reverse proxy, else on `http://localhost:<port>`; a healthcheck always on `http://localhost:<port>`. See [docs/configuration.md](docs/configuration.md).
 - **Packages can declare a `subdomain` again**, exposed on the resolved config and handed to the package's callbacks. See [docs/configuration.md](docs/configuration.md#callbacks-instead-of-interpolation).
@@ -23,6 +25,7 @@
 
 ### Breaking changes
 
+- **A `PORT` or `PUBLIC_ORIGIN` in a workspace-level `.env` file no longer overrides a package's own** — set it in that package's `.env` file instead.
 - **`relativeDir` is required unless the config sets `packageRootDir`** — the implicit `packages/<key>` default is gone; add `packageRootDir: 'packages'` to keep it.
 - **The resolved package's `path` is now `absoluteDir`**, next to `relativeDir`.
 - **`devtooie cmd` is now `devtooie exec`, and `devtooie cmd -c <script>` is `devtooie run <script>`** — update any script or alias that calls it. See [docs/cli.md](docs/cli.md#devtooie-exec-and-devtooie-run).
