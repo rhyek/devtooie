@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, test, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import primitives from '@dotenvx/primitives';
 import {
   ambientEnv,
   assignedNames,
@@ -707,9 +708,8 @@ describe('assignedNames', () => {
     ['windows line endings', 'A=1\r\nB="x\r\nC=3"\r\nD=4\r\n'],
     ['an empty value and a repeated name', 'A=\nB=1\nB=2\n'],
     ['an escaped quote inside a quoted value', 'A="say \\"hi\\"\nB=2"\nC=3\n'],
-  ])('reads the names dotenvx does, with %s', async (_what, source) => {
-    const { default: dotenvx } = await import('@dotenvx/dotenvx');
-    const parsed = dotenvx.parse(source, { processEnv: {} });
+  ])('reads the names dotenvx does, with %s', (_what, source) => {
+    const { parsed } = primitives.parseSync(source, { processEnv: {} });
     expect([...assignedNames(source)].sort()).toEqual(Object.keys(parsed).sort());
   });
 });
@@ -837,7 +837,44 @@ describe("resolveEnv with the config's own vars", () => {
 
   test('lets a file replace a var whose value has a single quote and a dollar', () => {
     write('.env', "PRICE='it\\'s \\$b'\n");
-    expect(resolve({ PRICE: "it's $b" }).PRICE).toBe("it\\'s \\$b");
+    expect(resolve({ PRICE: "it's $b" }).PRICE).toBe("it's \\$b");
+  });
+});
+
+describe('encrypted values', () => {
+  const secret = () => {
+    const { publicKey, privateKey } = primitives.keypair();
+    write(
+      '.env',
+      `DOTENV_PUBLIC_KEY="${publicKey}"\nSECRET="${primitives.encrypt(publicKey, 's3cret')}"\nPLAIN=1\n`,
+    );
+    return privateKey;
+  };
+
+  test('decrypts a value whose private key is in the ambient environment', () => {
+    const privateKey = secret();
+    const { env } = resolveEnv({
+      cwd,
+      relativeDir: '.',
+      ambient: { DOTENV_PRIVATE_KEY: privateKey },
+    });
+    expect(env).toMatchObject({ SECRET: 's3cret', PLAIN: '1' });
+  });
+
+  test('leaves a value it has no key for as it is, and says which one on stderr', () => {
+    secret();
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      errors.push(args.join(' '));
+    });
+    try {
+      const { env } = resolveEnv({ cwd, relativeDir: '.', ambient: {} });
+      expect(env.SECRET).toMatch(/^encrypted:/);
+      expect(env.PLAIN).toBe('1');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(errors.join('\n')).toContain('could not decrypt SECRET');
   });
 });
 

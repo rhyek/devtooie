@@ -2,6 +2,7 @@ import { describe, it, test, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { execa } from 'execa';
 import {
   exitCodeOf,
@@ -369,6 +370,55 @@ describe('tsconfig project-reference inference', () => {
     );
     const app = packages.find((p) => p.name === 'app-both')!;
     expect(getTsconfigBuildPackages(app).map((p) => p.name)).toEqual(['lib-b']);
+  });
+
+  test('reads a tsconfig with comments, trailing commas and a byte-order mark', () => {
+    fs.mkdirSync(path.join(ws, 'packages/app-jsonc'), { recursive: true });
+    fs.writeFileSync(
+      path.join(ws, 'packages/app-jsonc/tsconfig.json'),
+      '\uFEFF{\n  // built first\n  "references": [\n    { "path": "../lib-a" }, /* and */\n    { "path": "../lib-b/tsconfig.build.json" },\n  ],\n}\n',
+    );
+    const packages = Object.values(
+      defineConfig({
+        packageRootDir: 'packages',
+        workspaceDir: ws,
+        packages: { 'lib-a': {}, 'lib-b': {}, 'app-jsonc': {} },
+      }).packages,
+    );
+    const app = packages.find((p) => p.name === 'app-jsonc')!;
+    expect(getTsconfigBuildPackages(app).map((p) => p.name)).toEqual(['lib-a', 'lib-b']);
+  });
+
+  test('follows references transitively', () => {
+    write('packages/lib-c/tsconfig.json', { references: [{ path: '../lib-a' }] });
+    write('packages/app-deep/tsconfig.json', { references: [{ path: '../lib-c' }] });
+    const packages = Object.values(
+      defineConfig({
+        packageRootDir: 'packages',
+        workspaceDir: ws,
+        packages: { 'lib-a': {}, 'lib-c': {}, 'app-deep': {} },
+      }).packages,
+    );
+    const app = packages.find((p) => p.name === 'app-deep')!;
+    expect(getTsconfigBuildPackages(app).map((p) => p.name)).toEqual(['lib-c', 'lib-a']);
+  });
+
+  test('treats a tsconfig it cannot make sense of as declaring no references', () => {
+    fs.mkdirSync(path.join(ws, 'packages/app-broken'), { recursive: true });
+    fs.writeFileSync(path.join(ws, 'packages/app-broken/tsconfig.json'), 'not json at all');
+    const packages = Object.values(
+      defineConfig({
+        packageRootDir: 'packages',
+        workspaceDir: ws,
+        packages: { 'app-broken': {} },
+      }).packages,
+    );
+    expect(getTsconfigBuildPackages(packages[0]!)).toEqual([]);
+  });
+
+  test('does not load the TypeScript compiler to do it', () => {
+    const loaded = Object.keys(createRequire(import.meta.url).cache);
+    expect(loaded.filter((file) => file.includes('/typescript/lib/'))).toEqual([]);
   });
 
   it('prefers run.tsconfig over tsconfig.build.json', () => {

@@ -1,5 +1,3 @@
-import { confirm, isCancel } from '@clack/prompts';
-
 import { startedByAgent } from './agent-detection.js';
 import { connectControlClient, createControlClient, type SessionStatus } from './control-client.js';
 
@@ -86,6 +84,8 @@ const defaultDeps: PreflightDeps = {
     return client ? client.queryStatus() : null;
   },
   async askToQuit(status) {
+    // Loaded here, not up top: most sessions start with no other one to ask about.
+    const { confirm, isCancel } = await import('@clack/prompts');
     const answer = await confirm({
       message: `Another devtooie session is running for this project (pid ${status.pid}). Quit it and start this one?`,
       initialValue: true,

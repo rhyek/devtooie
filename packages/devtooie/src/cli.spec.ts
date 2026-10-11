@@ -23,6 +23,86 @@ const cli = path.join(buildDir, 'cli.js');
 let ws: string;
 let app: string;
 let order: string;
+let traceHook: string;
+
+/**
+ * A preload that records every module the process loads and writes the URLs to `$TRACE_OUT` as
+ * it exits — how the specs below check that a command loads only what it runs.
+ */
+const TRACE_HOOK = `
+import { registerHooks } from 'node:module';
+import fs from 'node:fs';
+const urls = [];
+registerHooks({
+  load(url, context, nextLoad) {
+    urls.push(url);
+    return nextLoad(url, context);
+  },
+});
+process.on('exit', () => fs.writeFileSync(process.env.TRACE_OUT, JSON.stringify(urls)));
+`;
+
+/** What a traced run loaded: the third-party packages by name, and whether the config ran. */
+function readTrace(file: string): { packages: Set<string>; evaluatedConfig: boolean } {
+  const urls = JSON.parse(fs.readFileSync(file, 'utf8')) as string[];
+  const packages = new Set<string>();
+  for (const url of urls) {
+    const name = /.*\/node_modules\/((?:@[^/]+\/)?[^/]+)\//.exec(url)?.[1];
+    if (name !== undefined && name !== 'devtooie') {
+      packages.add(name);
+    }
+  }
+  return { packages, evaluatedConfig: urls.some((url) => url.endsWith('/devtooie.config.ts')) };
+}
+
+let traces = 0;
+const nextTraceFile = () => path.join(ws, `trace-${String(traces++)}.json`);
+
+/** Runs the CLI to its exit like {@link devtooie}, also resolving with what it loaded. */
+async function traced(args: string[], opts: { cwd?: string } = {}) {
+  const out = nextTraceFile();
+  const result = await execa('node', ['--import', traceHook, cli, ...args], {
+    cwd: opts.cwd ?? ws,
+    env: { TRACE_OUT: out },
+    reject: false,
+  });
+  return { result, ...readTrace(out) };
+}
+
+/**
+ * Starts a `--plain` session, stops it once `until` has been printed (a package having started,
+ * unless told otherwise), and resolves with its output and what it loaded.
+ */
+async function tracedPlainSession(names: string[], until = '] started') {
+  const out = nextTraceFile();
+  const child = execa(
+    'node',
+    ['--import', traceHook, cli, '--plain', ...names.flatMap((name) => ['-p', name])],
+    { cwd: ws, env: { TRACE_OUT: out }, reject: false },
+  );
+  let output = '';
+  await new Promise<void>((resolve, reject) => {
+    const giveUp = setTimeout(
+      () => reject(new Error(`never printed ${until}:\n${output}`)),
+      20_000,
+    );
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+      if (output.includes(until)) {
+        clearTimeout(giveUp);
+        resolve();
+      }
+    });
+  });
+  child.kill('SIGINT');
+  const result = await child;
+  if (!fs.existsSync(out)) {
+    throw new Error(
+      `the session wrote no trace (exit ${String(result.exitCode)}, signal ${String(result.signal)}):\n${output}\n${String(result.stderr)}`,
+    );
+  }
+  return { output, ...readTrace(out) };
+}
 
 const script = (js: string) => `node -e "${js}"`;
 const append = (text: string) =>
@@ -87,6 +167,7 @@ beforeAll(async () => {
       '  packages: {',
       '    lib: {},',
       '    envbuild: {},',
+      '    wide: {},',
       "    app: { deps: { build: ['lib'] } },",
       '    broken: {},',
       '    killed: {},',
@@ -100,6 +181,9 @@ beforeAll(async () => {
   fs.mkdirSync(standIn, { recursive: true });
   fs.symlinkSync(path.join(packageDir, 'package.json'), path.join(standIn, 'package.json'));
   fs.symlinkSync(buildDir, path.join(standIn, 'dist'));
+
+  traceHook = path.join(ws, 'trace-hook.mjs');
+  fs.writeFileSync(traceHook, TRACE_HOOK);
 
   fakeBin(ws, 'rootbin');
   writePackage('lib', { dev: 'true', build: `rootbin && ${append('lib')}` });
@@ -143,6 +227,12 @@ beforeAll(async () => {
     ),
   });
   writePackage('broken', { dev: 'true', build: 'exit 3' });
+  // Prints a line wider than any terminal and one with glyphs that are not one column each.
+  writePackage('wide', {
+    dev: script(
+      "console.log('x'.repeat(150));console.log('glyphs \\u2713 \\u4e2d\\u6587 done');setInterval(()=>{},1e9)",
+    ),
+  });
   writePackage('killed', { dev: 'true', build: script("process.kill(process.pid,'SIGKILL')") });
 }, 120_000);
 
@@ -395,5 +485,96 @@ describe('devtooie --build', () => {
     const result = await devtooie(['--build', '-p', 'killed']);
     expect(result.exitCode).not.toBe(0);
     expect(result.stdout).not.toContain('build complete');
+  });
+});
+
+describe('what a command loads', () => {
+  const HEAVY = ['zod', 'execa', '@dotenvx/primitives', 'pino', '@clack/prompts', 'typescript'];
+  const SESSION_ONLY = ['pino', '@clack/prompts', 'jsonc-parser', 'typescript', 'ink', 'react'];
+
+  const expectNotLoaded = (packages: Set<string>, names: string[]) => {
+    expect(names.filter((name) => packages.has(name))).toEqual([]);
+  };
+
+  test('--help prints the usage without loading the config or anything a command needs', async () => {
+    const { result, packages, evaluatedConfig } = await traced(['--help']);
+    expect(result.stdout).toContain('Usage: devtooie');
+    expect(result.exitCode).toBe(0);
+    expect(evaluatedConfig).toBe(false);
+    expectNotLoaded(packages, HEAVY);
+  });
+
+  test('logs --path finds the newest logfile without loading the config', async () => {
+    await devtooie(['exec', '-p', 'app', '--', 'true']);
+    const { result, packages, evaluatedConfig } = await traced(['logs', '--path'], { cwd: app });
+    expect(result.stdout).toMatch(/node_modules\/\.devtooie\/logs\/.+\.log$/);
+    expect(result.exitCode).toBe(0);
+    expect(evaluatedConfig).toBe(false);
+    expectNotLoaded(packages, HEAVY);
+  });
+
+  test('logs prints that logfile', async () => {
+    await devtooie(['exec', '-p', 'app', '--', 'echo', 'in-the-log']);
+    const result = await devtooie(['logs']);
+    expect(result.stdout).toContain('in-the-log');
+    expect(result.exitCode).toBe(0);
+  });
+
+  test('reset clears the saved selection without evaluating the config', async () => {
+    const { result, evaluatedConfig } = await traced(['reset']);
+    expect(result.stdout).toBe('Selection reset.');
+    expect(result.exitCode).toBe(0);
+    expect(evaluatedConfig).toBe(false);
+  });
+
+  test('exec loads nothing a session needs', async () => {
+    const { result, packages } = await traced(['exec', '-p', 'app', '--', 'echo', 'ran']);
+    expect(result.stdout).toBe('ran');
+    expectNotLoaded(packages, [...SESSION_ONLY, 'string-width', 'wrap-ansi']);
+  });
+
+  test('run loads nothing a session needs', async () => {
+    const { result, packages } = await traced(['run', '-p', 'app', 'cwd']);
+    expect(lastLine(result.stdout)).toBe(app);
+    expectNotLoaded(packages, [...SESSION_ONLY, 'string-width', 'wrap-ansi']);
+  });
+
+  test('show-config prints the resolved config, loading nothing that runs a command', async () => {
+    const { result, packages } = await traced(['show-config']);
+    const config = JSON.parse(result.stdout) as { packages: Record<string, { name: string }> };
+    expect(config.packages.app?.name).toBe('app');
+    expectNotLoaded(packages, ['execa', ...SESSION_ONLY]);
+  });
+
+  test("resolvedeps reads a package's project references without loading TypeScript", async () => {
+    const { result, packages } = await traced(['resolvedeps', 'app']);
+    expect(JSON.parse(result.stdout)).toEqual({ build: ['lib'], dev: [], runtime: [] });
+    expectNotLoaded(packages, ['pino', '@clack/prompts', 'typescript', 'ink', 'react']);
+  });
+
+  test('a --plain session loads no TUI, no prompt library and no TypeScript', async () => {
+    const { output, packages } = await tracedPlainSession(['app']);
+    expect(output).toMatch(/\[app\] started/);
+    expectNotLoaded(packages, ['ink', 'react', '@clack/prompts', 'typescript']);
+  }, 30_000);
+
+  test('a --plain session loads the row-wrapping packages only for a line that needs them', async () => {
+    const { packages } = await tracedPlainSession(['app']);
+    expectNotLoaded(packages, ['string-width', 'wrap-ansi', 'slice-ansi']);
+  }, 30_000);
+
+  test('a --plain session still wraps a long line to the terminal width, gutter on every row', async () => {
+    const { output, packages } = await tracedPlainSession(['wide'], 'done');
+    const rows = output.split('\n').filter((line) => /\[wide\] x+$/.test(line));
+    // Piped, the terminal is taken as 120 columns: a 20-column timestamp, `[wide] `, the text.
+    expect(rows.map((row) => row.length)).toEqual([120, 84]);
+    expect(rows.map((row) => /x+$/.exec(row)![0].length)).toEqual([93, 57]);
+    expect(output).toMatch(/\[wide\] glyphs \u2713 \u4e2d\u6587 done/);
+    expect(packages.has('string-width')).toBe(true);
+  }, 30_000);
+
+  test("no command loads the env parser's CLI tooling", async () => {
+    const { packages } = await traced(['exec', '-p', 'app', '--', 'true']);
+    expectNotLoaded(packages, ['@dotenvx/dotenvx', '@dotenvx/tooling']);
   });
 });

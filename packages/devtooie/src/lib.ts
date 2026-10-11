@@ -11,41 +11,19 @@ import {
   normalizeUrlEntry,
 } from './config.js';
 import { envFileNames } from './env.js';
+import { getStateDir } from './log-files.js';
 import type { RunnerArgs } from './runners/types.js';
 
+export {
+  getStateDir,
+  getLogDir,
+  getDefaultLogFile,
+  displayLogFile,
+  pickNewestLog,
+  resolveLogFile,
+} from './log-files.js';
+
 const require = createRequire(import.meta.url);
-
-export function getStateDir(): string {
-  const dir = path.join(process.cwd(), 'node_modules', '.devtooie');
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-/** Default directory for timestamped session logs: `node_modules/.devtooie/logs/`. */
-export function getLogDir(): string {
-  return path.join(getStateDir(), 'logs');
-}
-
-/**
- * A fresh, timestamped log file path (`<timestamp>.log`) inside `dir` (created
- * if needed). Each run — and each in-session rotation — gets a unique name so
- * previous sessions' logs are never overwritten. Pass `dir` to choose the location
- * (e.g. the `--log-dir` override, or the current logfile's dir when rotating);
- * defaults to `getLogDir()`.
- */
-export function getDefaultLogFile(dir: string = getLogDir()): string {
-  fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, `${Date.now()}.log`);
-}
-
-/**
- * How a logfile path is shown to the user: relative to devtooie's working directory
- * (falling back to the path itself when it *is* the cwd). Shared by the footer and the
- * exit line so a session reports one and the same string throughout.
- */
-export function displayLogFile(file: string): string {
-  return path.relative(process.cwd(), file) || file;
-}
 
 /**
  * A duration in words for the exit line: `3 days 2 hours 3 minutes`. Units that are zero
@@ -70,69 +48,6 @@ export function formatDuration(ms: number): string {
 
 function plural(count: number, unit: string): string {
   return `${count} ${unit}${count === 1 ? '' : 's'}`;
-}
-
-/**
- * The most recently modified `*.log` file in `dir` (absolute path), or null when `dir` is
- * missing or holds no logfiles. Used by `devtooie logs` to locate the current session's log
- * when a live instance can't be queried for it.
- */
-export function pickNewestLog(dir: string): string | null {
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(dir);
-  } catch {
-    return null;
-  }
-  let newest: { path: string; mtimeMs: number } | null = null;
-  for (const name of entries) {
-    if (!name.endsWith('.log')) {
-      continue;
-    }
-    const full = path.join(dir, name);
-    try {
-      const st = fs.statSync(full);
-      if (st.isFile() && (!newest || st.mtimeMs > newest.mtimeMs)) {
-        newest = { path: full, mtimeMs: st.mtimeMs };
-      }
-    } catch {
-      /* raced away between readdir and stat — skip */
-    }
-  }
-  return newest?.path ?? null;
-}
-
-/**
- * Picks the logfile `devtooie logs` should show, in order of precedence:
- *
- * 1. the running instance's current (rotation-aware) logfile, when it can be queried;
- * 2. the logfile recorded in `running.json` (`recordedLogFile`), when it still exists — more
- *    precise than scanning the dir, since a stray `devtooie exec` log could be newer;
- * 3. the newest `*.log` in `fallbackDir`.
- *
- * Returns null when none yields one. Purely read-only — it never touches the running session.
- */
-export async function resolveLogFile(opts: {
-  /** Asks the live instance for its current logfile; resolves null if there's no live answer. */
-  liveLogFile: () => Promise<string | null>;
-  /** The logfile recorded in `running.json`, used when there's no live answer and it still exists. */
-  recordedLogFile?: string | null;
-  /** Directory searched for the newest `*.log` as a last resort. */
-  fallbackDir: string;
-  /** Injectable for tests; defaults to {@link pickNewestLog}. */
-  newestLog?: (dir: string) => string | null;
-  /** Injectable for tests; defaults to `fs.existsSync`. */
-  exists?: (file: string) => boolean;
-}): Promise<string | null> {
-  const live = await opts.liveLogFile();
-  if (live) {
-    return live;
-  }
-  const exists = opts.exists ?? fs.existsSync;
-  if (opts.recordedLogFile && exists(opts.recordedLogFile)) {
-    return opts.recordedLogFile;
-  }
-  return (opts.newestLog ?? pickNewestLog)(opts.fallbackDir);
 }
 
 /** Strips ANSI SGR (color) escape sequences, so logfiles hold plain text. */
@@ -407,15 +322,34 @@ function resolveRefTsconfig(dir: string, byPath: Map<string, AnyPackageConfig>):
   return candidates.find((c) => fs.existsSync(c)) ?? null;
 }
 
-export function getTsconfigBuildPackages(pkg: AnyPackageConfig): AnyPackageConfig[] {
-  // Resolve TS project references transitively (via the TS peer dep), reading each package's
-  // tsconfig per `resolveRefTsconfig`'s precedence (tsconfig → tsconfig.build.json → tsconfig.json).
-  let ts: typeof import('typescript');
+/** A tsconfig's `references`, or none when the file can't be read or declares none. */
+function readTsconfigReferences(
+  jsonc: typeof import('jsonc-parser'),
+  cfgPath: string,
+): { path: string }[] {
+  let text: string;
   try {
-    ts = require('typescript');
+    text = fs.readFileSync(cfgPath, 'utf8');
   } catch {
     return [];
   }
+  // Tolerant, as TypeScript's own reader is: comments, trailing commas, a leading BOM.
+  const config = jsonc.parse(text.replace(/^\uFEFF/, ''), [], { allowTrailingComma: true }) as
+    { references?: unknown } | undefined;
+  return Array.isArray(config?.references) ? (config.references as { path: string }[]) : [];
+}
+
+export function getTsconfigBuildPackages(pkg: AnyPackageConfig): AnyPackageConfig[] {
+  // Resolve TS project references transitively, reading each package's tsconfig per
+  // `resolveRefTsconfig`'s precedence (tsconfig → tsconfig.build.json → tsconfig.json). They
+  // count only in a project that has the TS peer dep — which is looked up, never loaded: the
+  // references are all that's read, so a tsconfig is parsed as the JSON-with-comments it is.
+  try {
+    require.resolve('typescript');
+  } catch {
+    return [];
+  }
+  const jsonc = require('jsonc-parser') as typeof import('jsonc-parser');
   const registered = getRegisteredPackages();
   const byPath = new Map(registered.map((a) => [path.resolve(a.absoluteDir), a]));
   const seen = new Set<string>();
@@ -430,8 +364,7 @@ export function getTsconfigBuildPackages(pkg: AnyPackageConfig): AnyPackageConfi
     if (!cfgPath) {
       return;
     }
-    const parsed = ts.readConfigFile(cfgPath, ts.sys.readFile);
-    const refs = (parsed.config?.references ?? []) as { path: string }[];
+    const refs = readTsconfigReferences(jsonc, cfgPath);
     for (const ref of refs) {
       const refDir = path.resolve(resolvedDir, ref.path.replace(/tsconfig.*\.json$/, ''));
       const match = byPath.get(refDir);

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import dotenvx from '@dotenvx/dotenvx';
+import { createRequire } from 'node:module';
 import type { AnyPackageConfig } from './config.js';
 import { findPassthrough } from './infra/argv.js';
 
@@ -247,6 +247,19 @@ export function hideDollars(
   return out;
 }
 
+let primitives: typeof import('@dotenvx/primitives').default | undefined;
+
+/**
+ * dotenvx's parser, loaded when the first source is parsed rather than with this module: a
+ * command that resolves no environment — `--help`, `logs` — doesn't pay for it.
+ */
+function dotenvxPrimitives(): typeof import('@dotenvx/primitives').default {
+  primitives ??= createRequire(import.meta.url)('@dotenvx/primitives') as NonNullable<
+    typeof primitives
+  >;
+  return primitives;
+}
+
 /** A name a `.env` line can carry: what dotenv's line grammar accepts on the left of `=`. */
 export const ENV_NAME_RE = /^[\w.-]+$/;
 
@@ -336,12 +349,18 @@ export function resolveEnv(opts: ResolveEnvOptions): EnvResolution {
   const fromVars = asEnvSource(vars, '__DEVTOOIE_VAR_');
   const final = { ...winning, ...fromAmbient.placeholders, ...fromVars.placeholders };
   const standIn = dollarStandIn([...Object.values(final), ...texts]);
-  // dotenvx reads from `processEnv` for `$VAR` lookups but writes to neither it nor the real
-  // process.env, so nothing is mutated.
-  const parsed = dotenvx.parse([fromAmbient.source, fromVars.source, ...texts].join('\n'), {
-    processEnv: hideDollars(final, standIn),
-    overload: false,
-  });
+  // dotenvx's parser, taken from the package it lives in: `@dotenvx/dotenvx` wraps the same
+  // call in a CLI's worth of tooling, which costs every command its load time. It reads from
+  // `processEnv` for `$VAR` lookups but writes to neither it nor the real process.env, so
+  // nothing is mutated.
+  const { parsed, errors } = dotenvxPrimitives().parseSync(
+    [fromAmbient.source, fromVars.source, ...texts].join('\n'),
+    { processEnv: hideDollars(final, standIn), overload: false },
+  );
+  // An encrypted value with no key to decrypt it stays as it is; say which, as dotenvx does.
+  for (const error of errors) {
+    console.error(error.message);
+  }
 
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(parsed)) {

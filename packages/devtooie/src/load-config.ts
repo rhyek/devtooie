@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { getRegisteredPackages, type AnyPackageConfig, type Config } from './config.js';
+import type { AnyPackageConfig, Config } from './config.js';
 
 export class NoProjectConfigError extends Error {}
 
@@ -81,7 +81,9 @@ export async function loadConfig(cwd: string = process.cwd()): Promise<AnyPackag
     throw new NoProjectConfigError('no devtooie.config.ts found — run `devtooie init`');
   }
   const mod = (await import(pathToFileURL(configPath).href)) as { default?: Config<string> };
-  // `defineConfig` registers packages as a side effect of being imported.
+  // `defineConfig` registers packages as a side effect of being imported. (Imported here, not
+  // up top, so finding the workspace root — all some commands need — loads no config code.)
+  const { getRegisteredPackages } = await import('./config.js');
   const registered = getRegisteredPackages();
   if (registered.length) {
     return registered;

@@ -1,7 +1,25 @@
-import sliceAnsi from 'slice-ansi';
-import stringWidth from 'string-width';
-import wrapAnsi from 'wrap-ansi';
+import { createRequire } from 'node:module';
 import { stripAnsi } from './lib.js';
+
+// The three packages that measure and cut text by display column are loaded when a text first
+// needs them — one that isn't plain ASCII, or that has to be wrapped for real — not with this
+// module. `string-width` alone takes some 25 ms to load, and a `--plain` session whose lines are
+// ASCII and fit the terminal never calls it. (`require`, because the callers are synchronous.)
+const require = createRequire(import.meta.url);
+const loaded: {
+  stringWidth?: typeof import('string-width').default;
+  wrapAnsi?: typeof import('wrap-ansi').default;
+  sliceAnsi?: typeof import('slice-ansi').default;
+} = {};
+
+const stringWidth: typeof import('string-width').default = (...args) =>
+  (loaded.stringWidth ??= (require('string-width') as typeof import('string-width')).default)(
+    ...args,
+  );
+const wrapAnsi: typeof import('wrap-ansi').default = (...args) =>
+  (loaded.wrapAnsi ??= (require('wrap-ansi') as typeof import('wrap-ansi')).default)(...args);
+const sliceAnsi: typeof import('slice-ansi').default = (...args) =>
+  (loaded.sliceAnsi ??= (require('slice-ansi') as typeof import('slice-ansi')).default)(...args);
 
 /**
  * Wrap `text` into rows: the first `width` columns wide, every row after it `indent` columns

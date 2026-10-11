@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import chalk from 'chalk';
 import { execa, type ResultPromise } from 'execa';
-import stringWidth from 'string-width';
 import type { AnyPackageConfig, ResolvedHealthcheck } from './config.js';
 import { getDevScript, getLoadedConfig } from './config.js';
 import { defaultFormatter } from './log-formatter.js';
@@ -1368,7 +1367,7 @@ export class ProcessManager implements ControlManager {
   private gutterWidth(line: BufferedLine, mode: TsMode): number {
     let width = this.prefixWidths.get(line.prefix);
     if (width === undefined) {
-      width = stringWidth(line.prefix);
+      ({ width } = measureText(line.prefix));
       this.prefixWidths.set(line.prefix, width);
     }
     return width + (line.showTs ? timestampGutterWidth(mode) : 0);

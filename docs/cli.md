@@ -13,8 +13,9 @@ devtooie infra up         # bring the config's infra up, wait until ready, exit
 ```
 
 Every command works from **anywhere in the repo**: as a first step devtooie walks up to the
-nearest `devtooie.config.*`, switches to that directory, and loads its workspace-scope `.env`
-— so running from a subdirectory behaves the same as running from the root.
+nearest `devtooie.config.*` and switches to that directory, and a command that uses the
+config loads it there with its workspace-scope `.env` — so running from a subdirectory
+behaves the same as running from the root.
 
 Common options:
 
