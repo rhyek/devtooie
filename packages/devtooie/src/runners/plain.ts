@@ -29,6 +29,7 @@ export async function runPlain(
     probeReadiness: devReverseProxy !== null,
   });
 
+  let stopBranchWatch = (): void => {};
   let shuttingDown = false;
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) {
@@ -62,18 +63,19 @@ export async function runPlain(
   server.attach(manager);
   server.setOnQuit(() => void shutdown());
   devReverseProxy?.attach(manager);
+
+  // Before anything is spawned: a signal that arrives with no handler installed kills devtooie
+  // on the spot, and the packages it had just started would be orphaned. SIGHUP included: a
+  // closed terminal must tear the packages down like a Ctrl+C (see `signals.ts`).
+  installShutdownSignals(() => void shutdown());
   manager.startAll();
 
-  const stopBranchWatch = watchGitBranch({
+  stopBranchWatch = watchGitBranch({
     onChange: (from, to) => {
       manager.systemLog.warn(`git branch changed (${from} → ${to}), shutting down`);
       void shutdown();
     },
   });
-
-  // SIGHUP included: a closed terminal must tear the packages down like a Ctrl+C, not leave
-  // them orphaned to PID 1 (see `signals.ts`).
-  installShutdownSignals(() => void shutdown());
 
   // This promise only settles by way of shutdown() calling process.exit()
   // itself, so it simply keeps the runner's returned promise pending for the
