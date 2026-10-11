@@ -303,8 +303,9 @@ The two `.local` files are the personal tier — commit `.env` and `.env.<mode>`
 `.env*.local` out of git.
 
 **Package scope overrides workspace scope**, and within a scope a later file
-overrides an earlier one. `${VAR}` references expand against already-loaded files
-and the ambient environment.
+overrides an earlier one. A `${VAR}` reference expands to the value that wins for
+that variable: the ambient environment's, or the already-loaded files' where the
+ambient environment has none or `env.override` hands the files the win.
 
 **The ambient environment wins over the files**, as in Next.js, Vite and
 `node --env-file` — so `FOO=bar devtooie` overrides a file for one run. Ambient

@@ -1509,7 +1509,9 @@ The two `.local` files are the personal tier — commit `.env` and `.env.<mode>`
 `.env*.local` out of git.
 
 **Package scope overrides workspace scope**, and within a scope a later file overrides an earlier
-one. `${VAR}` references expand against already-loaded files and the ambient environment.
+one. A `${VAR}` reference expands to the value that wins for that variable: the ambient
+environment's, or the already-loaded files' where the ambient environment has none or
+`env.override` hands the files the win.
 
 **The ambient environment wins over the files**, as in Next.js, Vite and `node --env-file` — so
 `FOO=bar devtooie` overrides a file for a single run. `env.override` names the exceptions, for
@@ -1527,6 +1529,10 @@ defineConfig({
 With that, `NODE_OPTIONS=$NODE_OPTIONS --flag` appends to whatever the shell already set. Without
 it that line silently does nothing whenever the shell already sets `NODE_OPTIONS`, which VS Code's
 integrated terminal always does.
+
+An override holds wherever the variable is used. A `${VAR}` reference to it, in any line read
+after the one that sets it, expands to the value that won, never the shell's; and the same
+resolved environment goes to every package, one-off command, build script and infra service.
 
 **Ambient means the environment devtooie was started with** — what the shell (or a CI runner)
 exported. A value that comes from a `.env` file is never ambient, at either scope. So
@@ -1584,7 +1590,8 @@ With nothing else to set under `env`, the callback can stand in for the whole op
   names it. A `PORT` or `PUBLIC_ORIGIN` here, like one in a workspace `.env` file, does not
   replace the one devtooie injects into each package; only the package's own file does.
 - **A `.env` file can reference it.** `${VAR}` in a file expands to a variable set here. The
-  callback runs before that, so what it sees of such a line is the reference left empty.
+  callback runs before that, so what it sees of such a line has the reference filled from the
+  ambient environment, or left empty.
 - **Values are literal strings.** A `$` in a value is a `$`: nothing in it is expanded. A variable
   whose value is `undefined` is left out; any other non-string is an error when the config
   loads, naming the variable.

@@ -7,7 +7,7 @@ import {
   assignedNames,
   envCandidatePaths,
   envFileNames,
-  literalizeForExpansion,
+  hideDollars,
   packageEnvLayer,
   resolveEnv,
   resolveMode,
@@ -328,15 +328,109 @@ describe('resolveEnv precedence against the ambient environment', () => {
   });
 });
 
+describe('resolveEnv references to an overridden variable', () => {
+  const resolve = (override: boolean | string[] | undefined, vars?: Record<string, string>) =>
+    resolveEnv({ cwd, relativeDir: 'packages/api', override, vars }).env;
+
+  test("expand to the file's value, not the shell's, in a later file", () => {
+    write('.env', 'DEVTOOIE_ENV_A=/file\n');
+    write('.env.local', 'DEVTOOIE_ENV_B=$DEVTOOIE_ENV_A/storage\n');
+    write('packages/api/.env', 'DEVTOOIE_ENV_C="${DEVTOOIE_ENV_A}/cache"\n');
+    withAmbient({ DEVTOOIE_ENV_A: '/shell' }, () => {
+      expect(resolve(['DEVTOOIE_ENV_A'])).toEqual({
+        DEVTOOIE_ENV_A: '/file',
+        DEVTOOIE_ENV_B: '/file/storage',
+        DEVTOOIE_ENV_C: '/file/cache',
+      });
+      expect(resolve(true)).toEqual({
+        DEVTOOIE_ENV_A: '/file',
+        DEVTOOIE_ENV_B: '/file/storage',
+        DEVTOOIE_ENV_C: '/file/cache',
+      });
+      expect(resolve(undefined)).toEqual({
+        DEVTOOIE_ENV_A: '/shell',
+        DEVTOOIE_ENV_B: '/shell/storage',
+        DEVTOOIE_ENV_C: '/shell/cache',
+      });
+    });
+  });
+
+  test("expand to the config's own var when that is what the override lets win", () => {
+    write('.env', 'DEVTOOIE_ENV_B=$DEVTOOIE_ENV_A/storage\n');
+    withAmbient({ DEVTOOIE_ENV_A: '/shell' }, () => {
+      const vars = { DEVTOOIE_ENV_A: '/config' };
+      expect(resolve(['DEVTOOIE_ENV_A'], vars)).toEqual({
+        DEVTOOIE_ENV_A: '/config',
+        DEVTOOIE_ENV_B: '/config/storage',
+      });
+      expect(resolve(undefined, vars)).toEqual({
+        DEVTOOIE_ENV_A: '/shell',
+        DEVTOOIE_ENV_B: '/shell/storage',
+      });
+    });
+  });
+
+  test('expand to the appended value of a self-referential override', () => {
+    write('.env', 'DEVTOOIE_ENV_APPEND=$DEVTOOIE_ENV_APPEND --flag\n');
+    write('.env.local', 'DEVTOOIE_ENV_B="node $DEVTOOIE_ENV_APPEND"\n');
+    withAmbient({ DEVTOOIE_ENV_APPEND: '--require /tmp/boot.js' }, () => {
+      expect(resolve(['DEVTOOIE_ENV_APPEND'])).toEqual({
+        DEVTOOIE_ENV_APPEND: '--require /tmp/boot.js --flag',
+        DEVTOOIE_ENV_B: 'node --require /tmp/boot.js --flag',
+      });
+    });
+  });
+
+  test('keep a dollar in the overridden value literal', () => {
+    write('.env', 'DEVTOOIE_ENV_APPEND=$DEVTOOIE_ENV_APPEND --flag\n');
+    write('.env.local', 'DEVTOOIE_ENV_B="node $DEVTOOIE_ENV_APPEND"\n');
+    withAmbient({ DEVTOOIE_ENV_APPEND: "--a '$HOME' ${X}" }, () => {
+      expect(resolve(['DEVTOOIE_ENV_APPEND'])).toEqual({
+        DEVTOOIE_ENV_APPEND: "--a '$HOME' ${X} --flag",
+        DEVTOOIE_ENV_B: "node --a '$HOME' ${X} --flag",
+      });
+    });
+  });
+});
+
+describe('resolveEnv with an override in force', () => {
+  test("expands an overridden variable's own references by the usual rule: the shell's value", () => {
+    write('.env', 'DEVTOOIE_ENV_A=/file\nDEVTOOIE_ENV_B=$DEVTOOIE_ENV_A/b\n');
+    withAmbient({ DEVTOOIE_ENV_A: '/shell', DEVTOOIE_ENV_B: '/shell-b' }, () => {
+      const { env } = resolveEnv({ cwd, relativeDir: '.', override: ['DEVTOOIE_ENV_B'] });
+      expect(env).toEqual({ DEVTOOIE_ENV_A: '/shell', DEVTOOIE_ENV_B: '/shell/b' });
+    });
+  });
+
+  test('leaves a variable the override names alone when no file sets it', () => {
+    write('.env', 'DEVTOOIE_ENV_B=$DEVTOOIE_ENV_A/b\n');
+    withAmbient({ DEVTOOIE_ENV_A: '/shell' }, () => {
+      const { env } = resolveEnv({ cwd, relativeDir: '.', override: ['DEVTOOIE_ENV_A'] });
+      expect(env).toEqual({ DEVTOOIE_ENV_B: '/shell/b' });
+    });
+  });
+
+  test('runs a command substitution once', () => {
+    const counter = path.join(cwd, 'counter');
+    write('.env', `DEVTOOIE_ENV_A=$(echo x >> ${counter}; echo ran)\n`);
+    const { env } = resolveEnv({ cwd, relativeDir: '.', override: ['DEVTOOIE_ENV_B'] });
+    expect(env).toEqual({ DEVTOOIE_ENV_A: 'ran' });
+    expect(fs.readFileSync(counter, 'utf8')).toBe('x\n');
+  });
+});
+
 describe('two-stage resolution (anchor merge, then per-package)', () => {
   /**
    * What the CLI does at startup, for the duration of `fn`: note the environment the shell handed
-   * over, then merge the workspace's files into `process.env`. `fn` gets the shell's environment,
-   * to resolve against as the CLI's later resolutions do.
+   * over, then merge the workspace's files into `process.env`, under the config's `override`.
+   * `fn` gets the shell's environment, to resolve against as the CLI's later resolutions do.
    */
-  function anchored(fn: (shell: Record<string, string>) => void): void {
+  function anchored(
+    override: boolean | string[] | undefined,
+    fn: (shell: Record<string, string>) => void,
+  ): void {
     const shell = ambientEnv();
-    const { env } = resolveEnv({ cwd, relativeDir: '.', ambient: shell });
+    const { env } = resolveEnv({ cwd, relativeDir: '.', ambient: shell, override });
     withAmbient(env, () => fn(shell));
   }
 
@@ -354,7 +448,7 @@ describe('two-stage resolution (anchor merge, then per-package)', () => {
       write('.env.development', 'DEVTOOIE_ENV_A=2\n');
       write('packages/api/.env.development', 'DEVTOOIE_ENV_A=3\n');
       withAmbient(shell === undefined ? {} : { DEVTOOIE_ENV_A: shell }, () => {
-        anchored((ambient) => {
+        anchored(override, (ambient) => {
           const { env } = resolveEnv({ cwd, relativeDir: 'packages/api', override, ambient });
           expect(env.DEVTOOIE_ENV_A).toBe(expected);
         });
@@ -366,7 +460,7 @@ describe('two-stage resolution (anchor merge, then per-package)', () => {
     write('.env', 'DEVTOOIE_ENV_A=2\n');
     write('packages/api/.env', 'DEVTOOIE_ENV_A=3\n');
     withAmbient({ DEVTOOIE_ENV_A: '1' }, () => {
-      anchored((ambient) => {
+      anchored(true, (ambient) => {
         const { env } = resolveEnv({ cwd, relativeDir: 'packages/api', override: true, ambient });
         expect(env.DEVTOOIE_ENV_A).toBe('3');
       });
@@ -377,7 +471,7 @@ describe('two-stage resolution (anchor merge, then per-package)', () => {
   // it came from.
   test('picks up a workspace file edited after the merge', () => {
     write('.env', 'DEVTOOIE_ENV_A=before\n');
-    anchored((ambient) => {
+    anchored(undefined, (ambient) => {
       expect(process.env.DEVTOOIE_ENV_A).toBe('before');
       write('.env', 'DEVTOOIE_ENV_A=after\n');
       const { env } = resolveEnv({ cwd, relativeDir: 'packages/api', ambient });
@@ -391,8 +485,10 @@ describe('two-stage resolution (anchor merge, then per-package)', () => {
   test('appends a self-referential override exactly once', () => {
     write('.env', 'DEVTOOIE_ENV_TWOSTAGE=$DEVTOOIE_ENV_TWOSTAGE --flag\n');
     withAmbient({ DEVTOOIE_ENV_TWOSTAGE: '--require /boot.js' }, () => {
-      anchored((ambient) => {
-        expect(process.env.DEVTOOIE_ENV_TWOSTAGE).toBe('--require /boot.js');
+      anchored(['DEVTOOIE_ENV_TWOSTAGE'], (ambient) => {
+        // devtooie's own environment carries the appended value, for what it starts itself…
+        expect(process.env.DEVTOOIE_ENV_TWOSTAGE).toBe('--require /boot.js --flag');
+        // …and a package's is still built from the shell's, so the flag isn't appended again.
         const { env } = resolveEnv({
           cwd,
           relativeDir: 'packages/api',
@@ -406,7 +502,7 @@ describe('two-stage resolution (anchor merge, then per-package)', () => {
 
   test('appends a self-referential override exactly once when the shell has no value', () => {
     write('.env', 'DEVTOOIE_ENV_TWOSTAGE="$DEVTOOIE_ENV_TWOSTAGE --flag"\n');
-    anchored((ambient) => {
+    anchored(['DEVTOOIE_ENV_TWOSTAGE'], (ambient) => {
       const { env } = resolveEnv({
         cwd,
         relativeDir: 'packages/api',
@@ -444,26 +540,29 @@ describe('captureShellEnv', () => {
   });
 });
 
-describe('literalizeForExpansion', () => {
+describe('hideDollars', () => {
   // This is the primary regression guard, and it is deliberately a property assertion rather than
   // a behavioral one. The bug it prevents is a *synchronous* infinite loop inside dotenvx, which
   // no test timeout can interrupt — a test that just called resolveEnv would hang the whole runner
   // instead of failing (verified: neutering the fix blocks the suite indefinitely). Asserting the
   // invariant directly fails fast and points straight at the cause.
-  it('leaves no unescaped `$` for the expander to re-parse', () => {
-    const out = literalizeForExpansion({
-      SELF: '--require /boot.js ${SELF}',
-      PLAIN: 'no dollars here',
-      MIXED: 'a$b ${C} $D',
-    });
+  test('leaves no `$` for the expander to parse', () => {
+    const out = hideDollars(
+      {
+        SELF: '--require /boot.js ${SELF}',
+        PLAIN: 'no dollars here',
+        MIXED: 'a$b ${C} $D \\$E $(echo pwned)',
+      },
+      '<dollar>',
+    );
     for (const value of Object.values(out)) {
-      // Every `$` must be preceded by a backslash.
-      expect(value.replaceAll('\\$', '')).not.toContain('$');
+      expect(value).not.toContain('$');
     }
+    expect(out.MIXED).toBe('a<dollar>b <dollar>{C} <dollar>D \\<dollar>E <dollar>(echo pwned)');
   });
 
-  it('leaves values without a `$` untouched', () => {
-    expect(literalizeForExpansion({ A: 'plain', B: '' })).toEqual({ A: 'plain', B: '' });
+  test('leaves values without a `$` untouched', () => {
+    expect(hideDollars({ A: 'plain', B: '' }, '<dollar>')).toEqual({ A: 'plain', B: '' });
   });
 });
 

@@ -121,16 +121,22 @@ async function anchorAtConfigRoot(invocationCwd: string): Promise<void> {
   captureShellEnv();
   try {
     await loadConfig(root);
-    const files = getLoadedConfig()?.envFiles ?? envFileNames();
-    // Deliberately resolved WITHOUT the config's `env.override`, so a variable the shell set
-    // keeps the shell's value here. An overriding variable is typically self-referential
-    // (`NODE_OPTIONS=$NODE_OPTIONS --flag`), and its file value is applied where a child's
-    // environment is built, not to devtooie's own. (Nothing is lost for devtooie's own process:
-    // node reads NODE_OPTIONS at startup, long before this.)
-    // The config's own variables go in with the files, so whatever devtooie starts has them — a
-    // build script included, which is spawned with this environment alone.
-    const vars = getLoadedConfig()?.envVars;
-    Object.assign(process.env, workspaceEnvLayer({ cwd: root, files, vars }));
+    const config = getLoadedConfig();
+    // The same workspace layer everything outside a package is given — the config's own
+    // variables, the files, and `env.override` deciding where they beat the shell — so whatever
+    // devtooie starts has it: a build script included, which is spawned with this environment
+    // alone. (A later resolution still starts from what the shell handed over, captured above,
+    // so an override that extends a variable — `NODE_OPTIONS=$NODE_OPTIONS --flag` — extends
+    // it once.)
+    Object.assign(
+      process.env,
+      workspaceEnvLayer({
+        cwd: root,
+        files: config?.envFiles ?? envFileNames(),
+        override: config?.envOverride,
+        vars: config?.envVars,
+      }),
+    );
   } catch (err) {
     // Best-effort by design — this runs before *every* command (`init` included), so a config
     // that exists but won't load must not be fatal here; the commands that actually need it

@@ -75,11 +75,15 @@ beforeAll(async () => {
       "import { defineConfig } from 'devtooie';",
       'export default defineConfig({',
       "  packageRootDir: 'packages',",
-      '  env: ({ envs }) => ({',
-      '    ROOT_DIR: envs.DEVTOOIE_WORKSPACE_DIR,',
-      "    APP_PINNED: 'from-config',",
-      "    SHELL_SET: 'from-config',",
-      '  }),',
+      '  env: {',
+      '    vars: ({ envs }) => ({',
+      '      ROOT_DIR: envs.DEVTOOIE_WORKSPACE_DIR,',
+      "      APP_PINNED: 'from-config',",
+      "      SHELL_SET: 'from-config',",
+      "      PINNED_DIR: '/from/config',",
+      '    }),',
+      "    override: ['PINNED_DIR', 'APPENDED'],",
+      '  },',
       '  packages: {',
       '    lib: {},',
       '    envbuild: {},',
@@ -109,6 +113,7 @@ beforeAll(async () => {
     cwd: script('console.log(process.cwd())'),
     env: script('console.log(process.env.APP_VAR)'),
     rootdir: script('console.log(process.env.ROOT_DIR)'),
+    appended: script('console.log(process.env.APPENDED)'),
     whoami: script(
       "console.log(process.env.npm_package_name+' '+process.env.npm_package_version+' '+process.env.npm_lifecycle_event)",
     ),
@@ -118,13 +123,24 @@ beforeAll(async () => {
     posthook: 'echo POST',
   });
   fakeBin(app, 'localbin');
+  // A project reference with a comment and a trailing comma, as tsconfig files have them.
+  fs.writeFileSync(
+    path.join(app, 'tsconfig.json'),
+    '{\n  // lib is built first\n  "references": [{ "path": "../lib" },],\n}\n',
+  );
   fs.writeFileSync(
     path.join(app, '.env.development'),
     'APP_VAR=from-app-env-file\nAPP_PINNED=from-app-env-file\nAPP_DATA=${DEVTOOIE_WORKSPACE_DIR}/data\nAPP_ROOT_REF=${ROOT_DIR}/ref\n',
   );
+  fs.writeFileSync(
+    path.join(ws, '.env.development'),
+    'DERIVED_DIR=$PINNED_DIR/storage\nAPPENDED="$APPENDED --flag"\n',
+  );
   writePackage('envbuild', {
     dev: 'true',
-    build: script("require('fs').appendFileSync('../../order.log',String(process.env.ROOT_DIR))"),
+    build: script(
+      "require('fs').appendFileSync('../../order.log',process.env.ROOT_DIR+'|'+process.env.DERIVED_DIR)",
+    ),
   });
   writePackage('broken', { dev: 'true', build: 'exit 3' });
   writePackage('killed', { dev: 'true', build: script("process.kill(process.pid,'SIGKILL')") });
@@ -301,7 +317,39 @@ describe('environment variables', () => {
     fs.writeFileSync(order, '');
     const result = await devtooie(['--build', '-p', 'envbuild']);
     expect(result.exitCode).toBe(0);
-    expect(fs.readFileSync(order, 'utf8')).toBe(ws);
+    expect(fs.readFileSync(order, 'utf8')).toBe(`${ws}|/from/config/storage`);
+  });
+
+  describe('with the shell exporting a variable env.override names', () => {
+    const env = { PINNED_DIR: '/from/shell' };
+    const PRINT = print('PINNED_DIR', 'DERIVED_DIR');
+    const expected = '/from/config\n/from/config/storage';
+
+    test("gives a package's command the config's value, and a .env reference to it the same", async () => {
+      const result = await devtooie(['exec', '-p', 'app', '--', ...PRINT], { env });
+      expect(result.stdout).toBe(expected);
+    });
+
+    test('does the same for a command run outside every package', async () => {
+      expect((await devtooie(['exec', '--', ...PRINT], { env })).stdout).toBe(expected);
+    });
+
+    test('extends a variable the shell exports exactly once, for a command and a script', async () => {
+      const shell = { APPENDED: '--base' };
+      const command = await devtooie(['exec', '-p', 'app', '--', ...print('APPENDED')], {
+        env: shell,
+      });
+      expect(command.stdout).toBe('--base --flag');
+      const scripted = await devtooie(['run', '-p', 'app', 'appended'], { env: shell });
+      expect(lastLine(scripted.stdout)).toBe('--base --flag');
+    });
+
+    test('does the same for a build script', async () => {
+      fs.writeFileSync(order, '');
+      const result = await devtooie(['--build', '-p', 'envbuild'], { env });
+      expect(result.exitCode).toBe(0);
+      expect(fs.readFileSync(order, 'utf8')).toBe(`${ws}|/from/config/storage`);
+    });
   });
 });
 

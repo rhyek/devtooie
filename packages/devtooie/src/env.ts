@@ -169,7 +169,7 @@ export function baseEnvs(workspaceDir: string): Envs {
 /**
  * A snapshot of `process.env` with `undefined`-valued keys dropped, so it can be used as a
  * plain string map. Used as the base layer a package's env files are merged over, and (after
- * {@link literalizeForExpansion}) as the `${VAR}`-expansion source in {@link resolveEnv}.
+ * {@link hideDollars}) as the `${VAR}`-expansion source in {@link resolveEnv}.
  */
 export function ambientEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -198,35 +198,51 @@ export function captureShellEnv(): void {
   shellEnv = ambientEnv();
 }
 
-/** Escapes `$` so dotenvx substitutes a value without scanning it for references. */
-const escapeDollars = (value: string) => value.replaceAll('$', '\\$');
+/**
+ * A token to stand in for `$`, found in none of `texts` — so swapping it back afterwards can
+ * only ever bring back a `$` that {@link hideDollars} hid.
+ */
+function dollarStandIn(texts: string[]): string {
+  for (let n = 0; ; n++) {
+    // Private-use delimiters around a counter: no occurrence can straddle two of them.
+    const standIn = `\uE000${String(n)}\uE001`;
+    if (!texts.some((text) => text.includes(standIn))) {
+      return standIn;
+    }
+  }
+}
 
 /**
- * Makes ambient values inert to `${VAR}` expansion by escaping the metacharacter.
+ * Hides every `$` in values that are *already final* — the ambient environment's, the config's
+ * own variables — behind `standIn`, for use as dotenvx's `processEnv`.
  *
- * A value that came from the environment is *already final* — it is data, not a template — but
- * dotenvx re-scans substituted content for further references. That causes two failures, both of
- * which this prevents structurally (after escaping there is no unescaped `$` in any substituted
- * text, so a second expansion round cannot exist):
+ * Such a value is data, not a template, but dotenvx scans whatever it substitutes for further
+ * references, and it keeps doing so as later lines build on the result. That causes failures
+ * this prevents structurally (dotenvx never sees a `$` it didn't read from a file, at any depth
+ * of reference, so there is nothing to scan):
  *
  * - **A hang.** An ambient `NODE_OPTIONS` that itself contains a literal `${NODE_OPTIONS}`, plus a
  *   file line `NODE_OPTIONS="${NODE_OPTIONS} --flag"`, is a cycle: substitute, re-scan, find the
  *   reference again, forever — with no error and no output.
  * - **Silent mangling.** Ambient `GREETING=hello$world` with a file line `MSG="${GREETING}!"`
  *   resolved to `hello`, because `$world` was treated as a reference and expanded to nothing.
+ * - **A command run.** A `$(command)` in such a value is text, not a substitution to perform.
  *
- * Only for use as dotenvx's `processEnv`. {@link ambientEnv} keeps returning real values — escaped
- * ones must never reach the `envs` a config callback sees.
+ * {@link ambientEnv} keeps returning real values — hidden ones must never reach the `envs` a
+ * config callback sees; {@link resolveEnv} swaps the `$` back into everything it returns.
  *
  * Exported for tests only (not re-exported from `index.ts`). The invariant it guarantees — no
- * unescaped `$` survives — is what the regression test asserts directly, because the failure it
- * prevents is a *synchronous* infinite loop: a test that merely calls `resolveEnv` would hang the
- * runner rather than fail, since no timeout can interrupt a blocked event loop.
+ * `$` survives — is what the regression test asserts directly, because the failure it prevents
+ * is a *synchronous* infinite loop: a test that merely calls `resolveEnv` would hang the runner
+ * rather than fail, since no timeout can interrupt a blocked event loop.
  */
-export function literalizeForExpansion(ambient: Record<string, string>): Record<string, string> {
+export function hideDollars(
+  values: Record<string, string>,
+  standIn: string,
+): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(ambient)) {
-    out[key] = escapeDollars(value);
+  for (const [key, value] of Object.entries(values)) {
+    out[key] = value.replaceAll('$', standIn);
   }
   return out;
 }
@@ -251,46 +267,24 @@ export function assignedNames(source: string): Set<string> {
 }
 
 /**
- * The config's own variables as the source of a `.env` file, so they resolve by the very rules
- * a file's do.
+ * Variables as the source of a `.env` file, so they resolve by the very rules a file's do: a
+ * later line replaces them, and a later line's `${VAR}` references them.
  *
- * A value is written single-quoted, which dotenvx takes literally: no `${VAR}` expansion, no
- * `$(command)` substitution, and still literal when a later line references the variable.
- *
- * A value that itself contains a single quote can't be written that way, so its line references
- * a placeholder holding it — `placeholders`, for the environment the source is expanded
- * against. The placeholder's value is escaped twice: once for its own substitution, and once
- * more so the variable stays inert when a later line references *it*. That leaves the variable
- * itself one escape short of its value, which `restore` undoes after the parse.
+ * Each line assigns the variable from a placeholder that holds its value — `placeholders`, for
+ * the environment the source is expanded against — so nothing in the value has to survive
+ * dotenv's own syntax: quotes, newlines, a `#`.
  */
-function varsAsEnvSource(vars: Record<string, string>): {
-  source: string;
-  placeholders: Record<string, string>;
-  restore: (env: Record<string, string>) => void;
-} {
+function asEnvSource(
+  vars: Record<string, string>,
+  placeholderPrefix: string,
+): { source: string; placeholders: Record<string, string> } {
   const placeholders: Record<string, string> = {};
-  const indirect: [name: string, value: string][] = [];
-  const lines = Object.entries(vars).map(([name, value]) => {
-    if (!value.includes("'")) {
-      return `${name}='${value}'`;
-    }
-    const placeholder = `__DEVTOOIE_VAR_${String(indirect.length)}`;
-    placeholders[placeholder] = escapeDollars(escapeDollars(value));
-    indirect.push([name, value]);
+  const lines = Object.entries(vars).map(([name, value], i) => {
+    const placeholder = `${placeholderPrefix}${String(i)}`;
+    placeholders[placeholder] = value;
     return `${name}=\${${placeholder}}`;
   });
-  return {
-    source: lines.join('\n'),
-    placeholders,
-    restore: (env) => {
-      for (const [name, value] of indirect) {
-        // Still the variable's own value — not the ambient environment's, nor a file's.
-        if (env[name] === escapeDollars(value)) {
-          env[name] = value;
-        }
-      }
-    },
-  };
+  return { source: lines.join('\n'), placeholders };
 }
 
 /**
@@ -303,62 +297,56 @@ function varsAsEnvSource(vars: Record<string, string>): {
  * exceptions: variables whose file value is allowed to win instead (or `true` for all of them).
  * Ambient means what devtooie was started with: a variable only the files define is never
  * ambient, so its highest-ranked file wins whatever `override` says.
+ *
+ * A `${VAR}` reference expands to the value that wins: the ambient one, or for an overridden
+ * variable whatever the lines read so far have made of it — which starts as the ambient value,
+ * so `NODE_OPTIONS=$NODE_OPTIONS --flag` extends it.
  */
 export function resolveEnv(opts: ResolveEnvOptions): EnvResolution {
   const candidates = envCandidatePaths(opts);
   const files = candidates.filter((p) => fs.existsSync(p));
 
   const ambient = opts.ambient ?? shellEnv ?? ambientEnv();
-  const fromVars = varsAsEnvSource(opts.vars ?? {});
+  const vars = opts.vars ?? {};
   const texts = files.map((p) => fs.readFileSync(p, 'utf8'));
-  const source = [fromVars.source, ...texts].join('\n');
   const pkgDir = path.resolve(opts.cwd, opts.relativeDir);
   const packageNames = assignedNames(
     texts.filter((_text, i) => path.dirname(files[i] ?? '') === pkgDir).join('\n'),
   );
-  if (!source.trim()) {
+  if (Object.keys(vars).length === 0 && !texts.join('').trim()) {
     return { env: {}, files, candidates, packageNames };
   }
 
+  // An ambient variable the files may override stops being ambient for this resolution: it
+  // becomes the first line read, ahead of the config's own variables and every file. So the
+  // lines that assign it win, each one's reference to it sees what the lines before left —
+  // the ambient value, for the first — and every later reference sees the result. The rest of
+  // the ambient environment wins as ever, for the variable itself and for references to it.
   const { override } = opts;
-  const overridesAll = override === true;
-  const overridden = new Set(Array.isArray(override) ? override : []);
-  const isOverridden = (key: string) => overridesAll || overridden.has(key);
-  const hasOverrides = overridesAll || overridden.size > 0;
+  const assigned = new Set([...Object.keys(vars), ...assignedNames(texts.join('\n'))]);
+  const isOverridden = (key: string) =>
+    assigned.has(key) && (override === true || (Array.isArray(override) && override.includes(key)));
+  const winning: Record<string, string> = {};
+  const overridable: Record<string, string> = {};
+  for (const [key, value] of Object.entries(ambient)) {
+    (isOverridden(key) ? overridable : winning)[key] = value;
+  }
 
-  // dotenvx reads from this snapshot for `$VAR` lookups but writes to neither it nor the real
+  const fromAmbient = asEnvSource(overridable, '__DEVTOOIE_AMBIENT_');
+  const fromVars = asEnvSource(vars, '__DEVTOOIE_VAR_');
+  const final = { ...winning, ...fromAmbient.placeholders, ...fromVars.placeholders };
+  const standIn = dollarStandIn([...Object.values(final), ...texts]);
+  // dotenvx reads from `processEnv` for `$VAR` lookups but writes to neither it nor the real
   // process.env, so nothing is mutated.
-  const lit = { ...fromVars.placeholders, ...literalizeForExpansion(ambient) };
+  const parsed = dotenvx.parse([fromAmbient.source, fromVars.source, ...texts].join('\n'), {
+    processEnv: hideDollars(final, standIn),
+    overload: false,
+  });
 
-  // Ambient wins for every key, and `${VAR}` expands against ambient — so a file's `BAZ=$FOO`
-  // sees the ambient FOO rather than a file FOO that lost.
-  const env = dotenvx.parse(source, { processEnv: lit, overload: false });
-
-  // For a key the ambient won, dotenvx hands back the value it was *given* — the escaped copy.
-  // Put the real one back, or an ambient value containing `$` comes out carrying a literal
-  // backslash (`--require /b.js \${NODE_OPTIONS}`). Only ambient values with a `$` are affected,
-  // which is exactly the NODE_OPTIONS case `override` exists to serve.
-  for (const key of Object.keys(env)) {
-    const value = ambient[key];
-    if (value !== undefined && !isOverridden(key)) {
-      env[key] = value;
-    }
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    env[key] = value.replaceAll(standIn, '$');
   }
-
-  // The overrides, with the precedence inverted. This is what lets the self-append pattern
-  // `NODE_OPTIONS=$NODE_OPTIONS --flag` extend the ambient value instead of losing to it —
-  // `$NODE_OPTIONS` still expands from ambient, and the result is then allowed to win. Values
-  // from this pass need no repair: when a file value wins, dotenvx unescapes `\$` back to `$`.
-  if (hasOverrides) {
-    const forced = dotenvx.parse(source, { processEnv: lit, overload: true });
-    for (const [key, value] of Object.entries(forced)) {
-      if (isOverridden(key)) {
-        env[key] = value;
-      }
-    }
-  }
-
-  fromVars.restore(env);
   return { env, files, candidates, packageNames };
 }
 

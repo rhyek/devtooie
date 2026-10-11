@@ -138,7 +138,8 @@ With nothing else to set under `env`, the callback can stand in for the whole op
   names it. A `PORT` or `PUBLIC_ORIGIN` here, like one in a workspace `.env` file, does not
   replace the one devtooie injects into each package; only the package's own file does.
 - **A `.env` file can reference it.** `${VAR}` in a file expands to a variable set here. The
-  callback runs before that, so what it sees of such a line is the reference left empty.
+  callback runs before that, so what it sees of such a line has the reference filled from the
+  ambient environment, or left empty.
 - **Values are literal strings.** A `$` in a value is a `$`: nothing in it is expanded. A variable
   whose value is `undefined` is left out; any other non-string is an error when the config
   loads, naming the variable.
@@ -167,6 +168,10 @@ The case it exists for is a file that *extends* an inherited value rather than r
 `NODE_OPTIONS="$NODE_OPTIONS --disable-warning=ExperimentalWarning"`. Without the override that
 line silently does nothing whenever the shell already sets `NODE_OPTIONS`, which VS Code's
 integrated terminal always does.
+
+An override holds wherever the variable is used. A `${VAR}` reference to it, in any line read
+after the one that sets it, expands to the value that won, never the shell's; and the same
+resolved environment goes to every package, one-off command, build script and infra service.
 
 **Ambient means the environment devtooie was started with** — what the shell (or a CI runner)
 exported. A value that comes from a `.env` file is never ambient, at either scope. So
