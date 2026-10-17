@@ -1,4 +1,5 @@
-# The example's infrastructure, run by devtooie's `infra` (see devtooie.config.ts):
+# The example's infrastructure — a Postgres and a mail catcher — run by devtooie's `infra` (see
+# devtooie.config.ts):
 #
 #   pnpm devtooie infra up             # start it and wait until it's ready
 #   pnpm devtooie infra docker-compose ps
@@ -30,6 +31,24 @@ services:
       interval: 30s
       timeout: 5s
       start_period: 1m
+      start_interval: 1s
+      retries: 3
+
+  # A mail catcher: whatever the app sends over SMTP lands in its web UI, which devtooie's dev
+  # reverse proxy routes at http://mail.localhost:21050 — see `infra` in devtooie.config.ts. The
+  # proxy can't read the UI's port from this file, so the config names it too (MAIL_UI_PORT).
+  mail:
+    image: axllent/mailpit:v1.31.6
+    ports:
+      - '${MAIL_UI_PORT}:8025'
+      - '${MAIL_SMTP_PORT}:1025'
+    # The image checks itself every 15s; probing every second while it starts lets `infra up`
+    # move on as soon as it answers.
+    healthcheck:
+      test: ['CMD', '/mailpit', 'readyz']
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
       start_interval: 1s
       retries: 3
 

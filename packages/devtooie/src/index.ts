@@ -20,6 +20,8 @@ export type {
   AnyPackageConfig,
   Config,
   DevReverseProxyInput,
+  ProxyInput,
+  ResolvedProxy,
   ResolvedDevReverseProxy,
   PackageTypeValue,
   ConfigContext,

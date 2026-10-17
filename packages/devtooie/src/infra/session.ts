@@ -1,4 +1,4 @@
-import { getLoadedConfig } from '../config.js';
+import { getLoadedConfig, infraServicesOf } from '../config.js';
 import type { InfraLogLine, SessionInfra } from '../runners/types.js';
 import { InfraManager, type InfraManagerDeps } from './manager.js';
 import type { InfraEvent, InfraRunSummary } from './types.js';
@@ -36,7 +36,7 @@ export class InfraFailedError extends Error {
 /**
  * The infra step of a dev session: bring every service up — no reset — and wait, exactly as
  * `devtooie infra up` does, before any package starts. Resolves with what the run phase needs
- * (the services for the footer, the output for the session log), or `undefined` when the config
+ * (the services for the footer, with their public origins, the output for the session log), or `undefined` when the config
  * declares no `infra`. Throws {@link InfraFailedError} when a service doesn't make it: the
  * packages must not start against infrastructure that isn't there.
  *
@@ -58,7 +58,15 @@ export async function runSessionInfra(
   const summary = await manager.up({
     onEvent: (event) => {
       if (event.type === 'targets') {
-        services.push(...event.services.map((name) => ({ provider: event.provider, name })));
+        const declared = infraServicesOf(config);
+        services.push(
+          ...event.services.map((name) => ({
+            provider: event.provider,
+            name,
+            publicOrigin: declared.find((d) => d.provider === event.provider && d.name === name)
+              ?.service.publicOrigin,
+          })),
+        );
       } else if (event.type === 'output') {
         log.push({ service: event.service, text: event.line, isError: event.isError });
       }

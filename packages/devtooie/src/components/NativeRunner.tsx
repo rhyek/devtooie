@@ -189,15 +189,22 @@ function estimateRightColumnWidth(urlGroups: PackageUrlGroup[], topLevelUrls: Ur
 export function LinksColumn({
   topLevelUrls,
   packageUrlGroups,
+  infraUrls = [],
 }: {
   topLevelUrls: UrlLine[];
   packageUrlGroups: PackageUrlGroup[];
+  /** The public URLs of the infra services the dev reverse proxy routes, one line each. */
+  infraUrls?: UrlLine[];
 }): React.ReactElement | null {
-  if (topLevelUrls.length === 0 && packageUrlGroups.length === 0) {
+  // The infra links are one more group, under the packages', headed like the `infra:` row.
+  const groups: PackageUrlGroup[] = infraUrls.length
+    ? [...packageUrlGroups, { name: 'infra', selected: false, urls: infraUrls }]
+    : packageUrlGroups;
+  if (topLevelUrls.length === 0 && groups.length === 0) {
     return null;
   }
-  const showSeparator = topLevelUrls.length > 0 && packageUrlGroups.length > 0;
-  const separatorRule = '┈'.repeat(estimateRightColumnWidth(packageUrlGroups, topLevelUrls));
+  const showSeparator = topLevelUrls.length > 0 && groups.length > 0;
+  const separatorRule = '┈'.repeat(estimateRightColumnWidth(groups, topLevelUrls));
   return (
     <Box flexDirection="column" alignItems="flex-end" flexShrink={0}>
       {topLevelUrls.map((line, i) => (
@@ -207,11 +214,12 @@ export function LinksColumn({
         </Text>
       ))}
       {showSeparator && <Text dimColor>{separatorRule}</Text>}
-      {packageUrlGroups.map((group) => (
-        <React.Fragment key={group.name}>
+      {groups.map((group, i) => (
+        // Keyed by position too: a package may share the `infra` group's name.
+        <React.Fragment key={`${String(i)}-${group.name}`}>
           <Text bold={group.selected}>{group.name}</Text>
-          {group.urls.map((line, i) => (
-            <Text key={i} wrap="truncate" color={LINK_COLOR}>
+          {group.urls.map((line, j) => (
+            <Text key={j} wrap="truncate" color={LINK_COLOR}>
               {renderLineText(line)}
             </Text>
           ))}
@@ -392,6 +400,13 @@ export function NativeRunner({
   }, [args.sortedPackages, args.selectedSet]);
 
   const topLevelUrls = useMemo<UrlLine[]>(() => args.topLevelUrls ?? [], [args.topLevelUrls]);
+  const infraUrls = useMemo<UrlLine[]>(
+    () =>
+      (args.infra?.services ?? []).flatMap((service) =>
+        service.publicOrigin === undefined ? [] : [[{ url: service.publicOrigin }]],
+      ),
+    [args.infra],
+  );
 
   const [manager] = useState(() => new ProcessManager(args));
   useEffect(() => {
@@ -932,7 +947,11 @@ export function NativeRunner({
   }
 
   const linksColumn = (
-    <LinksColumn topLevelUrls={topLevelUrls} packageUrlGroups={packageUrlGroups} />
+    <LinksColumn
+      topLevelUrls={topLevelUrls}
+      packageUrlGroups={packageUrlGroups}
+      infraUrls={infraUrls}
+    />
   );
 
   const focusedPackage = displayPackages[cursor];

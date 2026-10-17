@@ -1,7 +1,7 @@
 import path from 'node:path';
 import type { z } from 'zod';
 import { ENV_NAME_RE, baseEnvs, resolveEnv, envFileNames, currentMode, type Envs, type EnvOverride, type Mode } from './env.js'; // prettier-ignore
-import { type CommandSchema, type PackageConfigSchema, DefineConfigSchema, SubdomainLabelSchema, DEFAULT_HEALTHCHECK_TIMEOUT_MS } from './config-schema.js'; // prettier-ignore
+import { type CommandSchema, type InfraServiceSchema, type PackageConfigSchema, type ProxySchema, DefineConfigSchema, SubdomainLabelSchema, DEFAULT_HEALTHCHECK_TIMEOUT_MS } from './config-schema.js'; // prettier-ignore
 import type { GeneratedPackageConfig, GeneratedDefineConfig } from './config.generated.js';
 import { composeProjectName } from './infra/project-name.js';
 import {
@@ -10,6 +10,7 @@ import {
   type InfraInput,
   type InfraServiceCallbacks,
   type ResolvedInfra,
+  type ResolvedInfraService,
 } from './infra/types.js';
 
 export const PackageType = { BACKEND: 'backend', BROWSER: 'browser', LIB: 'lib' } as const;
@@ -83,11 +84,11 @@ export interface PackageContext<T = TokenRecord> extends ConfigContext<T> {
    */
   port: number;
   /**
-   * The package's canonical `subdomain` — the first entry when it declared several — so a
-   * URL can be built from it without repeating it: `` ({ subdomain, envs }) =>
+   * The package's canonical `proxy.subdomain` — the first entry when it declared several — so
+   * a URL can be built from it without repeating it: `` ({ subdomain, envs }) =>
    * `https://${subdomain}.${envs.LOCALDEV_DOMAIN}` ``.
    *
-   * Plain data, unlike `port`: a package that declares no `subdomain` hands its callbacks
+   * Plain data, unlike `port`: a package that declares no `proxy` hands its callbacks
    * `undefined` here, and the optional type says so. Branch on it if a callback has to work
    * either way.
    */
@@ -267,9 +268,18 @@ export type PackageConfigInput<
   | 'healthcheck'
   | 'tokens'
   | 'relativeDir'
+  | 'proxy'
+  | 'subdomain'
 > &
   PackageNameRefs<N> &
   RelativeDirField<RootDir> & {
+    /**
+     * Route `<subdomain>.<rootDomain>` to this package's `port` through the dev reverse proxy.
+     * See {@link ProxyInput}.
+     */
+    proxy?: ProxyInput;
+    /** Not a package field: a package's subdomain goes under `proxy` — `proxy: { subdomain }`. */
+    subdomain?: never;
     /**
      * Values of your own for this package's callbacks, merged **over** the config's top-level
      * `tokens` and handed to them as `tokens` — typed from what you declare here, so
@@ -407,9 +417,33 @@ export type PackageConfigInput<
   };
 
 /**
+ * How a reverse proxy reaches a package or an infra service — the same block for both. With a
+ * top-level `devReverseProxy`, devtooie routes `<subdomain>.<rootDomain>` (aliases included) to
+ * the declaring package's or service's `port` on `localhost`; without one it is data for
+ * tooling that reads the exported config (a reverse proxy of your own, say).
+ */
+export interface ProxyInput {
+  /**
+   * The dev subdomain(s): a label, an array of them, or `true` for the declaring package's or
+   * service's own key. Each entry is a DNS label — lowercase letters, digits, and hyphens, at
+   * most 63 characters, not starting or ending with a hyphen — that no other package or service
+   * declares. An array's first entry is the canonical subdomain (the one a package's callbacks
+   * get as `subdomain`, and its public origin's); the rest are aliases that route too.
+   */
+  subdomain: true | string | string[];
+}
+
+/** A `proxy` block after resolution: `subdomain: true` replaced by the declaring key. */
+export interface ResolvedProxy {
+  /** The subdomain(s) as labels. An array's first entry is the canonical one. */
+  subdomain: string | string[];
+}
+
+/**
  * The built-in dev reverse proxy, as written in the config. Its presence enables the proxy:
  * devtooie listens on `port` (loopback only) and routes each request by the first label of its
- * `Host` to the package declaring that `subdomain`, on that package's resolved `port`. A TLS
+ * `Host` to the package or infra service whose `proxy` declares that subdomain, on its resolved
+ * `port`. A TLS
  * terminator in front (Caddy, say) forwards `*.<rootDomain>` here; the proxy does no TLS itself.
  */
 export interface DevReverseProxyInput<Top = TokenRecord, N extends string = string> {
@@ -417,12 +451,12 @@ export interface DevReverseProxyInput<Top = TokenRecord, N extends string = stri
    * The loopback port the proxy listens on — what the TLS terminator forwards to. A literal, or
    * a callback over the workspace context `{ envs, tokens }` resolved once at load, like a
    * package `port`: `port: ({ envs }) => Number(envs.DEV_REVERSE_PROXY_PORT)`. Must differ from
-   * every package's port.
+   * every package's and infra service's port.
    */
   port: number | ((ctx: ConfigContext<Top>) => number);
   /**
-   * The domain the packages live under: `<subdomain>.<rootDomain>` routes to the package with
-   * that `subdomain`. Defaults to `localhost`, which browsers resolve to loopback with nothing
+   * The domain the packages and services live under: `<subdomain>.<rootDomain>` routes to the
+   * one whose `proxy` declares that subdomain. Defaults to `localhost`, which browsers resolve to loopback with nothing
    * in front. A lowercase hostname, literal or a callback over `{ envs, tokens }`:
    * `rootDomain: ({ envs }) => \`myproject.${envs.LOCALDEV_DOMAIN}\``.
    */
@@ -501,7 +535,8 @@ export type DefineConfigOptions<
   packageRootDir?: RootDir;
   /**
    * Run devtooie's own dev reverse proxy: a loopback listener routing `<subdomain>.<rootDomain>`
-   * to the package declaring that `subdomain`. Present = enabled; there is no `enabled` flag.
+   * to the package or infra service whose `proxy` declares that subdomain. Present = enabled;
+   * there is no `enabled` flag.
    * See {@link DevReverseProxyInput}.
    */
   devReverseProxy?: DevReverseProxyInput<Top, K>;
@@ -538,16 +573,16 @@ export type DefineConfigOptions<
 
 export type ResolvedPackageConfig<N extends string, T = TokenRecord> = Omit<
   z.infer<typeof PackageConfigSchema>,
-  'waitFor' | 'deps' | 'port' | 'urls' | 'healthcheck' | 'tokens' | 'subdomain'
+  'waitFor' | 'deps' | 'port' | 'urls' | 'healthcheck' | 'tokens' | 'proxy' | 'subdomain'
 > &
   PackageNameRefs<N> & {
     /** The package's name — the key it was declared under. */
     name: N;
     /**
-     * The package's subdomain(s) as labels: what the config wrote, with `true` already replaced
-     * by the package's name. An array's first entry is the canonical one.
+     * How the dev reverse proxy routes to the package: what the config wrote, with
+     * `subdomain: true` already replaced by the package's name.
      */
-    subdomain?: string | string[];
+    proxy?: ResolvedProxy;
     /**
      * The config's top-level `tokens` with this package's own merged over them, typed from
      * what was declared. Available on the exported config, so other scripts can read a
@@ -567,8 +602,8 @@ export type ResolvedPackageConfig<N extends string, T = TokenRecord> = Omit<
     /**
      * The package's public origin under the dev reverse proxy —
      * `<urlScheme>://<canonical subdomain>.<rootDomain>[:<port>]` — or `undefined` when the
-     * config has no `devReverseProxy` or the proxy doesn't route this package (no `subdomain`
-     * or no `port`). Injected into the package's process as `PUBLIC_ORIGIN` (only one in the
+     * config has no `devReverseProxy` or the proxy doesn't route this package (no `proxy` or
+     * no `port`). Injected into the package's process as `PUBLIC_ORIGIN` (only one in the
      * package's own `.env` file overrides it), and what the proxy's footer links are built from.
      */
     publicOrigin?: string;
@@ -892,28 +927,95 @@ function resolveInfraEnabled(
   return result;
 }
 
+/** An infra service as parsed, before anything about it is resolved. */
+type ParsedInfraService = z.infer<typeof InfraServiceSchema>;
+
 /**
- * The subdomain `subdomain: true` stands for: the package's own name. A name that isn't a DNS
- * label (a scoped `@scope/web`, an uppercase or underscored key) can't be one, and guessing a
- * cleaned-up version would put the package at a hostname nobody wrote down.
+ * Resolves one infra service: `enabled` first, then — only for a service that runs — its `port`
+ * callback, over the workspace context. A service disabled in a mode is often exactly the one
+ * whose variables that mode doesn't set, so its port callback must not run there. The callbacks
+ * are kept as written.
  */
-function subdomainFromName(name: string): string {
-  if (!SubdomainLabelSchema.safeParse(name).success) {
+function resolveInfraService(
+  name: string,
+  { enabled, port, proxy: _, ...callbacks }: ParsedInfraService,
+  opts: {
+    /** The service's `proxy`, already settled (see `resolveProxy`). */
+    proxy: ResolvedProxy | undefined;
+    devReverseProxy: ResolvedDevReverseProxy | undefined;
+    ctx: () => ConfigContext;
+    enabledCtx: () => InfraEnabledContext;
+    envFilesLoaded: () => string[];
+  },
+): ResolvedInfraService {
+  // Before `enabled` is read: a `proxy` with nothing to point at is a config bug in every mode.
+  if (opts.proxy !== undefined && port === undefined) {
     throw new Error(
-      `${name}: \`subdomain: true\` uses the package's name as its subdomain, but "${name}" isn't a ` +
-        'DNS label (lowercase letters, digits, and hyphens). Give it an explicit `subdomain`.',
+      `infra service "${name}" declares \`proxy\` but no \`port\`, so the dev reverse proxy ` +
+        "can't route to it — devtooie doesn't read the port from the provider's file. Add " +
+        '`port` to it (the host side of its port mapping), or drop its `proxy`.',
     );
   }
-  return name;
+  const isEnabled = resolveInfraEnabled(name, enabled, opts.enabledCtx);
+  let resolvedPort: number | undefined;
+  if (isEnabled && port !== undefined) {
+    resolvedPort = typeof port === 'function' ? port(opts.ctx()) : port;
+    if (
+      resolvedPort !== undefined &&
+      (typeof resolvedPort !== 'number' || !Number.isFinite(resolvedPort))
+    ) {
+      throw new Error(
+        `infra service "${name}": port callback returned ${String(resolvedPort)} (check the env vars it reads)\n  ${envFilesNote(opts.envFilesLoaded())}`,
+      );
+    }
+  }
+  return {
+    ...(callbacks as InfraServiceCallbacks),
+    enabled: isEnabled,
+    port: resolvedPort,
+    proxy: opts.proxy,
+    publicOrigin: isEnabled
+      ? publicOriginOf(opts.devReverseProxy, { port: resolvedPort, proxy: opts.proxy })
+      : undefined,
+  };
 }
 
-/** Every subdomain a package declares — canonical first, then aliases — or none. */
-function subdomainsOf(pkg: { subdomain?: string | string[] | undefined }): string[] {
-  return pkg.subdomain === undefined
-    ? []
-    : Array.isArray(pkg.subdomain)
-      ? pkg.subdomain
-      : [pkg.subdomain];
+/** Whatever declares a `proxy`, as an error message names it: `api`, `infra service "mail"`. */
+interface ProxyOwner {
+  kind: 'package' | 'service';
+  name: string;
+}
+
+function ownerLabel(owner: ProxyOwner): string {
+  return owner.kind === 'package' ? owner.name : `infra service "${owner.name}"`;
+}
+
+/**
+ * Settles a `proxy` block: `subdomain: true` stands for the owner's own key. A key that isn't a
+ * DNS label (a scoped `@scope/web`, an uppercase or underscored one) can't be one, and guessing a
+ * cleaned-up version would put it at a hostname nobody wrote down.
+ */
+function resolveProxy(
+  proxy: z.infer<typeof ProxySchema> | undefined,
+  owner: ProxyOwner,
+): ResolvedProxy | undefined {
+  if (proxy === undefined || proxy.subdomain !== true) {
+    return proxy as ResolvedProxy | undefined;
+  }
+  if (!SubdomainLabelSchema.safeParse(owner.name).success) {
+    throw new Error(
+      `${ownerLabel(owner)}: \`subdomain: true\` uses the ${owner.kind}'s key as its subdomain, but ` +
+        `"${owner.name}" isn't a DNS label (lowercase letters, digits, and hyphens). Give it an ` +
+        'explicit `subdomain`.',
+    );
+  }
+  return { ...proxy, subdomain: owner.name };
+}
+
+/** Every subdomain a `proxy` declares — canonical first, then aliases — or none. */
+function subdomainsOf(target: { proxy?: ResolvedProxy | undefined }): string[] {
+  const subdomain = target.proxy?.subdomain;
+  return subdomain === undefined ? [] : Array.isArray(subdomain) ? subdomain : [subdomain];
 }
 
 /**
@@ -1011,24 +1113,57 @@ function publicHost(proxy: ResolvedDevReverseProxy, host: string): string {
   return proxy.urlScheme === 'http' ? `${host}:${String(proxy.port)}` : host;
 }
 
-/** The origin a package's public URLs start from, or `undefined` when the proxy doesn't route it. */
+/**
+ * The origin a package's or service's public URLs start from, or `undefined` when the proxy
+ * doesn't route it.
+ */
 function publicOriginOf(
   proxy: ResolvedDevReverseProxy | undefined,
-  pkg: { name: string; port: number | undefined; subdomain?: string | string[] | undefined },
+  target: { port: number | undefined; proxy?: ResolvedProxy | undefined },
 ): string | undefined {
-  const [canonical] = subdomainsOf(pkg);
-  if (!proxy || canonical === undefined || pkg.port === undefined) {
+  const [canonical] = subdomainsOf(target);
+  if (!proxy || canonical === undefined || target.port === undefined) {
     return undefined;
   }
   return `${proxy.urlScheme}://${publicHost(proxy, `${canonical}.${proxy.rootDomain}`)}`;
 }
 
+/** One infra service with the provider that runs it — what routing and validation iterate over. */
+export interface InfraServiceEntry {
+  provider: string;
+  name: string;
+  service: ResolvedInfraService;
+}
+
+/** Every service the config names, across every provider, in declaration order. */
+export function infraServicesOf(config: Pick<Config<string>, 'infra'> | null): InfraServiceEntry[] {
+  return Object.entries(config?.infra ?? {}).flatMap(([provider, block]) =>
+    Object.entries(servicesOf<ResolvedInfraService>(block)).map(([name, service]) => ({
+      provider,
+      name,
+      service,
+    })),
+  );
+}
+
 /**
- * Checks the proxy against the packages it will route to. Every rule here is a config bug the
- * proxy would otherwise turn into a runtime surprise: a route to nowhere, or two listeners on
- * one port.
+ * A provider block's `services`, whichever provider it is — every provider keys its services
+ * the same way, which is what lets `port` and `proxy` work for one with no code of its own.
  */
-function validateDevReverseProxy(proxy: ResolvedDevReverseProxy, packages: AnyPackageConfig[]) {
+function servicesOf<S>(block: unknown): Record<string, S> {
+  return (block as { services?: Record<string, S> } | undefined)?.services ?? {};
+}
+
+/**
+ * Checks the proxy against the packages and services it will route to. Every rule here is a
+ * config bug the proxy would otherwise turn into a runtime surprise: a route to nowhere, or two
+ * listeners on one port.
+ */
+function validateDevReverseProxy(
+  proxy: ResolvedDevReverseProxy,
+  packages: AnyPackageConfig[],
+  services: InfraServiceEntry[],
+) {
   if (proxy.defaultPackage !== undefined) {
     const target = packages.find((p) => p.name === proxy.defaultPackage);
     if (!target) {
@@ -1048,7 +1183,7 @@ function validateDevReverseProxy(proxy: ResolvedDevReverseProxy, packages: AnyPa
     if (subdomain !== undefined && pkg.port === undefined) {
       throw new Error(
         `${pkg.name} declares subdomain "${subdomain}" but no \`port\`, so the dev reverse proxy ` +
-          "can't route to it. Add `port` to it, or drop its `subdomain`.",
+          "can't route to it. Add `port` to it, or drop its `proxy`.",
       );
     }
     if (pkg.port === proxy.port) {
@@ -1058,16 +1193,63 @@ function validateDevReverseProxy(proxy: ResolvedDevReverseProxy, packages: AnyPa
       );
     }
   }
+  for (const { name, service } of services) {
+    if (service.port === proxy.port) {
+      throw new Error(
+        `devReverseProxy.port ${String(proxy.port)} is also infra service "${name}"'s port — the ` +
+          "proxy can't listen where a service does. Give one of them a different port.",
+      );
+    }
+  }
+}
+
+/**
+ * Checks the infra services' `port` and `proxy` on their own, with or without a dev reverse
+ * proxy: a `proxy` needs a port to point at, and a service's port on the host is one nothing
+ * else in the config may claim — a package listening there too would be shadowed by, or shadow,
+ * the service's published port.
+ */
+function validateInfraServices(services: InfraServiceEntry[], packages: AnyPackageConfig[]) {
+  const portOwners = new Map<number, string>();
+  for (const pkg of packages) {
+    if (pkg.port !== undefined) {
+      portOwners.set(pkg.port, `the package ${pkg.name}`);
+    }
+  }
+  for (const { name, service } of services) {
+    // A disabled service's port is never resolved, so it has none to check — and claims none.
+    if (!service.enabled) {
+      continue;
+    }
+    const [subdomain] = subdomainsOf(service);
+    if (subdomain !== undefined && service.port === undefined) {
+      throw new Error(
+        `infra service "${name}" declares subdomain "${subdomain}" but no \`port\`, so the dev ` +
+          "reverse proxy can't route to it. Add `port` to it, or drop its `proxy`.",
+      );
+    }
+    if (service.port === undefined) {
+      continue;
+    }
+    const owner = portOwners.get(service.port);
+    if (owner !== undefined) {
+      throw new Error(
+        `infra service "${name}" has port ${String(service.port)}, which is also ${owner}'s — ` +
+          'two things cannot listen on one port. Give one of them a different port.',
+      );
+    }
+    portOwners.set(service.port, `infra service "${name}"`);
+  }
 }
 
 /**
  * Every hostname the dev reverse proxy routes to `pkg`, canonical subdomain first, then its
  * aliases, then the bare root domain when `pkg` is the `defaultPackage`. Empty for a package the
- * proxy doesn't route (no `subdomain` or no `port`), and when the config has no proxy at all.
+ * proxy doesn't route (no `proxy` or no `port`), and when the config has no proxy at all.
  */
 export function proxyHostsFor(
   config: Pick<Config<string>, 'devReverseProxy'> | null,
-  pkg: Pick<AnyPackageConfig, 'name' | 'port' | 'subdomain'>,
+  pkg: Pick<AnyPackageConfig, 'name' | 'port' | 'proxy'>,
 ): string[] {
   const proxy = config?.devReverseProxy;
   if (!proxy || pkg.port === undefined) {
@@ -1078,6 +1260,22 @@ export function proxyHostsFor(
     hosts.push(proxy.rootDomain);
   }
   return hosts;
+}
+
+/**
+ * Every hostname the dev reverse proxy routes to an infra service, canonical subdomain first,
+ * then its aliases. Empty for a disabled service, one without `proxy` or `port`, and when the
+ * config has no proxy. (The bare root domain is only ever a package's: `defaultPackage`.)
+ */
+export function serviceProxyHostsFor(
+  config: Pick<Config<string>, 'devReverseProxy'> | null,
+  service: Pick<ResolvedInfraService, 'enabled' | 'port' | 'proxy'>,
+): string[] {
+  const proxy = config?.devReverseProxy;
+  if (!proxy || !service.enabled || service.port === undefined) {
+    return [];
+  }
+  return subdomainsOf(service).map((label) => `${label}.${proxy.rootDomain}`);
 }
 
 export function defineConfig<
@@ -1096,12 +1294,15 @@ export function defineConfig<
   workspaceRoot = path.resolve(workspaceDir);
 
   // The key IS the package name. Everything downstream works on an array, so flatten here —
-  // and settle `subdomain: true` into the name it stands for, so nothing downstream sees `true`.
-  const parsedPackages = Object.entries(parsed.packages).map(([name, config]) => ({
-    ...config,
-    subdomain: config.subdomain === true ? subdomainFromName(name) : config.subdomain,
-    name,
-  }));
+  // and settle `proxy.subdomain: true` into the name it stands for, so nothing downstream sees
+  // `true`. (The top-level `subdomain` is only in the schema to be rejected; it's always absent.)
+  const parsedPackages = Object.entries(parsed.packages).map(
+    ([name, { subdomain: _, ...config }]) => ({
+      ...config,
+      proxy: resolveProxy(config.proxy, { kind: 'package', name }),
+      name,
+    }),
+  );
 
   // JavaScript enumerates integer-like keys first, in ascending numeric order, regardless of
   // where they were written — which would silently reorder startup and the TUI. Reject them
@@ -1142,21 +1343,37 @@ export function defineConfig<
     }
   }
 
-  // A subdomain is a route for whatever reverse proxy reads the exported config, so two packages
-  // claiming the same one (canonical or alias) is an ambiguous route — a config bug, not a tie
-  // to break silently.
+  // Every infra service's `proxy`, settled the same way, whichever provider runs it. Kept apart
+  // from the rest of the service's resolution (below) because the subdomain check needs it now.
+  const serviceProxies = Object.values(parsed.infra ?? {}).flatMap((block) =>
+    Object.entries(servicesOf<ParsedInfraService>(block)).map(([name, service]) => ({
+      name,
+      proxy: resolveProxy(service.proxy, { kind: 'service', name }),
+    })),
+  );
+
+  // A subdomain is a route for whatever reverse proxy reads the exported config, so two owners
+  // claiming the same one (canonical or alias) — packages and infra services alike — is an
+  // ambiguous route: a config bug, not a tie to break silently. Checked whether or not a service
+  // is enabled in this mode, so a clash can't hide until another mode runs.
   const subdomainOwners = new Map<string, string>();
-  for (const config of parsedPackages) {
-    for (const subdomain of subdomainsOf(config)) {
-      const owner = subdomainOwners.get(subdomain);
-      if (owner !== undefined && owner !== config.name) {
+  const claimSubdomains = (target: { proxy?: ResolvedProxy }, owner: string) => {
+    for (const subdomain of subdomainsOf(target)) {
+      const existing = subdomainOwners.get(subdomain);
+      if (existing !== undefined && existing !== owner) {
         throw new Error(
-          `${owner} and ${config.name} both declare the subdomain "${subdomain}" — a reverse ` +
+          `${existing} and ${owner} both declare the subdomain "${subdomain}" — a reverse ` +
             'proxy could not tell them apart. Give one of them a different subdomain.',
         );
       }
-      subdomainOwners.set(subdomain, config.name);
+      subdomainOwners.set(subdomain, owner);
     }
+  };
+  for (const config of parsedPackages) {
+    claimSubdomains(config, config.name);
+  }
+  for (const service of serviceProxies) {
+    claimSubdomains(service, ownerLabel({ kind: 'service', name: service.name }));
   }
 
   const tokens = parsed.tokens ?? {};
@@ -1227,7 +1444,7 @@ export function defineConfig<
     // What this package's relative URLs resolve against: its port on loopback, and — when the
     // dev reverse proxy routes it — its public origin. `urls` show the public form, the
     // `healthcheck` probes the private one (see `ResolvedUrlForms`).
-    const publicOrigin = publicOriginOf(devReverseProxy, { name: config.name, port, subdomain: config.subdomain }); // prettier-ignore
+    const publicOrigin = publicOriginOf(devReverseProxy, { port, proxy: config.proxy });
     const scope = (where: string): UrlScope => ({ ctx, port, publicOrigin, where });
     return {
       ...config,
@@ -1266,15 +1483,21 @@ export function defineConfig<
     }),
   );
 
-  // Now that every package's port is known, check the proxy against them. (devtooie adds no
-  // footer link of its own: `urls` holds exactly what the config lists — `'/'` or `''` there is
-  // how a package shows its public origin.)
-  if (devReverseProxy) {
-    validateDevReverseProxy(devReverseProxy, packages as unknown as AnyPackageConfig[]);
-  }
-
-  // The project name and each service's `enabled` are settled here, from the workspace
-  // environment; the callbacks stay as written, to run when an `infra` command does.
+  // The project name and each service's `enabled`, `port` and `proxy` are settled here, from the
+  // workspace environment; the callbacks stay as written, to run when an `infra` command does.
+  const resolveServices = (services: Record<string, ParsedInfraService> | undefined) =>
+    Object.fromEntries(
+      Object.entries(services ?? {}).map(([name, service]) => [
+        name,
+        resolveInfraService(name, service, {
+          proxy: serviceProxies.find((s) => s.name === name)?.proxy,
+          devReverseProxy,
+          ctx: workspaceBase,
+          enabledCtx: () => ({ mode: currentMode(), ...workspaceBase() }),
+          envFilesLoaded: workspaceEnv.files,
+        }),
+      ]),
+    );
   const compose = parsed.infra?.['docker-compose'];
   const infra: ResolvedInfra | undefined = compose && {
     'docker-compose': {
@@ -1285,20 +1508,18 @@ export function defineConfig<
         mode: currentMode(),
       }),
       readyTimeout: compose.readyTimeout ?? DEFAULT_READY_TIMEOUT_MS,
-      services: Object.fromEntries(
-        Object.entries(compose.services ?? {}).map(([name, { enabled, ...callbacks }]) => [
-          name,
-          {
-            ...(callbacks as InfraServiceCallbacks),
-            enabled: resolveInfraEnabled(name, enabled, () => ({
-              mode: currentMode(),
-              ...workspaceBase(),
-            })),
-          },
-        ]),
-      ),
+      services: resolveServices(compose.services),
     },
   };
+
+  // Now that every package's and service's port is known, check them against each other and the
+  // proxy against them all. (devtooie adds no footer link of its own: `urls` holds exactly what
+  // the config lists — `'/'` or `''` there is how a package shows its public origin.)
+  const services = infraServicesOf({ infra });
+  validateInfraServices(services, packages as unknown as AnyPackageConfig[]);
+  if (devReverseProxy) {
+    validateDevReverseProxy(devReverseProxy, packages as unknown as AnyPackageConfig[], services);
+  }
 
   const resolved: Config<string> = {
     apiPort: parsed.apiPort,

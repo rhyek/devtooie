@@ -214,6 +214,8 @@ export function BuildProgress({
         if (cancelled) {
           return;
         }
+        // The services are ready: the proxy forwards to them from here on.
+        devReverseProxy?.markInfraReady();
 
         // 6. Run — the caller now owns the control server's lifecycle.
         setState({ phase: 'done' });

@@ -14,8 +14,8 @@
 | `apiPort`      | Pin the [control API](./control-api.md) port (otherwise chosen automatically).              |
 | `urls`         | Workspace-wide footer links, not tied to a package. Same shape as a package's `urls`, but a callback here gets only `{ envs, tokens }`. |
 | `tokens`       | Values of your own, handed to every callback as `tokens` (a package's own `tokens` are merged on top) — see [Callbacks](#callbacks-instead-of-interpolation). |
-| `infra`        | Infrastructure that isn't a package — databases, caches, brokers — keyed by provider: `{ 'docker-compose': { file?, readyTimeout?, services? } }`, where `services` gives a service its `enabled` and callbacks. Brought up, and waited on, before the packages start. See [Infra](./infra.md). |
-| `devReverseProxy` | Run devtooie's own dev reverse proxy, routing `<subdomain>.<rootDomain>` to packages by their `subdomain`. `{ port, rootDomain?, defaultPackage?, urlScheme? }`; present = enabled. See [Dev reverse proxy](./dev-reverse-proxy.md). |
+| `infra`        | Infrastructure that isn't a package — databases, caches, brokers — keyed by provider: `{ 'docker-compose': { file?, readyTimeout?, services? } }`, where `services` gives a service its `enabled`, its `port` and `proxy`, and callbacks. Brought up, and waited on, before the packages start. See [Infra](./infra.md). |
+| `devReverseProxy` | Run devtooie's own dev reverse proxy, routing `<subdomain>.<rootDomain>` to the package or infra service whose `proxy` declares that subdomain. `{ port, rootDomain?, defaultPackage?, urlScheme? }`; present = enabled. See [Dev reverse proxy](./dev-reverse-proxy.md). |
 
 `packages` is an object keyed by package name:
 
@@ -62,19 +62,21 @@ lib):
   of a missing variable — is an error naming the package and the env files that were loaded.
   Declaring a `port` is what lets this package's other callbacks use `port` — see
   [The `port` in a callback](#the-port-in-a-callback).
-- **`subdomain`** — the package's dev subdomain: a string, an array of them (the first is the
-  canonical subdomain, the rest are aliases), or **`true`** for the package's own name —
-  `api: { subdomain: true }` is `subdomain: 'api'`. (`true` needs a name that is itself a DNS
-  label; a scoped or uppercase key has to spell its subdomain out.) With a top-level
+- **`proxy`** — how a reverse proxy reaches the package: `{ subdomain }`, the same block an
+  [infra service](./infra.md#reaching-a-service-through-the-dev-reverse-proxy) takes.
+  `subdomain` is a string, an array of them (the first is the canonical subdomain, the rest are
+  aliases), or **`true`** for the package's own name — `api: { proxy: { subdomain: true } }` is
+  `subdomain: 'api'`. (`true` needs a name that is itself a DNS label; a scoped or uppercase key
+  has to spell its subdomain out.) With a top-level
   [`devReverseProxy`](./dev-reverse-proxy.md), devtooie routes `<subdomain>.<rootDomain>` to
   this package's `port` (aliases too) and injects `PUBLIC_ORIGIN` into its process (also
-  exposed as `publicOrigin` on the resolved package). Without
-  one, devtooie doesn't use it: it's data for tooling that reads the exported config
-  (`config.packages.api.subdomain`), such as a reverse proxy of your own. Either way the
-  canonical entry is handed to this package's callbacks as `subdomain` — see
-  [Callbacks](#callbacks-instead-of-interpolation). Each entry must be a DNS label — lowercase
-  letters, digits, and hyphens, not starting or ending with a hyphen, at most 63 characters —
-  and no two packages may declare the same one, canonical or alias.
+  exposed as `publicOrigin` on the resolved package). Without one, devtooie doesn't use it:
+  it's data for tooling that reads the exported config (`config.packages.api.proxy.subdomain`),
+  such as a reverse proxy of your own. Either way the canonical entry is handed to this
+  package's callbacks as `subdomain` — see [Callbacks](#callbacks-instead-of-interpolation).
+  Each entry must be a DNS label — lowercase letters, digits, and hyphens, not starting or
+  ending with a hyphen, at most 63 characters — and no two packages or infra services may
+  declare the same one, canonical or alias.
 - **`urls`** — links shown in the running footer, one entry per line. Each entry is a
   URL, a `{ label, url }`, or an **array** of those (rendered on the same line,
   space-separated). Any URL may be a callback, and any may be a **path** (`'/todos'`, or
@@ -226,7 +228,7 @@ Each callback receives one object:
 | `envs`   | The config's own [`env.vars`](#envvars) and the package's `.env` files, resolved and merged with `process.env` (which wins by default) — the same environment the dev process gets. See [Environment loading](../README.md#environment-env-loading). |
 | `tokens` | The top-level `tokens` with this package's own `tokens` merged **over** them. Typed from what you declared, so a typo is a compile error. |
 | `port`   | The package's resolved `port`, typed **`number`** (not `number \| undefined`) so it drops straight into a URL. A package that declares no `port` has nothing to give, which types can't express here — so reading `port` in that case throws when the config loads, naming the package. Not offered to `port` itself, nor to the workspace-wide `urls`. |
-| `subdomain` | The package's canonical `subdomain` — the first entry when it declared several — so a URL can be built from it without repeating it: `` urls: [({ subdomain, envs }) => `https://${subdomain}.${envs.LOCALDEV_DOMAIN}`] ``. Plain data, unlike `port`: `undefined` (in type and in value) for a package that declares none, so branch on it if a callback has to work either way. Not offered to `port`, nor to the workspace-wide `urls`. |
+| `subdomain` | The package's canonical `proxy.subdomain` — the first entry when it declared several — so a URL can be built from it without repeating it: `` urls: [({ subdomain, envs }) => `https://${subdomain}.${envs.LOCALDEV_DOMAIN}`] ``. Plain data, unlike `port`: `undefined` (in type and in value) for a package that declares no `proxy`, so branch on it if a callback has to work either way. Not offered to `port`, nor to the workspace-wide `urls`. |
 
 Callbacks run **once**, while the config is being defined, and must be synchronous. A `port`
 callback returns a number (or `undefined`); the rest return a string.

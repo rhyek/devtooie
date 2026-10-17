@@ -198,7 +198,23 @@ const route = (
   pkg: string,
   port: number,
   hasHealthcheck = false,
-): DevReverseProxyRoute => ({ host, package: pkg, port, hasHealthcheck });
+): DevReverseProxyRoute => ({ kind: 'package', host, package: pkg, port, hasHealthcheck });
+
+const serviceRoute = (host: string, service: string, port: number): DevReverseProxyRoute => ({
+  kind: 'service',
+  host,
+  service,
+  port,
+});
+
+/** A loopback port nothing listens on: bind an ephemeral one, read the number, release it. */
+async function deadPort(): Promise<number> {
+  const probe = net.createServer();
+  await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const port = (probe.address() as net.AddressInfo).port;
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
+  return port;
+}
 
 // ---------------------------------------------------------------------------
 
@@ -351,20 +367,15 @@ describe('forwarding', () => {
   });
 
   test('turns an upstream refusing the connection into a 502 naming the package and port', async () => {
-    // An ephemeral port that nothing listens on: bind, read the number, release it.
-    const probe = net.createServer();
-    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
-    const deadPort = (probe.address() as net.AddressInfo).port;
-    await new Promise<void>((resolve) => probe.close(() => resolve()));
-
-    const proxy = await proxyFor([route(`web.${ROOT}`, 'web', deadPort)]);
+    const port = await deadPort();
+    const proxy = await proxyFor([route(`web.${ROOT}`, 'web', port)]);
     proxy.attach(stubManager({ web: 'running' }));
     const reply = await request(proxy.port, `web.${ROOT}`, { headers: { accept: 'text/html' } });
     expect(reply.status).toBe(502);
     expect(reply.headers['retry-after']).toBe('1');
     expect(reply.headers['cache-control']).toBe('no-store');
     expect(reply.body).toContain('web');
-    expect(reply.body).toContain(String(deadPort));
+    expect(reply.body).toContain(String(port));
   });
 });
 
@@ -537,23 +548,219 @@ describe('status-aware responses', () => {
   });
 });
 
+describe('infra services', () => {
+  /** An upstream that drains the request body and reports what it received. */
+  async function bodyCounter(): Promise<number> {
+    const server = http.createServer((req, res) => {
+      let received = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk: string) => (received += chunk));
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ host: req.headers.host, method: req.method, received }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    return (server.address() as net.AddressInfo).port;
+  }
+
+  test('replies 503 "starting" until the infra step has finished, manager or not', async () => {
+    const store = await upstream('store');
+    const proxy = await proxyFor([serviceRoute(`s3.${ROOT}`, 'store', store.port)]);
+    const before = await request(proxy.port, `s3.${ROOT}`, { headers: { accept: 'application/json' } }); // prettier-ignore
+    expect(before.status).toBe(503);
+    expect(JSON.parse(before.body)).toMatchObject({ service: 'store', status: 'starting' });
+    // The process manager attaching is not the signal: packages may be up while infra isn't.
+    proxy.attach(stubManager());
+    const html = await request(proxy.port, `s3.${ROOT}`, { headers: { accept: 'text/html' } });
+    expect(html.status).toBe(503);
+    expect(html.headers['retry-after']).toBe('2');
+    expect(html.headers['cache-control']).toBe('no-store');
+    expect(html.body).toContain('store');
+    expect(html.body).toContain('starting');
+    // …and no restart hint: there is no package to restart.
+    expect(html.body).not.toContain('/command/restart');
+  });
+
+  test('drops a websocket upgrade until the infra step has finished', async () => {
+    const store = await upstream('store');
+    const proxy = await proxyFor([serviceRoute(`s3.${ROOT}`, 'store', store.port)]);
+    proxy.attach(stubManager());
+    await expect(upgrade(proxy.port, `s3.${ROOT}`)).rejects.toThrow();
+  });
+
+  test('forwards once the infra step has finished, keeping the Host and custom headers', async () => {
+    const store = await upstream('store');
+    const proxy = await proxyFor([serviceRoute(`s3.${ROOT}`, 'store', store.port)]);
+    proxy.markInfraReady();
+    const reply = await request(proxy.port, `s3.${ROOT}`, {
+      path: '/bucket/key?X-Amz-Signature=abc',
+      headers: { 'x-custom': 'signed' },
+    });
+    expect(reply.status).toBe(200);
+    expect(JSON.parse(reply.body)).toMatchObject({
+      upstream: 'store',
+      host: `s3.${ROOT}`,
+      url: '/bucket/key?X-Amz-Signature=abc',
+      custom: 'signed',
+    });
+    expect(reply.headers['x-custom-echo']).toBe('signed');
+  });
+
+  test('streams a request body through to the service, as an upload form needs', async () => {
+    const port = await bodyCounter();
+    const proxy = await proxyFor([serviceRoute(`s3.${ROOT}`, 'store', port)]);
+    proxy.markInfraReady();
+    const body = 'x'.repeat(256 * 1024);
+    const reply = await new Promise<Reply>((resolve, reject) => {
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port: proxy.port,
+          method: 'POST',
+          path: '/bucket',
+          headers: { host: `s3.${ROOT}`, 'content-type': 'multipart/form-data; boundary=b' },
+        },
+        (res) => {
+          let text = '';
+          res.setEncoding('utf8');
+          res.on('data', (chunk: string) => (text += chunk));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: text })); // prettier-ignore
+        },
+      );
+      req.on('error', reject);
+      // Written in pieces, so it reaches the proxy chunked rather than as one buffer.
+      for (let i = 0; i < body.length; i += 16 * 1024) {
+        req.write(body.slice(i, i + 16 * 1024));
+      }
+      req.end();
+    });
+    expect(reply.status).toBe(200);
+    expect(JSON.parse(reply.body)).toEqual({ host: `s3.${ROOT}`, method: 'POST', received: body });
+  });
+
+  test('echoes a websocket upgrade once the infra step has finished', async () => {
+    const mail = await upstream('mail');
+    const proxy = await proxyFor([serviceRoute(`mail.${ROOT}`, 'mail', mail.port)]);
+    proxy.markInfraReady();
+    const { socket, res } = await upgrade(proxy.port, `mail.${ROOT}`);
+    expect(res.statusCode).toBe(101);
+    const echoed = new Promise<string>((resolve) => {
+      socket.once('data', (chunk: Buffer) => resolve(chunk.toString('utf8')));
+    });
+    socket.write('ping');
+    expect(await echoed).toBe('ping');
+  });
+
+  test('turns a refused connection into a 502 naming the service and its port', async () => {
+    const port = await deadPort();
+    const proxy = await proxyFor([serviceRoute(`s3.${ROOT}`, 'store', port)]);
+    proxy.markInfraReady();
+    const html = await request(proxy.port, `s3.${ROOT}`, { headers: { accept: 'text/html' } });
+    expect(html.status).toBe(502);
+    expect(html.headers['retry-after']).toBe('1');
+    expect(html.body).toContain('infra service store');
+    expect(html.body).toContain(String(port));
+    const json = await request(proxy.port, `s3.${ROOT}`, { headers: { accept: 'application/json' } }); // prettier-ignore
+    expect(JSON.parse(json.body)).toMatchObject({ service: 'store', port, code: 'ECONNREFUSED' });
+  });
+
+  test('turns a reset connection into the same 502', async () => {
+    const server = net.createServer((socket) => socket.resetAndDestroy());
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const port = (server.address() as net.AddressInfo).port;
+    const proxy = await proxyFor([serviceRoute(`s3.${ROOT}`, 'store', port)]);
+    proxy.markInfraReady();
+    const json = await request(proxy.port, `s3.${ROOT}`, { headers: { accept: 'application/json' } }); // prettier-ignore
+    expect(json.status).toBe(502);
+    expect(JSON.parse(json.body)).toMatchObject({ service: 'store', port, code: 'ECONNRESET' });
+  });
+
+  test("never consults a package's status, even one sharing the service's name", async () => {
+    const service = await upstream('service');
+    const proxy = await proxyFor([serviceRoute(`api-db.${ROOT}`, 'api', service.port)]);
+    proxy.attach(stubManager({ api: 'stopped' }));
+    proxy.markInfraReady();
+    const reply = await request(proxy.port, `api-db.${ROOT}`);
+    expect(reply.status).toBe(200);
+    expect(reply.headers['x-upstream']).toBe('service');
+  });
+
+  test('lists the service hostnames on the 404 page and in the attach log', async () => {
+    const web = await upstream('web');
+    const store = await upstream('store');
+    const proxy = await proxyFor(
+      [route(`web.${ROOT}`, 'web', web.port), serviceRoute(`s3.${ROOT}`, 'store', store.port)],
+      { urlScheme: 'https' },
+    );
+    const manager = stubManager({ web: 'running' });
+    proxy.attach(manager);
+    const reply = await request(proxy.port, `ghost.${ROOT}`, { headers: { accept: 'text/html' } });
+    expect(reply.status).toBe(404);
+    expect(reply.body).toContain(`href="https://s3.${ROOT}"`);
+    expect(reply.body).toContain(`href="https://web.${ROOT}"`);
+    expect(manager.logged[0]![0]).toEqual({
+      [`web.${ROOT}`]: `web :${String(web.port)}`,
+      [`s3.${ROOT}`]: `infra service store :${String(store.port)}`,
+    });
+  });
+});
+
 describe('routesFromConfig', () => {
   test('lists every hostname of every routable package, bare root last for defaultPackage', () => {
     const config = defineConfig({
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: ROOT, defaultPackage: 'web' },
       packages: {
-        web: { port: 3000, subdomain: ['web', 'www'], healthcheck: 'http://localhost:3000/' },
-        api: { port: 3001, subdomain: 'api' },
+        web: {
+          port: 3000,
+          proxy: { subdomain: ['web', 'www'] },
+          healthcheck: 'http://localhost:3000/',
+        },
+        api: { port: 3001, proxy: { subdomain: 'api' } },
         worker: { port: 3002 },
         lib: {},
       },
     });
     expect(routesFromConfig(config)).toEqual([
-      { host: `web.${ROOT}`, package: 'web', port: 3000, hasHealthcheck: true },
-      { host: `www.${ROOT}`, package: 'web', port: 3000, hasHealthcheck: true },
-      { host: ROOT, package: 'web', port: 3000, hasHealthcheck: true },
-      { host: `api.${ROOT}`, package: 'api', port: 3001, hasHealthcheck: false },
+      { kind: 'package', host: `web.${ROOT}`, package: 'web', port: 3000, hasHealthcheck: true },
+      { kind: 'package', host: `www.${ROOT}`, package: 'web', port: 3000, hasHealthcheck: true },
+      { kind: 'package', host: ROOT, package: 'web', port: 3000, hasHealthcheck: true },
+      { kind: 'package', host: `api.${ROOT}`, package: 'api', port: 3001, hasHealthcheck: false },
+    ]);
+  });
+
+  test('adds every enabled infra service with a proxy, aliases included, after the packages', () => {
+    const config = defineConfig({
+      packageRootDir: 'packages',
+      devReverseProxy: { port: 4000, rootDomain: ROOT, defaultPackage: 'web' },
+      infra: {
+        'docker-compose': {
+          services: {
+            store: { port: 9000, proxy: { subdomain: ['s3', 'files'] } },
+            mail: { port: 8025, proxy: { subdomain: true } },
+            // switched off for the mode: not routed (and its port callback never runs)
+            console: {
+              enabled: false,
+              port: () => Number(undefined),
+              proxy: { subdomain: 'console' },
+            },
+            // a port but no proxy: simply not routed
+            db: { port: 5432 },
+            cache: {},
+          },
+        },
+      },
+      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
+    });
+    expect(routesFromConfig(config)).toEqual([
+      { kind: 'package', host: `web.${ROOT}`, package: 'web', port: 3000, hasHealthcheck: false },
+      { kind: 'package', host: ROOT, package: 'web', port: 3000, hasHealthcheck: false },
+      { kind: 'service', host: `s3.${ROOT}`, service: 'store', port: 9000 },
+      { kind: 'service', host: `files.${ROOT}`, service: 'store', port: 9000 },
+      { kind: 'service', host: `mail.${ROOT}`, service: 'mail', port: 8025 },
     ]);
   });
 

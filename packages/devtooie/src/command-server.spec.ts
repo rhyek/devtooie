@@ -49,8 +49,15 @@ describe('command-server', () => {
         port: 4000,
         rootDomain: 'example.test',
         routes: [
-          { host: 'web.example.test', package: 'web', port: 3000 },
-          { host: 'example.test', package: 'web', port: 3000 },
+          { kind: 'package', host: 'web.example.test', package: 'web', port: 3000, hasHealthcheck: true }, // prettier-ignore
+          {
+            kind: 'package',
+            host: 'example.test',
+            package: 'web',
+            port: 3000,
+            hasHealthcheck: true,
+          },
+          { kind: 'service', host: 'mail.example.test', service: 'mail', port: 8025 },
         ],
       },
     });
@@ -64,6 +71,8 @@ describe('command-server', () => {
       routes: [
         { host: 'web.example.test', package: 'web', port: 3000 },
         { host: 'example.test', package: 'web', port: 3000 },
+        // a service route names its `service` instead
+        { host: 'mail.example.test', service: 'mail', port: 8025 },
       ],
     });
   });

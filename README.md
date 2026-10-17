@@ -41,9 +41,10 @@ picked.
   migrations — per mode, so a test database never lands on the dev port. `devtooie infra up`
   does the same on its own. See [Infra](docs/infra.md).
 - **One hostname per package.** Optionally, devtooie runs the dev reverse proxy itself:
-  give a package a `subdomain` and reach it at `http://api.localhost:4000` — or
+  give a package a `proxy: { subdomain }` and reach it at `http://api.localhost:4000` — or
   `https://api.myproject.test` behind a TLS terminator — instead of a bare port, with a
-  status page while the package is stopped or still starting. Vite HMR works through it.
+  status page while the package is stopped or still starting. Vite HMR works through it, and
+  an infra service — an object store, a mail catcher — can be routed the same way.
   See [Dev reverse proxy](docs/dev-reverse-proxy.md).
 - **Lifecycle-aware.** Each package declares whether its dev process watches or
   just builds, so you (or an agent) know exactly what to do after a code edit.
@@ -59,7 +60,8 @@ TypeScript library (`isomorphic`), a Node API (`backend`), a Go worker driven th
 `Makefile` (`worker`), and a web `frontend` — wired up with dependency-aware builds, `.env`
 loading, healthchecks, and `waitFor` readiness ordering. Its Postgres database is a Compose
 service that devtooie's [infra](docs/infra.md) brings up and migrates before the backend
-starts, so running it needs Docker.
+starts, next to a Mailpit mail catcher whose web UI the dev reverse proxy routes like a
+package, so running it needs Docker.
 
 ## Requirements
 
@@ -362,7 +364,8 @@ load `.env.development` — so values shared across modes belong in `.env` and
 `NODE_ENV=test` in `.env.test`.
 
 With a [dev reverse proxy](docs/dev-reverse-proxy.md) configured, a routable package also gets
-`PUBLIC_ORIGIN` (its public `<urlScheme>://<subdomain>.<rootDomain>[:<port>]`), under the same
+`PUBLIC_ORIGIN` (its public `<urlScheme>://<subdomain>.<rootDomain>[:<port>]`, from its
+`proxy.subdomain`), under the same
 rule.
 
 A package's `port` is also injected as `PORT`. It wins over a `PORT` set
@@ -443,14 +446,17 @@ devtooie infra docker-compose logs -f db   # Compose itself, bound to this proje
 ```
 
 Per-service callbacks (`beforeUp`, `afterReady`, `afterDestroy`) run your migrations and seeds,
-`enabled` switches a service off by mode or by a missing variable, and each [mode](#modes)
-gets its own Compose project, so `--mode test` has its own containers and ports. See **[docs/infra.md](docs/infra.md)**.
+`enabled` switches a service off by mode or by a missing variable, a `port` and a `proxy`
+route a service through the [dev reverse proxy](#dev-reverse-proxy) like a package, and each
+[mode](#modes) gets its own Compose project, so `--mode test` has its own containers and ports.
+See **[docs/infra.md](docs/infra.md)**.
 
 ## Dev reverse proxy
 
 devtooie can run the project's dev reverse proxy itself: a loopback listener that routes
-`<subdomain>.<rootDomain>` to the package declaring that `subdomain`, answering with a status
-page for a package that is stopped or still starting. A TLS terminator (Caddy, say) forwards
+`<subdomain>.<rootDomain>` to the package or [infra](docs/infra.md) service whose `proxy`
+declares that subdomain, answering with a status page for a package that is stopped or still
+starting. A TLS terminator (Caddy, say) forwards
 `*.<rootDomain>` to it. Enable it with a top-level `devReverseProxy` block — see
 **[docs/dev-reverse-proxy.md](docs/dev-reverse-proxy.md)**.
 

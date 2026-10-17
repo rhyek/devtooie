@@ -49,9 +49,10 @@ It's a good reference for how a real workspace is wired: project-reference build
   project's migrations — per mode, so a test database never lands on the dev port.
   `devtooie infra up` does the same on its own. See [Infra](#infra).
 - **One hostname per package.** Optionally, devtooie runs the dev reverse proxy itself: give a
-  package a `subdomain` and reach it at `http://api.localhost:4000` — or
+  package a `proxy: { subdomain }` and reach it at `http://api.localhost:4000` — or
   `https://api.myproject.test` behind a TLS terminator — instead of a bare port, with a status
-  page while the package is stopped or still starting. Vite HMR works through it. See
+  page while the package is stopped or still starting. Vite HMR works through it, and an infra
+  service — an object store, a mail catcher — can be routed the same way. See
   [Dev reverse proxy](#dev-reverse-proxy).
 - **Lifecycle-aware.** Each package declares whether its dev process watches or just builds,
   so you know exactly what to do after a code edit.
@@ -67,6 +68,7 @@ where it is:
 devtooie show-config                 # the whole resolved config, as JSON
 devtooie show-config --mode test     # resolved against .env.test files (default mode: development)
 devtooie show-config | jq '.packages | map_values({port, publicOrigin, healthcheck})'
+devtooie show-config | jq '.infra["docker-compose"].services | map_values({port, publicOrigin})'
 ```
 
 This needs **no running session** — it loads `devtooie.config.ts` exactly as a session would
@@ -105,6 +107,9 @@ reports as `config` on `GET /query/status`. For each package you get, among the 
   while the package is running.
 - **`healthcheck.url`** is the readiness probe devtooie itself polls — the right thing to hit to
   find out whether the package is up, and what `packages.<name>` on `/query/status` reflects.
+- An **infra service** the proxy routes has its own `port` and `publicOrigin` under
+  `infra["docker-compose"].services.<name>` — use them the same way. Its hostnames answer 503
+  `starting` until the session's infra step has finished; see [Infra services](#infra-services).
 - The `devReverseProxy.port` is the proxy's own listener, for the TLS terminator in front of it;
   you normally don't call it directly unless the root is plain `localhost` (above).
 
@@ -279,8 +284,8 @@ Debian's and Ubuntu's `/bin/sh` stays as a small parent process. A Makefile targ
 | `apiPort`      | Pin the [control API](#drive-a-running-session-via-the-control-api) port (otherwise chosen automatically).                                                         |
 | `urls`         | Workspace-wide footer links, not tied to a package. Same shape as a package's `urls`, but a callback here gets only `{ envs, tokens }` (no package, so no `port`). |
 | `tokens`       | Values of your own, handed to every callback as `tokens` (a package's own `tokens` are merged on top) — see [Callbacks](#callbacks-instead-of-interpolation).      |
-| `infra`        | Infrastructure that isn't a package — databases, caches, brokers — keyed by provider: `{ 'docker-compose': { file?, readyTimeout?, services? } }`, where `services` gives a service its `enabled` and callbacks. Brought up, and waited on, before the packages start. See [Infra](#infra). |
-| `devReverseProxy` | Run devtooie's own dev reverse proxy, routing `<subdomain>.<rootDomain>` to packages by their `subdomain`. `{ port, rootDomain?, defaultPackage?, urlScheme? }`; present = enabled. See [Dev reverse proxy](#dev-reverse-proxy). |
+| `infra`        | Infrastructure that isn't a package — databases, caches, brokers — keyed by provider: `{ 'docker-compose': { file?, readyTimeout?, services? } }`, where `services` gives a service its `enabled`, its `port` and `proxy`, and callbacks. Brought up, and waited on, before the packages start. See [Infra](#infra). |
+| `devReverseProxy` | Run devtooie's own dev reverse proxy, routing `<subdomain>.<rootDomain>` to the package or infra service whose `proxy` declares that subdomain. `{ port, rootDomain?, defaultPackage?, urlScheme? }`; present = enabled. See [Dev reverse proxy](#dev-reverse-proxy). |
 
 `packages` is an object **keyed by package name**:
 
@@ -318,19 +323,21 @@ lib):
   **`false`** to leave it stopped; start it with the **`s`** hotkey or a control-API `restart`
   (`POST /command/restart/<name>` starts a stopped package). Ignored when `command` is `null`.
 - **`port`** — the package's dev port; injected as `PORT`, handed to this package's `healthcheck`/`urls` callbacks, and swept on session handoff. May be a **callback** deriving it from the package's [environment](#environment-env-loading) — see [Callbacks instead of interpolation](#callbacks-instead-of-interpolation). Return `undefined` for "no port" (same as omitting the field); returning `NaN` — the usual sign of a missing variable — is an error naming the package and the env files that were loaded. Declaring a `port` is what lets this package's other callbacks use `port` — see [The `port` in a callback](#the-port-in-a-callback).
-- **`subdomain`** — the package's dev subdomain: a string, an array of them (the first is the
-  canonical subdomain, the rest are aliases), or **`true`** for the package's own name —
-  `api: { subdomain: true }` is `subdomain: 'api'`. (`true` needs a name that is itself a DNS
-  label; a scoped or uppercase key has to spell its subdomain out.) It is data for tooling that reads the exported
-  config — a reverse proxy building its routing table from each package's `subdomain` and
-  resolved `port` (`config.packages.api.subdomain`). With a
-  top-level [`devReverseProxy`](#dev-reverse-proxy), devtooie is that proxy: it routes
+- **`proxy`** — how a reverse proxy reaches the package: `{ subdomain }`, the same block an
+  [infra service](#reaching-a-service-through-the-dev-reverse-proxy) takes. `subdomain` is a
+  string, an array of them (the first is the canonical subdomain, the rest are aliases), or
+  **`true`** for the package's own name — `api: { proxy: { subdomain: true } }` is
+  `subdomain: 'api'`. (`true` needs a name that is itself a DNS label; a scoped or uppercase key
+  has to spell its subdomain out.) It is data for tooling that reads the exported config — a
+  reverse proxy building its routing table from each package's `proxy.subdomain` and resolved
+  `port` (`config.packages.api.proxy.subdomain`). With a top-level
+  [`devReverseProxy`](#dev-reverse-proxy), devtooie is that proxy: it routes
   `<subdomain>.<rootDomain>` to this package's `port` (aliases too) and injects `PUBLIC_ORIGIN`
   into its process. Without one, devtooie doesn't use it. Either way the canonical entry is
   handed to this package's callbacks as `subdomain` — see
   [Callbacks](#callbacks-instead-of-interpolation). Each entry must be a DNS label — lowercase
   letters, digits, and hyphens, not starting or ending with a hyphen, at most 63 characters —
-  and no two packages may declare the same one, canonical or alias.
+  and no two packages or infra services may declare the same one, canonical or alias.
 - **`urls`** — links shown in the running footer, one entry per line. Each entry is a URL, a
   `{ label, url }`, or an **array** of those (rendered on the same line, space-separated). Any
   URL may be a callback, and any may be a **path** (`'/todos'`, or `'todos'`; `''` is the origin
@@ -395,7 +402,7 @@ Each callback receives one object:
 | `envs`   | The config's own [`env.vars`](#envvars) and the package's `.env` files, resolved and merged with `process.env` (which wins by default) — the same environment the dev process gets. See [Environment loading](#environment-env-loading). |
 | `tokens` | The top-level `tokens` with this package's own `tokens` merged **over** them. Typed from what you declared, so a typo is a compile error.                               |
 | `port`   | The package's resolved `port`, typed **`number`** (not `number \| undefined`) so it drops straight into a URL. A package that declares no `port` has nothing to give, which types can't express here — so reading `port` in that case throws when the config loads, naming the package. Not offered to `port` itself, nor to the workspace-wide `urls`. |
-| `subdomain` | The package's canonical `subdomain` — the first entry when it declared several — so a URL can be built from it without repeating it: `` urls: [({ subdomain, envs }) => `https://${subdomain}.${envs.LOCALDEV_DOMAIN}`] ``. Plain data, unlike `port`: `undefined` (in type and in value) for a package that declares none, so branch on it if a callback has to work either way. Not offered to `port`, nor to the workspace-wide `urls`. |
+| `subdomain` | The package's canonical `proxy.subdomain` — the first entry when it declared several — so a URL can be built from it without repeating it: `` urls: [({ subdomain, envs }) => `https://${subdomain}.${envs.LOCALDEV_DOMAIN}`] ``. Plain data, unlike `port`: `undefined` (in type and in value) for a package that declares no `proxy`, so branch on it if a callback has to work either way. Not offered to `port`, nor to the workspace-wide `urls`. |
 
 Callbacks run **once**, while the config is being defined, and must be synchronous. A `port`
 callback returns a number (or `undefined`); the rest return a string.
@@ -687,7 +694,8 @@ building those deps first. Give a shared lib a watching `dev` (e.g. `tsc --watch
 devtooie can run the project's dev reverse proxy itself. A TLS terminator on the machine
 (Caddy, say — not devtooie's concern) forwards `*.<rootDomain>` to one loopback port per
 project; devtooie owns that port and routes each request by the first label of its `Host`
-header to the package that declares that `subdomain`, on that package's resolved `port`.
+header to the package or [infra service](#infra) whose `proxy` declares that subdomain, on
+its resolved `port`.
 
 Because devtooie also knows every package's live status, the proxy can **answer for a package
 that is stopped or still starting** — a page saying so, rather than a bare connection error.
@@ -705,10 +713,19 @@ export default defineConfig({
     defaultPackage: 'web', // optional: what the bare rootDomain routes to
     urlScheme: 'https', // optional; defaults from rootDomain: http on localhost, https elsewhere
   },
+  infra: {
+    'docker-compose': {
+      services: {
+        // the host side of the service's port mapping, which devtooie doesn't read from the file
+        store: { port: ({ envs }) => Number(envs.STORE_PORT), proxy: { subdomain: 's3' } },
+        mail: { port: 21054, proxy: { subdomain: true } }, // true: the key, `mail`
+      },
+    },
+  },
   packages: {
-    web: { port: 3000, subdomain: ['web', 'www'] },
-    api: { port: 3001, subdomain: true, healthcheck: '/health' }, // true: the key, `api`
-    worker: { port: 3002 }, // a port but no subdomain: simply not routed
+    web: { port: 3000, proxy: { subdomain: ['web', 'www'] } },
+    api: { port: 3001, proxy: { subdomain: true }, healthcheck: '/health' }, // true: the key, `api`
+    worker: { port: 3002 }, // a port but no proxy: simply not routed
   },
 });
 ```
@@ -730,13 +747,31 @@ export default defineConfig({
   package is `http://api.localhost:4000` under the default root and `https://api.myproject.test`
   under a custom one, with nothing else to set.
 
-**Routable packages** are those declaring both `subdomain` and `port`. A package with a port
-but no subdomain is simply not routed. Validation, when the block is present:
+#### `proxy`
+
+A package and an infra service declare a route the same way, with a `proxy` block:
+
+- **`subdomain`** (required) — a DNS label (lowercase letters, digits, and hyphens, at most 63
+  characters, not starting or ending with a hyphen); an array of them, whose first entry is the
+  canonical subdomain and the rest aliases that route too; or **`true`** for the package's or
+  service's own key (`api: { proxy: { subdomain: true } }` is `subdomain: 'api'`). `true` needs a
+  key that is itself a DNS label; a scoped, uppercase, or underscored one has to spell its
+  subdomain out.
+
+Without a `devReverseProxy` block, `proxy` is data for tooling that reads the exported config —
+a reverse proxy of your own, say.
+
+**Routable** packages and services are those declaring both `proxy` and `port`; one with a port
+but no `proxy` is simply not routed. An infra service switched off for the mode (`enabled:
+false`) is not routed either. Validation:
 
 - `rootDomain` is a lowercase hostname (labels of `[a-z0-9-]`, no leading or trailing hyphen).
 - `defaultPackage` names a declared package that has a `port`.
-- A package that declares `subdomain` but no `port` is an error — it can't be routed.
-- The proxy `port` equals no package's port.
+- Every subdomain and alias is unique across packages **and** infra services.
+- A package that declares `proxy` but no `port` is an error when the block is present — it
+  can't be routed. An infra service that declares `proxy` but no `port` is always an error.
+- The proxy `port` equals no package's or infra service's port, and an infra service's port
+  equals no package's (or another service's).
 
 Each error names the offender.
 
@@ -747,15 +782,17 @@ The proxy strips any `:port` from the `Host` header, then:
 | Host                    | Routes to                                                                |
 | ----------------------- | ------------------------------------------------------------------------ |
 | `<rootDomain>`          | `defaultPackage`, or 404 when unset.                                     |
-| `<label>.<rootDomain>`  | The package whose canonical subdomain **or alias** is `<label>`.         |
+| `<label>.<rootDomain>`  | The package or infra service whose canonical subdomain **or alias** is `<label>`. |
 | anything else           | 404 — including multi-label prefixes (`a.web.<rootDomain>`) and hosts outside `rootDomain`. |
 
 The 404 is a small page listing every hostname that does exist, as public URLs you can click:
-`<subdomain>.<rootDomain>` for every routable package, aliases included, plus the bare root when
-`defaultPackage` is set.
+`<subdomain>.<rootDomain>` for every routable package and infra service, aliases included, plus
+the bare root when `defaultPackage` is set.
 
-Requests are forwarded to the package's port on `localhost`, trying both loopback families
-(Vite on a modern Node listens on `[::1]` alone). The `Host` header is kept as received and every other request and response header passes through unchanged, except the
+Requests are forwarded to the package's or service's port on `localhost`, trying both loopback
+families (Vite on a modern Node listens on `[::1]` alone). The `Host` header is kept as
+received — so a signature computed over it, like an S3 presigned URL's or a presigned POST
+form's, still matches at the service — and every other request and response header passes through unchanged, except the
 hop-by-hop ones (`connection`, `keep-alive`, `proxy-*`, `te`, `trailer`, `transfer-encoding`,
 `upgrade`), which Node manages on each side. devtooie adds or rewrites no `X-Forwarded-*` —
 the TLS terminator in front already sets them. Bodies stream both ways; nothing is buffered,
@@ -773,17 +810,28 @@ The proxy asks the process manager before forwarding:
 | `running` and ready (or no `healthcheck`)           | Proxied. If the package refuses or resets the connection, a **502** page naming the package and port, `Retry-After: 1`.                                                 |
 | not part of the running session                     | **503**, saying so.                                                                                                                                                      |
 
-Before the session's process manager is up (during the build phase), every routable host
-answers 503 with status `starting`. If the client disconnects mid-request, the upstream request
-is aborted.
+Before the session's process manager is up (during the build phase), every routable package
+host answers 503 with status `starting`. If the client disconnects mid-request, the upstream
+request is aborted.
+
+#### Infra services
+
+An infra service has no live status for the proxy to ask about, so its routes go by the
+session's infra step alone:
+
+| When                                     | Response                                                                                                                         |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Before the session's infra step finishes | **503** with status `starting`, naming the service, as HTML or JSON like the package pages. `Retry-After: 2`, `Cache-Control: no-store`. |
+| After it                                 | Proxied. If the service refuses or resets the connection, a **502** page naming the service and its port, `Retry-After: 1`.      |
 
 ### WebSockets and Vite HMR
 
 The proxy handles the `upgrade` event with the same `Host` routing, opens the upstream with the
-original headers, and once the package answers `101` splices the two sockets both ways. An
-upgrade to a package that is not `running` right now is **dropped** (the socket is destroyed)
-rather than held, and so is one the package fails to accept because it isn't listening yet:
-websocket clients reconnect on their own, and a real answer is there once the package is up.
+original headers, and once the package or service answers `101` splices the two sockets both
+ways. An upgrade to a package that is not `running` right now, or to an infra service before the
+session's infra step has finished, is **dropped** (the socket is destroyed) rather than held, and
+so is one the target fails to accept because it isn't listening yet: websocket clients reconnect
+on their own, and a real answer is there once the target is up.
 
 Vite HMR is the canonical client. Point its client at the TLS terminator's port and let the
 websocket ride the same connection as the page — no separate HMR port:
@@ -802,7 +850,7 @@ export default defineConfig({
 
 ### `PUBLIC_ORIGIN`
 
-Every routable package's process — one declaring both `subdomain` and `port` — gets
+Every routable package's process — one declaring both `proxy` and `port` — gets
 `PUBLIC_ORIGIN` injected next to `PORT`, under the same rule: only a `PUBLIC_ORIGIN` in the
 package's own `.env` file overrides it. It is built from the block as
 
@@ -810,28 +858,32 @@ package's own `.env` file overrides it. It is built from the block as
 <urlScheme>://<canonical subdomain>.<rootDomain>[:<port>]
 ```
 
-where the canonical subdomain is the package's `subdomain` (the first entry of an array — aliases
-never appear here) and the port follows the [`urlScheme` rule](#config): the proxy `port` under
-`http`, none under `https`. So `https://web.myproject.test` behind a TLS terminator, and
-`http://web.localhost:21050` on plain `localhost`. A package with a port but no subdomain gets
-no `PUBLIC_ORIGIN` at all.
+where the canonical subdomain is the package's `proxy.subdomain` (the first entry of an array —
+aliases never appear here) and the port follows the [`urlScheme` rule](#config): the proxy
+`port` under `http`, none under `https`. So `https://web.myproject.test` behind a TLS
+terminator, and `http://web.localhost:21050` on plain `localhost`. A package with a port but no
+`proxy` gets no `PUBLIC_ORIGIN` at all.
 
 Apps use it for things like Vite's `server.allowedHosts` and `server.hmr` without repeating the
 subdomain in their own config. `devtooie exec` and `devtooie run` hand the same variable to a one-off command.
 
 ### Footer links and the resolved config
 
-devtooie adds no footer link of its own: `urls` holds exactly what the config lists. To show a
-package's public origin, list it — `''` (or `'/'`) is the origin itself, any other path is
-resolved against it (see [Configuration options](#configuration-options)). The origin is on the resolved
-config as `publicOrigin` (the same value injected as `PUBLIC_ORIGIN`), next to
-`config.devReverseProxy`:
+devtooie adds no footer link of its own for a package: `urls` holds exactly what the config
+lists. To show a package's public origin, list it — `''` (or `'/'`) is the origin itself, any
+other path is resolved against it (see [Configuration options](#configuration-options)). An
+infra service has no `urls`; the footer's link column lists each routed service's public origin
+under an `infra` heading, below the packages' links.
+
+The origin is on the resolved config as `publicOrigin` — for a package, the same value injected
+as `PUBLIC_ORIGIN` — next to `config.devReverseProxy`:
 
 ```ts
 // with `urls: ['', '/todos']` on web
 config.devReverseProxy; // { port: 4000, rootDomain: 'myproject.example.test', defaultPackage: 'web', urlScheme: 'https' } | undefined
 config.packages.web.publicOrigin; // 'https://web.myproject.example.test'
 config.packages.web.urls; // ['https://web.myproject.example.test', 'https://web.myproject.example.test/todos']
+config.infra['docker-compose'].services.store; // { enabled: true, port: 9000, proxy: { subdomain: 's3' }, publicOrigin: 'https://s3.myproject.example.test', … }
 ```
 
 `devtooie show-config` prints all of this as JSON without starting a session.
@@ -839,7 +891,8 @@ config.packages.web.urls; // ['https://web.myproject.example.test', 'https://web
 ### Lifecycle
 
 The proxy starts **before any package**, in both the TUI and `--plain` modes, whenever the
-loaded config has `devReverseProxy`. `devtooie exec`, `run`, `logs`, `env`, and `init` never start it.
+loaded config has `devReverseProxy`. `devtooie exec`, `run`, `infra`, `logs`, `env`, and `init`
+never start it.
 On shutdown it closes and destroys every open socket, proxied websockets included, so a
 lingering connection can't hold the exit.
 
@@ -848,7 +901,7 @@ session being handed off releases it as it shuts down; anything still holding it
 a startup error naming the port.
 
 At start, one `[devtooie]` log entry names the proxy port, with one indented line per route
-beneath it (`<host>: <package> :<port>`). The [control API](#drive-a-running-session-via-the-control-api)'s `GET /query/status` reports
+beneath it (`<host>: <package> :<port>`, or `<host>: infra service <name> :<port>`). The [control API](#drive-a-running-session-via-the-control-api)'s `GET /query/status` reports
 the same table under `devReverseProxy`.
 
 ### No terminator: plain `localhost`
@@ -911,7 +964,8 @@ For a working setup to copy from, see the
 in `node_modules`): a Postgres service in
 `docker-compose.yaml` with a healthcheck, its connection values in the mode's `.env` file (read
 by Compose, and by the app as `DATABASE_URI`), and an `afterReady` in `devtooie.config.ts` that
-migrates on every start and seeds a fresh database.
+migrates on every start and seeds a fresh database — plus a Mailpit mail catcher whose web UI
+the dev reverse proxy routes at `http://mail.localhost:21050`.
 
 ```sh
 devtooie infra up                     # start every service, wait until ready, then exit
@@ -970,6 +1024,8 @@ cwd: example  git: main
   lines (type `infra` in the `f` filter to see only those).
 - The footer dots are a record of startup, not a monitor: nothing watches the containers
   afterwards.
+- A service the [dev reverse proxy routes](#reaching-a-service-through-the-dev-reverse-proxy)
+  also has its public URL in the footer's link column, under an `infra` heading.
 
 `--build`, `devtooie exec`, `run`, `show-config`, `logs` and the other subcommands never touch infra.
 
@@ -983,6 +1039,8 @@ infra: {
     services: {                    // optional — keys are Compose service names
       db: {
         enabled: ({ mode }) => mode !== 'test',
+        port: ({ envs }) => Number(envs.DB_PORT), // optional: the host port, for `proxy`
+        proxy: { subdomain: 'db' },               // optional: route it through devReverseProxy
         afterDestroy: async (ctx) => {},
         beforeUp: async (ctx) => {},
         afterReady: async (ctx) => {},
@@ -996,7 +1054,7 @@ infra: {
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `file`         | The compose file, relative to `workspaceDir`. Omit it and Compose discovers the file itself (`compose.yaml`, `docker-compose.yaml`, plus any override file).                                                                                                          |
 | `readyTimeout` | How long `up` waits for the services to become ready, in ms. Default: 5 minutes.                                                                                                                                                                                      |
-| `services`     | Per-service options, keyed by Compose service name: [`enabled`](#turning-a-service-off) and the [callbacks](#callbacks). A service doesn't have to be listed to run. A key that isn't a service in the compose file is an error, reported before anything is started. |
+| `services`     | Per-service options, keyed by Compose service name: [`enabled`](#turning-a-service-off), [`port` and `proxy`](#reaching-a-service-through-the-dev-reverse-proxy), and the [callbacks](#callbacks). A service doesn't have to be listed to run. A key that isn't a service in the compose file is an error, reported before anything is started. |
 
 **Which services run:** all the services Compose reports for the file — minus any you
 [turn off](#turning-a-service-off) — or the ones you name on the command line.
@@ -1052,6 +1110,43 @@ Two things `enabled` doesn't do:
 Compose's own [profiles](https://docs.docker.com/compose/how-tos/profiles/) are the other way
 to do this — `COMPOSE_PROFILES=…` in a mode's `.env` file — and they do hide a service from
 Compose entirely.
+
+### Reaching a service through the dev reverse proxy
+
+A service a browser has to reach — an S3-compatible object store, a mail catcher's web UI —
+can be routed by the [dev reverse proxy](#dev-reverse-proxy) at `<subdomain>.<rootDomain>`,
+like a package. Give it a `port` and a `proxy`:
+
+```ts
+services: {
+  // signed GET URLs and presigned POST forms cover the Host header, which the proxy keeps
+  store: { port: ({ envs }) => Number(envs.STORE_PORT), proxy: { subdomain: 's3' } },
+  mail: { port: 21054, proxy: { subdomain: true } }, // true: the service's key, `mail`
+}
+```
+
+- **`port`** is the port the service answers on at `localhost` — the host side of its port
+  mapping. devtooie doesn't read it from the compose file. A literal, or a callback over the
+  workspace context `{ envs, tokens }`, resolved once at load like a package's `port`; it isn't
+  resolved for a disabled service. It equals no package's port, no other service's, and not the
+  proxy's.
+- **`proxy`** is the same block a package takes — `subdomain` is a label, an array of them (the
+  first canonical, the rest aliases), or `true` for the service's key — and requires `port`.
+  Its subdomains are unique across packages and services. See
+  [`proxy`](#proxy).
+
+These are options of the service, not of the provider, so they mean the same for every
+provider. A disabled service is not routed. Until a session's infra step has finished, its
+hostnames answer 503 `starting`; after it they are forwarded, and a refused or reset connection
+gets a 502 naming the service and its port. Only a session runs the proxy — `infra up` doesn't.
+
+The resolved `port`, `proxy` and `publicOrigin` are on the exported config, so `devtooie
+show-config` shows them:
+
+```sh
+devtooie show-config | jq '.infra["docker-compose"].services.mail'
+# { "enabled": true, "port": 21054, "proxy": { "subdomain": "mail" }, "publicOrigin": "http://mail.localhost:21050" }
+```
 
 ### Callbacks
 
@@ -1460,8 +1555,8 @@ Subcommands:
 - **`devtooie init`** — interactive setup; see [Getting started](#getting-started-devtooie-init).
 - **`devtooie reset`** — clear the saved package selection.
 - **`devtooie show-config`** — print the **fully resolved config** as JSON, no session
-  needed: every package's `port`, `publicOrigin`, `healthcheck`, `urls`, and the
-  `devReverseProxy` block. Takes `--mode`. See [Reach a package](#reach-a-package-devtooie-show-config).
+  needed: every package's `port`, `publicOrigin`, `healthcheck`, `urls`, every infra service's
+  `enabled`, `port`, `proxy` and `publicOrigin`, and the `devReverseProxy` block. Takes `--mode`. See [Reach a package](#reach-a-package-devtooie-show-config).
 - **`devtooie resolvedeps <package>`** — print the resolved build/dev/runtime dependency
   sets for a single package as JSON.
 - **`devtooie exec`** — run a **one-off command** with a package's environment (its dir +
@@ -1792,7 +1887,8 @@ Endpoints (all plain HTTP, no auth — localhost-only):
   - `devReverseProxy` — `{ port, rootDomain, routes: [{ host, package, port }] }` for the
     session's [dev reverse proxy](#dev-reverse-proxy), or `null` when the config declares none.
     Present from the start (the proxy binds before anything else); `routes` lists every public
-    hostname and the package (and loopback port) it forwards to.
+    hostname and the package (and loopback port) it forwards to — an infra service route names
+    its `service` in place of `package`: `{ host, service, port }`.
 - `POST /command/restart/<name>` — restart one package in place (`202` if accepted, `404` for an
   unknown package).
 - `POST /command/rebuild/<name>` — stop, clean-build, then start. Prefer this over `restart`

@@ -994,23 +994,61 @@ describe('getWorkspaceDir', () => {
   });
 });
 
-// `subdomain` is data for an external reverse proxy that reads the exported config; devtooie
-// itself only validates it and hands the canonical (first) entry to the package's callbacks.
-describe('subdomain', () => {
+// A package's `proxy.subdomain`. Without a `devReverseProxy` it is data for an external reverse
+// proxy that reads the exported config; devtooie validates it and hands the canonical (first)
+// entry to the package's callbacks. (Routing is under `devReverseProxy` below.)
+describe('proxy', () => {
+  test('a top-level `subdomain` is an error saying to move it under `proxy`', () => {
+    expect(() =>
+      defineConfig({
+        packageRootDir: 'packages',
+        packages: { api: { subdomain: 'api' } as unknown as Record<never, never> },
+      }),
+    ).toThrow(
+      /packages\.api\.subdomain: a package's subdomain goes under `proxy` — `proxy: \{ subdomain: … \}`/,
+    );
+    // Every form of it, `true` included — none may be stripped and leave the package unrouted.
+    for (const subdomain of [true, ['api', 'www']]) {
+      expect(() =>
+        defineConfig({
+          packageRootDir: 'packages',
+          packages: { api: { subdomain } as unknown as Record<never, never> },
+        }),
+      ).toThrow(/packages\.api\.subdomain: .*under `proxy`/);
+    }
+  });
+
+  test('rejects an unknown option in the block, and a block with no subdomain', () => {
+    expect(() =>
+      defineConfig({
+        packageRootDir: 'packages',
+        // @ts-expect-error `proxy` takes `subdomain` only
+        packages: { api: { proxy: { subdomain: 'api', host: 'x' } } },
+      }),
+    ).toThrow(/packages\.api\.proxy: Unrecognized key: "host"/);
+    expect(() =>
+      // @ts-expect-error `subdomain` is required: `proxy: {}` would route nothing
+      defineConfig({ packageRootDir: 'packages', packages: { api: { proxy: {} } } }),
+    ).toThrow(/packages\.api\.proxy\.subdomain/);
+    expect(() =>
+      defineConfig({ packageRootDir: 'packages', packages: { api: { proxy: { subdomain: [] } } } }),
+    ).toThrow(/packages\.api\.proxy\.subdomain/);
+  });
+
   test('accepts a single subdomain and exposes it unchanged on the resolved package', () => {
     const cfg = defineConfig({
       packageRootDir: 'packages',
-      packages: { api: { subdomain: 'api' } },
+      packages: { api: { proxy: { subdomain: 'api' } } },
     });
-    expect(cfg.packages.api.subdomain).toBe('api');
+    expect(cfg.packages.api.proxy?.subdomain).toBe('api');
   });
 
   test('accepts an array of subdomains and exposes it unchanged on the resolved package', () => {
     const cfg = defineConfig({
       packageRootDir: 'packages',
-      packages: { api: { subdomain: ['api', 'api-legacy'] } },
+      packages: { api: { proxy: { subdomain: ['api', 'api-legacy'] } } },
     });
-    expect(cfg.packages.api.subdomain).toEqual(['api', 'api-legacy']);
+    expect(cfg.packages.api.proxy?.subdomain).toEqual(['api', 'api-legacy']);
   });
 
   test("`true` is the package's own name, resolved to that string everywhere it is read", () => {
@@ -1020,7 +1058,7 @@ describe('subdomain', () => {
       devReverseProxy: { port: 4000 },
       packages: {
         'web-api': {
-          subdomain: true,
+          proxy: { subdomain: true },
           port: 3001,
           urls: [
             ({ subdomain }) => {
@@ -1031,18 +1069,24 @@ describe('subdomain', () => {
         },
       },
     });
-    expect(cfg.packages['web-api'].subdomain).toBe('web-api');
+    expect(cfg.packages['web-api'].proxy?.subdomain).toBe('web-api');
     expect(seen).toEqual(['web-api']);
     expect(cfg.packages['web-api'].publicOrigin).toBe('http://web-api.localhost:4000');
-    expect(JSON.parse(JSON.stringify(cfg)).packages['web-api'].subdomain).toBe('web-api');
+    expect(JSON.parse(JSON.stringify(cfg)).packages['web-api'].proxy?.subdomain).toBe('web-api');
   });
 
   test('`true` on a name that is not a DNS label is an error asking for an explicit one', () => {
     expect(() =>
-      defineConfig({ packageRootDir: 'packages', packages: { '@scope/web': { subdomain: true } } }),
+      defineConfig({
+        packageRootDir: 'packages',
+        packages: { '@scope/web': { proxy: { subdomain: true } } },
+      }),
     ).toThrow(/@scope\/web[\s\S]*subdomain: true[\s\S]*DNS label[\s\S]*explicit/);
     expect(() =>
-      defineConfig({ packageRootDir: 'packages', packages: { Web_API: { subdomain: true } } }),
+      defineConfig({
+        packageRootDir: 'packages',
+        packages: { Web_API: { proxy: { subdomain: true } } },
+      }),
     ).toThrow(/Web_API[\s\S]*subdomain: true/);
   });
 
@@ -1050,7 +1094,10 @@ describe('subdomain', () => {
     expect(() =>
       defineConfig({
         packageRootDir: 'packages',
-        packages: { api: { subdomain: true }, legacy: { subdomain: ['old', 'api'] } },
+        packages: {
+          api: { proxy: { subdomain: true } },
+          legacy: { proxy: { subdomain: ['old', 'api'] } },
+        },
       }),
     ).toThrow(/api and legacy both declare the subdomain "api"/);
   });
@@ -1059,21 +1106,21 @@ describe('subdomain', () => {
     expect(() =>
       defineConfig({
         packageRootDir: 'packages',
-        packages: { api: { subdomain: false as unknown as true } },
+        packages: { api: { proxy: { subdomain: false as unknown as true } } },
       }),
     ).toThrow(/subdomain/);
   });
 
   test('leaves the resolved subdomain undefined when the package declares none', () => {
     const cfg = defineConfig({ packageRootDir: 'packages', packages: { api: {} } });
-    expect(cfg.packages.api.subdomain).toBeUndefined();
+    expect(cfg.packages.api.proxy?.subdomain).toBeUndefined();
   });
 
   test('rejects two packages declaring the same subdomain, naming both', () => {
     expect(() =>
       defineConfig({
         packageRootDir: 'packages',
-        packages: { api: { subdomain: 'app' }, web: { subdomain: 'app' } },
+        packages: { api: { proxy: { subdomain: 'app' } }, web: { proxy: { subdomain: 'app' } } },
       }),
     ).toThrow(/api.*web.*"app"|"app".*api.*web/);
   });
@@ -1082,7 +1129,10 @@ describe('subdomain', () => {
     expect(() =>
       defineConfig({
         packageRootDir: 'packages',
-        packages: { api: { subdomain: ['api', 'app'] }, web: { subdomain: 'app' } },
+        packages: {
+          api: { proxy: { subdomain: ['api', 'app'] } },
+          web: { proxy: { subdomain: 'app' } },
+        },
       }),
     ).toThrow(/api.*web.*"app"|"app".*api.*web/);
   });
@@ -1093,11 +1143,11 @@ describe('subdomain', () => {
       tokens: { domain: 'example.test' },
       packages: {
         api: {
-          subdomain: ['api', 'api-legacy'],
+          proxy: { subdomain: ['api', 'api-legacy'] },
           urls: [({ subdomain, tokens }) => `https://${subdomain}.${tokens.domain}`],
         },
         web: {
-          subdomain: 'web',
+          proxy: { subdomain: 'web' },
           healthcheck: ({ subdomain, tokens }) => `https://${subdomain}.${tokens.domain}/health`,
         },
       },
@@ -1139,7 +1189,7 @@ describe('subdomain', () => {
           return 'https://example.test';
         },
       ],
-      packages: { api: { subdomain: 'api' } },
+      packages: { api: { proxy: { subdomain: 'api' } } },
     });
     expect(seen).toEqual([undefined]);
   });
@@ -1148,8 +1198,8 @@ describe('subdomain', () => {
   // root domain, and case or dots would make two spellings of one route.
   test.each(['api', 'api-v2', 'a1', '0x'])('accepts the DNS label %j', (subdomain) => {
     expect(
-      defineConfig({ packageRootDir: 'packages', packages: { api: { subdomain } } }).packages.api
-        .subdomain,
+      defineConfig({ packageRootDir: 'packages', packages: { api: { proxy: { subdomain } } } })
+        .packages.api.proxy?.subdomain,
     ).toBe(subdomain);
   });
 
@@ -1157,8 +1207,8 @@ describe('subdomain', () => {
     'rejects %j, naming the package and the field',
     (subdomain) => {
       expect(() =>
-        defineConfig({ packageRootDir: 'packages', packages: { api: { subdomain } } }),
-      ).toThrow(/packages\.api\.subdomain: .*lowercase letters, digits, and hyphens/);
+        defineConfig({ packageRootDir: 'packages', packages: { api: { proxy: { subdomain } } } }),
+      ).toThrow(/packages\.api\.proxy\.subdomain: .*lowercase letters, digits, and hyphens/);
     },
   );
 
@@ -1166,12 +1216,14 @@ describe('subdomain', () => {
     expect(() =>
       defineConfig({
         packageRootDir: 'packages',
-        packages: { api: { subdomain: 'a'.repeat(64) } },
+        packages: { api: { proxy: { subdomain: 'a'.repeat(64) } } },
       }),
-    ).toThrow(/packages\.api\.subdomain: .*at most 63 characters/);
+    ).toThrow(/packages\.api\.proxy\.subdomain: .*at most 63 characters/);
     expect(
-      defineConfig({ packageRootDir: 'packages', packages: { api: { subdomain: 'a'.repeat(63) } } })
-        .packages.api.subdomain,
+      defineConfig({
+        packageRootDir: 'packages',
+        packages: { api: { proxy: { subdomain: 'a'.repeat(63) } } },
+      }).packages.api.proxy?.subdomain,
     ).toHaveLength(63);
   });
 
@@ -1179,9 +1231,9 @@ describe('subdomain', () => {
     expect(() =>
       defineConfig({
         packageRootDir: 'packages',
-        packages: { api: { subdomain: ['api', 'Api-Legacy'] } },
+        packages: { api: { proxy: { subdomain: ['api', 'Api-Legacy'] } } },
       }),
-    ).toThrow(/packages\.api\.subdomain\.1: .*lowercase letters, digits, and hyphens/);
+    ).toThrow(/packages\.api\.proxy\.subdomain\.1: .*lowercase letters, digits, and hyphens/);
   });
 });
 
@@ -1190,7 +1242,7 @@ describe('subdomain', () => {
 describe('devReverseProxy', () => {
   const withProxy = (
     proxy: RootedOpts['devReverseProxy'],
-    packages: RootedOpts['packages'] = { web: { port: 3000, subdomain: 'web' } },
+    packages: RootedOpts['packages'] = { web: { port: 3000, proxy: { subdomain: 'web' } } },
   ) => defineConfig({ packageRootDir: 'packages', devReverseProxy: proxy, packages });
 
   test('is absent from the resolved config when the block is omitted', () => {
@@ -1218,7 +1270,7 @@ describe('devReverseProxy', () => {
         rootDomain: ({ tokens }) => `example.${tokens.tld}`,
         urlScheme: 'http',
       },
-      packages: { web: { port: 3000, subdomain: 'web' } },
+      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
     expect(cfg.devReverseProxy).toMatchObject({
       port: 4100,
@@ -1261,7 +1313,7 @@ describe('devReverseProxy', () => {
         packageRootDir: 'packages',
         // @ts-expect-error also a compile error — the load-time check is the backstop
         devReverseProxy: { port: 4000, rootDomain: 'example.test', defaultPackage: 'ghost' },
-        packages: { web: { port: 3000, subdomain: 'web' } },
+        packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
       }),
     ).toThrow(/devReverseProxy\.defaultPackage "ghost" names no declared package/);
   });
@@ -1270,21 +1322,26 @@ describe('devReverseProxy', () => {
     expect(() =>
       withProxy(
         { port: 4000, rootDomain: 'example.test', defaultPackage: 'lib' },
-        { web: { port: 3000, subdomain: 'web' }, lib: {} },
+        { web: { port: 3000, proxy: { subdomain: 'web' } }, lib: {} },
       ),
     ).toThrow(/devReverseProxy\.defaultPackage "lib" has no `port`/);
   });
 
   test('rejects a package that declares a subdomain but no port', () => {
     expect(() =>
-      withProxy({ port: 4000, rootDomain: 'example.test' }, { docs: { subdomain: 'docs' } }),
+      withProxy(
+        { port: 4000, rootDomain: 'example.test' },
+        { docs: { proxy: { subdomain: 'docs' } } },
+      ),
     ).toThrow(/docs declares subdomain "docs" but no `port`/);
   });
 
   test('leaves a subdomain-without-port package alone when there is no proxy block', () => {
     expect(
-      defineConfig({ packageRootDir: 'packages', packages: { docs: { subdomain: 'docs' } } })
-        .packages.docs.port,
+      defineConfig({
+        packageRootDir: 'packages',
+        packages: { docs: { proxy: { subdomain: 'docs' } } },
+      }).packages.docs.port,
     ).toBe(undefined);
   });
 
@@ -1299,8 +1356,8 @@ describe('devReverseProxy', () => {
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'example.test', defaultPackage: 'web' },
       packages: {
-        web: { port: 3000, subdomain: ['web', 'www'], urls: [({ port }) => `http://localhost:${port}`] }, // prettier-ignore
-        api: { port: 3001, subdomain: 'api' },
+        web: { port: 3000, proxy: { subdomain: ['web', 'www'] }, urls: [({ port }) => `http://localhost:${port}`] }, // prettier-ignore
+        api: { port: 3001, proxy: { subdomain: 'api' } },
         worker: { port: 3002 },
         lib: {},
       },
@@ -1317,7 +1374,7 @@ describe('devReverseProxy', () => {
     const cfg = defineConfig({
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'example.test', urlScheme: 'http' },
-      packages: { web: { port: 3000, subdomain: 'web', urls: ['/'] } },
+      packages: { web: { port: 3000, proxy: { subdomain: 'web' }, urls: ['/'] } },
     });
     expect(cfg.packages.web.publicOrigin).toBe('http://web.example.test:4000');
     expect(cfg.packages.web.urls).toEqual(['http://web.example.test:4000']);
@@ -1327,13 +1384,16 @@ describe('devReverseProxy', () => {
     const cfg = defineConfig({
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'example.test' },
-      packages: { web: { port: 3000, subdomain: ['web', 'www'] }, worker: { port: 3002 } },
+      packages: {
+        web: { port: 3000, proxy: { subdomain: ['web', 'www'] } },
+        worker: { port: 3002 },
+      },
     });
     expect(cfg.packages.web.publicOrigin).toBe('https://web.example.test');
     expect(cfg.packages.worker.publicOrigin).toBeUndefined();
     const noProxy = defineConfig({
       packageRootDir: 'packages',
-      packages: { web: { port: 3000, subdomain: 'web' } },
+      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
     expect(noProxy.packages.web.publicOrigin).toBeUndefined();
   });
@@ -1348,7 +1408,10 @@ describe('devReverseProxy', () => {
         packageRootDir: 'packages',
         workspaceDir: dir,
         devReverseProxy: { port: 4000, rootDomain: 'example.test' },
-        packages: { web: { port: 3000, subdomain: 'web' }, api: { port: 3001, subdomain: 'api' } },
+        packages: {
+          web: { port: 3000, proxy: { subdomain: 'web' } },
+          api: { port: 3001, proxy: { subdomain: 'api' } },
+        },
       });
       const layer = (pkg: AnyPackageConfig) => packageEnvLayer(pkg, { cwd: dir });
       expect(layer(cfg.packages.web)).toMatchObject({
@@ -1373,7 +1436,7 @@ describe('public URL port', () => {
     const cfg = defineConfig({
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'localhost', defaultPackage: 'web' },
-      packages: { web: { port: 3000, subdomain: 'web' } },
+      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
     expect(cfg.packages.web.publicOrigin).toBe('http://web.localhost:4000');
     expect(cfg.packages.web.urls).toBeUndefined();
@@ -1383,7 +1446,7 @@ describe('public URL port', () => {
     const cfg = defineConfig({
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'localhost', urlScheme: 'https' },
-      packages: { web: { port: 3000, subdomain: 'web' } },
+      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
     expect(cfg.packages.web.publicOrigin).toBe('https://web.localhost');
   });
@@ -1397,7 +1460,7 @@ describe('devReverseProxy defaults from rootDomain', () => {
     const cfg = defineConfig({
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000 },
-      packages: { web: { port: 3000, subdomain: 'web' } },
+      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
     expect(cfg.devReverseProxy).toEqual({
       port: 4000,
@@ -1412,7 +1475,7 @@ describe('devReverseProxy defaults from rootDomain', () => {
     const cfg = defineConfig({
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
-      packages: { web: { port: 3000, subdomain: 'web' } },
+      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
     expect(cfg.devReverseProxy).toMatchObject({ urlScheme: 'https' });
     expect(cfg.devReverseProxy).not.toHaveProperty('urlPort');
@@ -1423,7 +1486,7 @@ describe('devReverseProxy defaults from rootDomain', () => {
     const plainTerminator = defineConfig({
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test', urlScheme: 'http' },
-      packages: { web: { port: 3000, subdomain: 'web' } },
+      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
     expect(plainTerminator.packages.web.publicOrigin).toBe(
       'http://web.myproject.example.test:4000',
@@ -1431,7 +1494,7 @@ describe('devReverseProxy defaults from rootDomain', () => {
     const tlsOnLocalhost = defineConfig({
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000, urlScheme: 'https' },
-      packages: { web: { port: 3000, subdomain: 'web' } },
+      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
     expect(tlsOnLocalhost.packages.web.publicOrigin).toBe('https://web.localhost');
   });
@@ -1456,7 +1519,11 @@ describe('path urls', () => {
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
       packages: {
-        api: { port: 3001, subdomain: 'api', urls: ['/todos', [{ label: 'a', url: '/a' }, '/b']] },
+        api: {
+          port: 3001,
+          proxy: { subdomain: 'api' },
+          urls: ['/todos', [{ label: 'a', url: '/a' }, '/b']],
+        },
       },
     });
     expect(cfg.packages.api.urls).toEqual([
@@ -1489,7 +1556,9 @@ describe('path urls', () => {
     const cfg = defineConfig({
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000 },
-      packages: { api: { port: 3001, subdomain: 'api', urls: ['https://status.example.test'] } },
+      packages: {
+        api: { port: 3001, proxy: { subdomain: 'api' }, urls: ['https://status.example.test'] },
+      },
     });
     expect(cfg.packages.api.urls).toEqual(['https://status.example.test']);
   });
@@ -1527,7 +1596,9 @@ describe('path healthchecks', () => {
     const cfg = defineConfig({
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
-      packages: { api: { port: 3001, subdomain: 'api', healthcheck: '/health', urls: ['/todos'] } },
+      packages: {
+        api: { port: 3001, proxy: { subdomain: 'api' }, healthcheck: '/health', urls: ['/todos'] },
+      },
     });
     expect(cfg.packages.api.healthcheck?.url).toBe('http://localhost:3001/health');
     expect(cfg.packages.api.urls).toContain('https://api.myproject.example.test/todos');
@@ -1555,7 +1626,11 @@ describe('paths without a leading slash', () => {
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
       packages: {
-        api: { port: 3001, subdomain: 'api', urls: ['todos', { label: 'x', url: 'a/b?c=1' }] },
+        api: {
+          port: 3001,
+          proxy: { subdomain: 'api' },
+          urls: ['todos', { label: 'x', url: 'a/b?c=1' }],
+        },
         worker: { port: 3002, urls: ['metrics'] },
       },
     });
@@ -1571,7 +1646,7 @@ describe('paths without a leading slash', () => {
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
       packages: {
-        api: { port: 3001, subdomain: 'api', urls: [''], healthcheck: '' },
+        api: { port: 3001, proxy: { subdomain: 'api' }, urls: [''], healthcheck: '' },
         worker: { port: 3002, urls: [{ label: 'root', url: '' }] },
       },
     });
@@ -1607,7 +1682,11 @@ describe('paths with a trailing slash', () => {
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
       packages: {
-        api: { port: 3001, subdomain: 'api', urls: ['/todos/', { label: 'x', url: 'a/b/' }] },
+        api: {
+          port: 3001,
+          proxy: { subdomain: 'api' },
+          urls: ['/todos/', { label: 'x', url: 'a/b/' }],
+        },
         worker: { port: 3002, urls: ['/metrics/', ['jobs/', '/queues//']] },
       },
     });
@@ -1626,7 +1705,7 @@ describe('paths with a trailing slash', () => {
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
       packages: {
-        api: { port: 3001, subdomain: 'api', urls: ['/'] },
+        api: { port: 3001, proxy: { subdomain: 'api' }, urls: ['/'] },
         worker: { port: 3002, urls: ['/', '//'] },
       },
     });
@@ -1799,6 +1878,214 @@ describe('infra', () => {
     expect(() =>
       withInfra({ 'docker-compose': { services: { tracing: { enabled: 'yes' } } } }),
     ).toThrow(/enabled/);
+  });
+});
+
+// An infra service's `port` and `proxy`: on the service type every provider shares, resolved over
+// the workspace context, and checked against the packages and the dev reverse proxy.
+describe('infra service port and proxy', () => {
+  let ws: string;
+  beforeEach(() => {
+    ws = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-infra-proxy-'));
+  });
+  afterEach(() => fs.rmSync(ws, { recursive: true, force: true }));
+
+  type Services = NonNullable<
+    Exclude<NonNullable<RootedOpts['infra']>['docker-compose'], true | undefined>['services']
+  >;
+  const withServices = (
+    services: Services,
+    opts: Partial<Pick<RootedOpts, 'devReverseProxy' | 'packages'>> = {},
+  ) =>
+    defineConfig({
+      workspaceDir: ws,
+      packageRootDir: 'packages',
+      devReverseProxy: opts.devReverseProxy,
+      infra: { 'docker-compose': { services } },
+      packages: opts.packages ?? { web: { port: 3000, proxy: { subdomain: 'web' } } },
+    });
+  const proxied = { devReverseProxy: { port: 4000, rootDomain: 'example.test' } };
+
+  test('resolves a literal port, a port callback over envs and tokens, and the proxy', () => {
+    fs.writeFileSync(path.join(ws, '.env.development'), 'MAIL_UI_PORT=8025\n');
+    const seen: unknown[] = [];
+    const cfg = defineConfig({
+      workspaceDir: ws,
+      packageRootDir: 'packages',
+      tokens: { tld: 'test' },
+      devReverseProxy: { port: 4000, rootDomain: 'example.test' },
+      infra: {
+        'docker-compose': {
+          services: {
+            mail: {
+              port: ({ envs, tokens }) => {
+                seen.push(tokens.tld);
+                return Number(envs.MAIL_UI_PORT);
+              },
+              proxy: { subdomain: true },
+            },
+            store: { port: 9000, proxy: { subdomain: ['s3', 'files'] } },
+            db: { port: 5432 },
+          },
+        },
+      },
+      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
+    });
+    const services = cfg.infra!['docker-compose']!.services;
+    expect(seen).toEqual(['test']);
+    expect(services.mail).toMatchObject({
+      enabled: true,
+      port: 8025,
+      proxy: { subdomain: 'mail' },
+      publicOrigin: 'https://mail.example.test',
+    });
+    // The canonical subdomain is the first; aliases route but don't make the origin.
+    expect(services.store).toMatchObject({ port: 9000, publicOrigin: 'https://s3.example.test' });
+    expect(services.db).toMatchObject({ port: 5432, publicOrigin: undefined });
+    // What show-config prints and outside tooling reads.
+    expect(JSON.parse(JSON.stringify(cfg)).infra['docker-compose'].services.mail).toEqual({
+      enabled: true,
+      port: 8025,
+      proxy: { subdomain: 'mail' },
+      publicOrigin: 'https://mail.example.test',
+    });
+  });
+
+  test('has no public origin without a devReverseProxy, but keeps port and proxy as data', () => {
+    const mail = withServices({ mail: { port: 8025, proxy: { subdomain: 'mail' } } }).infra![
+      'docker-compose'
+    ]!.services.mail!;
+    expect(mail).toMatchObject({ port: 8025, proxy: { subdomain: 'mail' }, publicOrigin: undefined }); // prettier-ignore
+  });
+
+  test('uses the proxy port in the public origin under http', () => {
+    const cfg = withServices(
+      { mail: { port: 8025, proxy: { subdomain: 'mail' } } },
+      { devReverseProxy: { port: 4000 } },
+    );
+    expect(cfg.infra!['docker-compose']!.services.mail!.publicOrigin).toBe(
+      'http://mail.localhost:4000',
+    );
+  });
+
+  test("a service switched off for the mode gets no public origin, and its port callback doesn't run", () => {
+    let calls = 0;
+    const cfg = withServices(
+      {
+        mail: {
+          enabled: false,
+          port: () => {
+            calls += 1;
+            return Number(undefined);
+          },
+          proxy: { subdomain: 'mail' },
+        },
+      },
+      proxied,
+    );
+    expect(calls).toBe(0);
+    expect(cfg.infra!['docker-compose']!.services.mail).toMatchObject({
+      enabled: false,
+      port: undefined,
+      proxy: { subdomain: 'mail' },
+      publicOrigin: undefined,
+    });
+  });
+
+  test('rejects a port callback returning NaN, naming the service and the env files loaded', () => {
+    expect(() =>
+      withServices({ mail: { port: () => Number(undefined), proxy: { subdomain: 'mail' } } }),
+    ).toThrow(/infra service "mail": port callback returned NaN[\s\S]*env files/);
+  });
+
+  test('rejects a proxy with no port, naming the service — enabled or not, proxy block or not', () => {
+    expect(() => withServices({ mail: { proxy: { subdomain: 'mail' } } }, proxied)).toThrow(
+      /infra service "mail" declares `proxy` but no `port`/,
+    );
+    expect(() => withServices({ mail: { proxy: { subdomain: 'mail' } } })).toThrow(
+      /infra service "mail" declares `proxy` but no `port`/,
+    );
+    expect(() =>
+      withServices({ mail: { enabled: false, proxy: { subdomain: 'mail' } } }, proxied),
+    ).toThrow(/infra service "mail" declares `proxy` but no `port`/);
+    // A port callback that answers "no port" is the same mistake.
+    expect(() =>
+      withServices({ mail: { port: () => undefined, proxy: { subdomain: 'mail' } } }, proxied),
+    ).toThrow(/infra service "mail" declares subdomain "mail" but no `port`/);
+  });
+
+  test("rejects a service port equal to the proxy's, naming the service", () => {
+    expect(() =>
+      withServices({ mail: { port: 4000, proxy: { subdomain: 'mail' } } }, proxied),
+    ).toThrow(/devReverseProxy\.port 4000 is also infra service "mail"'s port/);
+  });
+
+  test("rejects a service port equal to a package's, naming both — with or without a proxy", () => {
+    for (const opts of [{}, proxied]) {
+      expect(() =>
+        withServices({ mail: { port: 3000, proxy: { subdomain: 'mail' } } }, opts),
+      ).toThrow(/infra service "mail" has port 3000, which is also the package web's/);
+    }
+    // A service with no proxy still claims its port on the host.
+    expect(() => withServices({ db: { port: 3000 } })).toThrow(
+      /infra service "db" has port 3000, which is also the package web's/,
+    );
+  });
+
+  test('rejects two services on one port, naming both', () => {
+    expect(() => withServices({ a: { port: 9000 }, b: { port: 9000 } })).toThrow(
+      /infra service "b" has port 9000, which is also infra service "a"'s/,
+    );
+  });
+
+  test('ignores a disabled service in the port checks: it claims no port', () => {
+    expect(
+      withServices({ mail: { enabled: false, port: 3000, proxy: { subdomain: 'mail' } } }, proxied)
+        .infra!['docker-compose']!.services.mail!.enabled,
+    ).toBe(false);
+  });
+
+  test('rejects a service subdomain or alias another package or service declares, naming both', () => {
+    expect(() => withServices({ mail: { port: 8025, proxy: { subdomain: 'web' } } })).toThrow(
+      /web and infra service "mail" both declare the subdomain "web"/,
+    );
+    expect(() =>
+      withServices({ mail: { port: 8025, proxy: { subdomain: ['mail', 'web'] } } }),
+    ).toThrow(/web and infra service "mail" both declare the subdomain "web"/);
+    expect(() =>
+      withServices({
+        mail: { port: 8025, proxy: { subdomain: 'mail' } },
+        store: { port: 9000, proxy: { subdomain: ['s3', 'mail'] } },
+      }),
+    ).toThrow(/infra service "mail" and infra service "store" both declare the subdomain "mail"/);
+    // `true` is the key, and collides like any other label — even for a disabled service.
+    expect(() =>
+      withServices({ web: { enabled: false, port: 8025, proxy: { subdomain: true } } }),
+    ).toThrow(/web and infra service "web" both declare the subdomain "web"/);
+  });
+
+  test('applies the DNS-label rules to a service subdomain, naming the field', () => {
+    expect(() => withServices({ mail: { port: 8025, proxy: { subdomain: 'Mail' } } })).toThrow(
+      /infra\.docker-compose\.services\.mail\.proxy\.subdomain: .*lowercase letters, digits, and hyphens/,
+    );
+    expect(() =>
+      withServices({ mail: { port: 8025, proxy: { subdomain: ['mail', 'a'.repeat(64)] } } }),
+    ).toThrow(/infra\.docker-compose\.services\.mail\.proxy\.subdomain\.1: .*at most 63/);
+  });
+
+  test("`true` on a service key that isn't a DNS label asks for an explicit subdomain", () => {
+    expect(() =>
+      withServices({ object_store: { port: 9000, proxy: { subdomain: true } } }),
+    ).toThrow(
+      /infra service "object_store": `subdomain: true` uses the service's key[\s\S]*explicit/,
+    );
+  });
+
+  test('rejects an unknown option in a service proxy block', () => {
+    expect(() =>
+      // @ts-expect-error `proxy` takes `subdomain` only
+      withServices({ mail: { port: 8025, proxy: { subdomain: 'mail', scheme: 'https' } } }),
+    ).toThrow(/infra\.docker-compose\.services\.mail\.proxy: Unrecognized key: "scheme"/);
   });
 });
 

@@ -70,6 +70,8 @@ cwd: example  git: main
   lines (type `infra` in the `f` filter to see only those).
 - The footer dots are a record of startup, not a monitor: nothing watches the containers
   afterwards.
+- A service the [dev reverse proxy routes](#reaching-a-service-through-the-dev-reverse-proxy)
+  also has its public URL in the footer's link column, under an `infra` heading.
 
 `--build`, `devtooie exec`, `run`, `show-config`, `logs` and the other subcommands never touch infra.
 
@@ -83,6 +85,8 @@ infra: {
     services: {                    // optional — keys are Compose service names
       db: {
         enabled: ({ mode }) => mode !== 'test',
+        port: ({ envs }) => Number(envs.DB_PORT), // optional: the host port, for `proxy`
+        proxy: { subdomain: 'db' },               // optional: route it through devReverseProxy
         afterDestroy: async (ctx) => {},
         beforeUp: async (ctx) => {},
         afterReady: async (ctx) => {},
@@ -96,7 +100,7 @@ infra: {
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `file`         | The compose file, relative to `workspaceDir`. Omit it and Compose discovers the file itself (`compose.yaml`, `docker-compose.yaml`, plus any override file).                                                                                                          |
 | `readyTimeout` | How long `up` waits for the services to become ready, in ms. Default: 5 minutes.                                                                                                                                                                                      |
-| `services`     | Per-service options, keyed by Compose service name: [`enabled`](#turning-a-service-off) and the [callbacks](#callbacks). A service doesn't have to be listed to run. A key that isn't a service in the compose file is an error, reported before anything is started. |
+| `services`     | Per-service options, keyed by Compose service name: [`enabled`](#turning-a-service-off), [`port` and `proxy`](#reaching-a-service-through-the-dev-reverse-proxy), and the [callbacks](#callbacks). A service doesn't have to be listed to run. A key that isn't a service in the compose file is an error, reported before anything is started. |
 
 **Which services run:** all the services Compose reports for the file — minus any you
 [turn off](#turning-a-service-off) — or the ones you name on the command line.
@@ -152,6 +156,43 @@ Two things `enabled` doesn't do:
 Compose's own [profiles](https://docs.docker.com/compose/how-tos/profiles/) are the other way
 to do this — `COMPOSE_PROFILES=…` in a mode's `.env` file — and they do hide a service from
 Compose entirely.
+
+## Reaching a service through the dev reverse proxy
+
+A service a browser has to reach — an S3-compatible object store, a mail catcher's web UI —
+can be routed by the [dev reverse proxy](./dev-reverse-proxy.md) at `<subdomain>.<rootDomain>`,
+like a package. Give it a `port` and a `proxy`:
+
+```ts
+services: {
+  // signed GET URLs and presigned POST forms cover the Host header, which the proxy keeps
+  store: { port: ({ envs }) => Number(envs.STORE_PORT), proxy: { subdomain: 's3' } },
+  mail: { port: 21054, proxy: { subdomain: true } }, // true: the service's key, `mail`
+}
+```
+
+- **`port`** is the port the service answers on at `localhost` — the host side of its port
+  mapping. devtooie doesn't read it from the compose file. A literal, or a callback over the
+  workspace context `{ envs, tokens }`, resolved once at load like a package's `port`; it isn't
+  resolved for a disabled service. It equals no package's port, no other service's, and not the
+  proxy's.
+- **`proxy`** is the same block a package takes — `subdomain` is a label, an array of them (the
+  first canonical, the rest aliases), or `true` for the service's key — and requires `port`.
+  Its subdomains are unique across packages and services. See
+  [`proxy`](./dev-reverse-proxy.md#proxy).
+
+These are options of the service, not of the provider, so they mean the same for every
+provider. A disabled service is not routed. Until a session's infra step has finished, its
+hostnames answer 503 `starting`; after it they are forwarded, and a refused or reset connection
+gets a 502 naming the service and its port. Only a session runs the proxy — `infra up` doesn't.
+
+The resolved `port`, `proxy` and `publicOrigin` are on the exported config, so `devtooie
+show-config` shows them:
+
+```sh
+devtooie show-config | jq '.infra["docker-compose"].services.mail'
+# { "enabled": true, "port": 21054, "proxy": { "subdomain": "mail" }, "publicOrigin": "http://mail.localhost:21050" }
+```
 
 ## Callbacks
 

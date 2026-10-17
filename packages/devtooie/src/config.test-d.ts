@@ -11,9 +11,9 @@
  * value form would *read* `port` and throw at load time by design.
  */
 import { describe, it, test, expectTypeOf } from 'vitest';
-import { defineConfig, type ResolvedDevReverseProxy } from './config.js';
+import { defineConfig, type PackageConfigInput, type ProxyInput, type ResolvedDevReverseProxy, type ResolvedProxy } from './config.js'; // prettier-ignore
 import type { PackageConfig } from './register.js';
-import type { InfraRunResult, ResolvedInfra } from './infra/types.js';
+import type { InfraRunResult, InfraServiceInput, ResolvedInfra, ResolvedInfraService } from './infra/types.js'; // prettier-ignore
 import type { Envs, Mode } from './env.js';
 
 describe('per-package tokens', () => {
@@ -240,19 +240,38 @@ describe('key narrowing survives a config of nothing but callbacks', () => {
   });
 });
 
-describe('subdomain', () => {
+describe('proxy', () => {
   test('is typed on the resolved package, and on `PackageConfig<name>`', () => {
     const config = defineConfig({
       packageRootDir: 'packages',
-      packages: { api: { subdomain: 'api' }, web: { subdomain: ['web', 'www'] }, lib: {} },
+      packages: {
+        api: { proxy: { subdomain: 'api' } },
+        web: { proxy: { subdomain: ['web', 'www'] } },
+        lib: {},
+      },
     });
-    expectTypeOf(config.packages.api.subdomain).toEqualTypeOf<string | string[] | undefined>();
-    expectTypeOf(config.packages.web.subdomain).toEqualTypeOf<string | string[] | undefined>();
-    expectTypeOf(config.packages.lib.subdomain).toEqualTypeOf<string | string[] | undefined>();
+    expectTypeOf(config.packages.api.proxy).toEqualTypeOf<ResolvedProxy | undefined>();
+    expectTypeOf(config.packages.web.proxy).toEqualTypeOf<ResolvedProxy | undefined>();
+    expectTypeOf(config.packages.lib.proxy).toEqualTypeOf<ResolvedProxy | undefined>();
+    expectTypeOf<ResolvedProxy['subdomain']>().toEqualTypeOf<string | string[]>();
     // Unaugmented, `PackageConfig<'api'>` is the generic resolved package — the field is there.
-    expectTypeOf<PackageConfig<'api'>['subdomain']>().toEqualTypeOf<
-      string | string[] | undefined
-    >();
+    expectTypeOf<PackageConfig<'api'>['proxy']>().toEqualTypeOf<ResolvedProxy | undefined>();
+  });
+
+  test('is one type, shared by packages and infra services', () => {
+    expectTypeOf<PackageConfigInput['proxy']>().toEqualTypeOf<ProxyInput | undefined>();
+    expectTypeOf<InfraServiceInput['proxy']>().toEqualTypeOf<ProxyInput | undefined>();
+    expectTypeOf<ProxyInput['subdomain']>().toEqualTypeOf<true | string | string[]>();
+  });
+
+  test('a package has no top-level subdomain: it goes under proxy', () => {
+    // Typed `never`, so any value is rejected for this field — and only for this field.
+    expectTypeOf<PackageConfigInput['subdomain']>().toEqualTypeOf<undefined>();
+    defineConfig({
+      packageRootDir: 'packages',
+      // @ts-expect-error a package's subdomain goes under `proxy`
+      packages: { api: { subdomain: 'api' } },
+    });
   });
 
   test('hands the canonical subdomain to a package callback, but not to workspace-wide urls', () => {
@@ -266,7 +285,7 @@ describe('subdomain', () => {
       ],
       packages: {
         api: {
-          subdomain: ['api', 'api-legacy'],
+          proxy: { subdomain: ['api', 'api-legacy'] },
           healthcheck: (ctx) => {
             expectTypeOf(ctx.subdomain).toEqualTypeOf<string | undefined>();
             return `https://${ctx.subdomain}.example.test/health`;
@@ -283,7 +302,7 @@ describe('subdomain', () => {
             return 3000;
           },
         },
-        // no `subdomain` declared: unlike `port`, the value really is `undefined` (no throwing
+        // no `proxy` declared: unlike `port`, the value really is `undefined` (no throwing
         // getter), so the optional type is honest and the value form is safe to read
         bare: {
           healthcheck: (ctx) => {
@@ -294,6 +313,52 @@ describe('subdomain', () => {
           },
         },
       },
+    });
+  });
+});
+
+describe('infra service port and proxy', () => {
+  test('a port callback gets the workspace context; both resolve on the service', () => {
+    const config = defineConfig({
+      packageRootDir: 'packages',
+      tokens: { tld: 'test' },
+      infra: {
+        'docker-compose': {
+          services: {
+            mail: {
+              port: (ctx) => {
+                expectTypeOf(ctx.envs).toEqualTypeOf<Envs>();
+                expectTypeOf(ctx.tokens.tld).toEqualTypeOf<'test'>();
+                // a service is no package: no port of its own to read, no subdomain handed in
+                expectTypeOf(ctx).not.toHaveProperty('port');
+                expectTypeOf(ctx).not.toHaveProperty('subdomain');
+                return Number(ctx.envs.MAIL_UI_PORT);
+              },
+              proxy: { subdomain: true },
+            },
+            store: { port: 9000, proxy: { subdomain: ['s3', 'files'] } },
+          },
+        },
+      },
+      packages: { web: {} },
+    });
+    const service = config.infra!['docker-compose']!.services.mail!;
+    expectTypeOf(service.port).toEqualTypeOf<number | undefined>();
+    expectTypeOf(service.proxy).toEqualTypeOf<ResolvedProxy | undefined>();
+    expectTypeOf(service.publicOrigin).toEqualTypeOf<string | undefined>();
+    expectTypeOf<ResolvedInfraService['port']>().toEqualTypeOf<number | undefined>();
+  });
+
+  test('rejects an unknown proxy option', () => {
+    defineConfig({
+      packageRootDir: 'packages',
+      infra: {
+        'docker-compose': {
+          // @ts-expect-error `proxy` takes `subdomain` only
+          services: { mail: { port: 8025, proxy: { subdomain: 'mail', path: '/ui' } } },
+        },
+      },
+      packages: { web: {} },
     });
   });
 });
@@ -315,7 +380,7 @@ describe('devReverseProxy', () => {
         defaultPackage: 'web',
         urlScheme: 'http',
       },
-      packages: { web: { port: 3000, subdomain: 'web' } },
+      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
     type Opts = Parameters<
       typeof defineConfig<Record<never, never>, { web: unknown; api: unknown }, 'web' | 'api'>
@@ -329,7 +394,7 @@ describe('devReverseProxy', () => {
     const config = defineConfig({
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'example.test' },
-      packages: { web: { port: 3000, subdomain: 'web' } },
+      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
     expectTypeOf(config.devReverseProxy).toEqualTypeOf<ResolvedDevReverseProxy | undefined>();
     expectTypeOf(config.devReverseProxy!.port).toEqualTypeOf<number>();
@@ -345,7 +410,7 @@ describe('devReverseProxy rootDomain', () => {
     const config = defineConfig({
       packageRootDir: 'packages',
       devReverseProxy: { port: 4000 },
-      packages: { web: { port: 3000, subdomain: 'web' } },
+      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
     expectTypeOf(config.devReverseProxy!.rootDomain).toEqualTypeOf<string>();
   });
@@ -432,10 +497,10 @@ describe('shorthands', () => {
     const config = defineConfig({
       packageRootDir: 'packages',
       infra: { 'docker-compose': true },
-      packages: { web: { subdomain: true } },
+      packages: { web: { proxy: { subdomain: true } } },
     });
     // `true` never survives resolution: readers of the config get the label itself.
-    expectTypeOf(config.packages.web.subdomain).toEqualTypeOf<string | string[] | undefined>();
+    expectTypeOf(config.packages.web.proxy!.subdomain).toEqualTypeOf<string | string[]>();
     expectTypeOf(config.infra).toEqualTypeOf<ResolvedInfra | undefined>();
   });
 });

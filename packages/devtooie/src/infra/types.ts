@@ -1,4 +1,4 @@
-import type { TokenRecord } from '../config.js';
+import type { PortResolver, ProxyInput, ResolvedProxy, TokenRecord } from '../config.js';
 import type { Envs, Mode } from '../env.js';
 
 /** How long `infra up` waits for the services to become ready, when the config doesn't say. */
@@ -115,7 +115,10 @@ export interface InfraEnabledContext<T = TokenRecord> {
   tokens: T;
 }
 
-/** What a service can be given under `services`: its callbacks, and whether it runs at all. */
+/**
+ * What a service can be given under `services`: its callbacks, whether it runs at all, and how
+ * the dev reverse proxy reaches it. Shared by every provider.
+ */
 export interface InfraServiceInput<T = TokenRecord> extends InfraServiceCallbacks<T> {
   /**
    * Whether devtooie runs this service (default `true`). A literal, or a callback over the mode
@@ -124,11 +127,35 @@ export interface InfraServiceInput<T = TokenRecord> extends InfraServiceCallback
    * run. (Compose still starts it if an enabled service `depends_on` it.)
    */
   enabled?: boolean | ((ctx: InfraEnabledContext<T>) => boolean);
+  /**
+   * The port the service answers on at `localhost` — the host side of its port mapping, which
+   * devtooie doesn't read from the provider's own file. A literal, or a callback over the
+   * workspace context `{ envs, tokens }` resolved once at load, like a package's `port`:
+   * `port: ({ envs }) => Number(envs.MAIL_UI_PORT)`. Required with `proxy`. Not resolved for a
+   * disabled service. It must differ from every package's port and from the dev reverse
+   * proxy's.
+   */
+  port?: number | PortResolver<T>;
+  /**
+   * Route `<subdomain>.<rootDomain>` to this service's `port` through the dev reverse proxy,
+   * as for a package. `subdomain: true` is the service's key. Needs `port`. See {@link ProxyInput}.
+   */
+  proxy?: ProxyInput;
 }
 
-/** A service's config, resolved: `enabled` decided, the callbacks as written. */
+/** A service's config, resolved: `enabled` decided, `port` and `proxy` settled, the callbacks as written. */
 export interface ResolvedInfraService extends InfraServiceCallbacks {
   enabled: boolean;
+  /** The service's port on `localhost`, with any callback resolved; never set for a disabled service. */
+  port?: number;
+  /** How the dev reverse proxy routes to the service, `subdomain: true` already replaced by its key. */
+  proxy?: ResolvedProxy;
+  /**
+   * The service's public origin under the dev reverse proxy —
+   * `<urlScheme>://<canonical subdomain>.<rootDomain>[:<port>]` — or `undefined` when the config
+   * has no `devReverseProxy`, the service declares no `proxy`, or it is disabled.
+   */
+  publicOrigin?: string;
 }
 
 /** The `docker-compose` provider's options. `{}` — or `true` in its place — is a complete config. */
@@ -160,8 +187,8 @@ export interface ResolvedDockerComposeInfra {
   projectName: string;
   readyTimeout: number;
   /**
-   * The services the config names, with `enabled` resolved and the callbacks as written.
-   * Functions have no JSON form, so serializing one leaves `{ enabled }`.
+   * The services the config names, with `enabled`, `port` and `proxy` resolved and the callbacks
+   * as written. Functions have no JSON form, so serializing one leaves the rest.
    */
   services: Record<string, ResolvedInfraService>;
 }

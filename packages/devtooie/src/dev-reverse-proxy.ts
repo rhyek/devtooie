@@ -2,33 +2,49 @@ import http from 'node:http';
 import type net from 'node:net';
 import type { Duplex } from 'node:stream';
 import type { Config } from './config.js';
-import { proxyHostsFor } from './config.js';
+import { infraServicesOf, proxyHostsFor, serviceProxyHostsFor } from './config.js';
 
 /**
  * The built-in dev reverse proxy.
  *
  * A TLS terminator on the machine (Caddy, say — not devtooie's concern) forwards `*.<rootDomain>`
- * to one loopback port per project. This is that port: each request is routed by the first label
- * of its `Host` to the package declaring that `subdomain`, on the package's resolved `port`. Since
+ * to one loopback port per project. This is that port: each request is routed by its `Host` to the
+ * package or infra service whose `proxy` declares that subdomain, on its resolved `port`. Since
  * devtooie also knows every package's live status, the proxy can answer for a package that is
- * stopped or still starting instead of surfacing a bare connection error. No TLS, no path-based
- * routing, no auth.
+ * stopped or still starting instead of surfacing a bare connection error. An infra service has no
+ * live status: it is answered for as starting until the session's infra step has finished, and
+ * forwarded to from then on. No TLS, no path-based routing, no auth.
  *
  * Built like the control API server: created early (before any package starts) so the listener
  * is bound and the port conflict is settled up front, then `attach`ed to the process manager once
- * that exists. Until then every routable host answers 503 "starting".
+ * that exists. Until then every package host answers 503 "starting"; every service host does until
+ * `markInfraReady`.
  */
 
 /** One hostname the proxy routes, and where to. */
-export interface DevReverseProxyRoute {
+export type DevReverseProxyRoute = {
   /** The full hostname: `<subdomain>.<rootDomain>`, or the bare `rootDomain` for `defaultPackage`. */
   host: string;
-  /** The package this host routes to. */
-  package: string;
-  /** That package's resolved dev port, on loopback. */
+  /** The package's or service's resolved port, on loopback. */
   port: number;
-  /** Whether the package declares a `healthcheck` — if so, requests wait for it to pass. */
-  hasHealthcheck: boolean;
+} & (
+  | {
+      kind: 'package';
+      /** The package this host routes to. */
+      package: string;
+      /** Whether the package declares a `healthcheck` — if so, requests wait for it to pass. */
+      hasHealthcheck: boolean;
+    }
+  | {
+      kind: 'service';
+      /** The infra service this host routes to. */
+      service: string;
+    }
+);
+
+/** How a page names a route's target: `api`, `infra service mail`. */
+function describeTarget(route: DevReverseProxyRoute): string {
+  return route.kind === 'package' ? route.package : `infra service ${route.service}`;
 }
 
 /** What the proxy needs from the process manager. `ProcessManager` satisfies it structurally. */
@@ -50,6 +66,11 @@ export interface DevReverseProxyServer {
   routes: DevReverseProxyRoute[];
   /** Hands the proxy the live statuses; logs the route table on devtooie's own channel. */
   attach(manager: DevReverseProxyManager): void;
+  /**
+   * The session's infra step has finished: forward to the infra service routes from now on.
+   * Until it's called they answer 503 "starting", and drop websocket upgrades.
+   */
+  markInfraReady(): void;
   /** Stops listening and destroys every open socket, proxied websockets included. */
   close(): Promise<void>;
 }
@@ -76,17 +97,26 @@ const HOP_BY_HOP = new Set([
   'upgrade',
 ]);
 
-/** The route table for a config, one entry per hostname (`proxyHostsFor` order). */
+/**
+ * The route table for a config, one entry per hostname: the packages' (`proxyHostsFor` order),
+ * then the enabled infra services'.
+ */
 export function routesFromConfig(config: Config<string>): DevReverseProxyRoute[] {
   const routes: DevReverseProxyRoute[] = [];
   for (const pkg of Object.values(config.packages)) {
     for (const host of proxyHostsFor(config, pkg)) {
       routes.push({
+        kind: 'package',
         host,
         package: pkg.name,
         port: pkg.port!,
         hasHealthcheck: pkg.healthcheck !== undefined,
       });
+    }
+  }
+  for (const { name, service } of infraServicesOf(config)) {
+    for (const host of serviceProxyHostsFor(config, service)) {
+      routes.push({ kind: 'service', host, service: name, port: service.port! });
     }
   }
   return routes;
@@ -172,6 +202,7 @@ export async function startDevReverseProxy(opts: {
   const readyTimeoutMs = opts.readyTimeoutMs ?? READY_HOLD_MS;
   const byHost = new Map(routes.map((r) => [r.host, r]));
   let manager: DevReverseProxyManager | null = null;
+  let infraReady = false;
   /** Every socket we've seen, on either side, so `close()` can cut them all. */
   const sockets = new Set<Duplex>();
   const track = (socket: Duplex) => {
@@ -194,7 +225,7 @@ export async function startDevReverseProxy(opts: {
     const urls = routes.map((r) => publicUrl(r.host));
     sendProblem(req, res, {
       status: 404,
-      title: `No package is routed at ${host ?? '(no Host header)'}`,
+      title: `Nothing is routed at ${host ?? '(no Host header)'}`,
       detail: { host, routes: routes.map((r) => r.host), urls },
       paragraphs: [
         `The devtooie dev reverse proxy for <code>${escapeHtml(rootDomain)}</code> knows these hostnames:`,
@@ -212,7 +243,7 @@ export async function startDevReverseProxy(opts: {
   const unavailable = (
     req: http.IncomingMessage,
     res: http.ServerResponse,
-    route: DevReverseProxyRoute,
+    route: DevReverseProxyRoute & { kind: 'package' },
     status: string,
     managed: boolean,
   ) => {
@@ -239,6 +270,29 @@ export async function startDevReverseProxy(opts: {
     });
   };
 
+  /** The 503 for an infra service while the session is still bringing the infra up. */
+  const serviceStarting = (
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    route: DevReverseProxyRoute & { kind: 'service' },
+  ) => {
+    sendProblem(req, res, {
+      status: 503,
+      title: `${describeTarget(route)} is starting`,
+      detail: {
+        service: route.service,
+        status: 'starting',
+        host: route.host,
+        hint: 'devtooie is still bringing the infra up',
+      },
+      paragraphs: [
+        `<code>${escapeHtml(route.host)}</code> routes to the infra service <code>${escapeHtml(route.service)}</code>, which devtooie is still bringing up.`,
+        'This page refreshes on its own.',
+      ],
+      headers: { 'retry-after': '2', refresh: '2' },
+    });
+  };
+
   const badGateway = (
     req: http.IncomingMessage,
     res: http.ServerResponse,
@@ -250,23 +304,27 @@ export async function startDevReverseProxy(opts: {
       res.destroy();
       return;
     }
+    const target = route.kind === 'package' ? { package: route.package } : { service: route.service }; // prettier-ignore
     sendProblem(req, res, {
       status: 502,
-      title: `${route.package} is not answering on port ${String(route.port)}`,
-      detail: { package: route.package, port: route.port, code: err.code ?? null },
+      title: `${describeTarget(route)} is not answering on port ${String(route.port)}`,
+      detail: { ...target, port: route.port, code: err.code ?? null },
       paragraphs: [
-        `<code>${escapeHtml(route.host)}</code> routes to <code>${escapeHtml(route.package)}</code> on <code>localhost:${String(route.port)}</code>, ` +
-          `but the connection failed (<code>${escapeHtml(err.code ?? err.message)}</code>). It may still be starting, or listening on a different port than its config says.`,
+        `<code>${escapeHtml(route.host)}</code> routes to <code>${escapeHtml(describeTarget(route))}</code> on <code>localhost:${String(route.port)}</code>, ` +
+          `but the connection failed (<code>${escapeHtml(err.code ?? err.message)}</code>). ` +
+          (route.kind === 'package'
+            ? 'It may still be starting, or listening on a different port than its config says.'
+            : 'It may have stopped, or publish a different port than its config says.'),
       ],
       headers: { 'retry-after': '1', refresh: '1' },
     });
   };
 
   /**
-   * Where to dial a route: the package's port on `localhost`, trying both loopback families.
-   * A package may bind only one of them — Vite on a modern Node listens on `[::1]` alone —
-   * and a fixed `127.0.0.1` would be refused there while the package's own healthcheck (which
-   * dials `localhost` the same way) passes.
+   * Where to dial a route: the package's or service's port on `localhost`, trying both loopback
+   * families. A package may bind only one of them — Vite on a modern Node listens on `[::1]`
+   * alone — and a fixed `127.0.0.1` would be refused there while the package's own healthcheck
+   * (which dials `localhost` the same way) passes.
    */
   const upstreamAddress = (route: DevReverseProxyRoute) => ({
     host: 'localhost',
@@ -291,7 +349,11 @@ export async function startDevReverseProxy(opts: {
    * short poll, since a readiness flip on its own doesn't notify. Also gives up if the client
    * hangs up while waiting, so a held request can't outlive its socket.
    */
-  const waitUntilReady = (route: DevReverseProxyRoute, req: http.IncomingMessage) =>
+  const waitUntilReady = (
+    route: DevReverseProxyRoute & { kind: 'package' },
+    req: http.IncomingMessage,
+  ) =>
+    // prettier-ignore
     new Promise<boolean>((resolve) => {
       const check = (): boolean => {
         if (!manager) {
@@ -360,6 +422,11 @@ export async function startDevReverseProxy(opts: {
     if (!route) {
       return notFound(req, res, host);
     }
+    // A service has no live status to consult: once the infra step is done it is up (that step
+    // waits for it), and a service that went away since gets the 502 like any refused dial.
+    if (route.kind === 'service') {
+      return infraReady ? forward(req, res, route) : serviceStarting(req, res, route);
+    }
     if (!manager) {
       return unavailable(req, res, route, 'starting', true);
     }
@@ -397,10 +464,15 @@ export async function startDevReverseProxy(opts: {
     socket.on('error', () => socket.destroy());
     const host = hostnameOf(req.headers.host);
     const route = host === null ? undefined : byHost.get(host);
-    // Not routable right now (unknown host, no manager yet, or not `running`): just drop it —
-    // websocket clients such as Vite's HMR reconnect on their own, and a real answer will be
-    // there once the package is up.
-    if (!route || !manager || manager.getStatus(route.package) !== 'running') {
+    // Not routable right now (unknown host, infra or manager not there yet, or a package not
+    // `running`): just drop it — websocket clients such as Vite's HMR reconnect on their own,
+    // and a real answer will be there once the target is up.
+    const routable =
+      route !== undefined &&
+      (route.kind === 'service'
+        ? infraReady
+        : manager !== null && manager.getStatus(route.package) === 'running');
+    if (!route || !routable) {
       socket.destroy();
       return;
     }
@@ -471,13 +543,16 @@ export async function startDevReverseProxy(opts: {
       // One entry: the listener as the message, then a line per route (`<host>: <package> :<port>`),
       // which the log formatter indents beneath it — readable at any terminal width.
       const table = Object.fromEntries(
-        routes.map((r) => [r.host, `${r.package} :${String(r.port)}`]),
+        routes.map((r) => [r.host, `${describeTarget(r)} :${String(r.port)}`]),
       );
       m.systemLog.info(
         table,
         `dev reverse proxy listening on 127.0.0.1:${String(port)}` +
-          (routes.length ? '' : ' — no routable packages (none declares both `subdomain` and `port`)'), // prettier-ignore
+          (routes.length ? '' : ' — nothing to route (no package or infra service declares both `proxy` and `port`)'), // prettier-ignore
       );
+    },
+    markInfraReady() {
+      infraReady = true;
     },
     close() {
       return new Promise<void>((resolve) => {

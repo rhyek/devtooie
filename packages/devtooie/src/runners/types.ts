@@ -11,8 +11,11 @@ export interface InfraLogLine {
 
 /** What a session's infra step hands the run phase. */
 export interface SessionInfra {
-  /** The services brought up, for the footer. */
-  services: { provider: string; name: string }[];
+  /**
+   * The services brought up, for the footer — each with its public origin when the dev reverse
+   * proxy routes it.
+   */
+  services: { provider: string; name: string; publicOrigin?: string }[];
   /** Everything infra printed on the way up, written at the top of the session log. */
   log: InfraLogLine[];
 }

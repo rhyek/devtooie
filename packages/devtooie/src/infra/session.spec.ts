@@ -60,6 +60,20 @@ describe('runSessionInfra', () => {
     expect(seen).toContain('targets');
   });
 
+  test("carries a routed service's public origin, for the footer", async () => {
+    defineConfig({
+      workspaceDir: ws,
+      packageRootDir: 'packages',
+      devReverseProxy: { port: 4000, rootDomain: 'example.test' },
+      infra: { 'docker-compose': { services: { db: { port: 5432, proxy: { subdomain: 'db' } } } } },
+      packages: { web: {} },
+    });
+    const infra = await runSessionInfra(undefined, { exec: docker({ State: 'running' }) });
+    expect(infra?.services).toEqual([
+      { provider: 'docker-compose', name: 'db', publicOrigin: 'https://db.example.test' },
+    ]);
+  });
+
   test('throws when a service does not come up, naming it and why', async () => {
     defineConfig({
       workspaceDir: ws,

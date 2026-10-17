@@ -12,7 +12,8 @@
 - **Everything devtooie starts gets `DEVTOOIE_CWD` and `DEVTOOIE_WORKSPACE_DIR`**: where devtooie was invoked, and the workspace root. See [Variables devtooie sets](README.md#variables-devtooie-sets).
 - **New `devtooie show-config` prints the fully resolved config as JSON**, no session needed — including each package's public origin under the dev reverse proxy. See [docs/cli.md](docs/cli.md#devtooie-show-config).
 - **A `urls` entry or `healthcheck` can be a path** like `'/todos'` (or `''` for the origin itself): a link is based on the package's public origin under the dev reverse proxy, else on `http://localhost:<port>`; a healthcheck always on `http://localhost:<port>`. See [docs/configuration.md](docs/configuration.md).
-- **Packages can declare a `subdomain` again**, exposed on the resolved config and handed to the package's callbacks. See [docs/configuration.md](docs/configuration.md#callbacks-instead-of-interpolation).
+- **Packages can declare a subdomain under `proxy: { subdomain }`**, exposed on the resolved config and handed to the package's callbacks. See [docs/configuration.md](docs/configuration.md#callbacks-instead-of-interpolation).
+- **The dev reverse proxy routes infra services too** — an object store, a mail catcher's web UI — given a `port` and a `proxy`. See [docs/infra.md](docs/infra.md#reaching-a-service-through-the-dev-reverse-proxy).
 - **Log lines carry a timestamp by default — just the time while everything on screen is from the same day**, the full date once two days are visible together. Set `logs.timestamps: false` to hide them. See [docs/logging.md](docs/logging.md#timestamps).
 - **Each running package uses roughly 75 MB less memory and starts faster**, with no package-manager process kept alongside it. See [How a script is run](README.md#how-a-script-is-run).
 - **`devtooie exec`, `run`, `logs` and the other subcommands start in half the time or less, and a session uses about 70 MB less memory.**
@@ -28,6 +29,7 @@
 
 ### Breaking changes
 
+- **A package's `subdomain` goes under `proxy`** — change `subdomain: 'api'` to `proxy: { subdomain: 'api' }`; a top-level `subdomain` is an error.
 - **A `PORT` or `PUBLIC_ORIGIN` in a workspace-level `.env` file no longer overrides a package's own** — set it in that package's `.env` file instead.
 - **`relativeDir` is required unless the config sets `packageRootDir`** — the implicit `packages/<key>` default is gone; add `packageRootDir: 'packages'` to keep it.
 - **The resolved package's `path` is now `absoluteDir`**, next to `relativeDir`.

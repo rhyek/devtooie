@@ -76,14 +76,16 @@ as `config` on [`GET /query/status`](./control-api.md) — **without a session**
 defaults are applied, `command` is normalized, and every package carries its `relativeDir`
 (as written, or inferred from `packageRootDir`) and `absoluteDir`, its resolved `port`,
 `urls`, `healthcheck`, and — under the [dev reverse proxy](./dev-reverse-proxy.md) — its
-`publicOrigin` (`<urlScheme>://<subdomain>.<rootDomain>[:<port>]`). The `devReverseProxy` block
-itself, port included, is there too.
+`publicOrigin` (`<urlScheme>://<subdomain>.<rootDomain>[:<port>]`). Each infra service the config
+names carries its `enabled`, its resolved `port`, its `proxy`, and its `publicOrigin` the same
+way. The `devReverseProxy` block itself, port included, is there too.
 
 ```bash
 devtooie show-config                          # the whole resolved config
 devtooie show-config --mode test              # resolved against that mode's .env files
 devtooie show-config | jq '.packages.api.publicOrigin'
 devtooie show-config | jq '.packages | map_values(.port)'
+devtooie show-config | jq '.infra["docker-compose"].services | map_values(.publicOrigin)'
 ```
 
 `--mode` selects the `.env.<mode>` files the config resolves against, exactly as for a session or

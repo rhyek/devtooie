@@ -1,6 +1,7 @@
 import http from 'node:http';
 
 import { startedByAgent } from './agent-detection.js';
+import type { DevReverseProxyServer } from './dev-reverse-proxy.js';
 
 export interface ControlManager {
   getAllStatuses(): unknown;
@@ -34,11 +35,7 @@ export async function startCommandServer(opts: {
    * The session's dev reverse proxy, if the config declares one — surfaced on `/query/status`
    * so a client can learn the public hostnames without parsing the config.
    */
-  devReverseProxy?: {
-    port: number;
-    rootDomain: string;
-    routes: { host: string; package: string; port: number }[];
-  } | null;
+  devReverseProxy?: Pick<DevReverseProxyServer, 'port' | 'rootDomain' | 'routes'> | null;
 }): Promise<{
   attach(m: ControlManager): void;
   /**
@@ -101,11 +98,12 @@ export async function startCommandServer(opts: {
           ? {
               port: opts.devReverseProxy.port,
               rootDomain: opts.devReverseProxy.rootDomain,
-              routes: opts.devReverseProxy.routes.map(({ host, package: pkg, port }) => ({
-                host,
-                package: pkg,
-                port,
-              })),
+              // A package route names its `package`, an infra service route its `service`.
+              routes: opts.devReverseProxy.routes.map((route) =>
+                route.kind === 'package'
+                  ? { host: route.host, package: route.package, port: route.port }
+                  : { host: route.host, service: route.service, port: route.port },
+              ),
             }
           : null,
       });

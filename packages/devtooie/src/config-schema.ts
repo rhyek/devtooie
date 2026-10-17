@@ -87,6 +87,24 @@ export const SubdomainLabelSchema = z
     'a subdomain is a DNS label: lowercase letters, digits, and hyphens, not starting or ending with a hyphen',
   );
 
+// The `proxy` block packages and infra services share: how a reverse proxy routes to the thing
+// declaring it. Strict, so a misspelled option fails at load. `subdomain` is required — it is the
+// block's only option, and `proxy: {}` would route nothing. `true` is shorthand for the declaring
+// package's or service's own key; `defineConfig` replaces it with that string (checking it is a
+// label) before anything else reads the field.
+export const ProxySchema = z.strictObject({
+  subdomain: z.union([z.literal(true), SubdomainLabelSchema, z.array(SubdomainLabelSchema).min(1)]),
+});
+
+// A `port`: a literal, or a callback `defineConfig` resolves to a number before anything
+// downstream sees it. Overridden in config.ts (`z.custom` erases the callback to `any`).
+const PortSchema = z.union([
+  z.number(),
+  z.custom<PortResolver>((v) => typeof v === 'function', {
+    message: 'port must be a number or a function',
+  }),
+]);
+
 // All per-package config is flat (no `run` nesting). The package's *name* is the key it's
 // declared under in `packages` (injected by `defineConfig` after parsing), so it isn't a field
 // here; the rest describe how to run/select/link it (omit them all for a build-only lib).
@@ -105,28 +123,21 @@ export const PackageConfigSchema = z.object({
     .describe(
       "Color for this package's log-prefix label, overriding the auto-assigned palette color. Any Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`), `'rgb(175,135,255)'`, or `'ansi256(140)'`.",
     ),
-  // `true` is shorthand for the package's own name; `defineConfig` replaces it with that string
-  // (checking it is a label) before anything else reads the field.
+  // Overridden in config.ts (the shared `ProxyInput`); documented there.
+  proxy: ProxySchema.optional(),
+  // A package's subdomain lives under `proxy`. Named here only so a config that sets it at the
+  // top level fails with directions, rather than having it stripped and the package silently
+  // unrouted. Omitted from the public input type in config.ts.
   subdomain: z
-    .union([z.literal(true), SubdomainLabelSchema, z.array(SubdomainLabelSchema)])
-    .optional()
-    .describe(
-      "The package's dev subdomain(s): a label, an array of them, or `true` for the package's own name (its key). With a top-level `devReverseProxy`, devtooie routes `<subdomain>.<rootDomain>` to this package's `port`; without one it is data for tooling that reads the exported config (a reverse proxy of your own, say). Each entry is a DNS label — lowercase letters, digits, and hyphens — that no other package declares. An array's first entry is the canonical subdomain, handed to this package's callbacks as `subdomain`; the rest are aliases that route too.",
-    ),
+    .undefined({ error: "a package's subdomain goes under `proxy` — `proxy: { subdomain: … }`" })
+    .optional(),
   // Overridden in config.ts (pinned to the keys the package declares); documented there.
   // Must be parsed, not stripped — it's what a callback's `tokens` is built from.
   tokens: z.record(z.string(), z.string().optional()).optional(),
   // Overridden in config.ts (a callback Zod can't usefully type — `z.custom` erases to `any`);
   // documented there. `defineConfig` resolves a callback to a number before anything downstream
   // sees it, so the *resolved* type is still `number | undefined`.
-  port: z
-    .union([
-      z.number(),
-      z.custom<PortResolver>((v) => typeof v === 'function', {
-        message: 'port must be a number or a function',
-      }),
-    ])
-    .optional(),
+  port: PortSchema.optional(),
   // Overridden in config.ts (transform → `any`); documented there.
   command: CommandSchema,
   autostart: z
@@ -223,6 +234,11 @@ export const InfraServiceSchema = z.strictObject({
       }),
     ])
     .optional(),
+  // The service's port on the host, and how a reverse proxy routes to it. Both overridden in
+  // config.ts (the port callback erases to `any`; `proxy` is the shared `ProxyInput`) and
+  // documented in infra/types.ts. Here, not on a provider's options, so every provider has them.
+  port: PortSchema.optional(),
+  proxy: ProxySchema.optional(),
   afterDestroy: infraCallback('afterDestroy'),
   beforeUp: infraCallback('beforeUp'),
   afterReady: infraCallback('afterReady'),

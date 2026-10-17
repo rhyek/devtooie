@@ -98,6 +98,8 @@ export async function runDevSession(opts: RootOptions): Promise<void> {
       const deps = resolveDeps(packages);
       await buildDeps(deps);
       const infra = await runPlainInfraOrExit();
+      // The services are ready: the proxy forwards to them from here on.
+      devReverseProxy?.markInfraReady();
       await runPlain(
         { ...buildRunnerArgs(packages, deps), logFile, infra },
         server,
