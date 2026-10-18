@@ -459,13 +459,18 @@ export interface DevReverseProxyInput<Top = TokenRecord, N extends string = stri
    * one whose `proxy` declares that subdomain. Defaults to `localhost`, which browsers resolve to loopback with nothing
    * in front. A lowercase hostname, literal or a callback over `{ envs, tokens }`:
    * `rootDomain: ({ envs }) => \`myproject.${envs.LOCALDEV_DOMAIN}\``.
+   *
+   * An array (or a callback returning one) adds aliases: the first entry is the canonical root,
+   * the one every derived URL uses (`PUBLIC_ORIGIN`, footer links, the `urlScheme` default); a
+   * Host under any other entry routes exactly as under the canonical one. No two entries may be
+   * equal, and none may be a suffix of another.
    */
-  rootDomain?: string | ((ctx: ConfigContext<Top>) => string);
+  rootDomain?: string | string[] | ((ctx: ConfigContext<Top>) => string | string[]);
   /** The package the bare `rootDomain` routes to. Must declare a `port`. Omit for a 404 there. */
   defaultPackage?: NoInfer<N>;
   /**
    * Scheme of the public URLs devtooie derives (footer links, `PUBLIC_ORIGIN`). Defaults from
-   * `rootDomain`: `http` on `localhost`, `https` on any other root. `http` means the browser
+   * the canonical `rootDomain`: `http` on `localhost`, `https` on any other root. `http` means the browser
    * hits the proxy directly, so the URLs carry its `port` (`http://web.localhost:4000`);
    * `https` means a TLS terminator sits in front, so they carry no port.
    */
@@ -476,8 +481,13 @@ export interface DevReverseProxyInput<Top = TokenRecord, N extends string = stri
 export interface ResolvedDevReverseProxy {
   /** The loopback port the proxy listens on — and the port of the public URLs under `http`. */
   port: number;
-  /** The domain packages are routed under (`localhost` unless the config says otherwise). */
+  /**
+   * The canonical domain packages are routed under (`localhost` unless the config says
+   * otherwise): the first entry when the config gives an array. Every derived URL uses it.
+   */
   rootDomain: string;
+  /** Every root domain the proxy routes under, canonical first, then its aliases. */
+  rootDomains: string[];
   /** The package the bare `rootDomain` routes to, if any. */
   defaultPackage?: string;
   /** Scheme of the public URLs devtooie derives; `https` means they carry no port. */
@@ -1086,23 +1096,76 @@ function resolveDevReverseProxy(
   if (typeof port !== 'number' || !Number.isFinite(port)) {
     fail('port', port);
   }
-  const rootDomain =
+  const isCallback = typeof block.rootDomain === 'function';
+  const written: unknown =
     typeof block.rootDomain === 'function'
       ? block.rootDomain(ctx())
       : (block.rootDomain ?? 'localhost');
-  if (typeof rootDomain !== 'string' || rootDomain === '') {
-    fail('rootDomain', rootDomain);
+  const rootDomains = resolveRootDomains(written, isCallback, fail);
+  const rootDomain = rootDomains[0]!;
+  // The scheme follows the canonical root unless the config says: `localhost` has nothing in
+  // front, so the browser hits the proxy itself over http; any other root has a TLS terminator
+  // in front.
+  const urlScheme = block.urlScheme ?? (rootDomain === 'localhost' ? 'http' : 'https');
+  return { port, rootDomain, rootDomains, defaultPackage: block.defaultPackage, urlScheme };
+}
+
+/**
+ * Checks a resolved `rootDomain` — a string, or an array of canonical-then-aliases — and returns
+ * it as a non-empty list. A Host is routed by which entry it falls under, so the entries must
+ * leave no doubt: none may equal another, or be another with labels in front (`a.example.test`
+ * beside `example.test`, which would claim each other's hosts).
+ */
+function resolveRootDomains(
+  value: unknown,
+  isCallback: boolean,
+  fail: (field: string, value: unknown) => never,
+): string[] {
+  if (typeof value === 'string' && value === '' && isCallback) {
+    fail('rootDomain', value);
   }
-  if (!HOSTNAME_RE.test(rootDomain)) {
+  if (Array.isArray(value) && value.length === 0) {
     throw new Error(
-      `devReverseProxy.rootDomain ${JSON.stringify(rootDomain)} is not a lowercase hostname ` +
-        '(labels of a-z, 0-9 and hyphens, not starting or ending with a hyphen)',
+      `devReverseProxy.rootDomain ${isCallback ? 'callback returned' : 'is'} an empty array — ` +
+        'give at least one root domain (the first is the canonical one), or omit it for `localhost`',
     );
   }
-  // The scheme follows the root unless the config says: `localhost` has nothing in front, so
-  // the browser hits the proxy itself over http; any other root has a TLS terminator in front.
-  const urlScheme = block.urlScheme ?? (rootDomain === 'localhost' ? 'http' : 'https');
-  return { port, rootDomain, defaultPackage: block.defaultPackage, urlScheme };
+  if (typeof value !== 'string' && !Array.isArray(value)) {
+    fail('rootDomain', value);
+  }
+  const list: unknown[] = Array.isArray(value) ? value : [value];
+  const field = (i: number) => (Array.isArray(value) ? `rootDomain[${String(i)}]` : 'rootDomain');
+  list.forEach((entry, i) => {
+    if (typeof entry !== 'string' || !HOSTNAME_RE.test(entry)) {
+      throw new Error(
+        `devReverseProxy.${field(i)} ${JSON.stringify(entry)} is not a lowercase hostname ` +
+          '(labels of a-z, 0-9 and hyphens, not starting or ending with a hyphen)',
+      );
+    }
+  });
+  const domains = list as string[];
+  domains.forEach((a, i) => {
+    domains.forEach((b, j) => {
+      if (i >= j) {
+        return;
+      }
+      if (a === b) {
+        throw new Error(
+          `devReverseProxy.rootDomain lists "${a}" twice (entries ${String(i)} and ${String(j)}) — ` +
+            'drop one of them',
+        );
+      }
+      const [inner, outer] = a.endsWith(`.${b}`) ? [a, b] : b.endsWith(`.${a}`) ? [b, a] : [];
+      if (inner !== undefined) {
+        throw new Error(
+          `devReverseProxy.rootDomain entries "${inner}" and "${outer!}" overlap: every host under ` +
+            `"${inner}" is also under "${outer!}", so the proxy couldn't tell which one a request ` +
+            'means. Drop one of them, or pick a root that is not under the other.',
+        );
+      }
+    });
+  });
+  return domains;
 }
 
 /**

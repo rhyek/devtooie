@@ -23,7 +23,8 @@ it says where a session _would_ answer, not that one is running — query the po
     "devReverseProxy": {
       // the session's dev reverse proxy, or null when the config declares none
       "port": 4000,
-      "rootDomain": "myproject.example.test",
+      "rootDomain": "myproject.example.test", // the canonical root
+      "rootDomains": ["myproject.example.test", "myproject.localhost"], // every root routed, canonical first
       "routes": [
         { "host": "web.myproject.example.test", "package": "web", "port": 3000 },
         { "host": "s3.myproject.example.test", "service": "store", "port": 9000 }, // an infra service
@@ -48,7 +49,8 @@ it says where a session _would_ answer, not that one is running — query the po
   `projectName` among it); infra has no endpoints of its own — drive it with
   [`devtooie infra`](./cli.md#devtooie-infra).
   `devReverseProxy` is present
-  from the start (the proxy binds before anything else) and lists every hostname it routes: a
+  from the start (the proxy binds before anything else) and lists every hostname it routes
+  under the canonical `rootDomain` (each answers under every entry of `rootDomains` alike): a
   package route names its `package`, an infra service route its `service` — see
   [Dev reverse proxy](./dev-reverse-proxy.md).
 

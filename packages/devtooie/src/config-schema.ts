@@ -192,11 +192,14 @@ export const DevReverseProxySchema = z.strictObject({
       message: 'devReverseProxy.port must be a number or a function',
     }),
   ]),
+  // An array's first entry is the canonical root, the rest aliases. Emptiness, hostname shape,
+  // duplicates and overlap are checked once the callback (if any) has run, in `defineConfig`.
   rootDomain: z
     .union([
       z.string(),
-      z.custom<(ctx: ConfigContext) => string>((v) => typeof v === 'function', {
-        message: 'devReverseProxy.rootDomain must be a string or a function',
+      z.array(z.string()),
+      z.custom<(ctx: ConfigContext) => string | string[]>((v) => typeof v === 'function', {
+        message: 'devReverseProxy.rootDomain must be a string, an array of strings, or a function',
       }),
     ])
     .optional(),
@@ -210,7 +213,7 @@ export const DevReverseProxySchema = z.strictObject({
     .enum(['http', 'https'])
     .optional()
     .describe(
-      'Scheme of the public URLs devtooie derives (footer links, `PUBLIC_ORIGIN`). Defaults from `rootDomain`: `http` on `localhost` (the browser hits the proxy directly, so the URLs carry its `port`), `https` on any other root (a TLS terminator in front, so no port).',
+      'Scheme of the public URLs devtooie derives (footer links, `PUBLIC_ORIGIN`). Defaults from the canonical `rootDomain`: `http` on `localhost` (the browser hits the proxy directly, so the URLs carry its `port`), `https` on any other root (a TLS terminator in front, so no port).',
     ),
 });
 

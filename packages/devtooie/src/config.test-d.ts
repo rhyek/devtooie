@@ -11,7 +11,7 @@
  * value form would *read* `port` and throw at load time by design.
  */
 import { describe, it, test, expectTypeOf } from 'vitest';
-import { defineConfig, type PackageConfigInput, type ProxyInput, type ResolvedDevReverseProxy, type ResolvedProxy } from './config.js'; // prettier-ignore
+import { defineConfig, type ConfigContext, type PackageConfigInput, type ProxyInput, type ResolvedDevReverseProxy, type ResolvedProxy } from './config.js'; // prettier-ignore
 import type { PackageConfig } from './register.js';
 import type { InfraRunResult, InfraServiceInput, ResolvedInfra, ResolvedInfraService } from './infra/types.js'; // prettier-ignore
 import type { Envs, Mode } from './env.js';
@@ -413,6 +413,36 @@ describe('devReverseProxy rootDomain', () => {
       packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
     expectTypeOf(config.devReverseProxy!.rootDomain).toEqualTypeOf<string>();
+  });
+
+  test('takes an array, literal or from the callback; resolves to the canonical string plus the list', () => {
+    const literal = defineConfig({
+      packageRootDir: 'packages',
+      devReverseProxy: { port: 4000, rootDomain: ['example.test', 'example.localhost'] },
+      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
+    });
+    expectTypeOf(literal.devReverseProxy!.rootDomain).toEqualTypeOf<string>();
+    expectTypeOf(literal.devReverseProxy!.rootDomains).toEqualTypeOf<string[]>();
+    defineConfig({
+      packageRootDir: 'packages',
+      tokens: { tld: 'test' },
+      devReverseProxy: {
+        port: 4000,
+        rootDomain: (ctx) => [`example.${ctx.tokens.tld}`, 'example.localhost'],
+      },
+      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
+    });
+    type Proxy = NonNullable<
+      Parameters<
+        typeof defineConfig<Record<never, never>, { web: unknown }, 'web'>
+      >[0]['devReverseProxy']
+    >;
+    expectTypeOf<Proxy['rootDomain']>().toEqualTypeOf<
+      | string
+      | string[]
+      | ((ctx: ConfigContext<Record<never, never>>) => string | string[])
+      | undefined
+    >();
   });
 });
 

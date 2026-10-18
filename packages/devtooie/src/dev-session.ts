@@ -347,6 +347,7 @@ export async function startSessionDevReverseProxy(opts: {
   return startDevReverseProxy({
     port: proxy.port,
     rootDomain: proxy.rootDomain,
+    rootDomainAliases: proxy.rootDomains.slice(1),
     routes: routesFromConfig(config),
     controlApiPort: opts.controlApiPort,
     urlScheme: proxy.urlScheme,

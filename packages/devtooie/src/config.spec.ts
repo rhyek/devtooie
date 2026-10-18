@@ -1256,6 +1256,7 @@ describe('devReverseProxy', () => {
     expect(cfg.devReverseProxy).toEqual({
       port: 4000,
       rootDomain: 'example.test',
+      rootDomains: ['example.test'],
       defaultPackage: undefined,
       urlScheme: 'https',
     });
@@ -1299,6 +1300,92 @@ describe('devReverseProxy', () => {
       );
     },
   );
+
+  // An array's first entry is the canonical root, the rest aliases: every derived URL uses the
+  // canonical one, and the entries must not overlap, so a Host falls under at most one.
+  describe('rootDomain as an array', () => {
+    test('resolves the first entry as rootDomain and keeps the full list in rootDomains', () => {
+      const cfg = withProxy({ port: 4000, rootDomain: ['example.test', 'example.localhost'] });
+      expect(cfg.devReverseProxy).toEqual({
+        port: 4000,
+        rootDomain: 'example.test',
+        rootDomains: ['example.test', 'example.localhost'],
+        defaultPackage: undefined,
+        urlScheme: 'https',
+      });
+      expect(cfg.packages.web!.publicOrigin).toBe('https://web.example.test');
+    });
+
+    test('accepts an array from the callback', () => {
+      const cfg = defineConfig({
+        packageRootDir: 'packages',
+        tokens: { tld: 'test' },
+        devReverseProxy: {
+          port: 4000,
+          rootDomain: ({ tokens }) => [`example.${tokens.tld}`, 'example.localhost'],
+        },
+        packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
+      });
+      expect(cfg.devReverseProxy).toMatchObject({
+        rootDomain: 'example.test',
+        rootDomains: ['example.test', 'example.localhost'],
+      });
+    });
+
+    test('derives the urlScheme default from the canonical entry only', () => {
+      expect(withProxy({ port: 4000, rootDomain: ['localhost', 'example.test'] })).toMatchObject({
+        devReverseProxy: { urlScheme: 'http' },
+        packages: { web: { publicOrigin: 'http://web.localhost:4000' } },
+      });
+      expect(withProxy({ port: 4000, rootDomain: ['example.test', 'localhost'] })).toMatchObject({
+        devReverseProxy: { urlScheme: 'https' },
+        packages: { web: { publicOrigin: 'https://web.example.test' } },
+      });
+    });
+
+    test('rejects an empty array, literal or from the callback', () => {
+      expect(() => withProxy({ port: 4000, rootDomain: [] })).toThrow(
+        /devReverseProxy\.rootDomain is an empty array/,
+      );
+      expect(() => withProxy({ port: 4000, rootDomain: () => [] })).toThrow(
+        /devReverseProxy\.rootDomain callback returned an empty array/,
+      );
+    });
+
+    test('rejects an entry that is not a lowercase hostname, naming its index', () => {
+      expect(() =>
+        withProxy({ port: 4000, rootDomain: ['example.test', 'Example.local'] }),
+      ).toThrow(/devReverseProxy\.rootDomain\[1\] "Example\.local" is not a lowercase hostname/);
+      expect(() => withProxy({ port: 4000, rootDomain: () => ['example.test', ''] })).toThrow(
+        /devReverseProxy\.rootDomain\[1\] "" is not a lowercase hostname/,
+      );
+    });
+
+    test('rejects an entry listed twice', () => {
+      expect(() =>
+        withProxy({
+          port: 4000,
+          rootDomain: ['example.test', 'example.localhost', 'example.test'],
+        }),
+      ).toThrow(/devReverseProxy\.rootDomain lists "example\.test" twice \(entries 0 and 2\)/);
+    });
+
+    test.each([[['example.test', 'dev.example.test']], [['dev.example.test', 'example.test']]])(
+      'rejects entries where one is under the other: %j',
+      (rootDomain) => {
+        expect(() => withProxy({ port: 4000, rootDomain })).toThrow(
+          /devReverseProxy\.rootDomain entries "dev\.example\.test" and "example\.test" overlap/,
+        );
+      },
+    );
+
+    test('allows entries that share a string suffix but not a label', () => {
+      expect(
+        withProxy({ port: 4000, rootDomain: ['example.test', 'myexample.test'] }).devReverseProxy
+          ?.rootDomains,
+      ).toEqual(['example.test', 'myexample.test']);
+    });
+  });
 
   test('rejects an unknown key in the block', () => {
     expect(() =>
@@ -1465,6 +1552,7 @@ describe('devReverseProxy defaults from rootDomain', () => {
     expect(cfg.devReverseProxy).toEqual({
       port: 4000,
       rootDomain: 'localhost',
+      rootDomains: ['localhost'],
       defaultPackage: undefined,
       urlScheme: 'http',
     });

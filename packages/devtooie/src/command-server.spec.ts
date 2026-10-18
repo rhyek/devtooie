@@ -48,6 +48,7 @@ describe('command-server', () => {
       devReverseProxy: {
         port: 4000,
         rootDomain: 'example.test',
+        rootDomains: ['example.test', 'example.localhost'],
         routes: [
           { kind: 'package', host: 'web.example.test', package: 'web', port: 3000, hasHealthcheck: true }, // prettier-ignore
           {
@@ -68,6 +69,7 @@ describe('command-server', () => {
     expect(body.devReverseProxy).toEqual({
       port: 4000,
       rootDomain: 'example.test',
+      rootDomains: ['example.test', 'example.localhost'],
       routes: [
         { host: 'web.example.test', package: 'web', port: 3000 },
         { host: 'example.test', package: 'web', port: 3000 },

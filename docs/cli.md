@@ -78,7 +78,8 @@ defaults are applied, `command` is normalized, and every package carries its `re
 `urls`, `healthcheck`, and — under the [dev reverse proxy](./dev-reverse-proxy.md) — its
 `publicOrigin` (`<urlScheme>://<subdomain>.<rootDomain>[:<port>]`). Each infra service the config
 names carries its `enabled`, its resolved `port`, its `proxy`, and its `publicOrigin` the same
-way. The `devReverseProxy` block itself, port included, is there too.
+way. The `devReverseProxy` block itself is there too, with its port, its canonical `rootDomain`,
+and `rootDomains`, every root domain it routes under.
 
 ```bash
 devtooie show-config                          # the whole resolved config

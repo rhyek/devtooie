@@ -77,7 +77,7 @@ reports as `config` on `GET /query/status`. For each package you get, among the 
 
 ```jsonc
 {
-  "devReverseProxy": { "port": 4000, "rootDomain": "myproject.example.test", "defaultPackage": "web", "urlScheme": "https" },
+  "devReverseProxy": { "port": 4000, "rootDomain": "myproject.example.test", "rootDomains": ["myproject.example.test"], "defaultPackage": "web", "urlScheme": "https" },
   "packages": {
     "api": {
       "name": "api",
@@ -285,7 +285,7 @@ Debian's and Ubuntu's `/bin/sh` stays as a small parent process. A Makefile targ
 | `urls`         | Workspace-wide footer links, not tied to a package. Same shape as a package's `urls`, but a callback here gets only `{ envs, tokens }` (no package, so no `port`). |
 | `tokens`       | Values of your own, handed to every callback as `tokens` (a package's own `tokens` are merged on top) — see [Callbacks](#callbacks-instead-of-interpolation).      |
 | `infra`        | Infrastructure that isn't a package — databases, caches, brokers — keyed by provider: `{ 'docker-compose': { file?, readyTimeout?, services? } }`, where `services` gives a service its `enabled`, its `port` and `proxy`, and callbacks. Brought up, and waited on, before the packages start. See [Infra](#infra). |
-| `devReverseProxy` | Run devtooie's own dev reverse proxy, routing `<subdomain>.<rootDomain>` to the package or infra service whose `proxy` declares that subdomain. `{ port, rootDomain?, defaultPackage?, urlScheme? }`; present = enabled. See [Dev reverse proxy](#dev-reverse-proxy). |
+| `devReverseProxy` | Run devtooie's own dev reverse proxy, routing `<subdomain>.<rootDomain>` to the package or infra service whose `proxy` declares that subdomain. `{ port, rootDomain?, defaultPackage?, urlScheme? }`, where `rootDomain` may be an array (the canonical root, then aliases); present = enabled. See [Dev reverse proxy](#dev-reverse-proxy). |
 
 `packages` is an object **keyed by package name**:
 
@@ -709,7 +709,7 @@ export default defineConfig({
   packageRootDir: 'packages',
   devReverseProxy: {
     port: ({ envs }) => Number(envs.DEV_REVERSE_PROXY_PORT), // number | callback
-    rootDomain: ({ envs }) => `myproject.${envs.LOCALDEV_DOMAIN}`, // string | callback, default 'localhost'
+    rootDomain: ({ envs }) => `myproject.${envs.LOCALDEV_DOMAIN}`, // string | string[] | callback, default 'localhost'
     defaultPackage: 'web', // optional: what the bare rootDomain routes to
     urlScheme: 'https', // optional; defaults from rootDomain: http on localhost, https elsewhere
   },
@@ -737,6 +737,17 @@ export default defineConfig({
   package `port`. A callback returning `NaN` or an empty string is an error naming the field
   and the env files that were loaded. `rootDomain` defaults to **`localhost`**, which browsers
   resolve to loopback with nothing in front (see [No terminator](#no-terminator-plain-localhost)).
+- **`rootDomain` as an array** — `['myproject.example.test', 'myproject.localhost']`, as a
+  literal or a callback's return. The first entry is the **canonical** root; the rest are
+  **aliases**, and a `Host` under one routes exactly as under the canonical root — subdomains,
+  subdomain aliases, `defaultPackage` on the bare alias, infra services, status pages,
+  WebSockets — with the `Host` still forwarded unchanged. Everything devtooie derives uses the
+  canonical root alone: `PUBLIC_ORIGIN`, the `urlScheme` default, footer links, `publicOrigin`,
+  and the 404 page's links. An alias suits a local-only name reached at the proxy directly,
+  `http://web.myproject.localhost:<proxy port>`, beside a canonical root that a TLS terminator
+  serves. The app behind it is configured from the canonical `PUBLIC_ORIGIN`, so whatever it
+  derives from that — the HMR `clientPort` in the [Vite example](#websockets-and-vite-hmr), CORS
+  origins, cookie domains — has to allow the alias as well.
 - **`defaultPackage`** — the package the bare `rootDomain` routes to. Must declare a `port`.
   Without it the bare root is a 404.
 - **`urlScheme`** — `'http' | 'https'`. The scheme of the public URLs devtooie derives (footer
@@ -765,7 +776,10 @@ a reverse proxy of your own, say.
 but no `proxy` is simply not routed. An infra service switched off for the mode (`enabled:
 false`) is not routed either. Validation:
 
-- `rootDomain` is a lowercase hostname (labels of `[a-z0-9-]`, no leading or trailing hyphen).
+- `rootDomain` is a lowercase hostname (labels of `[a-z0-9-]`, no leading or trailing hyphen) —
+  every entry, when it is an array. An array is non-empty, lists no entry twice, and has no
+  entry under another (`dev.example.test` beside `example.test`), so a `Host` falls under at
+  most one.
 - `defaultPackage` names a declared package that has a `port`.
 - Every subdomain and alias is unique across packages **and** infra services.
 - A package that declares `proxy` but no `port` is an error when the block is present — it
@@ -785,9 +799,11 @@ The proxy strips any `:port` from the `Host` header, then:
 | `<label>.<rootDomain>`  | The package or infra service whose canonical subdomain **or alias** is `<label>`. |
 | anything else           | 404 — including multi-label prefixes (`a.web.<rootDomain>`) and hosts outside `rootDomain`. |
 
+With `rootDomain` an array, `<rootDomain>` above is any of its entries.
+
 The 404 is a small page listing every hostname that does exist, as public URLs you can click:
 `<subdomain>.<rootDomain>` for every routable package and infra service, aliases included, plus
-the bare root when `defaultPackage` is set.
+the bare root when `defaultPackage` is set — all under the canonical root.
 
 Requests are forwarded to the package's or service's port on `localhost`, trying both loopback
 families (Vite on a modern Node listens on `[::1]` alone). The `Host` header is kept as
@@ -880,13 +896,14 @@ as `PUBLIC_ORIGIN` — next to `config.devReverseProxy`:
 
 ```ts
 // with `urls: ['', '/todos']` on web
-config.devReverseProxy; // { port: 4000, rootDomain: 'myproject.example.test', defaultPackage: 'web', urlScheme: 'https' } | undefined
+config.devReverseProxy; // { port: 4000, rootDomain: 'myproject.example.test', rootDomains: ['myproject.example.test'], defaultPackage: 'web', urlScheme: 'https' } | undefined
 config.packages.web.publicOrigin; // 'https://web.myproject.example.test'
 config.packages.web.urls; // ['https://web.myproject.example.test', 'https://web.myproject.example.test/todos']
 config.infra['docker-compose'].services.store; // { enabled: true, port: 9000, proxy: { subdomain: 's3' }, publicOrigin: 'https://s3.myproject.example.test', … }
 ```
 
-`devtooie show-config` prints all of this as JSON without starting a session.
+`config.devReverseProxy.rootDomain` is the canonical root; `rootDomains` lists every entry,
+canonical first. `devtooie show-config` prints all of this as JSON without starting a session.
 
 ### Lifecycle
 
@@ -1884,11 +1901,13 @@ Endpoints (all plain HTTP, no auth — localhost-only):
     [Package lifecycle](#package-lifecycle-when-you-change-code). A config with
     [`infra`](#infra) carries it resolved under `config.infra` (the mode's Compose `projectName`
     among it); infra has no endpoints of its own — drive it with `devtooie infra`.
-  - `devReverseProxy` — `{ port, rootDomain, routes: [{ host, package, port }] }` for the
+  - `devReverseProxy` — `{ port, rootDomain, rootDomains, routes: [{ host, package, port }] }` for the
     session's [dev reverse proxy](#dev-reverse-proxy), or `null` when the config declares none.
     Present from the start (the proxy binds before anything else); `routes` lists every public
     hostname and the package (and loopback port) it forwards to — an infra service route names
-    its `service` in place of `package`: `{ host, service, port }`.
+    its `service` in place of `package`: `{ host, service, port }`. `rootDomains` lists every root
+    domain the proxy answers under, canonical first; `routes` are under the canonical
+    `rootDomain`, and each also answers under every alias.
 - `POST /command/restart/<name>` — restart one package in place (`202` if accepted, `404` for an
   unknown package).
 - `POST /command/rebuild/<name>` — stop, clean-build, then start. Prefer this over `restart`

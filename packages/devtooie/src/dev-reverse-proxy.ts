@@ -62,7 +62,11 @@ export interface DevReverseProxyManager {
 export interface DevReverseProxyServer {
   /** The port actually bound (the configured one, or the ephemeral one a test asked for). */
   port: number;
+  /** The canonical root domain — the one `routes` are written under. */
   rootDomain: string;
+  /** Every root domain routed: the canonical one, then its aliases. */
+  rootDomains: string[];
+  /** The route table, one entry per hostname under the canonical root (aliases route the same). */
   routes: DevReverseProxyRoute[];
   /** Hands the proxy the live statuses; logs the route table on devtooie's own channel. */
   attach(manager: DevReverseProxyManager): void;
@@ -185,7 +189,13 @@ function sendProblem(req: http.IncomingMessage, res: http.ServerResponse, proble
 export async function startDevReverseProxy(opts: {
   /** The loopback port to bind; `0` for an ephemeral one (tests). */
   port: number;
+  /** The canonical root domain, the one every route's `host` is under. */
   rootDomain: string;
+  /**
+   * Further root domains that route exactly like the canonical one: `<x>.<alias>` reaches what
+   * `<x>.<rootDomain>` does, and the bare alias what the bare root does.
+   */
+  rootDomainAliases?: string[];
   routes: DevReverseProxyRoute[];
   /** The control API's port, if known, so a 503 page can spell out the exact `restart` URL. */
   controlApiPort?: number;
@@ -199,8 +209,25 @@ export async function startDevReverseProxy(opts: {
   readyTimeoutMs?: number;
 }): Promise<DevReverseProxyServer> {
   const { rootDomain, routes } = opts;
+  const rootDomains = [rootDomain, ...(opts.rootDomainAliases ?? [])];
   const readyTimeoutMs = opts.readyTimeoutMs ?? READY_HOLD_MS;
+  // Every route answers under every root: the same target, with `host` the one asked for, so a
+  // status page names the hostname in the address bar. (No root is under another — the config
+  // rejects that — so no alias host can shadow a canonical one.)
   const byHost = new Map(routes.map((r) => [r.host, r]));
+  for (const alias of opts.rootDomainAliases ?? []) {
+    for (const r of routes) {
+      const host =
+        r.host === rootDomain
+          ? alias
+          : r.host.endsWith(`.${rootDomain}`)
+            ? `${r.host.slice(0, -rootDomain.length)}${alias}`
+            : null;
+      if (host !== null) {
+        byHost.set(host, { ...r, host });
+      }
+    }
+  }
   let manager: DevReverseProxyManager | null = null;
   let infraReady = false;
   /** Every socket we've seen, on either side, so `close()` can cut them all. */
@@ -228,7 +255,8 @@ export async function startDevReverseProxy(opts: {
       title: `Nothing is routed at ${host ?? '(no Host header)'}`,
       detail: { host, routes: routes.map((r) => r.host), urls },
       paragraphs: [
-        `The devtooie dev reverse proxy for <code>${escapeHtml(rootDomain)}</code> knows these hostnames:`,
+        `The devtooie dev reverse proxy for ${rootDomains.map((d) => `<code>${escapeHtml(d)}</code>`).join(', ')} knows these hostnames` +
+          (rootDomains.length > 1 ? ', each under every one of those roots:' : ':'),
       ],
       listItems: urls,
       headers: {},
@@ -537,6 +565,7 @@ export async function startDevReverseProxy(opts: {
   return {
     port,
     rootDomain,
+    rootDomains,
     routes,
     attach(m) {
       manager = m;

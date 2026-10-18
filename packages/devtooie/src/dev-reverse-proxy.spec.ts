@@ -129,6 +129,7 @@ async function proxyFor(
     readyTimeoutMs?: number;
     controlApiPort?: number;
     urlScheme?: 'http' | 'https';
+    rootDomainAliases?: string[];
   } = {},
 ): Promise<DevReverseProxyServer> {
   const proxy = await startDevReverseProxy({ port: 0, rootDomain: ROOT, routes, ...opts });
@@ -286,6 +287,94 @@ describe('routing', () => {
         expect(reply.body).toContain(`href="http://${known}:${String(proxy.port)}"`);
       }
       expect(reply.body).toContain(host);
+    },
+  );
+});
+
+// A root-domain alias routes exactly like the canonical root, while everything the proxy reports
+// (its route table, the 404 page's links) stays under the canonical one.
+describe('root domain aliases', () => {
+  const ALIAS = 'example.localhost';
+
+  test('routes subdomains, subdomain aliases and the bare alias, forwarding Host unchanged', async () => {
+    const web = await upstream('web');
+    const api = await upstream('api');
+    const proxy = await proxyFor(
+      [
+        route(`web.${ROOT}`, 'web', web.port),
+        route(`www.${ROOT}`, 'web', web.port),
+        route(ROOT, 'web', web.port),
+        route(`api.${ROOT}`, 'api', api.port),
+      ],
+      { defaultPackage: 'web', rootDomainAliases: [ALIAS] },
+    );
+    proxy.attach(stubManager({ web: 'running', api: 'running' }));
+
+    for (const [host, expected] of [
+      [`web.${ALIAS}`, 'web'],
+      [`www.${ALIAS}`, 'web'],
+      [ALIAS, 'web'],
+      [`api.${ALIAS}:${String(proxy.port)}`, 'api'],
+      [`api.${ROOT}`, 'api'],
+    ] as const) {
+      const reply = await request(proxy.port, host);
+      expect(reply.status).toBe(200);
+      expect(JSON.parse(reply.body)).toMatchObject({ upstream: expected, host });
+    }
+    expect(proxy.rootDomains).toEqual([ROOT, ALIAS]);
+    expect(proxy.routes.map((r) => r.host)).toEqual([`web.${ROOT}`, `www.${ROOT}`, ROOT, `api.${ROOT}`]); // prettier-ignore
+  });
+
+  test('answers the status pages under the alias, naming the host asked for', async () => {
+    const proxy = await proxyFor([route(`web.${ROOT}`, 'web', await deadPort())], {
+      rootDomainAliases: [ALIAS],
+    });
+    proxy.attach(stubManager({ web: 'stopped' }));
+    const reply = await request(proxy.port, `web.${ALIAS}`);
+    expect(reply.status).toBe(503);
+    expect(JSON.parse(reply.body)).toMatchObject({ package: 'web', status: 'stopped', host: `web.${ALIAS}` }); // prettier-ignore
+  });
+
+  test('routes an infra service under the alias once the infra is up', async () => {
+    const mail = await upstream('mail');
+    const proxy = await proxyFor([serviceRoute(`mail.${ROOT}`, 'mail', mail.port)], {
+      rootDomainAliases: [ALIAS],
+    });
+    expect((await request(proxy.port, `mail.${ALIAS}`)).status).toBe(503);
+    proxy.markInfraReady();
+    const reply = await request(proxy.port, `mail.${ALIAS}`);
+    expect(reply.status).toBe(200);
+    expect(JSON.parse(reply.body)).toMatchObject({ upstream: 'mail', host: `mail.${ALIAS}` });
+  });
+
+  test('carries a websocket under the alias', async () => {
+    const web = await upstream('web');
+    const proxy = await proxyFor([route(`web.${ROOT}`, 'web', web.port)], {
+      rootDomainAliases: [ALIAS],
+    });
+    proxy.attach(stubManager({ web: 'running' }));
+    const { socket, res } = await upgrade(proxy.port, `web.${ALIAS}`);
+    expect(res.headers['x-upstream']).toBe('web');
+    const echoed = new Promise<string>((resolve) => socket.once('data', (d: Buffer) => resolve(d.toString()))); // prettier-ignore
+    socket.write('ping');
+    expect(await echoed).toBe('ping');
+  });
+
+  test.each([`ghost.${ALIAS}`, 'web.other.test', `web.${ALIAS}.evil.test`, `web.x${ALIAS}`])(
+    '404s %s, listing only the canonical links',
+    async (host) => {
+      const web = await upstream('web');
+      const proxy = await proxyFor([route(`web.${ROOT}`, 'web', web.port)], {
+        rootDomainAliases: [ALIAS],
+        urlScheme: 'http',
+      });
+      proxy.attach(stubManager({ web: 'running' }));
+      const reply = await request(proxy.port, host, { headers: { accept: 'text/html' } });
+      expect(reply.status).toBe(404);
+      expect(reply.body).toContain(`href="http://web.${ROOT}:${String(proxy.port)}"`);
+      expect(reply.body).not.toContain(`href="http://web.${ALIAS}`);
+      // The page names every root it answers under.
+      expect(reply.body).toContain(`<code>${ROOT}</code>, <code>${ALIAS}</code>`);
     },
   );
 });
