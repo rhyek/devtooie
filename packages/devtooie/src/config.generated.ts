@@ -51,7 +51,7 @@ export type GeneratedPackageConfig = {
 };
 
 export type GeneratedDefineConfig = {
-    /** Fixed control-API port; omit to let devtooie pick one (recorded in `running.json`). */
+    /** Fixed control-API port; omit to let devtooie pick one (recorded in `running.<mode>.json`). A fixed port serves the session of one mode at a time. */
     apiPort?: number | undefined;
     packages: {
         [key: string]: {

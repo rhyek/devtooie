@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -23,7 +23,10 @@ function tmpWorkspace(): string {
   return dir;
 }
 
+// Pinned, so a run from inside a devtooie session of another mode can't change the answers.
+beforeEach(() => vi.stubEnv('DEVTOOIE_MODE', 'development'));
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(servers.splice(0).map((s) => new Promise<void>((r) => s.close(() => r()))));
   for (const dir of tmpDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -33,6 +36,7 @@ afterEach(async () => {
 const SNAPSHOT = {
   pid: 4242,
   configPath: '/ws/devtooie.config.ts',
+  mode: 'test',
   startedByAgent: true,
   logFile: '/ws/node_modules/.devtooie/logs/171.log',
   packages: { web: 'running' },
@@ -67,6 +71,15 @@ describe('createControlClient', () => {
       ...oldShape,
       startedByAgent: false,
     });
+  });
+
+  test('queryStatus() reads a missing mode as development (an instance from before per-mode sessions)', async () => {
+    const { mode: _omitted, ...oldShape } = SNAPSHOT;
+    const port = await startServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(oldShape));
+    });
+    expect(await createControlClient(port).queryStatus()).toEqual({ ...oldShape, mode: 'development' }); // prettier-ignore
   });
 
   it('queryStatus() returns null when nothing is listening', async () => {
@@ -118,6 +131,14 @@ describe('connectControlClient', () => {
     expect(client?.port).toBe(port);
     expect(await client!.queryStatus()).toEqual(SNAPSHOT);
   });
+
+  test("finds the given mode's session, not another mode's", async () => {
+    const cwd = tmpWorkspace();
+    const port = await startServer((_req, res) => res.end(JSON.stringify(SNAPSHOT)));
+    writeRunning(cwd, { port, pid: SNAPSHOT.pid }, 'test');
+    expect(await connectControlClient(cwd)).toBeNull();
+    expect((await connectControlClient(cwd, 'test'))?.port).toBe(port);
+  });
 });
 
 describe('probeInstance', () => {
@@ -126,6 +147,7 @@ describe('probeInstance', () => {
     expect(await probeInstance(port)).toEqual({
       pid: SNAPSHOT.pid,
       configPath: SNAPSHOT.configPath,
+      mode: 'test',
     });
   });
 

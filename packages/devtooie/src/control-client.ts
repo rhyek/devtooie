@@ -1,3 +1,4 @@
+import { DEFAULT_MODE } from './env.js';
 import { type InstanceInfo, isPortListening, readRunning } from './running.js';
 import { QUIT_REQUEST_TIMEOUT_MS } from './shutdown-timing.js';
 
@@ -10,6 +11,11 @@ export interface SessionStatus {
   pid: number;
   /** Absolute path to the `devtooie.config.*` the session was started with. */
   configPath: string;
+  /**
+   * The mode the session runs in. An instance that doesn't report one predates per-mode
+   * sessions, when there was one session per workspace, and reads as the default mode.
+   */
+  mode: string;
   /**
    * Whether that session was started by a coding agent rather than by a person. Absent from
    * instances older than 0.7.0, which read as `false` — so a new session never auto-quits one
@@ -78,6 +84,7 @@ export function createControlClient(port: number, timeoutMs = 500): ControlClien
         return {
           pid: body.pid,
           configPath: body.configPath,
+          mode: typeof body.mode === 'string' ? body.mode : DEFAULT_MODE,
           startedByAgent: body.startedByAgent === true,
           logFile: typeof body.logFile === 'string' ? body.logFile : null,
           packages: (body.packages ?? null) as Record<string, unknown> | null,
@@ -108,14 +115,16 @@ export function createControlClient(port: number, timeoutMs = 500): ControlClien
 }
 
 /**
- * Returns a {@link ControlClient} for this workspace's running instance — reading the port
- * from `running.json` and confirming something is listening on it — or null when no instance
- * is up. The reusable entry point for querying/driving the current session.
+ * Returns a {@link ControlClient} for this workspace's running session in `mode` (the active
+ * one unless given) — reading the port from its `running.<mode>.json` and confirming something
+ * is listening on it — or null when no such session is up. The reusable entry point for
+ * querying/driving the current session.
  */
 export async function connectControlClient(
   cwd: string = process.cwd(),
+  mode?: string,
 ): Promise<ControlClient | null> {
-  const running = readRunning(cwd);
+  const running = readRunning(cwd, mode);
   if (!running) {
     return null;
   }
@@ -131,5 +140,5 @@ export async function connectControlClient(
  */
 export async function probeInstance(port: number, timeoutMs = 500): Promise<InstanceInfo | null> {
   const status = await createControlClient(port, timeoutMs).queryStatus();
-  return status ? { pid: status.pid, configPath: status.configPath } : null;
+  return status ? { pid: status.pid, configPath: status.configPath, mode: status.mode } : null;
 }

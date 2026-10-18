@@ -351,13 +351,20 @@ See [`env.vars`](docs/configuration.md#envvars).
 
 ```sh
 devtooie --mode test               # loads .env.test / .env.test.local
-devtooie --mode test cmd -- vitest # same environment, one-off command
+devtooie --mode test exec -- vitest # same environment, one-off command
 ```
 
 Any name works (`test`, `staging`, `e2e`), and the mode is passed to every child
 process as `DEVTOOIE_MODE`. **Modes are exclusive** — `--mode test` does *not*
 load `.env.development` — so values shared across modes belong in `.env` and
 `.env.local`, which load in every mode.
+
+**One session per mode.** A workspace runs one devtooie session per mode, side by side: a
+`devtooie --mode test` session for an e2e run starts next to the `development` session you're
+working in, and neither touches the other — each keeps its own record, logs, and processes.
+Starting a second session in the **same** mode takes that mode's session over (see
+[Taking over a running session](docs/cli.md#taking-over-a-running-session)). For two modes to run
+at once, give each its own ports in its `.env.<mode>` file.
 
 `--mode` deliberately leaves `NODE_ENV` alone (a mode name is free-form, and
 `NODE_ENV` isn't). Set it from the mode's own file if you want it:

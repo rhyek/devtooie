@@ -11,7 +11,7 @@
 | `packageRootDir` | The directory the packages live under, e.g. `'packages'`: each package's directory is inferred as `<packageRootDir>/<key>`, and `relativeDir` becomes an optional override. Without it, every package must set `relativeDir`. **Recommended.** |
 | `env`          | Environment options: [`vars`](#envvars), variables of the config's own, and [`override`](#envoverride). Which files load is chosen with `--mode`; see [Environment loading](../README.md#environment-env-loading). |
 | `logs`         | Top-level log options (`{ timestamps? }`); timestamps + structured-log formatting — see [Logging](./logging.md). |
-| `apiPort`      | Pin the [control API](./control-api.md) port (otherwise chosen automatically).              |
+| `apiPort`      | Pin the [control API](./control-api.md) port (otherwise chosen automatically). A pinned port serves one mode's session at a time. |
 | `urls`         | Workspace-wide footer links, not tied to a package. Same shape as a package's `urls`, but a callback here gets only `{ envs, tokens }`. |
 | `tokens`       | Values of your own, handed to every callback as `tokens` (a package's own `tokens` are merged on top) — see [Callbacks](#callbacks-instead-of-interpolation). |
 | `infra`        | Infrastructure that isn't a package — databases, caches, brokers — keyed by provider: `{ 'docker-compose': { file?, readyTimeout?, services? } }`, where `services` gives a service its `enabled`, its `port` and `proxy`, and callbacks. Brought up, and waited on, before the packages start. See [Infra](./infra.md). |

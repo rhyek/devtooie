@@ -1,8 +1,9 @@
-import { describe, it, expect, afterEach, test } from 'vitest';
+import { describe, it, expect, afterEach, test, vi } from 'vitest';
 import { startCommandServer, type ControlManager } from './command-server.js';
 
 let server: Awaited<ReturnType<typeof startCommandServer>> | null = null;
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await server?.close();
   server = null;
 });
@@ -22,6 +23,7 @@ function fakeManager(overrides: Partial<ControlManager> = {}): ControlManager {
 
 describe('command-server', () => {
   it('GET /query/status serves identity with null packages/config before attach', async () => {
+    vi.stubEnv('DEVTOOIE_MODE', 'test');
     server = await startCommandServer({
       onQuit: () => {},
       port: 0,
@@ -33,6 +35,7 @@ describe('command-server', () => {
     expect(await res.json()).toEqual({
       pid: process.pid,
       configPath: '/ws/devtooie.config.ts',
+      mode: 'test',
       startedByAgent: expect.any(Boolean),
       logFile: '/ws/logs/1.log',
       packages: null,
@@ -80,6 +83,7 @@ describe('command-server', () => {
   });
 
   it('GET /query/status reflects the manager after attach (rotation-aware logFile)', async () => {
+    vi.stubEnv('DEVTOOIE_MODE', '');
     server = await startCommandServer({
       onQuit: () => {},
       port: 0,
@@ -98,6 +102,7 @@ describe('command-server', () => {
     expect(await res.json()).toEqual({
       pid: process.pid,
       configPath: '/ws/devtooie.config.ts',
+      mode: 'development',
       startedByAgent: expect.any(Boolean),
       logFile: '/ws/logs/2-rotated.log',
       packages: { web: 'running' },

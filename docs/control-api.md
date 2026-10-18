@@ -5,10 +5,13 @@
 While a session runs, devtooie exposes a localhost-only HTTP API — mostly useful
 for coding agents (via the [agent skill](../README.md#agent-skill)), but open to any tooling.
 Its port is picked at startup and written (with the pid, the session's `logDir`, and the
-current `logFile`) to `node_modules/.devtooie/running.json` — read the `port` field there.
-`logFile` is kept pointing at the latest file across in-session log rotation. Pin a fixed
-port with `apiPort` in `devtooie.config.ts`. The file is not removed when a session ends, so
-it says where a session _would_ answer, not that one is running — query the port to find out.
+current `logFile`) to the session record of its mode, `node_modules/.devtooie/running.<mode>.json`
+— `running.development.json` for a plain `devtooie`, `running.test.json` for `--mode test` — so
+read the `port` field of the mode you want. A project runs one session per mode, each with its
+own record and port. `logFile` is kept pointing at the latest file across in-session log
+rotation. Pin a fixed port with `apiPort` in `devtooie.config.ts` (it then serves one mode at a
+time). The file is not removed when a session ends, so it says where a session _would_ answer,
+not that one is running — query the port to find out.
 
 - `GET /query/status` — a single snapshot of the running session:
 
@@ -16,8 +19,9 @@ it says where a session _would_ answer, not that one is running — query the po
   {
     "pid": 12345,
     "configPath": "/abs/devtooie.config.ts", // the devtooie.config.* it was started with
+    "mode": "development", // the mode it runs in — one session per mode
     "startedByAgent": false, // was this session launched by a coding agent?
-    "logFile": "/abs/.../node_modules/.devtooie/logs/1784784120727.log", // current logfile (rotation-aware)
+    "logFile": "/abs/.../node_modules/.devtooie/logs/development/1784784120727.log", // current logfile (rotation-aware)
     "packages": { "web": "running", "api": "waiting" }, // running | stopped | waiting | restarting | rebuilding; null until the build and infra steps finish
     "config": {/* … */}, // the resolved config; null until the build and infra steps finish
     "devReverseProxy": {
@@ -33,8 +37,8 @@ it says where a session _would_ answer, not that one is running — query the po
   }
   ```
 
-  `pid`, `configPath`, `startedByAgent`, and `logFile` are present immediately — even while
-  the session is still building — so the endpoint never blocks on the build.
+  `pid`, `configPath`, `mode`, `startedByAgent`, and `logFile` are present immediately — even
+  while the session is still building — so the endpoint never blocks on the build.
   `startedByAgent` reports whether the session was launched by a coding agent rather than by
   a person, detected from the environment variables agents set (`CLAUDECODE`, `CURSOR_AGENT`,
   `AGENT`, and friends); it decides whether a starting session may quit this one without
@@ -96,8 +100,9 @@ the old process only if it overruns its graceful window).
 
 `SIGKILL` can't be trapped, so a devtooie killed outright (or lost to a crashed terminal) leaves its
 packages running, reparented to PID 1. To keep those from accumulating one generation per lost
-session, devtooie records the processes it spawns in `node_modules/.devtooie/running.json` and, on
-the next start, reaps whatever is still running.
+session, devtooie records the processes it spawns in its mode's `node_modules/.devtooie/running.<mode>.json`
+and, on the next start in that mode, reaps whatever is still running. A session in another mode is
+never swept.
 
 Records are matched as **process groups**, not single pids. Packages are spawned detached, so each
 recorded pid is also its group id — and the group outlives its leader. A dev command that wraps the
@@ -113,4 +118,5 @@ This sweep reaches packages that never bind a port, which the port check below c
 devtooie also frees its configured dev ports at startup, but only from processes belonging to **this
 workspace**. A configured port is a claim on a number, not ownership of it: if another project (or
 any other program) is listening there, devtooie reports it and leaves it running, and the package
-that wanted the port fails to bind as it normally would.
+that wanted the port fails to bind as it normally would. The same goes for a port held by a package
+of this project's session in another mode: devtooie names that mode and leaves it running.

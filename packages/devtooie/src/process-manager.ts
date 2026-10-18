@@ -148,7 +148,7 @@ export function packagePrefixColor(pkg: AnyPackageConfig, index: number): (s: st
 
 const MAX_BUFFER_LINES = 50_000;
 /**
- * Cap on the spawned-child records mirrored into `running.json`. Records outlive the processes
+ * Cap on the spawned-child records mirrored into the session record (`running.<mode>.json`). Records outlive the processes
  * themselves (see `trackChild`), so a long session with many restarts would otherwise accumulate
  * one entry per spawn forever.
  */
@@ -250,7 +250,7 @@ export class ProcessManager implements ControlManager {
   private disposed = false;
   /**
    * Every child this session has spawned, `pid → the directory it was spawned in`, mirrored into
-   * `running.json` so the next session can sweep them if this one is SIGKILLed (see
+   * the session record so the next session can sweep them if this one is SIGKILLed (see
    * {@link ChildRecord}). Retained past exit — see {@link ProcessManager.trackChild}.
    */
   private childRecords = new Map<number, string>();
@@ -1102,7 +1102,7 @@ export class ProcessManager implements ControlManager {
   }
 
   /**
-   * Records a freshly spawned child in `running.json`, for the *next* session's orphan sweep —
+   * Records a freshly spawned child in this mode's session record, for the *next* session's orphan sweep —
    * nothing in this session reads it back.
    *
    * A record is deliberately **not** removed when the child exits. Dev commands are commonly a
@@ -1114,8 +1114,8 @@ export class ProcessManager implements ControlManager {
    * running in its recorded directory before signalling anything, so a record for a long-dead
    * process is inert.
    *
-   * Best-effort throughout: `updateRunning` is a no-op unless this process owns the workspace's
-   * `running.json`, so a session that never wrote one (tests) simply records
+   * Best-effort throughout: `updateRunning` is a no-op unless this process owns its mode's
+   * session record, so a session that never wrote one (tests) simply records
    * nothing. Never let a bookkeeping failure interfere with actually running the package.
    */
   private trackChild(proc: ResultPromise, cwd: string): void {
@@ -1467,8 +1467,8 @@ export class ProcessManager implements ControlManager {
     fs.closeSync(this.logFd);
     this.logFilePath = getDefaultLogFile(path.dirname(this.logFilePath));
     this.logFd = fs.openSync(this.logFilePath, 'w');
-    // Keep running.json's `logFile` pointing at the file we're now writing, so `devtooie logs`
-    // (and anything reading running.json) always resolves the latest logfile after a rotation.
+    // Keep the session record's `logFile` pointing at the file we're now writing, so `devtooie logs`
+    // (and anything reading it) always resolves the latest logfile after a rotation.
     updateRunning(process.cwd(), { logFile: this.logFilePath });
     return this.logFilePath;
   }

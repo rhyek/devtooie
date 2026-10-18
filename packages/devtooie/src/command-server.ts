@@ -1,6 +1,7 @@
 import http from 'node:http';
 
 import { startedByAgent } from './agent-detection.js';
+import { currentMode } from './env.js';
 import type { DevReverseProxyServer } from './dev-reverse-proxy.js';
 
 export interface ControlManager {
@@ -93,6 +94,7 @@ export async function startCommandServer(opts: {
       return send(res, 200, {
         pid: process.pid,
         configPath: opts.configPath ?? null,
+        mode: currentMode(),
         startedByAgent: startedByAgent(),
         logFile: manager ? manager.getLogFile() : (opts.logFile ?? null),
         packages: manager ? manager.getAllStatuses() : null,

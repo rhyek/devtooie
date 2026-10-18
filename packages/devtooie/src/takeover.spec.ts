@@ -1,14 +1,19 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import type { SessionStatus } from './control-client.js';
 import { preflightTakeover, resolveTakeover, type PreflightDeps } from './takeover.js';
 
 const CONFIG = '/ws/devtooie.config.ts';
 
+// Pinned, so a run from inside a devtooie session of another mode can't change the answers.
+beforeEach(() => vi.stubEnv('DEVTOOIE_MODE', 'development'));
+afterEach(() => vi.unstubAllEnvs());
+
 function status(over: Partial<SessionStatus> = {}): SessionStatus {
   return {
     pid: 4242,
     configPath: CONFIG,
+    mode: 'development',
     startedByAgent: false,
     logFile: null,
     packages: null,
@@ -185,6 +190,37 @@ describe('preflightTakeover', () => {
       }),
     });
     expect(result.ok).toBe(false);
+  });
+
+  test("starts alongside this project's session in another mode, asking and quitting nothing", async () => {
+    // The hardest case to be let through: a person's session, and no terminal to ask.
+    const result = await preflightTakeover({
+      configPath: CONFIG,
+      mode: 'test',
+      killOthers: false,
+      deps: deps({
+        queryRunning: async () => status({ mode: 'development', startedByAgent: false }),
+        isInteractive: () => false,
+        selfStartedByAgent: () => true,
+        askToQuit: async () => {
+          throw new Error('must not prompt');
+        },
+      }),
+    });
+    expect(result).toEqual({ ok: true });
+  });
+
+  test('names the mode of the session it would quit', async () => {
+    const result = await preflightTakeover({
+      configPath: CONFIG,
+      mode: 'test',
+      killOthers: false,
+      deps: deps({
+        queryRunning: async () => status({ mode: 'test' }),
+        isInteractive: () => false,
+      }),
+    });
+    expect(result.ok === false && result.message).toMatch(/Another test devtooie session is already running/); // prettier-ignore
   });
 
   it('skips the question entirely with --kill-others', async () => {

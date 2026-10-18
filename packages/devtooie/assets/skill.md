@@ -11,7 +11,8 @@ queried for logs while a session runs.
 
 > **Stop and restart sessions through the control API — never `kill`, `pkill`, or
 > `lsof … | kill` a devtooie process or its port.** To stop a running session,
-> `POST /command/quit` (to the API port in `node_modules/.devtooie/running.json`); it shuts
+> `POST /command/quit` (to the API port in `node_modules/.devtooie/running.<mode>.json`, e.g.
+> `running.development.json`); it shuts
 > every package down gracefully and frees the ports — that's all you need before relaunching. To
 > restart one package in place without stopping the session, `POST /command/restart/<name>`.
 > Reaching for a raw OS kill is a mistake: it kills the process out from under devtooie and

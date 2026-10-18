@@ -99,11 +99,11 @@ const program = new Command()
   )
   .option(
     '--log-dir <dir>',
-    'write the timestamped session log into this directory (default: node_modules/.devtooie/logs/)',
+    'write the timestamped session log into this directory (default: node_modules/.devtooie/logs/<mode>/)',
   )
   .option(
     '--kill-others',
-    "quit a devtooie session already running for this project instead of asking (agents: don't pass this unprompted)",
+    "quit the devtooie session already running for this project in the same mode instead of asking (agents: don't pass this unprompted)",
     false,
   );
 
@@ -182,8 +182,9 @@ program
 program
   .command('logs')
   .description(
-    "print the current dev session's logfile (queried from the running instance, else the newest under node_modules/.devtooie/logs/)",
+    "print the logfile of the mode's dev session (queried from the running instance, else the newest under node_modules/.devtooie/logs/<mode>/)",
   )
+  .option(MODE_FLAGS, MODE_HELP) // see `exec`
   .option(
     '-f, --follow',
     'stream new lines live (native `tail -f`) instead of printing the file and exiting',

@@ -1,13 +1,16 @@
 import { spawn } from 'node:child_process';
+import path from 'node:path';
 import { connectControlClient } from '../control-client.js';
+import { currentMode } from '../env.js';
 import { getLogDir, resolveLogFile } from '../log-files.js';
 import { readRunning } from '../running.js';
 
 /**
- * `devtooie logs`: print the current session's logfile, follow it, or print its path.
+ * `devtooie logs`: print the current session's logfile, follow it, or print its path — the
+ * session of the active mode (`--mode`, default `development`).
  *
  * Strictly READ-ONLY: `devtooie logs` must NEVER terminate a running session. It only reads
- * running.json and issues a read-only GET /query/status, then cats/tails a file — it must never
+ * the mode's session record and issues a read-only GET /query/status, then cats/tails a file — it must never
  * go through acquireDevSession/decideControlPort, which hand off (shut down) an instance.
  */
 export async function runLogs(opts: { follow?: boolean; path?: boolean }): Promise<never> {
@@ -28,7 +31,7 @@ export async function runLogs(opts: { follow?: boolean; path?: boolean }): Promi
   });
   if (!logFile) {
     console.error(
-      'devtooie logs: no logfile found (no running session, and no logs under node_modules/.devtooie/logs/).',
+      `devtooie logs: no logfile found (no running ${currentMode()} session, and no logs under ${path.relative(cwd, getLogDir()) || getLogDir()}/).`,
     );
     process.exit(1);
   }

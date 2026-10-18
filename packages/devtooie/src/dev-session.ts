@@ -9,7 +9,13 @@ import {
   startDevReverseProxy,
   type DevReverseProxyServer,
 } from './dev-reverse-proxy.js';
-import { decideControlPort, isPortListening, readRunning, type RunningState } from './running.js';
+import {
+  decideControlPort,
+  isPortListening,
+  readOtherModesRunning,
+  readRunning,
+  type RunningState,
+} from './running.js';
 import { HANDOFF_FORCE_KILL_MS } from './shutdown-timing.js';
 
 export function parseLsofPids(out: string): number[] {
@@ -158,6 +164,24 @@ export async function partitionByWorkspace(
   return { ours, foreign };
 }
 
+/**
+ * The live sessions of this workspace's *other* modes, as a map from each package process group
+ * they recorded to that session's mode. A port held by one of those groups belongs to a session
+ * running alongside this one, never to this mode's orphans.
+ */
+export function otherModeGroups(cwd: string): Map<number, string> {
+  const groups = new Map<number, string>();
+  for (const [mode, state] of readOtherModesRunning(cwd)) {
+    if (!isProcessAlive(state.pid)) {
+      continue;
+    }
+    for (const child of state.children ?? []) {
+      groups.set(child.pid, mode);
+    }
+  }
+  return groups;
+}
+
 /** Parses `ps -Ao pid=,pgid=` into `{ pid, pgid }` pairs. */
 export function parsePsGroups(out: string): { pid: number; pgid: number }[] {
   return out
@@ -166,6 +190,17 @@ export function parsePsGroups(out: string): { pid: number; pgid: number }[] {
     .map((l) => l.trim().split(/\s+/).map(Number))
     .filter(([pid, pgid]) => Number.isInteger(pid) && Number.isInteger(pgid))
     .map(([pid, pgid]) => ({ pid: pid!, pgid: pgid! }));
+}
+
+/** The process group of each of `pids` that is still alive. */
+async function processGroups(pids: number[]): Promise<Map<number, number>> {
+  const { stdout } = await execa('ps', ['-Ao', 'pid=,pgid='], { reject: false });
+  const wanted = new Set(pids);
+  return new Map(
+    parsePsGroups(stdout)
+      .filter(({ pid }) => wanted.has(pid))
+      .map(({ pid, pgid }) => [pid, pgid]),
+  );
 }
 
 /** Live members of each process group, from `ps` output. */
@@ -183,8 +218,9 @@ export function groupMembers(procs: { pid: number; pgid: number }[]): Map<number
 }
 
 /**
- * Kills package processes a previous session recorded in `running.json` but never cleaned up —
- * the SIGKILL case, where no shutdown path ran at all.
+ * Kills package processes a previous session in this mode recorded in its `running.<mode>.json`
+ * but never cleaned up — the SIGKILL case, where no shutdown path ran at all. Only this mode's
+ * record is ever read, so a session in another mode is never swept.
  *
  * Records are matched as **process groups**, not as single pids, and that distinction is the whole
  * point. Packages are spawned `detached: true`, so each recorded pid is also its group id, and the
@@ -339,9 +375,14 @@ export async function startSessionDevReverseProxy(opts: {
     return null;
   }
   if (await isPortListening(proxy.port)) {
+    const others = [...readOtherModesRunning(process.cwd())]
+      .filter(([, state]) => isProcessAlive(state.pid))
+      .map(([mode]) => mode);
     throw new Error(
-      `dev reverse proxy port ${String(proxy.port)} is already in use by another program. ` +
-        'Free it, or change `devReverseProxy.port` in devtooie.config.ts.',
+      `dev reverse proxy port ${String(proxy.port)} is already in use` +
+        (others.length
+          ? ` — by this project's ${others.join('/')} session, or another program. Each mode's session needs its own \`devReverseProxy.port\`; give this mode a different one in its .env file.`
+          : ' by another program. Free it, or change `devReverseProxy.port` in devtooie.config.ts.'),
     );
   }
   return startDevReverseProxy({
@@ -355,22 +396,23 @@ export async function startSessionDevReverseProxy(opts: {
 }
 
 /**
- * Prepares a dev session: decides (and records in `running.json`) the control-API port,
- * handing off or relocating around any instance already on it (see
- * {@link decideControlPort}), then sweeps orphans off this workspace's package dev ports.
- * Returns the chosen control-API port.
+ * Prepares a dev session: decides (and records in this mode's `running.<mode>.json`) the
+ * control-API port, handing off or relocating around any instance already on it (see
+ * {@link decideControlPort}), then sweeps orphans off this workspace's package dev ports —
+ * leaving alone whatever a live session in another mode runs. Returns the chosen control-API
+ * port.
  */
 export async function acquireDevSession(opts: {
   /** Absolute path to this session's `devtooie.config.*` — identifies this workspace. */
   configPath: string;
   /** A user-pinned `apiPort`, if any; when set, the port is fixed instead of random. */
   apiPortOverride?: number;
-  /** This session's logfile; its directory is recorded in `running.json` as `logDir`. */
+  /** This session's logfile; its directory is recorded in the session record as `logDir`. */
   logFile?: string;
   onStatus?: (msg: string) => void;
 }): Promise<number> {
   const onStatus = opts.onStatus ?? (() => {});
-  // Read before `decideControlPort` — it rewrites `running.json` with this session's pid, which
+  // Read before `decideControlPort` — it rewrites the record with this session's pid, which
   // would drop the previous session's child records before we've had a chance to sweep them.
   const previous = readRunning(process.cwd());
   const port = await decideControlPort({
@@ -396,7 +438,18 @@ export async function acquireDevSession(opts: {
     // side effect well outside what starting a dev session should do. Say so and let the
     // package's own startup fail loudly on the bound port instead.
     const { ours, foreign } = await partitionByWorkspace(holders, getWorkspaceDir());
-    await killTrees(ours);
+    // Nor a holder that is a package of this workspace's session in another mode: it runs
+    // alongside this one, and a shared port is a clash between the modes' configs, not an orphan.
+    const otherModes = otherModeGroups(process.cwd());
+    const groupOf = otherModes.size ? await processGroups(ours) : new Map<number, number>();
+    const orphans = ours.filter((pid) => !otherModes.has(groupOf.get(pid) ?? -1));
+    await killTrees(orphans);
+    for (const pid of ours) {
+      const mode = otherModes.get(groupOf.get(pid) ?? -1);
+      if (mode !== undefined) {
+        onStatus(`dev port held by this project's ${mode} session (pid ${String(pid)}) — leaving it alone`); // prettier-ignore
+      }
+    }
     for (const pid of foreign) {
       onStatus(`dev port held by another program (pid ${String(pid)}) — leaving it alone`);
     }

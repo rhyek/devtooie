@@ -281,7 +281,7 @@ Debian's and Ubuntu's `/bin/sh` stays as a small parent process. A Makefile targ
 | `packageRootDir` | The directory the packages live under, e.g. `'packages'`: each package's directory is inferred as `<packageRootDir>/<key>`, and `relativeDir` becomes an optional override. Without it, every package must set `relativeDir`. **Always set it** and omit `relativeDir` unless a package really lives elsewhere. |
 | `env`          | Environment options: [`vars`](#envvars) (variables of the config's own, for everything devtooie starts) and `override` (which variables a `.env` file may win over the ambient environment for). Which files load is chosen with `--mode`. See [Environment loading](#environment-env-loading). |
 | `logs`         | Log display options: `{ timestamps?: boolean }` (default `true`) — see [Log timestamps](#log-timestamps).                                                          |
-| `apiPort`      | Pin the [control API](#drive-a-running-session-via-the-control-api) port (otherwise chosen automatically).                                                         |
+| `apiPort`      | Pin the [control API](#drive-a-running-session-via-the-control-api) port (otherwise chosen automatically). A pinned port serves one mode's session at a time. |
 | `urls`         | Workspace-wide footer links, not tied to a package. Same shape as a package's `urls`, but a callback here gets only `{ envs, tokens }` (no package, so no `port`). |
 | `tokens`       | Values of your own, handed to every callback as `tokens` (a package's own `tokens` are merged on top) — see [Callbacks](#callbacks-instead-of-interpolation).      |
 | `infra`        | Infrastructure that isn't a package — databases, caches, brokers — keyed by provider: `{ 'docker-compose': { file?, readyTimeout?, services? } }`, where `services` gives a service its `enabled`, its `port` and `proxy`, and callbacks. Brought up, and waited on, before the packages start. See [Infra](#infra). |
@@ -1388,8 +1388,9 @@ a worker — **including when you don't yet know whether devtooie manages it, or
 uses devtooie at all**. Work through these four steps; each is cheap, and any one of them can end
 with a complete answer.
 
-Check before you start anything. Only one session can run a project, so starting a second one
-means quitting the first and every dev process under it. devtooie will **refuse** to do that
+Check before you start anything. A project runs one session per [mode](#modes---mode), so
+starting a second one in the same mode means quitting the first and every dev process under it
+(a session in another mode — `--mode test` next to `development` — just runs alongside). devtooie will **refuse** to do that
 from an agent when a person started the running session — you'll get an error and a non-zero
 exit, not a session (see [Taking over a running session](#taking-over-a-running-session)).
 Starting devtooie "just to see" is never free: at best it's an error, at worst it restarts
@@ -1415,21 +1416,25 @@ API — it need not match the directory name or the `package.json` name, and a r
 apps devtooie was never taught about. If the app isn't a key there, it is **not devtooie-managed**;
 that's a legitimate answer to report, then check it directly with the fallback below.
 
-**3. Is a session live right now?** `node_modules/.devtooie/running.json` (under the config's
-directory) records the control-API `port`. **devtooie never deletes that file, so its existence
-proves nothing** — an exited or killed session leaves it behind. Only a reply from the API proves a
-session is up:
+**3. Is a session live right now?** Each mode's session records its control-API `port` in
+`node_modules/.devtooie/running.<mode>.json` (under the config's directory) —
+`running.development.json` for a plain `devtooie`, `running.test.json` for `--mode test`. Check
+the mode you care about (`ls node_modules/.devtooie/running.*.json` lists every mode that has run).
+**devtooie never deletes that file, so its existence proves nothing** — an exited or killed session
+leaves it behind. Only a reply from the API proves a session is up:
 
 ```sh
-port=$(node -e "process.stdout.write(String(require('./node_modules/.devtooie/running.json').port))" 2>/dev/null)
+mode=development   # or test, …
+port=$(node -e "process.stdout.write(String(require('./node_modules/.devtooie/running.$mode.json').port))" 2>/dev/null)
 curl -s --max-time 2 "http://127.0.0.1:$port/query/status"
 ```
 
-- No `running.json`, connection refused, or no valid JSON → **no session is running** for this
-  workspace. Nothing devtooie starts is up (though the app may still be running on its own — see
-  the fallback below).
-- It answers, but `configPath` is not this workspace's config → that port now belongs to a
-  **different workspace's** session (sessions relocate ports), so there's no session here.
+- No such file, connection refused, or no valid JSON → **no session is running** in that mode for
+  this workspace. Nothing devtooie starts in it is up (though the app may still be running on its
+  own — see the fallback below).
+- It answers, but `configPath` is not this workspace's config, or `mode` is not the mode you asked
+  about → that port now belongs to a **different** session (sessions relocate ports), so there's no
+  session of that mode here.
 
 **4. Read the package's state** from the `packages` map in that answer (e.g. `{ "backend": "running" }`):
 
@@ -1471,7 +1476,9 @@ process devtooie doesn't own, report it and let the human decide.
 
 ## Taking over a running session
 
-Only one devtooie session can run a project at a time, so starting a second one quits the
+A project runs one devtooie session per [mode](#modes---mode). A session in another mode runs
+alongside — `devtooie --mode test --plain` starts next to the `development` session, whoever
+started it, and nothing is asked or quit. Starting a second session in the **same** mode quits the
 first — and every dev process under it. What happens when you try:
 
 | Situation                                        | What devtooie does                      |
@@ -1564,8 +1571,8 @@ Common options:
 | `--last-answers`       | Skip selection; reuse the last saved selection. If a saved name is no longer a package (a renamed key), the picker opens instead with the surviving names preselected; `--plain`/`--build` refuse with a message naming the stale ones.                                                                                                                                                            |
 | `--build`              | Build the selected packages and their build-time deps, then exit (no run phase).                                                                                                                           |
 | `--rebuild`            | Like `--build`, but first clears `dist/` for every build target.                                                                                                                                           |
-| `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/`. Each run gets a fresh `<timestamp>.log`; previous sessions' logs are kept. Also used by `devtooie exec` and `devtooie run`. |
-| `--kill-others`        | Quit a devtooie session already running for this project instead of asking. **Never pass this on your own initiative** — see [Taking over a running session](#taking-over-a-running-session).              |
+| `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/<mode>/`. Each run gets a fresh `<timestamp>.log`; previous sessions' logs are kept. Also used by `devtooie exec` and `devtooie run`. |
+| `--kill-others`        | Quit the devtooie session already running for this project in the same mode instead of asking. **Never pass this on your own initiative** — see [Taking over a running session](#taking-over-a-running-session).              |
 
 Subcommands:
 
@@ -1757,6 +1764,14 @@ modes belong in `.env` / `.env.local`, which load in every mode. (This is delibe
 cumulative mode could override an inherited variable but never unset one, so a `.env.test` that
 forgot `DATABASE_URL` would silently run against the development database.)
 
+**One session per mode.** A workspace runs one devtooie session per mode, side by side: a
+`--mode test` session for an e2e run starts next to the `development` session the user is
+working in, and neither touches the other — each has its own `running.<mode>.json`, its own logs
+under `node_modules/.devtooie/logs/<mode>/`, and its own processes. Only a session in the same mode
+is taken over (see [Taking over a running session](#taking-over-a-running-session)). For two modes
+to run at once, each needs its own ports in its `.env.<mode>` file; a port held by another mode's
+session is reported and left alone, and the package wanting it fails to bind.
+
 `--mode` does **not** set `NODE_ENV`: a mode name is free-form, while `NODE_ENV` is effectively
 limited to `development`/`production`/`test` by the wider ecosystem. Set it from the mode's own
 file instead — `NODE_ENV=test` inside `.env.test`. (That line is itself subject to ambient-wins,
@@ -1794,7 +1809,7 @@ devtooie run -p <name> <script> -- ...      # target <name> explicitly (from any
 - `devtooie exec` — runs the literal command after `--`, which is required.
 - The command's exit code is propagated, and devtooie exits as soon as the command does.
 - Output streams to your terminal **and** is teed to a fresh timestamped logfile under
-  `node_modules/.devtooie/logs/` (or `--log-dir`). devtooie prints nothing of its own around it —
+  `node_modules/.devtooie/logs/<mode>/` (or `--log-dir`). devtooie prints nothing of its own around it —
   the output you see is exactly the command's, so both are safe to pipe or capture.
 
 You do not need this for packages devtooie is already running (their env is injected
@@ -1822,9 +1837,9 @@ script/target name or `[name, { watches, builds, cleans }]`:
   without separate `clean`/`build` scripts — a rebuild just restarts it.
 
 **Fetch the config early, and re-fetch before acting.** On first involvement with a running
-session, read `node_modules/.devtooie/running.json` (for the port) and `GET /query/status` once
-(read its `config` field). Then, each time you're about to restart/rebuild a package, **re-read
-`running.json`** (the port changes if the user restarted devtooie) and **re-`GET /query/status`** —
+session, read its mode's `node_modules/.devtooie/running.<mode>.json` (for the port) and
+`GET /query/status` once (read its `config` field). Then, each time you're about to restart/rebuild
+a package, **re-read `running.<mode>.json`** (the port changes if the user restarted devtooie) and **re-`GET /query/status`** —
 the user may have edited the config and restarted the session, changing what a package needs.
 Don't trust a cached copy across a possible restart.
 
@@ -1873,20 +1888,23 @@ don't behave this way and need nothing.
 
 A running devtooie session (whether started by you or a human) exposes a localhost-only HTTP
 control API on a port chosen at startup — mostly useful for coding agents, but open to any
-tooling. **Read the active port from `node_modules/.devtooie/running.json`** — devtooie writes the
-current `{ "port", "pid", "logDir", "logFile" }` there (`logDir` is where this session's logs go;
+tooling. **Read the active port from `node_modules/.devtooie/running.<mode>.json`** — the record of
+that mode's session, `running.development.json` for a plain `devtooie` (one session per mode, each
+with its own record and port). devtooie writes the current `{ "port", "pid", "logDir", "logFile" }` there (`logDir` is where this session's logs go;
 `logFile` is the current logfile, kept up to date across in-session rotation). Always resolve the
 port from that file rather than assuming one; a project may pin a fixed port with `apiPort` in
-`devtooie.config.ts`, but `running.json` is always current for the last session started. It is not
+`devtooie.config.ts` (it then serves one mode at a time), but `running.<mode>.json` is always
+current for the last session started in that mode. It is not
 removed when a session ends, so it says where a session _would_ answer, not that one is live — see
 [Is the app already running?](#is-the-app-already-running) to check that.
 
 Endpoints (all plain HTTP, no auth — localhost-only):
 
 - `GET /query/status` — a single snapshot of the session,
-  `{ pid, configPath, startedByAgent, logFile, packages, config, devReverseProxy }`:
+  `{ pid, configPath, mode, startedByAgent, logFile, packages, config, devReverseProxy }`:
   - `pid` / `configPath` — the session's PID and the absolute path to the `devtooie.config.*` it
     was started with; available immediately, even while the session is still building.
+  - `mode` — the mode the session runs in (`development`, `test`, …).
   - `startedByAgent` — whether a coding agent started this session rather than a person. Decides
     whether a starting session may quit it without asking; see
     [Taking over a running session](#taking-over-a-running-session).
@@ -1972,8 +1990,9 @@ If a package needs to flush or persist state on shutdown, do it on `SIGTERM`, an
 
 `SIGKILL` can't be trapped, so a devtooie killed outright (or lost to a crashed terminal) leaves its
 packages running, reparented to PID 1. To keep those from accumulating one generation per lost
-session, devtooie records the processes it spawns in `node_modules/.devtooie/running.json` and, on
-the next start, reaps whatever is still running.
+session, devtooie records the processes it spawns in its mode's `node_modules/.devtooie/running.<mode>.json`
+and, on the next start in that mode, reaps whatever is still running. A session in another mode is
+never swept.
 
 Records are matched as **process groups**, not single pids. Packages are spawned detached, so each
 recorded pid is also its group id — and the group outlives its leader. A dev command that wraps the
@@ -1989,7 +2008,8 @@ This sweep reaches packages that never bind a port, which the port check below c
 devtooie also frees its configured dev ports at startup, but only from processes belonging to **this
 workspace**. A configured port is a claim on a number, not ownership of it: if another project (or
 any other program) is listening there, devtooie reports it and leaves it running, and the package
-that wanted the port fails to bind as it normally would. If you're diagnosing "my package won't
+that wanted the port fails to bind as it normally would. The same goes for a port held by a package
+of this project's session in another mode: devtooie names that mode and leaves it running. If you're diagnosing "my package won't
 start, the port is taken", that message is the signal — find the other program rather than expecting
 devtooie to clear it.
 
@@ -2003,26 +2023,28 @@ subcommand:
 devtooie logs        # print the whole current logfile
 devtooie logs -f     # ...then stream new lines live (Ctrl+C to stop — the session keeps running)
 devtooie logs --path # print just the resolved logfile path (for piping), then exit
+devtooie logs --mode test  # the test-mode session's logfile
 ```
 
 `devtooie logs` is **strictly read-only** and never starts, hands off, or shuts down a session. It
-resolves the current logfile in order of precedence: (1) ask the running instance over the control
-API (`GET /query/status` → `logFile`); (2) the `logFile` recorded in `running.json` (kept current
+reads the session of the active mode (`--mode`, default `development`) and resolves its current
+logfile in order of precedence: (1) ask the running instance over the control
+API (`GET /query/status` → `logFile`); (2) the `logFile` recorded in `running.<mode>.json` (kept current
 across in-session log rotation — the `t` hotkey — and more precise than scanning the dir, where a
 stray `devtooie exec` log could be newer), if it still exists; (3) the newest logfile in the
 session's log directory. (`-f` uses the Unix `tail`/`cat`, so macOS/Linux only; `--path` is
 mutually exclusive with `-f`.)
 
 To locate the file yourself instead (e.g. to `grep` an earlier run), the directory devtooie writes
-into is recorded in `node_modules/.devtooie/running.json` as **`logDir`**; it defaults to
-`node_modules/.devtooie/logs/` and only differs when the session was started with `--log-dir`.
+into is recorded in `node_modules/.devtooie/running.<mode>.json` as **`logDir`**; it defaults to
+`node_modules/.devtooie/logs/<mode>/` and only differs when the session was started with `--log-dir`.
 Each session (and each in-session log rotation) writes a **fresh** file named `<timestamp>.log`;
 `devtooie exec` and `devtooie run` write one too. devtooie never truncates or overwrites an existing log, so logs
 from earlier sessions stay on disk.
 
 ```sh
-# the session's log dir from running.json, falling back to the default
-dir=$(node -e "process.stdout.write(require('./node_modules/.devtooie/running.json').logDir)" 2>/dev/null || echo node_modules/.devtooie/logs)
+# the development session's log dir from its record, falling back to the default
+dir=$(node -e "process.stdout.write(require('./node_modules/.devtooie/running.development.json').logDir)" 2>/dev/null || echo node_modules/.devtooie/logs/development)
 log=$(ls -t "$dir"/*.log | head -1)   # newest = current session
 tail -n 200 "$log"
 grep -i error "$log"
@@ -2050,8 +2072,8 @@ devtooie's own lifecycle notices (shutdown, git-branch change) are logged the sa
 ```
 
 **You generally don't need `--log-dir`.** If you start the session yourself, leave it off and logs
-land in the default `node_modules/.devtooie/logs/`. The flag only changes which directory the
-_running_ session writes into — and because that directory is recorded in `running.json`
+land in the default `node_modules/.devtooie/logs/<mode>/`. The flag only changes which directory the
+_running_ session writes into — and because that directory is recorded in `running.<mode>.json`
 (`logDir`), the command above finds the logs either way.
 
 ## Onboard a package into devtooie

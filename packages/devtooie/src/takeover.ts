@@ -1,8 +1,11 @@
 import { startedByAgent } from './agent-detection.js';
 import { connectControlClient, createControlClient, type SessionStatus } from './control-client.js';
+import { currentMode } from './env.js';
 
 /**
- * Deciding whether a starting session may quit the one already running for this project.
+ * Deciding whether a starting session may quit the one already running for this project in the
+ * same mode. A project runs one session per mode: a session in another mode runs alongside this
+ * one, so it is never quit, and never asked about.
  *
  * This runs as a **preflight**, before `acquireDevSession` — it has to. Acquisition doesn't
  * only hand off the control port: right after, it frees the configured dev ports by
@@ -57,6 +60,8 @@ export type PreflightOutcome = { ok: true } | { ok: false; message: string };
 export interface PreflightOptions {
   /** Absolute path to this session's config — identifies "the same project". */
   configPath: string;
+  /** This session's mode (the active one unless given) — only a session in it is quit. */
+  mode?: string;
   /** `--kill-others`. */
   killOthers: boolean;
   /** An explicit `apiPort` from the config, which pins where a running instance would be. */
@@ -87,7 +92,7 @@ const defaultDeps: PreflightDeps = {
     // Loaded here, not up top: most sessions start with no other one to ask about.
     const { confirm, isCancel } = await import('@clack/prompts');
     const answer = await confirm({
-      message: `Another devtooie session is running for this project (pid ${status.pid}). Quit it and start this one?`,
+      message: `Another ${status.mode} devtooie session is running for this project (pid ${status.pid}). Quit it and start this one?`,
       initialValue: true,
     });
     return !isCancel(answer) && answer === true;
@@ -104,11 +109,13 @@ const defaultDeps: PreflightDeps = {
 export async function preflightTakeover(opts: PreflightOptions): Promise<PreflightOutcome> {
   const deps = { ...defaultDeps, ...opts.deps };
   const cwd = opts.cwd ?? process.cwd();
+  const mode = opts.mode ?? currentMode();
 
   const running = await deps.queryRunning(cwd, opts.apiPortOverride);
-  // Nothing running, or something running for a *different* config — which the handoff
-  // protocol leaves alone anyway (it relocates rather than quitting a stranger).
-  if (!running || running.configPath !== opts.configPath) {
+  // Nothing running, something running for a *different* config, or this project's session in
+  // another mode — all of which the handoff protocol leaves alone anyway (it relocates rather
+  // than quitting them). A pinned `apiPort` held by another mode's session fails there instead.
+  if (!running || running.configPath !== opts.configPath || running.mode !== mode) {
     return { ok: true };
   }
 
@@ -140,7 +147,7 @@ function blockedMessage(running: SessionStatus): string {
     ? 'it was started by a coding agent'
     : 'it was not started by a coding agent, so someone is likely watching it in another terminal';
   return [
-    `Another devtooie session is already running for this project (pid ${running.pid}), and ${whose}.`,
+    `Another ${running.mode} devtooie session is already running for this project (pid ${running.pid}), and ${whose}.`,
     '',
     'devtooie will not quit it automatically, and there is no terminal here to ask.',
     '',

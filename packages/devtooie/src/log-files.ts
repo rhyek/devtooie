@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { currentMode } from './env.js';
 
 // Where a workspace's devtooie state and session logs live, and which logfile is the current
 // one. Kept free of the config and of anything that spawns, so `devtooie logs` loads only this.
@@ -11,9 +12,12 @@ export function getStateDir(): string {
   return dir;
 }
 
-/** Default directory for timestamped session logs: `node_modules/.devtooie/logs/`. */
+/**
+ * Default directory for the active mode's timestamped session logs:
+ * `node_modules/.devtooie/logs/<mode>/`. Each mode has its own, as each runs its own session.
+ */
 export function getLogDir(): string {
-  return path.join(getStateDir(), 'logs');
+  return path.join(getStateDir(), 'logs', currentMode());
 }
 
 /**
@@ -71,7 +75,7 @@ export function pickNewestLog(dir: string): string | null {
  * Picks the logfile `devtooie logs` should show, in order of precedence:
  *
  * 1. the running instance's current (rotation-aware) logfile, when it can be queried;
- * 2. the logfile recorded in `running.json` (`recordedLogFile`), when it still exists — more
+ * 2. the logfile recorded in the mode's session record (`recordedLogFile`), when it still exists — more
  *    precise than scanning the dir, since a stray `devtooie exec` log could be newer;
  * 3. the newest `*.log` in `fallbackDir`.
  *
@@ -80,7 +84,7 @@ export function pickNewestLog(dir: string): string | null {
 export async function resolveLogFile(opts: {
   /** Asks the live instance for its current logfile; resolves null if there's no live answer. */
   liveLogFile: () => Promise<string | null>;
-  /** The logfile recorded in `running.json`, used when there's no live answer and it still exists. */
+  /** The logfile recorded in the mode's session record, used when there's no live answer and it still exists. */
   recordedLogFile?: string | null;
   /** Directory searched for the newest `*.log` as a last resort. */
   fallbackDir: string;

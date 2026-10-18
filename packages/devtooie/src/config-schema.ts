@@ -273,7 +273,7 @@ export const DefineConfigSchema = z.object({
     .number()
     .optional()
     .describe(
-      'Fixed control-API port; omit to let devtooie pick one (recorded in `running.json`).',
+      'Fixed control-API port; omit to let devtooie pick one (recorded in `running.<mode>.json`). A fixed port serves the session of one mode at a time.',
     ),
   // Keyed by package name; the key becomes the package's `name`. Overridden in config.ts (a
   // mapped type carrying each package's own token types); documented there.

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +10,8 @@ import {
   updateRunning,
   pickRandomPort,
   decideControlPort,
+  readOtherModesRunning,
+  runningFilePath,
   type PortEnv,
   type InstanceInfo,
 } from './running.js';
@@ -17,8 +19,13 @@ import {
 let cwd: string;
 beforeEach(() => {
   cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-running-'));
+  // Pinned, so a run from inside a devtooie session of another mode can't change the answers.
+  vi.stubEnv('DEVTOOIE_MODE', 'development');
 });
-afterEach(() => fs.rmSync(cwd, { recursive: true, force: true }));
+afterEach(() => {
+  vi.unstubAllEnvs();
+  fs.rmSync(cwd, { recursive: true, force: true });
+});
 
 const inRange = (p: number) => p >= CONTROL_PORT_MIN && p < CONTROL_PORT_MIN + CONTROL_PORT_COUNT;
 
@@ -131,7 +138,7 @@ describe('decideControlPort — random mode', () => {
     const shutdowns: [number, number][] = [];
     const env = fakeEnv({
       listening: [14050],
-      info: { 14050: { pid: 999, configPath } },
+      info: { 14050: { pid: 999, configPath, mode: 'development' } },
       onShutdown: (p, pid) => shutdowns.push([p, pid]),
     });
     const port = await decideControlPort({ cwd, configPath, pid: 4242, env });
@@ -145,7 +152,7 @@ describe('decideControlPort — random mode', () => {
     let shutdownCalled = false;
     const env = fakeEnv({
       listening: [14050],
-      info: { 14050: { pid: 999, configPath: '/other/devtooie.config.ts' } },
+      info: { 14050: { pid: 999, configPath: '/other/devtooie.config.ts', mode: 'development' } },
       onShutdown: () => (shutdownCalled = true),
     });
     const port = await decideControlPort({ cwd, configPath, pid: 4242, env });
@@ -171,7 +178,7 @@ describe('decideControlPort — explicit apiPort override', () => {
     const shutdowns: [number, number][] = [];
     const env = fakeEnv({
       listening: [5000],
-      info: { 5000: { pid: 999, configPath } },
+      info: { 5000: { pid: 999, configPath, mode: 'development' } },
       onShutdown: (p, pid) => shutdowns.push([p, pid]),
     });
     const port = await decideControlPort({
@@ -190,7 +197,7 @@ describe('decideControlPort — explicit apiPort override', () => {
     let shutdownCalled = false;
     const env = fakeEnv({
       listening: [5000],
-      info: { 5000: { pid: 999, configPath: '/other/devtooie.config.ts' } },
+      info: { 5000: { pid: 999, configPath: '/other/devtooie.config.ts', mode: 'development' } },
       onShutdown: () => (shutdownCalled = true),
     });
     const port = await decideControlPort({
@@ -202,5 +209,84 @@ describe('decideControlPort — explicit apiPort override', () => {
     });
     expect(port).toBe(5000);
     expect(shutdownCalled).toBe(false);
+  });
+});
+
+// A workspace runs one session per mode: each mode has its own record, and a session only ever
+// hands off one in its own mode.
+describe('per-mode session records', () => {
+  const configPath = '/repo/devtooie.config.ts';
+  const statePath = (name: string) => path.join(cwd, 'node_modules', '.devtooie', name);
+
+  test("writes and reads the active mode's own running.<mode>.json", () => {
+    writeRunning(cwd, { port: 14001, pid: 1 });
+    vi.stubEnv('DEVTOOIE_MODE', 'test');
+    expect(readRunning(cwd)).toBeNull();
+    writeRunning(cwd, { port: 14002, pid: 2 });
+    expect(runningFilePath(cwd)).toBe(statePath('running.test.json'));
+    expect(readRunning(cwd)).toEqual({ port: 14002, pid: 2 });
+    expect(readRunning(cwd, 'development')).toEqual({ port: 14001, pid: 1 });
+    expect(fs.existsSync(statePath('running.development.json'))).toBe(true);
+  });
+
+  test("updates only the active mode's record, and only when this process owns it", () => {
+    writeRunning(cwd, { port: 14001, pid: 1 }, 'development');
+    writeRunning(cwd, { port: 14002, pid: process.pid }, 'test');
+    vi.stubEnv('DEVTOOIE_MODE', 'test');
+    updateRunning(cwd, { logFile: '/logs/test/2.log' });
+    expect(readRunning(cwd, 'test')).toEqual({ port: 14002, pid: process.pid, logFile: '/logs/test/2.log' }); // prettier-ignore
+    expect(readRunning(cwd, 'development')).toEqual({ port: 14001, pid: 1 });
+  });
+
+  test("reads a workspace-wide running.json as the default mode's record until that mode has its own", () => {
+    fs.mkdirSync(statePath(''), { recursive: true });
+    fs.writeFileSync(statePath('running.json'), JSON.stringify({ port: 14009, pid: 9 }));
+    expect(readRunning(cwd, 'development')).toEqual({ port: 14009, pid: 9 });
+    expect(readRunning(cwd, 'test')).toBeNull();
+    expect(readOtherModesRunning(cwd, 'test')).toEqual(new Map([['development', { port: 14009, pid: 9 }]])); // prettier-ignore
+    writeRunning(cwd, { port: 14001, pid: 1 }, 'development');
+    expect(readRunning(cwd, 'development')).toEqual({ port: 14001, pid: 1 });
+  });
+
+  test("lists the other modes' records, never the active one's", () => {
+    writeRunning(cwd, { port: 14001, pid: 1 }, 'development');
+    writeRunning(cwd, { port: 14002, pid: 2 }, 'test');
+    writeRunning(cwd, { port: 14003, pid: 3 }, 'e2e.ci');
+    expect(readOtherModesRunning(cwd, 'test')).toEqual(
+      new Map([
+        ['development', { port: 14001, pid: 1 }],
+        ['e2e.ci', { port: 14003, pid: 3 }],
+      ]),
+    );
+  });
+
+  test("relocates around this project's session in another mode, never shutting it down", async () => {
+    writeRunning(cwd, { port: 14050, pid: 111 }, 'development');
+    writeRunning(cwd, { port: 14050, pid: 222 }, 'test');
+    let shutdownCalled = false;
+    const env = fakeEnv({
+      listening: [14050],
+      info: { 14050: { pid: 111, configPath, mode: 'development' } },
+      onShutdown: () => (shutdownCalled = true),
+    });
+    const port = await decideControlPort({ cwd, configPath, mode: 'test', pid: 4242, env });
+    expect(shutdownCalled).toBe(false);
+    expect(port).not.toBe(14050);
+    expect(readRunning(cwd, 'test')).toEqual({ port, pid: 4242 });
+    expect(readRunning(cwd, 'development')).toEqual({ port: 14050, pid: 111 });
+  });
+
+  test("refuses a fixed apiPort held by this project's session in another mode", async () => {
+    let shutdownCalled = false;
+    const env = fakeEnv({
+      listening: [5000],
+      info: { 5000: { pid: 111, configPath, mode: 'development' } },
+      onShutdown: () => (shutdownCalled = true),
+    });
+    await expect(
+      decideControlPort({ cwd, configPath, mode: 'test', pid: 4242, apiPortOverride: 5000, env }),
+    ).rejects.toThrow(/apiPort 5000 is in use by this project's development session \(pid 111\)/);
+    expect(shutdownCalled).toBe(false);
+    expect(readRunning(cwd, 'test')).toBeNull();
   });
 });

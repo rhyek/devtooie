@@ -28,8 +28,8 @@ Common options:
 | `--last-answers`       | Skip selection; reuse the last saved selection. If a saved name is no longer a package (a renamed key), the picker opens instead with the surviving names preselected; `--plain`/`--build` refuse with a message naming the stale ones. |
 | `--build`              | Build the selected packages and their build-time deps, then exit (no run phase).                                                                                                                                                        |
 | `--rebuild`            | Like `--build`, but first clears `dist/` for every build target.                                                                                                                                                                        |
-| `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/`. Each run gets a fresh `<timestamp>.log`; previous sessions' logs are kept. Also used by [`devtooie exec` and `devtooie run`](#devtooie-exec-and-devtooie-run).             |
-| `--kill-others`        | Quit a devtooie session already running for this project instead of asking. See [Taking over a running session](#taking-over-a-running-session).                                                                                        |
+| `--log-dir <dir>`      | Write the timestamped session log into this directory. Defaults to `node_modules/.devtooie/logs/<mode>/`. Each run gets a fresh `<timestamp>.log`; previous sessions' logs are kept. Also used by [`devtooie exec` and `devtooie run`](#devtooie-exec-and-devtooie-run).             |
+| `--kill-others`        | Quit the devtooie session already running for this project in the same mode instead of asking. See [Taking over a running session](#taking-over-a-running-session).                                                                                        |
 
 Subcommands:
 
@@ -48,8 +48,10 @@ Subcommands:
 
 ## Taking over a running session
 
-Only one devtooie session can run a project at a time, so starting a second one has to
-quit the first — along with every dev process under it. devtooie asks before doing that:
+A project runs one devtooie session per [mode](../README.md#modes). A session in another mode
+runs alongside: `devtooie --mode test` starts next to the `development` session, and nothing is
+asked or quit. Starting a second session in the **same** mode has to quit the first — along with
+every dev process under it. devtooie asks before doing that:
 
 | Situation                                    | What happens                           |
 | -------------------------------------------- | -------------------------------------- |
@@ -144,7 +146,7 @@ devtooie exec -p api -- node src/migrate.ts
 
 The command's exit code is propagated, and devtooie exits as soon as the command does.
 Output is streamed to your terminal **and** teed to a fresh timestamped logfile under
-`node_modules/.devtooie/logs/` (or `--log-dir`), the same place a `--plain` session logs.
+`node_modules/.devtooie/logs/<mode>/` (or `--log-dir`), the same place a `--plain` session logs.
 Nothing else is printed — the terminal shows only the command's own output, so both compose in
 a pipeline.
 
@@ -192,18 +194,20 @@ output from another terminal, or for an agent tailing progress.
 devtooie logs         # print the whole current logfile and exit
 devtooie logs -f      # print it, then stream new lines live (Ctrl+C to stop)
 devtooie logs --path  # print just the resolved logfile path, then exit
+devtooie logs --mode test  # the test-mode session's logfile
 ```
 
-It finds the logfile without disturbing the session, in order of precedence:
+It reads the session of the active mode (`--mode`, default `development`), and finds its logfile
+without disturbing it, in order of precedence:
 
 1. If a session is running, it asks the instance over the [control API](control-api.md)
    (`GET /query/status` → `logFile`), so it always follows the **current** file even across
    in-session log rotation (the `t` hotkey).
-2. Otherwise, the `logFile` recorded in `node_modules/.devtooie/running.json` — the last logfile
+2. Otherwise, the `logFile` recorded in `node_modules/.devtooie/running.<mode>.json` — the last logfile
    the session was writing (kept current across rotation) — if it still exists. This is more
    precise than scanning the directory, where a stray `devtooie exec` log could be newer.
 3. Failing that, the **newest** `*.log` in the session's log directory (`logDir` from
-   `running.json`, else `node_modules/.devtooie/logs/`).
+   `running.<mode>.json`, else `node_modules/.devtooie/logs/<mode>/`).
 
 `devtooie logs` is **strictly read-only**: it never starts, hands off, or shuts down a session.
 Printing uses `cat`; `-f/--follow` uses `tail -n +1 -f` (native, so it prints the whole file
