@@ -92,21 +92,26 @@ export const HOTKEY_LABEL_COLOR: Color = '#bbbbbb';
 export const DEVTOOIE_LABEL_COLOR: Color = '#d7af5f';
 
 /**
- * Package-identity colors for log prefixes, ordered so adjacent packages land far
- * apart on the color wheel. Vivid truecolor shades — deliberately distinct from the
- * dull basic-ANSI colors the status text and dots use — and no pink or pastels.
+ * Package-identity colors for log prefixes. Vivid truecolor shades — deliberately
+ * distinct from the dull basic-ANSI colors the status text and dots use — and no pink
+ * or pastels.
+ *
+ * The order is a priority order, not a walk around the color wheel: a workspace of N
+ * packages wears the first N, so the leading entries are the ones most workspaces
+ * ever show. Preview a change — to the colors or to their order — with `pnpm palette`
+ * (`scripts/palette-preview.ts`) before making it.
  */
 export const PACKAGE_PALETTE: readonly Color[] = [
-  '#4C9AFF', // blue
-  '#22C3C3', // teal
-  '#7A6FFF', // periwinkle
-  '#FFC53D', // gold
-  '#E04262', // crimson
-  '#32CD32', // green
-  '#A56EFF', // purple
-  '#FF8C00', // orange
-  '#FFDC5C', // yellow
-  '#C77DFF', // violet
+  '#1FC5DA', // cyan
+  '#E74F62', // crimson
+  '#7898FC', // periwinkle
+  '#1FB5FA', // blue
+  '#FEBF33', // gold
+  '#5BCD4F', // green
+  '#BF98FD', // lavender
+  '#FE8445', // orange
+  '#07CEA9', // teal
+  '#D8D100', // yellow
 ];
 
 // ---------------------------------------------------------------------------

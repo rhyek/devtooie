@@ -17,6 +17,7 @@
 - **Log lines carry a timestamp by default — just the time while everything on screen is from the same day**, the full date once two days are visible together. Set `logs.timestamps: false` to hide them. See [docs/logging.md](docs/logging.md#timestamps).
 - **Each running package uses roughly 75 MB less memory and starts faster**, with no package-manager process kept alongside it. See [How a script is run](README.md#how-a-script-is-run).
 - **`devtooie exec`, `run`, `logs` and the other subcommands start in half the time or less, and a session uses about 70 MB less memory.**
+- **Package log prefixes wear a new default color palette** — a package's own `color` still wins. See [docs/configuration.md](docs/configuration.md).
 
 ### Fixes
 

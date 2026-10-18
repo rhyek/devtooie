@@ -34,6 +34,7 @@
   "scripts": {
     "postinstall": "node ./postinstall.js",
     "gen": "node scripts/gen-config-types.ts",
+    "palette": "node scripts/palette-preview.ts",
     "build": "rm -rf dist && pnpm gen && tsc -p ./tsconfig.build.json && chmod +x dist/cli.js"
   },
   "exports": {
