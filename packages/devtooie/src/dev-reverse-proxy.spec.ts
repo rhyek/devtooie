@@ -764,7 +764,9 @@ describe('infra services', () => {
     proxy.markInfraReady();
     const json = await request(proxy.port, `s3.${ROOT}`, { headers: { accept: 'application/json' } }); // prettier-ignore
     expect(json.status).toBe(502);
-    expect(JSON.parse(json.body)).toMatchObject({ service: 'store', port, code: 'ECONNRESET' });
+    expect(JSON.parse(json.body)).toMatchObject({ service: 'store', port });
+    // A reset that lands while the request is still being written surfaces as EPIPE instead.
+    expect(['ECONNRESET', 'EPIPE']).toContain(JSON.parse(json.body).code);
   });
 
   test("never consults a package's status, even one sharing the service's name", async () => {
