@@ -212,7 +212,7 @@ export type DragSelection = {
   onMouse: (report: PointerReport) => void;
   /** Copy `text` to the clipboard and toast `label`, lingering the highlight as a drag-copy does. For footer click-to-copy affordances (e.g. the logfile path). */
   flashCopy: (text: string, label: string) => void;
-  /** Drop any current selection (`esc`, filter change, resize, `k` — not scrolling); returns whether one was cleared. */
+  /** Drop any current selection (`esc`, filter change, resize, `c` — not scrolling); returns whether one was cleared. */
   clear: () => boolean;
 };
 

@@ -853,7 +853,7 @@ export function NativeRunner({
       return;
     }
 
-    if (input === 'k') {
+    if (input === 'c') {
       clearSelection();
       manager.clearBuffer();
       return;
@@ -967,7 +967,7 @@ export function NativeRunner({
   // `t: rotate` lives next to the logfile path instead (see below).
   const sessionHints: HotkeyHintItem[] = [
     { header: 'logs' },
-    { key: 'k', label: 'clear' },
+    { key: 'c', label: 'clear' },
     { key: 'f', label: 'filter' },
     { separator: true },
     { key: '^c', label: 'quit' },

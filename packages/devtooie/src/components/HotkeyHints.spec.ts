@@ -60,7 +60,7 @@ describe('HotkeyHints', () => {
         { width: 30, flexDirection: 'column' },
         h(HotkeyHints, {
           hints: [
-            { key: 'k', label: 'clear' },
+            { key: 'c', label: 'clear' },
             { key: 'f', label: 'filter' },
             { separator: true },
             { key: '^c', label: 'quit' },
@@ -70,7 +70,7 @@ describe('HotkeyHints', () => {
       30,
     );
     const text = lines.join('\n');
-    expect(text).toContain('k: clear');
+    expect(text).toContain('c: clear');
     expect(text).toContain('f: filter');
     expect(text).toContain('^c: quit');
     // Too wide for one 30-column line, so it must have wrapped between hints.

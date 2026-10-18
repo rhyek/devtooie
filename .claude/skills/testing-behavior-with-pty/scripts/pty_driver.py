@@ -204,7 +204,7 @@ class PtyDriver:
 
     def press(self, *names: str, delay: float = 0.4) -> "PtyDriver":
         """Press keys: named specials from KEYS (`press('down','down','enter')`)
-        or a single literal character hotkey (`press('m')`, `press('k')`). A
+        or a single literal character hotkey (`press('m')`, `press('c')`). A
         multi-character token that isn't a known key name is rejected as a
         likely typo (e.g. 'rihgt') — use `type()` for literal multi-char input."""
         for name in names:

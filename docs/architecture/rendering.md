@@ -316,7 +316,7 @@ enabling mouse reporting takes the mouse from the terminal, and `useDragSelectio
   `useLogViewport` exposes `firstVisibleFlatRow` to map between screen rows and
   that space. Anchoring here — not to screen cells — is what lets a selection ride
   along as content scrolls and as logs arrive (the thing native selection can't
-  do). It's only invalidated by a re-flow: resize, filter change, or `k` clear
+  do). It's only invalidated by a re-flow: resize, filter change, or `c` clear
   (all call `clearSelection`); eviction past `MAX_BUFFER_LINES` shifts flat rows,
   the one accepted edge case.
 - **Value-scoped copy.** A rendered row's gutter (timestamp + `[name]`) and hanging
@@ -350,7 +350,7 @@ enabling mouse reporting takes the mouse from the terminal, and `useDragSelectio
   (5s)** — so you briefly see what was copied — and the toast expires on its own
   clock, set to the same 5s so the two still go away together. They are two timers,
   though: dismissing the toast alone deliberately leaves the highlight up. `esc` (or
-  a filter change / resize / `k` / a fresh drag) clears both sooner and cancels the
+  a filter change / resize / `c` / a fresh drag) clears both sooner and cancels the
   linger. Scrolling does **not** clear it —
   the content-anchored highlight just rides along. The live selection lives in a ref
   (not state) so a burst of `move`+`up` in one read see each other synchronously; a
@@ -567,7 +567,7 @@ machinery is gated on `!plain`. Don't regress this path.
   never compute it from a measured height.
 - Text selection is app-managed and **anchored to flat-row/column content
   coordinates**, never to screen cells — that's what makes it survive scroll and
-  incoming logs. Clear it on any re-flow (resize, filter, `k`); don't clear it on
+  incoming logs. Clear it on any re-flow (resize, filter, `c`); don't clear it on
   plain appends.
 - The tab/window title is pinned once to `devtooie: <config-root basename>` on
   mount (`renderApp`, via `terminal-title.ts`). Child dev processes emit their own
