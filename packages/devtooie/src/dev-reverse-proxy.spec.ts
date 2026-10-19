@@ -855,6 +855,17 @@ describe('routesFromConfig', () => {
     ]);
   });
 
+  test('routes the bare root to a defaultPackage that declares no proxy, and nothing else', () => {
+    const config = defineConfig({
+      packageRootDir: 'packages',
+      devReverseProxy: { port: 4000, rootDomain: ROOT, defaultPackage: 'landing' },
+      packages: { landing: { port: 3000 }, worker: { port: 3001 } },
+    });
+    expect(routesFromConfig(config)).toEqual([
+      { kind: 'package', host: ROOT, package: 'landing', port: 3000, hasHealthcheck: false },
+    ]);
+  });
+
   test('is empty without a proxy block', () => {
     expect(
       routesFromConfig(

@@ -1485,6 +1485,46 @@ describe('devReverseProxy', () => {
     expect(noProxy.packages.web.publicOrigin).toBeUndefined();
   });
 
+  test('gives a defaultPackage with no proxy the bare root as its public origin', () => {
+    const cfg = defineConfig({
+      packageRootDir: 'packages',
+      devReverseProxy: {
+        port: 4000,
+        rootDomain: ['example.test', 'example.localhost'],
+        defaultPackage: 'landing',
+      },
+      packages: { landing: { port: 3000, urls: ['', '/pricing'] }, worker: { port: 3001 } },
+    });
+    expect(cfg.packages.landing.publicOrigin).toBe('https://example.test');
+    expect(cfg.packages.landing.urls).toEqual([
+      'https://example.test',
+      'https://example.test/pricing',
+    ]);
+    expect(cfg.packages.worker.publicOrigin).toBeUndefined();
+    expect(packageEnvLayer(cfg.packages.landing, { cwd: os.tmpdir() })).toMatchObject({
+      PORT: '3000',
+      PUBLIC_ORIGIN: 'https://example.test',
+    });
+  });
+
+  test('carries the proxy port on the bare-root origin under http', () => {
+    const cfg = defineConfig({
+      packageRootDir: 'packages',
+      devReverseProxy: { port: 4000, defaultPackage: 'landing' },
+      packages: { landing: { port: 3000 } },
+    });
+    expect(cfg.packages.landing.publicOrigin).toBe('http://localhost:4000');
+  });
+
+  test('keeps the subdomain origin for a defaultPackage that declares a subdomain', () => {
+    const cfg = defineConfig({
+      packageRootDir: 'packages',
+      devReverseProxy: { port: 4000, rootDomain: 'example.test', defaultPackage: 'web' },
+      packages: { web: { port: 3000, proxy: { subdomain: 'www' } } },
+    });
+    expect(cfg.packages.web.publicOrigin).toBe('https://www.example.test');
+  });
+
   test('injects PUBLIC_ORIGIN next to PORT, and an explicit .env PUBLIC_ORIGIN wins', () => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-origin-')));
     try {

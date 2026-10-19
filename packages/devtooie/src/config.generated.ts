@@ -110,7 +110,7 @@ export type GeneratedDefineConfig = {
     devReverseProxy?: {
         port: number | any;
         rootDomain?: (string | string[] | any) | undefined;
-        /** The package the bare `rootDomain` routes to. Must declare a `port`. Omit for a 404 there. */
+        /** The package the bare `rootDomain` routes to. Must declare a `port`; needs no `proxy`, and without one its `PUBLIC_ORIGIN` is the bare root. Omit for a 404 there. */
         defaultPackage?: string | undefined;
         /** Scheme of the public URLs devtooie derives (footer links, `PUBLIC_ORIGIN`). Defaults from the canonical `rootDomain`: `http` on `localhost` (the browser hits the proxy directly, so the URLs carry its `port`), `https` on any other root (a TLS terminator in front, so no port). */
         urlScheme?: ("http" | "https") | undefined;

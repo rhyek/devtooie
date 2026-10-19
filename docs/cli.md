@@ -78,7 +78,8 @@ as `config` on [`GET /query/status`](./control-api.md) — **without a session**
 defaults are applied, `command` is normalized, and every package carries its `relativeDir`
 (as written, or inferred from `packageRootDir`) and `absoluteDir`, its resolved `port`,
 `urls`, `healthcheck`, and — under the [dev reverse proxy](./dev-reverse-proxy.md) — its
-`publicOrigin` (`<urlScheme>://<subdomain>.<rootDomain>[:<port>]`). Each infra service the config
+`publicOrigin` (`<urlScheme>://<subdomain>.<rootDomain>[:<port>]`, or the bare root for a
+`defaultPackage` with no `proxy`). Each infra service the config
 names carries its `enabled`, its resolved `port`, its `proxy`, and its `publicOrigin` the same
 way. The `devReverseProxy` block itself is there too, with its port, its canonical `rootDomain`,
 and `rootDomains`, every root domain it routes under.

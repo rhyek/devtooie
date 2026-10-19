@@ -466,7 +466,10 @@ export interface DevReverseProxyInput<Top = TokenRecord, N extends string = stri
    * equal, and none may be a suffix of another.
    */
   rootDomain?: string | string[] | ((ctx: ConfigContext<Top>) => string | string[]);
-  /** The package the bare `rootDomain` routes to. Must declare a `port`. Omit for a 404 there. */
+  /**
+   * The package the bare `rootDomain` routes to. Must declare a `port`; needs no `proxy`, and
+   * without one its `PUBLIC_ORIGIN` is the bare root. Omit for a 404 there.
+   */
   defaultPackage?: NoInfer<N>;
   /**
    * Scheme of the public URLs devtooie derives (footer links, `PUBLIC_ORIGIN`). Defaults from
@@ -611,9 +614,10 @@ export type ResolvedPackageConfig<N extends string, T = TokenRecord> = Omit<
     healthcheck?: ResolvedHealthcheck;
     /**
      * The package's public origin under the dev reverse proxy —
-     * `<urlScheme>://<canonical subdomain>.<rootDomain>[:<port>]` — or `undefined` when the
-     * config has no `devReverseProxy` or the proxy doesn't route this package (no `proxy` or
-     * no `port`). Injected into the package's process as `PUBLIC_ORIGIN` (only one in the
+     * `<urlScheme>://<canonical subdomain>.<rootDomain>[:<port>]`, or the bare
+     * `<urlScheme>://<rootDomain>[:<port>]` for a `defaultPackage` that declares no subdomain —
+     * or `undefined` when the config has no `devReverseProxy` or the proxy doesn't route this
+     * package (no `port`, or neither a `proxy` nor `defaultPackage`). Injected into the package's process as `PUBLIC_ORIGIN` (only one in the
      * package's own `.env` file overrides it), and what the proxy's footer links are built from.
      */
     publicOrigin?: string;
@@ -1178,17 +1182,25 @@ function publicHost(proxy: ResolvedDevReverseProxy, host: string): string {
 
 /**
  * The origin a package's or service's public URLs start from, or `undefined` when the proxy
- * doesn't route it.
+ * doesn't route it. That is its canonical subdomain when it declares one, else the bare root
+ * domain when it is the `defaultPackage` — so a default package that also declares a subdomain
+ * keeps the subdomain origin, with the bare root as one more route to it.
  */
 function publicOriginOf(
   proxy: ResolvedDevReverseProxy | undefined,
-  target: { port: number | undefined; proxy?: ResolvedProxy | undefined },
+  target: { port: number | undefined; proxy?: ResolvedProxy | undefined; isDefault?: boolean },
 ): string | undefined {
-  const [canonical] = subdomainsOf(target);
-  if (!proxy || canonical === undefined || target.port === undefined) {
+  if (!proxy || target.port === undefined) {
     return undefined;
   }
-  return `${proxy.urlScheme}://${publicHost(proxy, `${canonical}.${proxy.rootDomain}`)}`;
+  const [canonical] = subdomainsOf(target);
+  const host =
+    canonical !== undefined
+      ? `${canonical}.${proxy.rootDomain}`
+      : target.isDefault
+        ? proxy.rootDomain
+        : undefined;
+  return host === undefined ? undefined : `${proxy.urlScheme}://${publicHost(proxy, host)}`;
 }
 
 /** One infra service with the provider that runs it — what routing and validation iterate over. */
@@ -1307,8 +1319,9 @@ function validateInfraServices(services: InfraServiceEntry[], packages: AnyPacka
 
 /**
  * Every hostname the dev reverse proxy routes to `pkg`, canonical subdomain first, then its
- * aliases, then the bare root domain when `pkg` is the `defaultPackage`. Empty for a package the
- * proxy doesn't route (no `proxy` or no `port`), and when the config has no proxy at all.
+ * aliases, then the bare root domain when `pkg` is the `defaultPackage` (which needs no `proxy`).
+ * Empty for a package the proxy doesn't route (no `port`, or neither a `proxy` nor the
+ * `defaultPackage` slot), and when the config has no proxy at all.
  */
 export function proxyHostsFor(
   config: Pick<Config<string>, 'devReverseProxy'> | null,
@@ -1507,7 +1520,11 @@ export function defineConfig<
     // What this package's relative URLs resolve against: its port on loopback, and — when the
     // dev reverse proxy routes it — its public origin. `urls` show the public form, the
     // `healthcheck` probes the private one (see `ResolvedUrlForms`).
-    const publicOrigin = publicOriginOf(devReverseProxy, { port, proxy: config.proxy });
+    const publicOrigin = publicOriginOf(devReverseProxy, {
+      port,
+      proxy: config.proxy,
+      isDefault: devReverseProxy?.defaultPackage === config.name,
+    });
     const scope = (where: string): UrlScope => ({ ctx, port, publicOrigin, where });
     return {
       ...config,

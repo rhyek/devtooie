@@ -207,7 +207,7 @@ export const DevReverseProxySchema = z.strictObject({
     .string()
     .optional()
     .describe(
-      'The package the bare `rootDomain` routes to. Must declare a `port`. Omit for a 404 there.',
+      'The package the bare `rootDomain` routes to. Must declare a `port`; needs no `proxy`, and without one its `PUBLIC_ORIGIN` is the bare root. Omit for a 404 there.',
     ),
   urlScheme: z
     .enum(['http', 'https'])

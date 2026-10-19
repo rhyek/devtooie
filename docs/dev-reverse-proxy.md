@@ -59,8 +59,10 @@ export default defineConfig({
   serves. The app behind it is configured from the canonical `PUBLIC_ORIGIN`, so whatever it
   derives from that — the HMR `clientPort` in the [Vite example](#websockets-and-vite-hmr), CORS
   origins, cookie domains — has to allow the alias as well.
-- **`defaultPackage`** — the package the bare `rootDomain` routes to. Must declare a `port`.
-  Without it the bare root is a 404.
+- **`defaultPackage`** — the package the bare `rootDomain` routes to. Must declare a `port`,
+  and needs no `proxy`: without one, the bare root is its public origin (its `PUBLIC_ORIGIN` and
+  `publicOrigin`); with a `proxy.subdomain`, that subdomain stays its origin and the bare root is
+  one more route to it. Without `defaultPackage` the bare root is a 404.
 - **`urlScheme`** — `'http' | 'https'`. The scheme of the public URLs devtooie derives (footer
   links, `PUBLIC_ORIGIN`), and with it whether they carry a port. **Defaults from `rootDomain`**:
   `http` on `localhost`, `https` on any other root. `http` means the browser hits the proxy
@@ -177,8 +179,8 @@ export default defineConfig({
 
 ## `PUBLIC_ORIGIN`
 
-Every routable package's process — one declaring both `proxy` and `port` — gets
-`PUBLIC_ORIGIN` injected next to `PORT`, under the same rule: only a `PUBLIC_ORIGIN` in the
+Every routable package's process — one with a `port` and either a `proxy` or the
+`defaultPackage` slot — gets `PUBLIC_ORIGIN` injected next to `PORT`, under the same rule: only a `PUBLIC_ORIGIN` in the
 package's own `.env` file overrides it. It is built from the block as
 
 ```
@@ -188,8 +190,10 @@ package's own `.env` file overrides it. It is built from the block as
 where the canonical subdomain is the package's `proxy.subdomain` (the first entry of an array —
 aliases never appear here) and the port follows the [`urlScheme` rule](#config): the proxy
 `port` under `http`, none under `https`. So `https://web.myproject.test` behind a TLS
-terminator, and `http://web.localhost:21050` on plain `localhost`. A package with a port but no
-`proxy` gets no `PUBLIC_ORIGIN` at all.
+terminator, and `http://web.localhost:21050` on plain `localhost`. A `defaultPackage` with no
+`proxy` gets the bare root instead, `<urlScheme>://<rootDomain>[:<port>]`:
+`https://myproject.test`, or `http://localhost:21050`. Any other package with no `proxy` gets
+no `PUBLIC_ORIGIN` at all.
 
 Apps use it for things like Vite's `server.allowedHosts` and `server.hmr` without repeating the
 subdomain in their own config. `devtooie exec` and `devtooie run` hand the same variable to a one-off command.

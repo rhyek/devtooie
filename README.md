@@ -372,8 +372,8 @@ at once, give each its own ports in its `.env.<mode>` file.
 
 With a [dev reverse proxy](docs/dev-reverse-proxy.md) configured, a routable package also gets
 `PUBLIC_ORIGIN` (its public `<urlScheme>://<subdomain>.<rootDomain>[:<port>]`, from its
-`proxy.subdomain`), under the same
-rule.
+`proxy.subdomain`, or the bare `<urlScheme>://<rootDomain>[:<port>]` for a `defaultPackage` with
+no `proxy`), under the same rule.
 
 A package's `port` is also injected as `PORT`. It wins over a `PORT` set
 workspace-wide — in a workspace `.env` file or `env.vars` — and only a `PORT` in

@@ -335,9 +335,10 @@ lib):
   `<subdomain>.<rootDomain>` to this package's `port` (aliases too) and injects `PUBLIC_ORIGIN`
   into its process. Without one, devtooie doesn't use it. Either way the canonical entry is
   handed to this package's callbacks as `subdomain` — see
-  [Callbacks](#callbacks-instead-of-interpolation). Each entry must be a DNS label — lowercase
-  letters, digits, and hyphens, not starting or ending with a hyphen, at most 63 characters —
-  and no two packages or infra services may declare the same one, canonical or alias.
+  [Callbacks](#callbacks-instead-of-interpolation). The proxy's [`defaultPackage`](#config),
+  served at the bare root, needs no `proxy`. Each entry must be a DNS label — lowercase letters,
+  digits, and hyphens, not starting or ending with a hyphen, at most 63 characters — and no two
+  packages or infra services may declare the same one, canonical or alias.
 - **`urls`** — links shown in the running footer, one entry per line. Each entry is a URL, a
   `{ label, url }`, or an **array** of those (rendered on the same line, space-separated). Any
   URL may be a callback, and any may be a **path** (`'/todos'`, or `'todos'`; `''` is the origin
@@ -748,8 +749,10 @@ export default defineConfig({
   serves. The app behind it is configured from the canonical `PUBLIC_ORIGIN`, so whatever it
   derives from that — the HMR `clientPort` in the [Vite example](#websockets-and-vite-hmr), CORS
   origins, cookie domains — has to allow the alias as well.
-- **`defaultPackage`** — the package the bare `rootDomain` routes to. Must declare a `port`.
-  Without it the bare root is a 404.
+- **`defaultPackage`** — the package the bare `rootDomain` routes to. Must declare a `port`,
+  and needs no `proxy`: without one, the bare root is its public origin (its `PUBLIC_ORIGIN` and
+  `publicOrigin`); with a `proxy.subdomain`, that subdomain stays its origin and the bare root is
+  one more route to it. Without `defaultPackage` the bare root is a 404.
 - **`urlScheme`** — `'http' | 'https'`. The scheme of the public URLs devtooie derives (footer
   links, `PUBLIC_ORIGIN`), and with it whether they carry a port. **Defaults from `rootDomain`**:
   `http` on `localhost`, `https` on any other root. `http` means the browser hits the proxy
@@ -866,8 +869,8 @@ export default defineConfig({
 
 ### `PUBLIC_ORIGIN`
 
-Every routable package's process — one declaring both `proxy` and `port` — gets
-`PUBLIC_ORIGIN` injected next to `PORT`, under the same rule: only a `PUBLIC_ORIGIN` in the
+Every routable package's process — one with a `port` and either a `proxy` or the
+`defaultPackage` slot — gets `PUBLIC_ORIGIN` injected next to `PORT`, under the same rule: only a `PUBLIC_ORIGIN` in the
 package's own `.env` file overrides it. It is built from the block as
 
 ```
@@ -877,8 +880,10 @@ package's own `.env` file overrides it. It is built from the block as
 where the canonical subdomain is the package's `proxy.subdomain` (the first entry of an array —
 aliases never appear here) and the port follows the [`urlScheme` rule](#config): the proxy
 `port` under `http`, none under `https`. So `https://web.myproject.test` behind a TLS
-terminator, and `http://web.localhost:21050` on plain `localhost`. A package with a port but no
-`proxy` gets no `PUBLIC_ORIGIN` at all.
+terminator, and `http://web.localhost:21050` on plain `localhost`. A `defaultPackage` with no
+`proxy` gets the bare root instead, `<urlScheme>://<rootDomain>[:<port>]`:
+`https://myproject.test`, or `http://localhost:21050`. Any other package with no `proxy` gets
+no `PUBLIC_ORIGIN` at all.
 
 Apps use it for things like Vite's `server.allowedHosts` and `server.hmr` without repeating the
 subdomain in their own config. `devtooie exec` and `devtooie run` hand the same variable to a one-off command.
@@ -1742,7 +1747,7 @@ They are typed on a callback's `envs`, so `envs.DEVTOOIE_WORKSPACE_DIR` is a `st
 A script that imports the config without devtooie still finds all three in each callback's
 `envs`: the default mode, its own working directory, and the config's `workspaceDir`.
 
-A package's `port` is also injected as `PORT` — it wins over a `PORT` set workspace-wide (in a workspace `.env` file or `env.vars`), and only a `PORT` in the package's own `.env` file overrides it — and under the [dev reverse proxy](#dev-reverse-proxy) a routable package also gets `PUBLIC_ORIGIN` (its public `https://<subdomain>.<rootDomain>`) under the same rule. The reverse direction works too: `port` may be a callback (`port: ({ envs }) => Number(envs.BACKEND_PORT)`) that reads these same resolved files to decide the port, and `healthcheck`/`urls` callbacks get the same `envs` — see [Callbacks instead of interpolation](#callbacks-instead-of-interpolation).
+A package's `port` is also injected as `PORT` — it wins over a `PORT` set workspace-wide (in a workspace `.env` file or `env.vars`), and only a `PORT` in the package's own `.env` file overrides it — and under the [dev reverse proxy](#dev-reverse-proxy) a routable package also gets `PUBLIC_ORIGIN` (its public `<urlScheme>://<subdomain>.<rootDomain>[:<port>]`, or the bare `<urlScheme>://<rootDomain>[:<port>]` for a `defaultPackage` with no `proxy`) under the same rule. The reverse direction works too: `port` may be a callback (`port: ({ envs }) => Number(envs.BACKEND_PORT)`) that reads these same resolved files to decide the port, and `healthcheck`/`urls` callbacks get the same `envs` — see [Callbacks instead of interpolation](#callbacks-instead-of-interpolation).
 
 ### Modes (`--mode`)
 

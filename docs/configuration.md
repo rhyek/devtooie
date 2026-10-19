@@ -74,6 +74,8 @@ lib):
   it's data for tooling that reads the exported config (`config.packages.api.proxy.subdomain`),
   such as a reverse proxy of your own. Either way the canonical entry is handed to this
   package's callbacks as `subdomain` — see [Callbacks](#callbacks-instead-of-interpolation).
+  The proxy's [`defaultPackage`](./dev-reverse-proxy.md#config), served at the bare root, needs
+  no `proxy`.
   Each entry must be a DNS label — lowercase letters, digits, and hyphens, not starting or
   ending with a hyphen, at most 63 characters — and no two packages or infra services may
   declare the same one, canonical or alias.
