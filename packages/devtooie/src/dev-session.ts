@@ -333,7 +333,7 @@ export async function shutdownInstance(port: number, pid: number): Promise<void>
     return;
   }
   const deadline = Date.now() + HANDOFF_FORCE_KILL_MS;
-  await createControlClient(port).quit();
+  await createControlClient(port).command.quit();
   while (Date.now() < deadline) {
     try {
       process.kill(pid, 0);

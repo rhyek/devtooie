@@ -453,10 +453,11 @@ devtooie infra up --reset db   # wipe one service's data and start it clean
 devtooie infra docker-compose logs -f db   # Compose itself, bound to this project and mode
 ```
 
-Per-service callbacks (`beforeUp`, `afterReady`, `afterDestroy`) run your migrations and seeds,
-`enabled` switches a service off by mode or by a missing variable, a `port` and a `proxy`
-route a service through the [dev reverse proxy](#dev-reverse-proxy) like a package, and each
-[mode](#modes) gets its own Compose project, so `--mode test` has its own containers and ports.
+Per-service callbacks (`beforeUp`, `afterReady`, `afterDestroy`) run your migrations and seeds
+and can drive the running session (restart a package after a reset, say), `enabled` switches a
+service off by mode or by a missing variable, a `port` and a `proxy` route a service through
+the [dev reverse proxy](#dev-reverse-proxy) like a package, and each [mode](#modes) gets its
+own Compose project, so `--mode test` has its own containers and ports.
 In a session, the footer shows each service's live state, and a service selected with the
 arrow keys can be started, stopped, restarted or reset from it — or from the
 [control API](docs/control-api.md).

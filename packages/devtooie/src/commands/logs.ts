@@ -23,7 +23,7 @@ export async function runLogs(opts: { follow?: boolean; path?: boolean }): Promi
   const client = await connectControlClient(cwd);
   const logFile = await resolveLogFile({
     liveLogFile: async () => {
-      const status = client ? await client.queryStatus() : null;
+      const status = client ? await client.query.status() : null;
       return typeof status?.logFile === 'string' ? status.logFile : null;
     },
     recordedLogFile: running?.logFile ?? null,

@@ -2,6 +2,7 @@ import path from 'node:path';
 import { describe, expect, test } from 'vitest';
 import type { Exec, ExecOptions, ExecResult } from './exec.js';
 import type { Envs } from '../env.js';
+import { createControlClient } from '../control-client.js';
 import { InfraProvider, type ProviderRuntime } from './provider.js';
 import {
   InfraError,
@@ -28,6 +29,7 @@ interface FakeOptions {
   fresh?: string[];
   /** Record the freshness reading in `calls`, to assert where it falls in the order. */
   recordFresh?: boolean;
+  connectControl?: ProviderRuntime['connectControl'];
 }
 
 /** A provider whose primitives only record that they were called. */
@@ -46,6 +48,7 @@ class FakeProvider extends InfraProvider {
       exec: o.exec ?? (async () => ({ exitCode: 0, stdout: '', stderr: '' })),
       spawnInherit: async () => 0,
       pollIntervalMs: 1,
+      connectControl: o.connectControl,
     };
     super(runtime, o.callbacks ?? {}, o.readyTimeout ?? 1000);
   }
@@ -312,6 +315,53 @@ describe('InfraProvider callback context', () => {
       tokens: { domain: 'example.test' },
       envs: { FROM_ENV: 'yes', TOOL_PROJECT: 'ws-test' },
     });
+  });
+
+  test('hands every callback of a run the same `control`, looked up once, when the first one starts', async () => {
+    const client = createControlClient(1);
+    const lookups: string[] = [];
+    const seen: unknown[] = [];
+    const record = (ctx: InfraCallbackContext) => {
+      seen.push(ctx.control);
+    };
+    const provider = new FakeProvider({
+      callbacks: {
+        db: { beforeUp: record, afterReady: record },
+        redis: { afterReady: record },
+      },
+      connectControl: async () => {
+        lookups.push('lookup');
+        return client;
+      },
+    });
+    await provider.up({});
+    expect(lookups).toEqual(['lookup']);
+    expect(seen).toEqual([client, client, client]);
+  });
+
+  test('a run with no callbacks never looks for a session', async () => {
+    let looked = false;
+    await new FakeProvider({
+      connectControl: async () => {
+        looked = true;
+        return undefined;
+      },
+    }).up({ reset: true });
+    expect(looked).toBe(false);
+  });
+
+  test('`control` is undefined without a session, and when the lookup fails', async () => {
+    const seen: unknown[] = [];
+    const callbacks = {
+      db: { afterDestroy: (ctx: InfraCallbackContext) => void seen.push(ctx.control) },
+    };
+    await new FakeProvider({ callbacks }).destroy({ services: ['db'] });
+    const failing = new FakeProvider({
+      callbacks,
+      connectControl: () => Promise.reject(new Error('down')),
+    });
+    expect((await failing.destroy({ services: ['db'] })).ok).toBe(true);
+    expect(seen).toEqual([undefined, undefined]);
   });
 
   test('run resolves cwd against the workspace, merges env, and streams output as events', async () => {

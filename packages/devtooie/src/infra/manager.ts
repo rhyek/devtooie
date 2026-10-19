@@ -1,5 +1,8 @@
+import path from 'node:path';
 import { getConfigTokens, getWorkspaceDir, type Config } from '../config.js';
+import { connectSessionControl, type ControlClient } from '../control-client.js';
 import { baseEnvs, workspaceEnvLayer } from '../env.js';
+import { findConfigPath } from '../load-config.js';
 import { execLines, spawnInherit, type Exec, type SpawnInherit, type Stream } from './exec.js';
 import type { InfraProvider, InfraRunRequest, InfraWatch, ProviderRuntime } from './provider.js';
 import { DockerComposeProvider } from './providers/docker-compose.js';
@@ -15,6 +18,8 @@ export interface InfraManagerDeps {
   exec?: Exec;
   spawnInherit?: SpawnInherit;
   stream?: Stream;
+  /** Finds the running session for a callback's `control`; defaults to {@link connectSessionControl}. */
+  connectControl?: () => Promise<ControlClient | undefined>;
 }
 
 /**
@@ -50,6 +55,18 @@ export class InfraManager {
       exec: deps.exec ?? execLines,
       spawnInherit: deps.spawnInherit ?? spawnInherit,
       stream: deps.stream,
+      // The session a callback's `control` drives: this config's, in this mode — the same
+      // config file a session started here records, wherever the command was run from.
+      connectControl:
+        deps.connectControl ??
+        (() =>
+          connectSessionControl({
+            workspaceDir,
+            configPath:
+              findConfigPath(workspaceDir) ?? path.join(workspaceDir, 'devtooie.config.ts'),
+            mode: config.envMode,
+            apiPort: config.apiPort,
+          })),
     };
     const providers: InfraProvider[] = [];
     const compose = config.infra['docker-compose'];

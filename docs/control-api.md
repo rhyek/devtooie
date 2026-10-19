@@ -77,7 +77,9 @@ not that one is running — query the port to find out.
 This is what lets a second `devtooie` invocation hand off from a running one — once that
 takeover is authorized, see [Taking over a running session](cli.md#taking-over-a-running-session)
 — what [`devtooie logs`](cli.md#devtooie-logs) locates the current logfile with, and what an
-external tool (or the agent skill) uses to drive a session headlessly.
+external tool (or the agent skill) uses to drive a session headlessly. An infra callback gets
+it as methods named after these paths — `control.command.restart('api')` — see
+[Driving the session: `control`](./infra.md#driving-the-session-control).
 
 ## Graceful shutdown
 

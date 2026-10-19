@@ -1,4 +1,5 @@
 import type { PortResolver, ProxyInput, ResolvedProxy, TokenRecord } from '../config.js';
+import type { ControlClient } from '../control-client.js';
 import type { Envs, Mode } from '../env.js';
 
 /** How long `infra up` waits for the services to become ready, when the config doesn't say. */
@@ -61,6 +62,17 @@ export interface InfraCallbackContext<T = TokenRecord> {
   run: (command: string, args?: string[], opts?: InfraRunOptions) => Promise<InfraRunResult>;
   /** Writes a line to devtooie's infra output. */
   log: (message: string) => void;
+  /**
+   * A client for the running dev session of this config in this mode, its methods named after
+   * the control API's paths: `query.status()`, `command.restart(name)`, `command.rebuild(name)`,
+   * `command.infra(action, service)`, `command.quit()`. `undefined` when no such session is
+   * running — `infra up` from a terminal with no session up, say.
+   *
+   * It is bound when the run's first callback starts. At a session's own start its infra comes
+   * up before its packages, so `packages` is still `null` there and `restart`/`rebuild` return
+   * `false`. Don't `quit()` from a callback: the session ends the run that is calling it.
+   */
+  control?: ControlClient;
 }
 
 export type InfraCallback<T = TokenRecord> = (ctx: InfraCallbackContext<T>) => void | Promise<void>;

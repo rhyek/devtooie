@@ -1,5 +1,6 @@
 import path from 'node:path';
 import type { TokenRecord } from '../config.js';
+import type { ControlClient } from '../control-client.js';
 import type { Envs, Mode } from '../env.js';
 import type { Exec, ExecOptions, ExecResult, LineStream, SpawnInherit, Stream } from './exec.js';
 import {
@@ -46,6 +47,11 @@ export interface ProviderRuntime {
   spawnInherit: SpawnInherit;
   /** Starts a long-running command read line by line; defaults to {@link streamLines}. */
   stream?: Stream;
+  /**
+   * Finds the running dev session of this config and mode, for a callback's `control`;
+   * `undefined` when there is none. Absent, callbacks get no `control`.
+   */
+  connectControl?: () => Promise<ControlClient | undefined>;
   pollIntervalMs?: number;
 }
 
@@ -249,7 +255,7 @@ export abstract class InfraProvider {
     const emit = req.onEvent ?? (() => {});
     const reset = req.reset ?? false;
     const { targets } = await this.resolveTargets(req.services, 'up');
-    const run = new Run(targets, emit);
+    const run = new Run(targets, emit, this.runtime.connectControl);
     emit({ type: 'targets', provider: this.key, action: 'up', services: targets });
     run.setAll('pending');
     let fresh: Set<string>;
@@ -293,7 +299,7 @@ export abstract class InfraProvider {
   async destroy(req: Omit<InfraRunRequest, 'reset'> = {}): Promise<InfraRunSummary> {
     const emit = req.onEvent ?? (() => {});
     const { targets, everything } = await this.resolveTargets(req.services, 'destroy');
-    const run = new Run(targets, emit);
+    const run = new Run(targets, emit, this.runtime.connectControl);
     emit({ type: 'targets', provider: this.key, action: 'destroy', services: targets });
     run.setAll('destroying');
     try {
@@ -307,7 +313,7 @@ export abstract class InfraProvider {
       run.failAll(errorMessage(err));
       return run.summary();
     }
-    const failures = await this.runCallbacks('afterDestroy', targets, false, emit);
+    const failures = await this.runCallbacks('afterDestroy', run, false);
     for (const service of targets) {
       const error = failures.get(service);
       if (error === undefined) {
@@ -365,7 +371,7 @@ export abstract class InfraProvider {
    * these phases come before the single start, so there is no partial way forward.
    */
   private async runPhase(name: CallbackName, run: Run, reset: boolean): Promise<boolean> {
-    const failures = await this.runCallbacks(name, run.targets, reset, run.emit);
+    const failures = await this.runCallbacks(name, run, reset);
     if (failures.size === 0) {
       return true;
     }
@@ -379,19 +385,18 @@ export abstract class InfraProvider {
   /** Runs `name` for each target that has it, in parallel. Returns the failures, by service. */
   private async runCallbacks(
     name: CallbackName,
-    targets: string[],
+    run: Run,
     reset: boolean,
-    emit: Emit,
   ): Promise<Map<string, string>> {
     const failures = new Map<string, string>();
     await Promise.all(
-      targets.map(async (service) => {
+      run.targets.map(async (service) => {
         const callback = this.serviceConfig[service]?.[name];
         if (!callback) {
           return;
         }
         try {
-          await callback(this.context(service, reset, emit));
+          await callback(this.context(service, reset, run.emit, await run.control()));
         } catch (err) {
           failures.set(service, `${name} failed: ${errorMessage(err)}`);
         }
@@ -463,7 +468,10 @@ export abstract class InfraProvider {
     if (callback) {
       run.set(service, 'starting', 'afterReady');
       try {
-        await callback({ ...this.context(service, reset, run.emit), fresh });
+        await callback({
+          ...this.context(service, reset, run.emit, await run.control()),
+          fresh,
+        });
       } catch (err) {
         run.fail(service, `afterReady failed: ${errorMessage(err)}`);
         return;
@@ -483,7 +491,12 @@ export abstract class InfraProvider {
   }
 
   /** What a callback for `service` receives. */
-  private context(service: string, reset: boolean, emit: Emit): InfraCallbackContext {
+  private context(
+    service: string,
+    reset: boolean,
+    emit: Emit,
+    control: ControlClient | undefined,
+  ): InfraCallbackContext {
     const { workspaceDir, mode, tokens, exec } = this.runtime;
     const envs = { ...this.runtime.envs, ...this.extraEnv() };
     const output = (line: string, isError: boolean) =>
@@ -523,6 +536,7 @@ export abstract class InfraProvider {
           output(line, false);
         }
       },
+      control,
     };
   }
 }
@@ -530,11 +544,24 @@ export abstract class InfraProvider {
 /** The bookkeeping of one `up` or `destroy`: each target's result, reported as it changes. */
 class Run {
   private readonly results = new Map<string, InfraServiceResult>();
+  private session: Promise<ControlClient | undefined> | null = null;
 
   constructor(
     readonly targets: string[],
     readonly emit: Emit,
+    private readonly connectControl?: () => Promise<ControlClient | undefined>,
   ) {}
+
+  /**
+   * The callbacks' `control`: looked up once, when the run's first callback starts — a run with
+   * no callbacks never looks — and shared by the rest. A lookup that fails is no session.
+   */
+  control(): Promise<ControlClient | undefined> {
+    this.session ??= this.connectControl
+      ? this.connectControl().catch(() => undefined)
+      : Promise.resolve(undefined);
+    return this.session;
+  }
 
   set(service: string, status: InfraServiceStatus, detail?: string): void {
     this.emit(

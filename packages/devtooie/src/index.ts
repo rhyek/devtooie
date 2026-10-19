@@ -53,6 +53,9 @@ export type {
   ResolvedDockerComposeInfra,
   ResolvedInfraService,
 } from './infra/types.js';
+// What an infra callback's `control` is: a client for the running session's control API.
+export type { ControlClient, SessionStatus, SessionPackageStatus } from './control-client.js';
+export type { InfraAction, InfraStatus } from './infra/control.js';
 export {
   resolveEnv,
   envCandidatePaths,

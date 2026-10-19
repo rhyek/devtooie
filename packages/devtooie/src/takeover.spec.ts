@@ -17,7 +17,9 @@ function status(over: Partial<SessionStatus> = {}): SessionStatus {
     startedByAgent: false,
     logFile: null,
     packages: null,
+    infra: null,
     config: null,
+    devReverseProxy: null,
     ...over,
   };
 }

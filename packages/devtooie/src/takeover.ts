@@ -86,7 +86,7 @@ const defaultDeps: PreflightDeps = {
       apiPortOverride === undefined
         ? await connectControlClient(cwd)
         : createControlClient(apiPortOverride);
-    return client ? client.queryStatus() : null;
+    return client ? client.query.status() : null;
   },
   async askToQuit(status) {
     // Loaded here, not up top: most sessions start with no other one to ask about.

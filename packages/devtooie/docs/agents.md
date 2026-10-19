@@ -1227,6 +1227,7 @@ Each callback receives one object:
 | `compose`      | `compose(args, opts?)` — runs `docker compose <args>` against this project, with `envs` as its environment: `await compose(['exec', '-T', 'db', 'psql', '-c', …])`.                                                                                                                                                                                                             |
 | `run`          | `run(command, args?, opts?)` — runs any other command, with `envs` as its environment: a migration or seed script gets the mode's variables and `DEVTOOIE_MODE` with nothing passed by hand.                                                                                                                                                                                    |
 | `log`          | `log(message)` — writes a line to devtooie's infra output.                                                                                                                                                                                                                                                                                                                      |
+| `control`      | A client for this config's running dev session, in this mode, or `undefined` when none is running — see [Driving the session: `control`](#driving-the-session-control).                                                                                                                                                                                                         |
 
 #### Seeding: `fresh`
 
@@ -1290,6 +1291,58 @@ over the TUI.
 
 A callback that throws fails its service: an `afterReady` failure fails only that service, while
 an `afterDestroy` or `beforeUp` failure stops the run before anything is started.
+
+#### Driving the session: `control`
+
+`control` is a client for the dev session running for this config, in this mode: the
+[control API](#drive-a-running-session-via-the-control-api), with its methods named after the endpoint paths. It is
+`undefined` when no such session is running — `infra up` from a terminal with no session up,
+say — so reach it with `?.`.
+
+| Method                                   | Endpoint                                                                                        |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `control.query.status()`                 | `GET /query/status` — resolves with the snapshot, or `null` if the session didn't answer.       |
+| `control.command.restart(name)`          | `POST /command/restart/<name>`                                                                  |
+| `control.command.rebuild(name)`          | `POST /command/rebuild/<name>`                                                                  |
+| `control.command.infra(action, service)` | `POST /command/infra/<action>/<service>`, `action` being `start`, `stop`, `restart` or `reset`. |
+| `control.command.quit()`                 | `POST /command/quit`                                                                            |
+
+The `command` methods resolve `true` when the session accepted the command, and `false` when it
+didn't: a package or service it doesn't have, or one busy with another action. They resolve
+once the command is accepted, not when it's done; `query.status()` shows where it ends.
+`restart` and `rebuild` take your package names, typed once you
+[register them](#typed-package-names-advanced).
+
+The case it's for: a package that creates state in a service's data when it boots — a job
+queue's schema, say — keeps running against data a reset has wiped. Restart it after a fresh
+start:
+
+```ts
+db: {
+  afterReady: async ({ run, fresh, control }) => {
+    await run('pnpm', ['migrate'], { cwd: 'packages/db' });
+    if (fresh) {
+      await run('pnpm', ['seed'], { cwd: 'packages/db' });
+      const status = await control?.query.status();
+      if (status?.packages?.api === 'running') {
+        await control?.command.restart('api');
+      }
+    }
+  },
+},
+```
+
+- **It only drives this project's session.** A session's record outlives it, and every
+  project's control API takes its port from the same range, so devtooie binds `control` only to
+  a session that reports this config file and this mode. Anything else is `undefined`.
+- **At a session's own start the packages aren't running yet.** The session brings its infra up
+  first, so `status.packages` is `null` there and `restart`/`rebuild` resolve `false`. The
+  example above acts on a reset made while the session runs: the footer's `t`,
+  `POST /command/infra/reset/db`, or `devtooie infra up --reset db` from another terminal.
+- **Leave the callback's own service alone.** A run the session started — from the footer or
+  the control API — keeps the service busy until its callbacks end, so `command.infra` on it
+  resolves `false`; from a terminal it would start a second run on a service still in this one.
+- **Don't `quit()` from a callback**: the session ends the run that is calling it.
 
 ### Modes: one Compose project each
 
@@ -1972,7 +2025,9 @@ Endpoints (all plain HTTP, no auth — localhost-only):
 This is what lets a second `devtooie` invocation hand off from a running one — once that takeover
 is authorized, see [Taking over a running session](#taking-over-a-running-session) — what
 `devtooie logs` finds the current logfile with, and what an external tool (or the agent skill)
-uses to drive a session headlessly.
+uses to drive a session headlessly. An infra callback gets it as methods named after these
+paths — `control.command.restart('api')` — see
+[Driving the session: `control`](#driving-the-session-control).
 
 Do not hardcode package names, ports, or hostnames. Discover them either from a running session
 (`GET /query/status`) or by asking devtooie directly, no session needed:
