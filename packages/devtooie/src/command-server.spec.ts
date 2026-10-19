@@ -15,6 +15,8 @@ function fakeManager(overrides: Partial<ControlManager> = {}): ControlManager {
     getLogFile: () => '/manager/current.log',
     restart: () => true,
     rebuild: () => true,
+    getInfraStatuses: () => null,
+    runInfra: () => 'accepted',
     quit: () => {},
     logControl: () => {},
     ...overrides,
@@ -39,6 +41,7 @@ describe('command-server', () => {
       startedByAgent: expect.any(Boolean),
       logFile: '/ws/logs/1.log',
       packages: null,
+      infra: null,
       config: null,
       devReverseProxy: null,
     });
@@ -106,6 +109,7 @@ describe('command-server', () => {
       startedByAgent: expect.any(Boolean),
       logFile: '/ws/logs/2-rotated.log',
       packages: { web: 'running' },
+      infra: null,
       config: { packages: [] },
       devReverseProxy: null,
     });
@@ -132,6 +136,32 @@ describe('command-server', () => {
     const base = `http://127.0.0.1:${server.port}`;
     expect((await fetch(`${base}/command/restart/web`, { method: 'POST' })).status).toBe(202);
     expect((await fetch(`${base}/command/restart/nope`, { method: 'POST' })).status).toBe(404);
+  });
+
+  test('GET /query/status reports the infra services, and POST /command/infra/<action>/<service> runs one', async () => {
+    server = await startCommandServer({ onQuit: () => {}, port: 0 });
+    const runs: string[] = [];
+    const logged: unknown[] = [];
+    server.attach(
+      fakeManager({
+        getInfraStatuses: () => ({ db: 'running', cache: 'restarting' }),
+        runInfra: (service, action) => {
+          runs.push(`${action} ${service}`);
+          return service === 'db' ? 'accepted' : service === 'cache' ? 'busy' : 'unknown';
+        },
+        logControl: (command, attrs) => logged.push({ command, attrs }),
+      }),
+    );
+    const base = `http://127.0.0.1:${server.port}`;
+    const status = (await (await fetch(`${base}/query/status`)).json()) as { infra: unknown };
+    expect(status.infra).toEqual({ db: 'running', cache: 'restarting' });
+    const post = (p: string) => fetch(`${base}${p}`, { method: 'POST' });
+    expect((await post('/command/infra/reset/db')).status).toBe(202);
+    expect((await post('/command/infra/stop/cache')).status).toBe(409);
+    expect((await post('/command/infra/start/mail')).status).toBe(404);
+    expect((await post('/command/infra/explode/db')).status).toBe(404);
+    expect(runs).toEqual(['reset db', 'stop cache', 'start mail']);
+    expect(logged[0]).toEqual({ command: 'infra reset', attrs: { service: 'db' } });
   });
 
   it('POST /command/rebuild/<known-pkg> returns 202', async () => {

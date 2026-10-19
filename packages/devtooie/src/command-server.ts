@@ -3,6 +3,12 @@ import http from 'node:http';
 import { startedByAgent } from './agent-detection.js';
 import { currentMode } from './env.js';
 import type { DevReverseProxyServer } from './dev-reverse-proxy.js';
+import {
+  INFRA_ACTIONS,
+  type InfraAction,
+  type InfraRunOutcome,
+  type InfraStatus,
+} from './infra/control.js';
 
 export interface ControlManager {
   getAllStatuses(): unknown;
@@ -12,6 +18,10 @@ export interface ControlManager {
   getLogFile(): string;
   restart(pkg: string): boolean;
   rebuild(pkg: string): boolean;
+  /** Every infra service's status, or `null` for a session without infra. */
+  getInfraStatuses(): Record<string, InfraStatus> | null;
+  /** Starts an action on an infra service; returns at once (see `InfraControl.run`). */
+  runInfra(service: string, action: InfraAction): InfraRunOutcome;
   quit(): void;
   /**
    * Emit a `[dt:control]` log line noting a mutating command arrived over the control API (as
@@ -98,6 +108,7 @@ export async function startCommandServer(opts: {
         startedByAgent: startedByAgent(),
         logFile: manager ? manager.getLogFile() : (opts.logFile ?? null),
         packages: manager ? manager.getAllStatuses() : null,
+        infra: manager ? manager.getInfraStatuses() : null,
         config: manager ? manager.getConfig() : null,
         devReverseProxy: opts.devReverseProxy
           ? {
@@ -139,6 +150,21 @@ export async function startCommandServer(opts: {
       manager.logControl(parts[1], { package: parts[2] });
       const ok = parts[1] === 'restart' ? manager.restart(parts[2]) : manager.rebuild(parts[2]);
       return send(res, ok ? 202 : 404, { ok });
+    }
+    // `/command/infra/<action>/<service>`: accepted at once, like a package restart — the
+    // service's status on `/query/status` shows the action under way, then where it ended.
+    if (parts[0] === 'command' && parts[1] === 'infra' && parts[2] && parts[3]) {
+      const action = parts[2] as InfraAction;
+      if (!INFRA_ACTIONS.includes(action)) {
+        return send(res, 404, { error: `unknown infra action "${parts[2]}"` });
+      }
+      manager.logControl(`infra ${action}`, { service: parts[3] });
+      const outcome = manager.runInfra(parts[3], action);
+      return outcome === 'accepted'
+        ? send(res, 202, { ok: true })
+        : outcome === 'busy'
+          ? send(res, 409, { ok: false, error: `infra service "${parts[3]}" is busy` })
+          : send(res, 404, { ok: false, error: `no infra service "${parts[3]}" in this session` });
     }
     send(res, 404, { error: 'not found' });
   });

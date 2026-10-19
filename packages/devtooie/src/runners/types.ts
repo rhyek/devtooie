@@ -1,5 +1,7 @@
 import type { AnyPackageConfig, ResolvedHealthcheck, UrlLine } from '../config.js';
 import type { EnvOverride } from '../env.js';
+import type { InfraWatch } from '../infra/provider.js';
+import type { InfraServiceState } from '../infra/types.js';
 
 /** One line infra printed while a session started, kept for the session log. */
 export interface InfraLogLine {
@@ -18,6 +20,11 @@ export interface SessionInfra {
   services: { provider: string; name: string; publicOrigin?: string }[];
   /** Everything infra printed on the way up, written at the top of the session log. */
   log: InfraLogLine[];
+  /**
+   * Watches the services' live states — reported at once and on every change — for the footer
+   * and `/query/status`. Absent where nothing should watch (specs).
+   */
+  watch?: (onStates: (states: Map<string, InfraServiceState>) => void) => InfraWatch;
 }
 
 export interface RunnerArgs {

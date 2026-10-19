@@ -6,6 +6,7 @@
 
 - **Reach each package at its own hostname**, like `http://api.localhost:4000` instead of a bare port per app, through a reverse proxy devtooie now runs itself — with a status page while the package is stopped or still starting. See [docs/dev-reverse-proxy.md](docs/dev-reverse-proxy.md).
 - **New top-level `infra` brings your `docker-compose.yaml` services up before the packages start** — waiting on their healthchecks and running your migrations — with `devtooie infra up|down|destroy` to drive them on their own. See [docs/infra.md](docs/infra.md).
+- **The session footer shows each infra service's live state, and starts, stops, restarts or resets the one you select with the arrow keys** — the control API does the same. See [docs/infra.md](docs/infra.md#in-a-dev-session).
 - **Installing devtooie sets the project up**: its `postinstall` runs `devtooie init` for a project with no config and (re)writes the agent skill for one that has it, so a fresh clone carries the guide for the installed version. pnpm 10+ needs `pnpm approve-builds` first. See [Install](README.md#install).
 - **A workspace runs one session per mode**, so a `--mode test` session starts alongside the `development` one instead of taking it over. See [docs/cli.md](docs/cli.md#taking-over-a-running-session).
 - **New top-level `packageRootDir` infers each package's directory from its key**, so `relativeDir` is only ever an override. See [docs/configuration.md](docs/configuration.md).
@@ -38,6 +39,7 @@
 - **`relativeDir` is required unless the config sets `packageRootDir`** — the implicit `packages/<key>` default is gone; add `packageRootDir: 'packages'` to keep it.
 - **The resolved package's `path` is now `absoluteDir`**, next to `relativeDir`.
 - **`devtooie cmd` is now `devtooie exec`, and `devtooie cmd -c <script>` is `devtooie run <script>`** — update any script or alias that calls it. See [docs/cli.md](docs/cli.md#devtooie-exec-and-devtooie-run).
+- **↑/↓ move the footer selection instead of scrolling the log a line** — scroll with PageUp/PageDown or the mouse wheel.
 - **`pre<name>` and `post<name>` scripts no longer run for the scripts devtooie starts** — chain the step into the script itself, like `"dev": "node codegen.ts && vite dev"`.
 - **pnpm's script settings (`scriptShell`, `shellEmulator`, `verifyDepsBeforeRun`) no longer apply to the scripts devtooie starts** — run `pnpm install` yourself when dependencies change. See [How a script is run](README.md#how-a-script-is-run).
 

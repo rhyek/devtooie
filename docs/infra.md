@@ -56,9 +56,10 @@ the footer lists them once the session is running:
 
 ```
 ● api  ● web
-← →: select │ r: restart  b: rebuild  s: stop  m: commands
-
 infra:  ● db  ● redis
+
+←→↑↓: select │ r: restart  b: rebuild  s: stop  m: commands
+
 cwd: example  git: main
 ```
 
@@ -68,8 +69,18 @@ cwd: example  git: main
   infrastructure that isn't there; you get the service, the reason, and the tail of its logs.
 - What infra printed on the way up is at the top of the session log, as `[infra:<service>]`
   lines (type `infra` in the `f` filter to see only those).
-- The footer dots are a record of startup, not a monitor: nothing watches the containers
-  afterwards.
+- **Each service's dot is its live state**: green running, yellow (pulsing) starting or while
+  an action runs on it, red stopped. It follows the containers themselves, so one stopped
+  outside devtooie turns red within a second or two.
+- **Select a service with the arrow keys** — `←`/`→` walk the packages and then the services,
+  `↑`/`↓` move between the rows — and its hotkeys replace the package ones:
+  - `s` — start or stop it (`devtooie infra up` / `down`).
+  - `r` — restart it: `down`, then `up`, so the container is recreated and its data kept.
+  - `t` — reset it (`infra up --reset`), which **deletes its data**, so it asks for a second
+    `t` to confirm.
+
+  Their output goes into the session log under `[infra:<service>]`. The control API runs the
+  same actions — see [Control API](./control-api.md).
 - A service the [dev reverse proxy routes](#reaching-a-service-through-the-dev-reverse-proxy)
   also has its public URL in the footer's link column, under an `infra` heading.
 

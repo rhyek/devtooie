@@ -36,7 +36,8 @@ export class InfraFailedError extends Error {
 /**
  * The infra step of a dev session: bring every service up — no reset — and wait, exactly as
  * `devtooie infra up` does, before any package starts. Resolves with what the run phase needs
- * (the services for the footer, with their public origins, the output for the session log), or `undefined` when the config
+ * (the services for the footer, with their public origins, the output for the session log, and
+ * a live watch of their states), or `undefined` when the config
  * declares no `infra`. Throws {@link InfraFailedError} when a service doesn't make it: the
  * packages must not start against infrastructure that isn't there.
  *
@@ -76,5 +77,6 @@ export async function runSessionInfra(
   if (!summary.ok) {
     throw new InfraFailedError(summary, log);
   }
-  return { services, log };
+  const names = services.map((service) => service.name);
+  return { services, log, watch: (onStates) => manager.watchStates(names, onStates) };
 }

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import chalk from 'chalk';
 import { execa, type ResultPromise } from 'execa';
 import type { AnyPackageConfig, ResolvedHealthcheck } from './config.js';
@@ -7,7 +8,13 @@ import { getDevScript, getLoadedConfig } from './config.js';
 import { defaultFormatter } from './log-formatter.js';
 import type { ControlManager } from './command-server.js';
 import { debugLog } from './debug-log.js';
-import { envFileNames, packageEnvLayer, type EnvOverride } from './env.js';
+import { currentMode, envFileNames, packageEnvLayer, type EnvOverride } from './env.js';
+import {
+  InfraControl,
+  type InfraAction,
+  type InfraRunOutcome,
+  type InfraStatus,
+} from './infra/control.js';
 import { watchEnvFiles, type WatchTarget } from './env-watch.js';
 import {
   exitCodeOf,
@@ -229,6 +236,11 @@ export class ProcessManager implements ControlManager {
   /** Control-API command notices; rendered under the gold `[dt:control]` prefix. */
   readonly controlLog: Logger;
   private systemPrefix: string;
+  /**
+   * The session's infra services — their live states and the actions run on them — or `null`
+   * for a session without infra.
+   */
+  readonly infra: InfraControl | null;
   /** Colored `"[dt:control] "` prefix for control-API command notices. */
   private controlPrefix: string;
   private nextGroupId = 0;
@@ -279,6 +291,7 @@ export class ProcessManager implements ControlManager {
     {
       plain = false,
       probeReadiness = false,
+      infraCli = [process.execPath, fileURLToPath(new URL('./cli.js', import.meta.url))],
     }: {
       plain?: boolean;
       /**
@@ -287,6 +300,8 @@ export class ProcessManager implements ControlManager {
        * proxy, which holds requests until a package's healthcheck passes).
        */
       probeReadiness?: boolean;
+      /** The command an infra action runs the devtooie CLI with; `[node, cli.js]` by default. */
+      infraCli?: string[];
     } = {},
   ) {
     this.plain = plain;
@@ -363,6 +378,29 @@ export class ProcessManager implements ControlManager {
       const text = line.isError ? chalk.red(line.text) : line.text;
       this.addLine(prefix, text, INFRA_SEARCH_NAME, line.isError, false, true);
     }
+
+    // What an infra action prints goes under the same `[infra:<service>]` labels, padded to the
+    // widest of them.
+    const services = infra?.services.map((s) => s.name) ?? [];
+    const actionWidth = services.reduce(
+      (width, name) => Math.max(width, infraLabel(name).length),
+      infraWidth,
+    );
+    this.infra =
+      services.length === 0
+        ? null
+        : new InfraControl({
+            services,
+            watch: infra?.watch,
+            cli: infraCli,
+            mode: currentMode(),
+            cwd: this.cwd,
+            log: (service, text, isError) => {
+              const prefix = devtooieLabel(`[${infraLabel(service).padEnd(actionWidth)}]`) + ' ';
+              this.addLine(prefix, isError ? chalk.red(text) : text, INFRA_SEARCH_NAME, isError);
+            },
+            track: (proc, dir) => this.trackChild(proc, dir),
+          });
   }
 
   /**
@@ -399,6 +437,7 @@ export class ProcessManager implements ControlManager {
 
   startAll(): void {
     debugLog(`startAll: starting ${this.processes.size} processes`);
+    this.infra?.start();
     for (const [name, managed] of this.processes) {
       if (managed.pkg.autostart === false) {
         // Opted out of auto-start: leave it stopped (not waiting) for a manual start via the
@@ -981,6 +1020,8 @@ export class ProcessManager implements ControlManager {
         this.killTree(extra, 'SIGKILL');
       }
     }
+    this.infra?.stop();
+    this.infra?.kill('SIGKILL');
   }
 
   /** Graceful shutdown: SIGTERM everything, wait up to 10s, then SIGKILL stragglers. */
@@ -1005,6 +1046,11 @@ export class ProcessManager implements ControlManager {
       }
       m.extraProcs.clear();
       m.status = 'stopped';
+    }
+    // An infra action under way goes down with the session; the watch ends with it.
+    this.infra?.stop();
+    for (const proc of this.infra?.takeLiving() ?? []) {
+      living.push({ proc });
     }
 
     if (living.length === 0) {
@@ -1044,6 +1090,7 @@ export class ProcessManager implements ControlManager {
 
   /** Immediate SIGKILL of every process group, no waiting (second Ctrl+C / hard exit). */
   forceKillAll(): void {
+    this.infra?.kill('SIGKILL');
     for (const [, managed] of this.processes) {
       if (managed.proc?.pid) {
         try {
@@ -1083,6 +1130,7 @@ export class ProcessManager implements ControlManager {
       return;
     }
     this.disposed = true;
+    this.infra?.stop();
     this.stopAllProbes();
     if (this.waitingPollTimer) {
       clearInterval(this.waitingPollTimer);
@@ -1219,6 +1267,16 @@ export class ProcessManager implements ControlManager {
   /** ControlManager entry point: the whole resolved config (defaults applied) served by `/query/status`. */
   getConfig(): unknown {
     return getLoadedConfig();
+  }
+
+  /** ControlManager entry point: every infra service's status, or `null` for a session without infra. */
+  getInfraStatuses(): Record<string, InfraStatus> | null {
+    return this.infra?.statuses() ?? null;
+  }
+
+  /** ControlManager entry point: start an action on an infra service (see {@link InfraControl.run}). */
+  runInfra(service: string, action: InfraAction): InfraRunOutcome {
+    return this.infra?.run(service, action) ?? 'unknown';
   }
 
   /** ControlManager entry point: the logfile currently being written (updated by {@link rotateLogFile}). */

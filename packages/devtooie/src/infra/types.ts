@@ -229,6 +229,13 @@ export interface InfraRunSummary {
 }
 
 /** One reading of whether a service is ready. */
+/**
+ * How a service stands right now, for a live display: `running` (ready, by its healthcheck when
+ * it has one), `starting` (up but not ready yet), or `stopped` (no container, or one that exited
+ * with an error or is unhealthy).
+ */
+export type InfraServiceState = 'running' | 'starting' | 'stopped';
+
 export interface Readiness {
   state: 'pending' | 'ready' | 'failed';
   /** What the provider saw, in a few words (`waiting for healthy`, `exited (1)`). */

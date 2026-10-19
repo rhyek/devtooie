@@ -457,6 +457,9 @@ Per-service callbacks (`beforeUp`, `afterReady`, `afterDestroy`) run your migrat
 `enabled` switches a service off by mode or by a missing variable, a `port` and a `proxy`
 route a service through the [dev reverse proxy](#dev-reverse-proxy) like a package, and each
 [mode](#modes) gets its own Compose project, so `--mode test` has its own containers and ports.
+In a session, the footer shows each service's live state, and a service selected with the
+arrow keys can be started, stopped, restarted or reset from it — or from the
+[control API](docs/control-api.md).
 See **[docs/infra.md](docs/infra.md)**.
 
 ## Dev reverse proxy

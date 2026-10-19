@@ -1,14 +1,20 @@
 import { getConfigTokens, getWorkspaceDir, type Config } from '../config.js';
 import { baseEnvs, workspaceEnvLayer } from '../env.js';
-import { execLines, spawnInherit, type Exec, type SpawnInherit } from './exec.js';
-import type { InfraProvider, InfraRunRequest, ProviderRuntime } from './provider.js';
+import { execLines, spawnInherit, type Exec, type SpawnInherit, type Stream } from './exec.js';
+import type { InfraProvider, InfraRunRequest, InfraWatch, ProviderRuntime } from './provider.js';
 import { DockerComposeProvider } from './providers/docker-compose.js';
-import { InfraError, unknownServicesError, type InfraRunSummary } from './types.js';
+import {
+  InfraError,
+  unknownServicesError,
+  type InfraRunSummary,
+  type InfraServiceState,
+} from './types.js';
 
 /** The command runners a manager's providers use; a session passes none and gets the real ones. */
 export interface InfraManagerDeps {
   exec?: Exec;
   spawnInherit?: SpawnInherit;
+  stream?: Stream;
 }
 
 /**
@@ -43,6 +49,7 @@ export class InfraManager {
       tokens: getConfigTokens(),
       exec: deps.exec ?? execLines,
       spawnInherit: deps.spawnInherit ?? spawnInherit,
+      stream: deps.stream,
     };
     const providers: InfraProvider[] = [];
     const compose = config.infra['docker-compose'];
@@ -74,6 +81,64 @@ export class InfraManager {
       exitCode = Math.max(exitCode, await provider.down(names));
     }
     return exitCode;
+  }
+
+  /** How each named service stands right now, across providers. See {@link InfraProvider.readStates}. */
+  async readStates(services: string[]): Promise<Map<string, InfraServiceState>> {
+    const plan = await this.route(services);
+    const states = new Map<string, InfraServiceState>();
+    for (const [provider, names] of plan) {
+      for (const [name, state] of await provider.readStates(names)) {
+        states.set(name, state);
+      }
+    }
+    return states;
+  }
+
+  /**
+   * Reports the named services' states now and whenever they change, across providers — each
+   * report the latest reading of every service. See {@link InfraProvider.watchStates}.
+   */
+  watchStates(
+    services: string[],
+    onStates: (states: Map<string, InfraServiceState>) => void,
+  ): InfraWatch {
+    const watches: InfraWatch[] = [];
+    let stopped = false;
+    const latest = new Map<string, InfraServiceState>();
+    void this.route(services).then(
+      (plan) => {
+        if (stopped) {
+          return;
+        }
+        for (const [provider, names] of plan) {
+          watches.push(
+            provider.watchStates(names, (states) => {
+              for (const [name, state] of states) {
+                latest.set(name, state);
+              }
+              onStates(new Map(latest));
+            }),
+          );
+        }
+      },
+      () => {
+        // A name no provider has: nothing to watch.
+      },
+    );
+    return {
+      stop: () => {
+        stopped = true;
+        for (const watch of watches) {
+          watch.stop();
+        }
+      },
+      refresh: () => {
+        for (const watch of watches) {
+          watch.refresh();
+        }
+      },
+    };
   }
 
   /** Runs a provider's own tool with `args`, the terminal handed over to it. */

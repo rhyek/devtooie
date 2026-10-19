@@ -1,12 +1,13 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { Envs } from '../../env.js';
-import type { Exec, ExecResult } from '../exec.js';
+import type { Exec, ExecResult, Stream } from '../exec.js';
 import { InfraError, type InfraEvent, type ResolvedDockerComposeInfra } from '../types.js';
 import {
   DockerComposeProvider,
   classify,
   parsePs,
   selectVolumes,
+  stateOf,
   type ComposeConfig,
   type PsRow,
 } from './docker-compose.js';
@@ -189,6 +190,135 @@ describe('classify', () => {
       state: 'failed',
       detail: 'exited (1)',
     });
+  });
+});
+
+describe('stateOf', () => {
+  test.each([
+    [[], 'stopped'],
+    [[row('db', 'running')], 'running'],
+    [[row('db', 'running', 'healthy')], 'running'],
+    [[row('db', 'running', 'starting')], 'starting'],
+    [[row('db', 'restarting')], 'starting'],
+    [[row('db', 'running', 'unhealthy')], 'stopped'],
+    [[row('db', 'exited', '', 0)], 'running'],
+    [[row('db', 'exited', '', 3)], 'stopped'],
+  ] as const)('%j → %s', (rows, state) => {
+    expect(stateOf([...rows])).toBe(state);
+  });
+
+  test('reads every target from one `ps`, without the second look `up` gives a new container', async () => {
+    const { provider, subs } = setup((args) =>
+      args[0] === 'ps'
+        ? ndjson(container('a1', 'db', 'running'), row('redis', 'running', 'starting'))
+        : undefined,
+    );
+    expect(await provider.readStates(['db', 'redis', 'mail'])).toEqual(
+      new Map([
+        ['db', 'running'],
+        ['redis', 'starting'],
+        ['mail', 'stopped'],
+      ]),
+    );
+    expect(subs()).toEqual([['ps', '--all', '--format', 'json', 'db', 'redis', 'mail']]);
+  });
+});
+
+describe('watchStates', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A provider whose `ps` answers from `states` and whose event streams the test drives. */
+  function watched(initial: string | null = 'running') {
+    vi.useFakeTimers();
+    // The db container's State, or `null` for no container at all.
+    let dbState = initial;
+    const streams: {
+      args: string[];
+      emit: (line: string) => void;
+      end: () => void;
+      stopped: boolean;
+    }[] = [];
+    const stream: Stream = (_command, args, opts) => {
+      let end!: (code: number) => void;
+      const entry = {
+        args,
+        emit: (line: string) => opts.onLine?.(line, false),
+        end: () => end(0),
+        stopped: false,
+      };
+      streams.push(entry);
+      return {
+        stop: () => {
+          entry.stopped = true;
+        },
+        done: new Promise<number>((resolve) => (end = resolve)),
+      };
+    };
+    const { provider, subs } = setup((args) =>
+      args[0] === 'ps' ? (dbState === null ? ok() : ndjson(row('db', dbState))) : undefined,
+    );
+    (provider as unknown as { runtime: { stream: Stream } }).runtime.stream = stream;
+    const reports: string[] = [];
+    const watch = provider.watchStates(['db'], (states) => reports.push(states.get('db')!));
+    return {
+      watch,
+      reports,
+      streams,
+      subs,
+      setDb: (state: string | null) => (dbState = state),
+    };
+  }
+
+  test('reports the states at once, then again after events settle — one read for a burst', async () => {
+    const { reports, streams, subs, setDb, watch } = watched();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reports).toEqual(['running']);
+    expect(sub({ command: 'docker', args: streams[0]!.args, cwd: WS, env: {} })).toEqual([
+      'events',
+      '--json',
+      'db',
+    ]);
+    setDb(null);
+    streams[0]!.emit('{"action":"die"}');
+    streams[0]!.emit('{"action":"stop"}');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(reports).toEqual(['running', 'stopped']);
+    expect(subs().filter((s) => s[0] === 'ps')).toHaveLength(2);
+    watch.stop();
+  });
+
+  test('re-reads while a service is starting, and stops once it is running', async () => {
+    const { reports, setDb, watch } = watched('restarting');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reports).toEqual(['starting']);
+    setDb('running');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(reports).toEqual(['starting', 'running']);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(reports).toEqual(['starting', 'running']);
+    watch.stop();
+  });
+
+  test('restarts an event stream that ended, and reads again', async () => {
+    const { reports, streams, watch } = watched();
+    await vi.advanceTimersByTimeAsync(0);
+    streams[0]!.end();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(streams).toHaveLength(2);
+    expect(reports).toEqual(['running', 'running']);
+    watch.stop();
+  });
+
+  test('reports nothing once stopped, and stops its stream', async () => {
+    const { reports, streams, watch } = watched();
+    await vi.advanceTimersByTimeAsync(0);
+    watch.stop();
+    streams[0]!.emit('{"action":"die"}');
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(reports).toEqual(['running']);
+    expect(streams[0]!.stopped).toBe(true);
   });
 });
 

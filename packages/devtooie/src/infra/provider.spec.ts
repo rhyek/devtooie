@@ -59,6 +59,12 @@ class FakeProvider extends InfraProvider {
   async passthrough() {
     return 0;
   }
+  async readStates(targets: string[]) {
+    return new Map(targets.map((t) => [t, 'running' as const]));
+  }
+  protected streamChanges() {
+    return { stop: () => {}, done: new Promise<number>(() => {}) };
+  }
   protected override extraEnv() {
     return { TOOL_PROJECT: 'ws-test' };
   }

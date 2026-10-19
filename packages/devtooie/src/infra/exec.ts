@@ -17,6 +17,17 @@ export interface ExecResult {
 /** Runs a command to completion with its output captured. Injected, so specs need no Docker. */
 export type Exec = (command: string, args: string[], opts: ExecOptions) => Promise<ExecResult>;
 
+/** A long-running command whose output arrives line by line, until it exits or is stopped. */
+export interface LineStream {
+  /** Ends the command. A no-op once it has exited. */
+  stop: () => void;
+  /** Resolves with the exit code once the command has exited, however it ended. */
+  done: Promise<number>;
+}
+
+/** Starts a command whose output is read as it arrives; injected, so specs need no Docker. */
+export type Stream = (command: string, args: string[], opts: ExecOptions) => LineStream;
+
 /** Runs a command with the terminal handed over to it; resolves with its exit code. */
 export type SpawnInherit = (
   command: string,
@@ -86,6 +97,36 @@ export const execLines: Exec = async (command, args, { cwd, env, onLine }) => {
     exitCode: result.exitCode ?? 1,
     stdout: result.stdout,
     stderr: result.stderr,
+  };
+};
+
+/**
+ * Starts a command with stdin closed, handing each output line to `onLine` as it arrives and
+ * keeping none of it — for a command that runs as long as it's needed, such as an event stream.
+ * Like {@link execLines} it never rejects: a command that can't be spawned is done with 127.
+ */
+export const streamLines: Stream = (command, args, { cwd, env, onLine }) => {
+  const child = execa(command, args, {
+    cwd,
+    env,
+    extendEnv: false,
+    reject: false,
+    stdin: 'ignore',
+    buffer: false,
+  });
+  const out = lineSplitter((line) => onLine?.(line, false));
+  const err = lineSplitter((line) => onLine?.(line, true));
+  child.stdout.on('data', (chunk: Buffer) => out.push(chunk.toString('utf8')));
+  child.stderr.on('data', (chunk: Buffer) => err.push(chunk.toString('utf8')));
+  return {
+    stop: () => {
+      child.kill('SIGTERM');
+    },
+    done: child.then((result) => {
+      out.flush();
+      err.flush();
+      return result.exitCode ?? (result.signal ? 1 : SPAWN_FAILED);
+    }),
   };
 };
 

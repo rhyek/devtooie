@@ -23,6 +23,7 @@ not that one is running — query the port to find out.
     "startedByAgent": false, // was this session launched by a coding agent?
     "logFile": "/abs/.../node_modules/.devtooie/logs/development/1784784120727.log", // current logfile (rotation-aware)
     "packages": { "web": "running", "api": "waiting" }, // running | stopped | waiting | restarting | rebuilding; null until the build and infra steps finish
+    "infra": { "db": "running", "redis": "restarting" }, // running | starting | stopped | stopping | restarting | resetting; null without infra
     "config": {/* … */}, // the resolved config; null until the build and infra steps finish
     "devReverseProxy": {
       // the session's dev reverse proxy, or null when the config declares none
@@ -50,8 +51,10 @@ not that one is running — query the port to find out.
   log rotation, so it's always the file currently being written. The same resolved `config`,
   without a session, is what [`devtooie show-config`](./cli.md#devtooie-show-config) prints.
   A config with `infra` carries it resolved under `config.infra` (the mode's Compose
-  `projectName` among it); infra has no endpoints of its own — drive it with
-  [`devtooie infra`](./cli.md#devtooie-infra).
+  `projectName` among it). `infra` is each of the session's [infra](./infra.md) services'
+  live state — `running`, `starting` (up, not ready yet) or `stopped` — or the action under way
+  on it: `stopping`, `restarting`, `resetting` (a start reads as `starting`). It is `null` for
+  a config without infra, and until the process manager attaches.
   `devReverseProxy` is present
   from the start (the proxy binds before anything else) and lists every hostname it routes
   under the canonical `rootDomain` (each answers under every entry of `rootDomains` alike): a
@@ -60,6 +63,12 @@ not that one is running — query the port to find out.
 
 - `POST /command/restart/<name>` / `POST /command/rebuild/<name>` — restart
   or rebuild-then-restart a package (`202` if accepted, `404` for an unknown package).
+- `POST /command/infra/<action>/<service>` — `start`, `stop`, `restart` or `reset` one of the
+  session's infra services: the same `devtooie infra` commands as the footer's `s`/`r`/`t`
+  hotkeys (see [In a dev session](./infra.md#in-a-dev-session)). `reset` deletes the service's
+  data, with no confirmation. `202` once accepted — the action runs in the background, and the
+  service's `infra` status shows it under way, then where it ended; `409` while another action
+  on that service is running; `404` for a service the session doesn't have, or an unknown action.
 - `POST /command/quit` — graceful shutdown (same as Ctrl+C). **Blocks** until the session's
   packages are torn down and their ports freed, then returns `200` (see
   [Graceful shutdown](#graceful-shutdown)) — so once the request returns, the ports are clear.

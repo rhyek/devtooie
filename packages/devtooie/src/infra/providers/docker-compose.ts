@@ -1,6 +1,17 @@
-import { SPAWN_FAILED, type ExecOptions, type ExecResult } from '../exec.js';
+import {
+  SPAWN_FAILED,
+  streamLines,
+  type ExecOptions,
+  type ExecResult,
+  type LineStream,
+} from '../exec.js';
 import { InfraProvider, type Emit, type ProviderRuntime } from '../provider.js';
-import { InfraError, type Readiness, type ResolvedDockerComposeInfra } from '../types.js';
+import {
+  InfraError,
+  type InfraServiceState,
+  type Readiness,
+  type ResolvedDockerComposeInfra,
+} from '../types.js';
 
 /** The fields of a `docker compose ps --format json` row that readiness is read from. */
 export interface PsRow {
@@ -75,6 +86,19 @@ function classifyContainer(row: PsRow): Readiness {
  */
 function isOneOff(row: PsRow): boolean {
   return (row.Labels ?? '').split(',').includes('com.docker.compose.oneoff=True');
+}
+
+/**
+ * How a service stands, from its containers' rows — the live counterpart of {@link classify},
+ * which answers "is it ready yet?" for a wait: here no containers at all is `stopped`, not
+ * `pending`, since nothing is about to create them.
+ */
+export function stateOf(rows: PsRow[]): InfraServiceState {
+  if (rows.length === 0) {
+    return 'stopped';
+  }
+  const { state } = classify(rows);
+  return state === 'ready' ? 'running' : state === 'pending' ? 'starting' : 'stopped';
 }
 
 /** A running container with no healthcheck, and an id to remember it by. */
@@ -403,6 +427,32 @@ export class DockerComposeProvider extends InfraProvider {
     return this.runtime.spawnInherit('docker', this.composeArgs(['down', ...services]), {
       cwd: this.runtime.workspaceDir,
       env: this.env(),
+    });
+  }
+
+  /** One `docker compose ps` for all the targets, each read with {@link stateOf}. */
+  async readStates(targets: string[]): Promise<Map<string, InfraServiceState>> {
+    const rows = await this.ps(targets);
+    return new Map(
+      targets.map((service) => [service, stateOf(rows.filter((row) => row.Service === service))]),
+    );
+  }
+
+  /**
+   * `docker compose events` for the targets: a line for every container created, started,
+   * stopped, or whose health changed — one long-running command rather than a `ps` every few
+   * seconds.
+   */
+  protected streamChanges(targets: string[], onChange: () => void): LineStream {
+    const stream = this.runtime.stream ?? streamLines;
+    return stream('docker', this.composeArgs(['events', '--json', ...targets]), {
+      cwd: this.runtime.workspaceDir,
+      env: this.env(),
+      onLine: (_line, isError) => {
+        if (!isError) {
+          onChange();
+        }
+      },
     });
   }
 

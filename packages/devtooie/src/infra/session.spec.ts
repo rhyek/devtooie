@@ -56,6 +56,7 @@ describe('runSessionInfra', () => {
     expect(infra).toEqual({
       services: [{ provider: 'docker-compose', name: 'db' }],
       log: [{ service: 'db', text: '2 migrations applied', isError: false }],
+      watch: expect.any(Function),
     });
     expect(seen).toContain('targets');
   });

@@ -1036,9 +1036,10 @@ the footer lists them once the session is running:
 
 ```
 ● api  ● web
-← →: select │ r: restart  b: rebuild  s: stop  m: commands
-
 infra:  ● db  ● redis
+
+←→↑↓: select │ r: restart  b: rebuild  s: stop  m: commands
+
 cwd: example  git: main
 ```
 
@@ -1048,8 +1049,18 @@ cwd: example  git: main
   infrastructure that isn't there; you get the service, the reason, and the tail of its logs.
 - What infra printed on the way up is at the top of the session log, as `[infra:<service>]`
   lines (type `infra` in the `f` filter to see only those).
-- The footer dots are a record of startup, not a monitor: nothing watches the containers
-  afterwards.
+- **Each service's dot is its live state**: green running, yellow (pulsing) starting or while
+  an action runs on it, red stopped. It follows the containers themselves, so one stopped
+  outside devtooie turns red within a second or two.
+- **Select a service with the arrow keys** — `←`/`→` walk the packages and then the services,
+  `↑`/`↓` move between the rows — and its hotkeys replace the package ones:
+  - `s` — start or stop it (`devtooie infra up` / `down`).
+  - `r` — restart it: `down`, then `up`, so the container is recreated and its data kept.
+  - `t` — reset it (`infra up --reset`), which **deletes its data**, so it asks for a second
+    `t` to confirm.
+
+  Their output goes into the session log under `[infra:<service>]`. The control API runs the
+  same actions — see [Drive a running session via the control API](#drive-a-running-session-via-the-control-api).
 - A service the [dev reverse proxy routes](#reaching-a-service-through-the-dev-reverse-proxy)
   also has its public URL in the footer's link column, under an `infra` heading.
 
@@ -1546,7 +1557,8 @@ devtooie --plain -p <package> [-p <other-package> ...]
   own — use `POST /command/quit` to stop, `POST /command/restart/<name>` to restart one package.
 - **Infra**: if the config declares [`infra`](#infra), the session starts it and waits for it
   before starting the packages, and leaves it running when the session ends. You don't start
-  it yourself, and stopping a session doesn't stop it.
+  it yourself, and stopping a session doesn't stop it. To restart, stop or reset one service
+  while the session runs, use `POST /command/infra/<action>/<service>` (see below).
 - **Environment**: each package's `.env` files are loaded and injected into its process
   automatically (see [Environment loading](#environment-env-loading)), so you don't set env
   vars yourself. A running session also restarts a package when its `.env` files change — so an
@@ -1910,7 +1922,7 @@ removed when a session ends, so it says where a session _would_ answer, not that
 Endpoints (all plain HTTP, no auth — localhost-only):
 
 - `GET /query/status` — a single snapshot of the session,
-  `{ pid, configPath, mode, startedByAgent, logFile, packages, config, devReverseProxy }`:
+  `{ pid, configPath, mode, startedByAgent, logFile, packages, infra, config, devReverseProxy }`:
   - `pid` / `configPath` — the session's PID and the absolute path to the `devtooie.config.*` it
     was started with; available immediately, even while the session is still building.
   - `mode` — the mode the session runs in (`development`, `test`, …).
@@ -1922,12 +1934,16 @@ Endpoints (all plain HTTP, no auth — localhost-only):
     `stopped`, `waiting`, `restarting`, `rebuilding`; `null` until the build and the infra step
     finish. See
     [Is the app already running?](#is-the-app-already-running) for what each value tells you.
+  - `infra` — each of the session's [infra](#infra) services' live state (e.g.
+    `{ "db": "running" }`): `running`, `starting` (up, not ready yet) or `stopped`, or the action
+    under way on it — `stopping`, `restarting`, `resetting` (a start reads as `starting`). `null`
+    for a config without infra, and until the build and the infra step finish.
   - `config` — the whole **resolved** config (defaults applied, `command` normalized to
     `{ name, watches, builds, cleans }`), as loaded at startup (restart devtooie to pick up edits);
     `null` until the build and the infra step finish. Use it to decide package lifecycle — see
     [Package lifecycle](#package-lifecycle-when-you-change-code). A config with
     [`infra`](#infra) carries it resolved under `config.infra` (the mode's Compose `projectName`
-    among it); infra has no endpoints of its own — drive it with `devtooie infra`.
+    among it).
   - `devReverseProxy` — `{ port, rootDomain, rootDomains, routes: [{ host, package, port }] }` for the
     session's [dev reverse proxy](#dev-reverse-proxy), or `null` when the config declares none.
     Present from the start (the proxy binds before anything else); `routes` lists every public
@@ -1939,6 +1955,13 @@ Endpoints (all plain HTTP, no auth — localhost-only):
   unknown package).
 - `POST /command/rebuild/<name>` — stop, clean-build, then start. Prefer this over `restart`
   whenever the package's build output (not just its source) changed.
+- `POST /command/infra/<action>/<service>` — `start`, `stop`, `restart` or `reset` one of the
+  session's infra services: the same `devtooie infra` commands as the footer's `s`/`r`/`t`
+  hotkeys. `restart` is `down` then `up` (container recreated, data kept); **`reset` deletes the
+  service's data**, with no confirmation — only reset when that is what's wanted. `202` once
+  accepted — the action runs in the background; poll `infra` on `/query/status` until the
+  service leaves `stopping`/`restarting`/`resetting`/`starting`. `409` while another action on
+  that service is running; `404` for a service the session doesn't have, or an unknown action.
 - `POST /command/quit` — gracefully shut down the whole session (same as Ctrl+C). **Blocks**
   until the session's packages are torn down and their ports freed, then returns `200` (see
   [Graceful shutdown](#graceful-shutdown) below) — so once the request returns, the ports are

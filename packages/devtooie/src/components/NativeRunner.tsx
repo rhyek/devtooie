@@ -1,4 +1,12 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react';
 import path from 'node:path';
 import {
   Box,
@@ -35,7 +43,9 @@ import { ProcessManager } from '../process-manager.js';
 import { SHUTDOWN_TIMEOUT_MS } from '../shutdown-timing.js';
 import { installShutdownSignals } from '../signals.js';
 import type { RunnerArgs } from '../runners/types.js';
+import type { InfraStatus } from '../infra/control.js';
 import { BottomChrome } from './BottomChrome.js';
+import { verticalTarget, type ItemRect } from './footer-nav.js';
 import { HotkeyHints, type HotkeyHintItem } from './HotkeyHints.js';
 import { LogPane, useDragSelection, useLogViewport } from './LogPane.js';
 import { useToasts } from './ToastStack.js';
@@ -101,6 +111,22 @@ const STATUS_COLORS: Record<PackageStatus, string> = {
   unknown: MUTED_COLOR,
   waiting: ACCENT_COLOR,
 };
+
+/** How an infra service's status draws its dot: the package palette, an action pulsing like a start. */
+const INFRA_DOT_STATUS: Record<InfraStatus, PackageStatus> = {
+  running: 'started',
+  starting: 'starting',
+  stopping: 'starting',
+  restarting: 'starting',
+  resetting: 'starting',
+  stopped: 'stopped',
+};
+
+/**
+ * How long a `t` on an infra service waits for the second `t` that confirms the reset — the
+ * confirmation toast's lifetime, so the window closes when the prompt goes away.
+ */
+const RESET_CONFIRM_MS = 5000;
 
 /** Rendered rows scrolled per mouse-wheel notch. */
 const WHEEL_STEP = 3;
@@ -434,6 +460,17 @@ export function NativeRunner({
   );
 
   const [manager] = useState(() => new ProcessManager(args));
+  // The footer cursor runs over the packages, then the infra services: `cursor` past the last
+  // package is a service.
+  const infraNames = manager.infra?.services ?? [];
+  const itemCount = displayPackages.length + infraNames.length;
+  // An infra service's status lives in the manager; re-render whenever one changes.
+  const [, onInfraChange] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => manager.infra?.subscribe(onInfraChange), [manager]);
+  /** Each footer item's element, by cursor index: what ↑/↓ measure the layout from. */
+  const itemRefs = useRef<(DOMElement | null)[]>([]);
+  /** The reset awaiting its confirming `t`, if one was asked for. */
+  const pendingResetRef = useRef<{ service: string; toastId: number; at: number } | null>(null);
   useEffect(() => {
     devReverseProxy?.attach(manager);
   }, [devReverseProxy, manager]);
@@ -808,6 +845,7 @@ export function NativeRunner({
         // so an in-progress custom command is never silently discarded.
         const blocked = isCustomFocused && customCommandInput.length > 0;
         if (!blocked && displayPackages.length > 1) {
+          // Packages only: the menu belongs to a package, so the cursor is on one here.
           const delta = key.rightArrow ? 1 : -1;
           setCursor((c) => (c + delta + displayPackages.length) % displayPackages.length);
           setCommandsCursor(0);
@@ -842,7 +880,7 @@ export function NativeRunner({
     // Normal mode.
 
     // Log viewport scrolling via the keyboard (the mouse wheel is handled in the
-    // mouse block above); left/right navigate packages. A selection is anchored to
+    // mouse block above); the arrows move the footer cursor. A selection is anchored to
     // content, so it rides along with scrolling and is intentionally kept.
     if (key.pageUp) {
       viewport.scrollPages(1);
@@ -860,27 +898,80 @@ export function NativeRunner({
       viewport.scrollToBottom();
       return;
     }
-    if (key.upArrow) {
-      viewport.scrollLines(1);
-      return;
-    }
-    if (key.downArrow) {
-      viewport.scrollLines(-1);
-      return;
-    }
-
+    // ←/→ walk the packages and then the infra services as one list, wrapping at both ends;
+    // ↑/↓ go to the item on the row above or below, as the footer is laid out right now.
     if (key.leftArrow) {
-      setCursor((c) => (c - 1 + displayPackages.length) % displayPackages.length);
+      setCursor((c) => (c - 1 + itemCount) % itemCount);
       return;
     }
     if (key.rightArrow) {
-      setCursor((c) => (c + 1) % displayPackages.length);
+      setCursor((c) => (c + 1) % itemCount);
+      return;
+    }
+    if (key.upArrow || key.downArrow) {
+      const rects: ItemRect[] = [];
+      for (let i = 0; i < itemCount; i++) {
+        const rect = elementScreenRect(itemRefs.current[i]);
+        if (!rect) {
+          return;
+        }
+        rects.push(rect);
+      }
+      setCursor(verticalTarget(rects, cursor, key.upArrow ? 'up' : 'down'));
       return;
     }
 
     if (input === 'c') {
       clearSelection();
       manager.clearBuffer();
+      return;
+    }
+
+    // An infra service has keys of its own: `s` start/stop, `r` restart, `t` reset (asked
+    // twice, since it deletes the service's data). `t` rotates the logfile only while a package
+    // is focused; the package keys (`b`, `m`) do nothing on a service.
+    const focusedService =
+      cursor >= displayPackages.length ? infraNames[cursor - displayPackages.length] : undefined;
+    if (
+      focusedService !== undefined &&
+      manager.infra &&
+      (input === 's' || input === 'r' || input === 't')
+    ) {
+      const infra = manager.infra;
+      if (infra.isBusy(focusedService)) {
+        return;
+      }
+      const status = infra.status(focusedService);
+      const isUp = status === 'running' || status === 'starting';
+      if (input === 's') {
+        infra.run(focusedService, isUp ? 'stop' : 'start');
+      } else if (input === 'r' && isUp) {
+        infra.run(focusedService, 'restart');
+      } else if (input === 't') {
+        const pending = pendingResetRef.current;
+        if (pending?.service === focusedService && Date.now() - pending.at < RESET_CONFIRM_MS) {
+          pendingResetRef.current = null;
+          toasts.dismiss(pending.toastId);
+          infra.run(focusedService, 'reset');
+          return;
+        }
+        const service = focusedService;
+        const toastId = toasts.notify({
+          message: `Reset ${service}? Its data is deleted. Press t again to confirm.`,
+          tone: 'warn',
+          duration: RESET_CONFIRM_MS,
+          actions: [
+            {
+              label: 'reset',
+              onPress: () => {
+                pendingResetRef.current = null;
+                infra.run(service, 'reset');
+              },
+            },
+          ],
+        });
+        pendingResetRef.current = { service, toastId, at: Date.now() };
+      }
       return;
     }
 
@@ -987,6 +1078,14 @@ export function NativeRunner({
   const focusedIsRebuildable = focusedPackage
     ? args.rebuildableSet.has(focusedPackage.name)
     : false;
+  const focusedService =
+    cursor >= displayPackages.length ? infraNames[cursor - displayPackages.length] : undefined;
+  const focusedServiceStatus =
+    focusedService === undefined ? undefined : manager.infra?.status(focusedService);
+  const focusedServiceBusy =
+    focusedService !== undefined && (manager.infra?.isBusy(focusedService) ?? false);
+  const focusedServiceUp =
+    focusedServiceStatus === 'running' || focusedServiceStatus === 'starting';
 
   // Session-level hotkeys (act on the whole session) — pinned to the top of the footer.
   // `t: rotate` lives next to the logfile path instead (see below).
@@ -998,19 +1097,30 @@ export function NativeRunner({
     { key: '^c', label: 'quit' },
   ];
 
-  // Per-package hotkeys (act on the focused package) — rendered directly under the dots.
-  // `← →: select` (and its separator) only make sense when there's more than one package
-  // to move the cursor between; with a single package it's dropped.
-  const packageHints: HotkeyHintItem[] = [
-    ...(displayPackages.length > 1
-      ? [{ key: '← →', label: 'select' } as HotkeyHintItem, { separator: true } as HotkeyHintItem]
-      : []),
-    { key: 'r', label: 'restart', dim: !focusedIsActive },
-    { key: 'b', label: 'rebuild', dim: !focusedIsActive || !focusedIsRebuildable },
-    // Merged start/stop toggle: show whichever action applies to the focused package.
-    focusedIsActive ? { key: 's', label: 'stop' } : { key: 's', label: 'start' },
-    { key: 'm', label: 'commands' },
-  ];
+  // Hotkeys for the focused package or infra service — rendered directly under the package
+  // dots. The selection hint (and its separator) only makes sense with more than one item to
+  // move the cursor between; ↑/↓ join it once infra puts a second row below the packages.
+  const selectHints: HotkeyHintItem[] =
+    itemCount > 1
+      ? [{ key: infraNames.length > 0 ? '←→↑↓' : '← →', label: 'select' }, { separator: true }]
+      : [];
+  const packageHints: HotkeyHintItem[] =
+    focusedService !== undefined
+      ? [
+          ...selectHints,
+          { key: 'r', label: 'restart', dim: focusedServiceBusy || !focusedServiceUp },
+          // Merged start/stop toggle, as for a package.
+          { key: 's', label: focusedServiceUp ? 'stop' : 'start', dim: focusedServiceBusy },
+          { key: 't', label: 'reset', dim: focusedServiceBusy },
+        ]
+      : [
+          ...selectHints,
+          { key: 'r', label: 'restart', dim: !focusedIsActive },
+          { key: 'b', label: 'rebuild', dim: !focusedIsActive || !focusedIsRebuildable },
+          // Merged start/stop toggle: show whichever action applies to the focused package.
+          focusedIsActive ? { key: 's', label: 'stop' } : { key: 's', label: 'start' },
+          { key: 'm', label: 'commands' },
+        ];
 
   const filterLine = activeFilter ? (
     <Text color={ACCENT_COLOR}>[filter: {activeFilter}] esc: clear filter</Text>
@@ -1024,7 +1134,13 @@ export function NativeRunner({
         const dim = (status === 'starting' || status === 'waiting') && !pulse;
         const isFocused = i === cursor;
         return (
-          <Box key={pkg.name} flexShrink={0}>
+          <Box
+            key={pkg.name}
+            flexShrink={0}
+            ref={(el: DOMElement | null) => {
+              itemRefs.current[i] = el;
+            }}
+          >
             <Text color={color} dimColor={dim}>
               ●
             </Text>
@@ -1146,21 +1262,43 @@ export function NativeRunner({
         <Box flexDirection="column" flexGrow={1}>
           {topSection}
           <Box marginTop={1}>{packageStatusDots}</Box>
-          {isNormal && <HotkeyHints hints={packageHints} />}
-          <Box flexDirection="column" marginTop={1}>
-            {infraServices.length > 0 && (
-              // The session's infra, listed like the packages above it. Every dot is green:
-              // these were ready when the session started, and nothing watches them after.
-              <Box flexWrap="wrap" columnGap={2}>
-                <Text color={ACCENT_COLOR}>infra:</Text>
-                {infraServices.map((service) => (
-                  <Box key={`${service.provider}/${service.name}`} flexShrink={0}>
-                    <Text color={OK_COLOR}>●</Text>
-                    <Text> {service.name}</Text>
+          {infraServices.length > 0 && (
+            // The session's infra, listed right under the packages and selectable with them.
+            // Each dot is the service's live state, or pulses while an action runs.
+            <Box flexWrap="wrap" columnGap={2}>
+              <Text color={ACCENT_COLOR}>infra:</Text>
+              {infraServices.map((service, j) => {
+                const index = displayPackages.length + j;
+                const status = INFRA_DOT_STATUS[manager.infra?.status(service.name) ?? 'running'];
+                const dim = status === 'starting' && !pulse;
+                const isFocused = index === cursor;
+                return (
+                  <Box
+                    key={`${service.provider}/${service.name}`}
+                    flexShrink={0}
+                    ref={(el: DOMElement | null) => {
+                      itemRefs.current[index] = el;
+                    }}
+                  >
+                    <Text color={STATUS_COLORS[status]} dimColor={dim}>
+                      ●
+                    </Text>
+                    <Text> </Text>
+                    <Text bold={isFocused} underline={isFocused}>
+                      {service.name}
+                    </Text>
                   </Box>
-                ))}
-              </Box>
-            )}
+                );
+              })}
+            </Box>
+          )}
+          {/* The hotkeys act on whichever item — package or service — is selected above. */}
+          {isNormal && (
+            <Box marginTop={1}>
+              <HotkeyHints hints={packageHints} />
+            </Box>
+          )}
+          <Box flexDirection="column" marginTop={1}>
             <Box columnGap={2}>
               <Text>
                 <Text color={ACCENT_COLOR}>cwd: </Text>
@@ -1180,7 +1318,10 @@ export function NativeRunner({
                 <Box ref={copyIconRef}>
                   <Text color={LINK_COLOR}>⧉</Text>
                 </Box>
-                {isNormal && <HotkeyHints hints={[{ key: 't', label: 'rotate' }]} />}
+                {/* With an infra service focused, `t` resets it instead. */}
+                {isNormal && focusedService === undefined && (
+                  <HotkeyHints hints={[{ key: 't', label: 'rotate' }]} />
+                )}
               </Box>
             )}
           </Box>

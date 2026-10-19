@@ -1,7 +1,7 @@
 import path from 'node:path';
 import type { TokenRecord } from '../config.js';
 import type { Envs, Mode } from '../env.js';
-import type { Exec, ExecOptions, ExecResult, SpawnInherit } from './exec.js';
+import type { Exec, ExecOptions, ExecResult, LineStream, SpawnInherit, Stream } from './exec.js';
 import {
   InfraError,
   type InfraCallbackContext,
@@ -11,10 +11,21 @@ import {
   type InfraRunSummary,
   type InfraServiceCallbacks,
   type InfraServiceResult,
+  type InfraServiceState,
   type InfraServiceStatus,
   type Readiness,
   unknownServicesError,
 } from './types.js';
+
+/** How long a watch lets a burst of changes settle before it reads the states once for all of them. */
+const CHANGE_SETTLE_MS = 150;
+/**
+ * How often a watch re-reads while a service is starting. A health change is reported as a
+ * change too; this is the backstop for a transition that a provider's feed missed.
+ */
+const STARTING_POLL_MS = 2000;
+/** How long a watch waits to restart a change feed that ended — the runtime restarted, or isn't up. */
+const RESTREAM_MS = 5000;
 
 /** How often `up` re-reads the services' readiness, when the runtime doesn't say. */
 const DEFAULT_POLL_INTERVAL_MS = 500;
@@ -33,7 +44,17 @@ export interface ProviderRuntime {
   tokens: TokenRecord;
   exec: Exec;
   spawnInherit: SpawnInherit;
+  /** Starts a long-running command read line by line; defaults to {@link streamLines}. */
+  stream?: Stream;
   pollIntervalMs?: number;
+}
+
+/** A live reading of services' states, from {@link InfraProvider.watchStates}. */
+export interface InfraWatch {
+  /** Stops watching; nothing is reported after it. */
+  stop: () => void;
+  /** Reads the states again now, as after an action that changed them. */
+  refresh: () => void;
 }
 
 export interface InfraRunRequest {
@@ -82,6 +103,109 @@ export abstract class InfraProvider {
   abstract down(services: string[]): Promise<number>;
   /** Runs the provider's own tool with `args`, in `invocationCwd`, the terminal handed over. */
   abstract passthrough(args: string[], invocationCwd: string): Promise<number>;
+  /**
+   * How each target stands right now. Read-only, and unlike the readiness poll `up` runs it
+   * remembers nothing between calls, so it can be read as often as a display needs.
+   */
+  abstract readStates(targets: string[]): Promise<Map<string, InfraServiceState>>;
+  /**
+   * Starts the runtime's feed of changes to the targets, calling `onChange` for each — what
+   * changed doesn't matter, {@link watchStates} reads the states again either way. The feed
+   * ends when the runtime stops sending (it restarted, or isn't running).
+   */
+  protected abstract streamChanges(targets: string[], onChange: () => void): LineStream;
+
+  /**
+   * Reports the targets' states now and again whenever they change, until stopped: a reading
+   * after every burst of changes from {@link streamChanges}, a re-read every few seconds while
+   * a service is starting, and a new feed whenever one ends. A reading that fails (the runtime
+   * not answering, say) is skipped, not reported.
+   */
+  watchStates(
+    targets: string[],
+    onStates: (states: Map<string, InfraServiceState>) => void,
+  ): InfraWatch {
+    let stopped = false;
+    let reading = false;
+    let readAgain = false;
+    let feed: LineStream | null = null;
+    const timers = new Set<ReturnType<typeof setTimeout>>();
+    const after = (ms: number, fn: () => void) => {
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        fn();
+      }, ms);
+      timers.add(timer);
+      return timer;
+    };
+    const cancel = (timer: ReturnType<typeof setTimeout> | null) => {
+      if (timer) {
+        clearTimeout(timer);
+        timers.delete(timer);
+      }
+    };
+    let settle: ReturnType<typeof setTimeout> | null = null;
+    let poll: ReturnType<typeof setTimeout> | null = null;
+
+    const read = async (): Promise<void> => {
+      if (reading) {
+        readAgain = true;
+        return;
+      }
+      reading = true;
+      try {
+        const states = await this.readStates(targets);
+        if (stopped) {
+          return;
+        }
+        onStates(states);
+        cancel(poll);
+        poll = [...states.values()].includes('starting')
+          ? after(STARTING_POLL_MS, () => void read())
+          : null;
+      } catch {
+        // The runtime not answering: keep the last states, and let the next change retry.
+      } finally {
+        reading = false;
+        if (readAgain && !stopped) {
+          readAgain = false;
+          void read();
+        }
+      }
+    };
+
+    const listen = () => {
+      feed = this.streamChanges(targets, () => {
+        if (stopped) {
+          return;
+        }
+        cancel(settle);
+        settle = after(CHANGE_SETTLE_MS, () => void read());
+      });
+      void feed.done.then(() => {
+        if (!stopped) {
+          after(RESTREAM_MS, () => {
+            void read();
+            listen();
+          });
+        }
+      });
+    };
+
+    void read();
+    listen();
+    return {
+      stop: () => {
+        stopped = true;
+        for (const timer of timers) {
+          clearTimeout(timer);
+        }
+        timers.clear();
+        feed?.stop();
+      },
+      refresh: () => void read(),
+    };
+  }
 
   /** Removes the named services' containers and data — and nothing belonging to another service. */
   protected abstract destroyServices(targets: string[], emit: Emit): Promise<void>;

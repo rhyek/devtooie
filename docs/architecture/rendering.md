@@ -94,8 +94,9 @@ screen — see [Resizing](#resizing).
   started).
 - The footer content is unchanged from before (package dots, hotkey hints, URL
   links, `git:(branch)` / `logfile:`); it's simply no longer hand-positioned.
-  A config with `infra` adds one row above `cwd:` — `infra:` and a green dot per
-  service — which is static: it records what was ready at startup.
+  A config with `infra` adds an `infra:` row right under the package dots — a dot
+  per service, its live state — and the hotkey hints sit below both rows, a blank
+  line apart, since they act on whichever item is selected.
 
 ## Virtualized log viewport
 
@@ -276,10 +277,16 @@ decoding, and re-asserting brings SGR straight back.
 
 - **Mouse wheel**: reports arrive as buttons 64 (up) / 65 (down) and scroll the
   viewport by `WHEEL_STEP` rows (dropping any active selection).
-- **Keyboard** (normal mode): `↑`/`↓` scroll a line, `PgUp`/`PgDn` page,
-  `Home`/`End` jump to oldest/newest (End re-enters follow). `←`/`→` navigate
-  packages (up/down no longer do, since they scroll). Any keyboard scroll drops an
-  active selection.
+- **Keyboard** (normal mode): `PgUp`/`PgDn` page, `Home`/`End` jump to
+  oldest/newest (End re-enters follow). The arrows move the footer cursor, which
+  runs over the packages and then the infra services: `←`/`→` step through that
+  one list with wrap-around, `↑`/`↓` go to the nearest item on the row above or
+  below (wrapping between the top and bottom rows). The rows are read from the
+  laid-out footer at keypress — each item's `elementScreenRect` — and the choice is
+  `verticalTarget` in `footer-nav.ts`: the nearest left edge, with each row's
+  first item counted from where the rows start, so the first service (behind the
+  `infra:` label) sits under the first package. Any keyboard scroll drops an active
+  selection.
 - **Keyboard** (commands mode, the `m` menu): `↑`/`↓` move within the focused
   package's command list and `←`/`→` switch the focused package in place — the
   same wrap-around cursor as normal mode — so commands on another package can be
