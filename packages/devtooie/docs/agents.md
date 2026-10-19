@@ -193,6 +193,7 @@ export default defineConfig({
       port: 3000,
       waitFor: ['core-api'], // Hold until core-api's healthcheck passes — typo-checked
       deps: { runtime: ['core-api'] }, // Selecting web also runs core-api
+      urls: [''], // The footer shows "web" as a link to its origin, http://localhost:3000
     },
   },
 });
@@ -345,7 +346,9 @@ lib):
   itself), based on the package's public origin under the [dev reverse proxy](#dev-reverse-proxy),
   or on `http://localhost:<port>` without one. A path's trailing slash is dropped: `'/todos/'`
   is `'/todos'`, and `'/'` is `''`. A path on a package with no `port` is an error. devtooie adds
-  no links of its own.
+  no links of its own. When `urls` is a single link with no label — one URL or path,
+  `urls: ['']` — the footer shows no line for it: the package's name is that link. With a label,
+  or more than one link, each line shows under the name.
 - **`healthcheck`** — a URL polled for readiness; also required by anything that lists this
   package in its `waitFor`. A **path** (`'/health'`, or `'health'`) is probed at `http://localhost:<port>/health`
   — always the package itself, never through the dev reverse proxy — and its trailing slash is
@@ -892,7 +895,8 @@ subdomain in their own config. `devtooie exec` and `devtooie run` hand the same 
 
 devtooie adds no footer link of its own for a package: `urls` holds exactly what the config
 lists. To show a package's public origin, list it — `''` (or `'/'`) is the origin itself, any
-other path is resolved against it (see [Configuration options](#configuration-options)). An
+other path is resolved against it (see [Configuration options](#configuration-options)). A lone
+`urls: ['']` makes the package's name in the footer the link to its origin. An
 infra service has no `urls`; the footer's link column lists each routed service's public origin
 under an `infra` heading, below the packages' links.
 

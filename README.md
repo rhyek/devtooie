@@ -140,6 +140,7 @@ export default defineConfig({
       port: 3000,
       waitFor: ['core-api'], // hold until core-api's healthcheck passes — typo-checked
       deps: { runtime: ['core-api'] }, // selecting web also runs core-api
+      urls: [''], // the footer shows "web" as a link to its origin, http://localhost:3000
     },
   },
 });

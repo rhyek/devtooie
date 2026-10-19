@@ -202,7 +202,8 @@ subdomain in their own config. `devtooie exec` and `devtooie run` hand the same 
 
 devtooie adds no footer link of its own for a package: `urls` holds exactly what the config
 lists. To show a package's public origin, list it — `''` (or `'/'`) is the origin itself, any
-other path is resolved against it (see [Configuration](./configuration.md)). An infra service
+other path is resolved against it (see [Configuration](./configuration.md)). A lone
+`urls: ['']` makes the package's name in the footer the link to its origin. An infra service
 has no `urls`; the footer's link column lists each routed service's public origin under an
 `infra` heading, below the packages' links.
 

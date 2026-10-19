@@ -166,6 +166,19 @@ function renderLineText(line: UrlLine): string {
   return line.map((u) => hyperlink(u.url, u.label ?? u.url)).join(' ');
 }
 
+/**
+ * The url a package's heading links to in place of a line under it: the one link of a package
+ * whose `urls` is a single unlabelled entry, else `undefined`. The `infra` group never collapses —
+ * its heading names the group, not a service.
+ */
+function headingUrl(group: PackageUrlGroup): string | undefined {
+  if (group.urls.length !== 1 || group.urls[0]?.length !== 1) {
+    return undefined;
+  }
+  const link = group.urls[0][0];
+  return link?.label === undefined ? link?.url : undefined;
+}
+
 /** Natural width of the right-hand URL column, so the left column knows how much room it can use. */
 function estimateRightColumnWidth(urlGroups: PackageUrlGroup[], topLevelUrls: UrlLine[]): number {
   let maxWidth = 0;
@@ -184,7 +197,8 @@ function estimateRightColumnWidth(urlGroups: PackageUrlGroup[], topLevelUrls: Ur
 /**
  * The right-hand footer column of links: workspace-wide (top-level) links first, then a
  * dim rule, then a bold-headed group per package. The rule shows only when both are
- * present. A line with several links renders them space-separated on one row.
+ * present. A line with several links renders them space-separated on one row. A package
+ * whose `urls` is one unlabelled link has its heading link there, with no line under it.
  */
 export function LinksColumn({
   topLevelUrls,
@@ -196,10 +210,15 @@ export function LinksColumn({
   /** The public URLs of the infra services the dev reverse proxy routes, one line each. */
   infraUrls?: UrlLine[];
 }): React.ReactElement | null {
+  // A package with one unlabelled link shows it as its heading, with no line under it.
+  const packageGroups = packageUrlGroups.map((group) => {
+    const url = headingUrl(group);
+    return { ...group, urls: url === undefined ? group.urls : [], url };
+  });
   // The infra links are one more group, under the packages', headed like the `infra:` row.
-  const groups: PackageUrlGroup[] = infraUrls.length
-    ? [...packageUrlGroups, { name: 'infra', selected: false, urls: infraUrls }]
-    : packageUrlGroups;
+  const groups: (PackageUrlGroup & { url?: string })[] = infraUrls.length
+    ? [...packageGroups, { name: 'infra', selected: false, urls: infraUrls }]
+    : packageGroups;
   if (topLevelUrls.length === 0 && groups.length === 0) {
     return null;
   }
@@ -217,7 +236,13 @@ export function LinksColumn({
       {groups.map((group, i) => (
         // Keyed by position too: a package may share the `infra` group's name.
         <React.Fragment key={`${String(i)}-${group.name}`}>
-          <Text bold={group.selected}>{group.name}</Text>
+          {group.url === undefined ? (
+            <Text bold={group.selected}>{group.name}</Text>
+          ) : (
+            <Text bold={group.selected} wrap="truncate" color={LINK_COLOR}>
+              {hyperlink(group.url, group.name)}
+            </Text>
+          )}
           {group.urls.map((line, j) => (
             <Text key={j} wrap="truncate" color={LINK_COLOR}>
               {renderLineText(line)}

@@ -86,7 +86,9 @@ lib):
   [dev reverse proxy](./dev-reverse-proxy.md), or on
   `http://localhost:<port>` without one. A path's trailing slash is dropped: `'/todos/'` is
   `'/todos'`, and `'/'` is `''`. A path on a package with no `port` is an error.
-  devtooie adds no links of its own.
+  devtooie adds no links of its own. When `urls` is a single link with no label — one URL or
+  path, `urls: ['']` — the footer shows no line for it: the package's name is that link. With
+  a label, or more than one link, each line shows under the name.
 - **`healthcheck`** — a URL polled for readiness; also required by anything
   that lists this package in its `waitFor`. A **path** (`'/health'`, or `'health'`) is probed
   at `http://localhost:<port>/health` — always the package itself, never through the dev
