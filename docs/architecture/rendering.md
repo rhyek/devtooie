@@ -92,11 +92,13 @@ screen — see [Resizing](#resizing).
   height until the chrome is measured, which is harmless (the run-phase buffer
   starts empty, or with only the few lines infra printed while the session
   started).
-- The footer content is unchanged from before (package dots, hotkey hints, URL
+- The footer content is unchanged from before (service dots, hotkey hints, URL
   links, `git:(branch)` / `logfile:`); it's simply no longer hand-positioned.
-  A config with `infra` adds an `infra:` row right under the package dots — a dot
-  per service, its live state — and the hotkey hints sit below both rows, a blank
-  line apart, since they act on whichever item is selected.
+  A config with `infra` adds an `infra:` row right under the service dots — a dot
+  per service, its live state. The hotkey hints for the selected item sit right
+  above the dots, with no blank line: hints, services and infra services are one stack,
+  set a blank line apart from the session hotkeys above it and the `cwd:` block
+  below it.
 
 ## Virtualized log viewport
 
@@ -139,7 +141,7 @@ line buffer (capped at `MAX_BUFFER_LINES`). What changed:
 
 - **It no longer paints the terminal in interactive mode.** `addLine` buffers the
   line, writes the logfile, and calls `notify()`. Only **plain mode**
-  (`--plain`, non-TTY) still streams lines to stdout — all the write-above
+  (`--headless`, non-TTY) still streams lines to stdout — all the write-above
   machinery (`renderNewLine`/`emitLine`/`resetScreen`/`replayBuffer`) is now gated
   behind `this.plain`.
 - **Subscription API for Ink**: `subscribe(listener)` + `getVersion()` (a
@@ -171,9 +173,9 @@ line buffer (capped at `MAX_BUFFER_LINES`). What changed:
 - **Log formatting** (`log-formatter.ts`): every **raw child-process** line runs through a
   formatter in the `start`/`spawnExtra` stdout/stderr handlers, via `addOutput` → `formatOutput`,
   _before_ it reaches `addLine` — so the buffer, screen, and logfile all hold the formatted text.
-  A package's `logs.formatter` (if set) runs in place of the module's `defaultFormatter`
+  A service's `logs.formatter` (if set) runs in place of the module's `defaultFormatter`
   (`= createFormatter()`, exposed publicly as `logging.formatter()`), which otherwise applies to
-  **every package** — it passes non-JSON through and pretty-prints JSON logs as `[LEVEL] message` +
+  **every service** — it passes non-JSON through and pretty-prints JSON logs as `[LEVEL] message` +
   indented properties. `addOutput` splits a multi-line result into separate buffered lines, so the
   indented ones group as continuations and each gets its own prefix in the logfile. A formatter owns
   presentation only of the lines it **rewrites**: whichever formatter ran, a line handed back
@@ -181,10 +183,10 @@ line buffer (capped at `MAX_BUFFER_LINES`). What changed:
   formatter was configured is what used to strip the red from stderr as soon as one was set.
   devtooie's own status lines (`started`, `stopping…`) never pass through any of this. The timestamp
   is still devtooie's (added in `addLine`), never the log's own.
-- **Per-package `logs.timestamps`**: on-screen timestamp visibility is resolved per
-  package (`pkg.logs.timestamps ?? top-level default`) into `showTsBySearchName`,
+- **Per-service `logs.timestamps`**: on-screen timestamp visibility is resolved per
+  service (`pkg.logs.timestamps ?? top-level default`) into `showTsBySearchName`,
   stamped onto each `BufferedLine` as `showTs`, so `tsPrefix`/`gutterWidth` render
-  (and align) each line by its own package's setting. The logfile is always
+  (and align) each line by its own service's setting. The logfile is always
   timestamped regardless.
 - **Timestamp layout (`timestamp-mode.ts`)**: a shown stamp is rendered in one of two
   layouts — `time` (`HH:MM:SS`, 9 columns of gutter) while every timestamped line **on
@@ -279,20 +281,20 @@ decoding, and re-asserting brings SGR straight back.
   viewport by `WHEEL_STEP` rows (dropping any active selection).
 - **Keyboard** (normal mode): `PgUp`/`PgDn` page, `Home`/`End` jump to
   oldest/newest (End re-enters follow). The arrows move the footer cursor, which
-  runs over the packages and then the infra services: `←`/`→` step through that
+  runs over the services and then the infra services: `←`/`→` step through that
   one list with wrap-around, `↑`/`↓` go to the nearest item on the row above or
   below (wrapping between the top and bottom rows). The rows are read from the
   laid-out footer at keypress — each item's `elementScreenRect` — and the choice is
   `verticalTarget` in `footer-nav.ts`: the nearest left edge, with each row's
   first item counted from where the rows start, so the first service (behind the
-  `infra:` label) sits under the first package. Any keyboard scroll drops an active
+  `infra:` label) sits under the first service. Any keyboard scroll drops an active
   selection.
 - **Keyboard** (commands mode, the `m` menu): `↑`/`↓` move within the focused
-  package's command list and `←`/`→` switch the focused package in place — the
-  same wrap-around cursor as normal mode — so commands on another package can be
+  service's command list and `←`/`→` switch the focused service in place — the
+  same wrap-around cursor as normal mode — so commands on another service can be
   picked without leaving the menu. Switching is suppressed only while the custom
   row holds typed text (which a switch would clear), resets the highlight to the
-  new package's first row, and clears any custom input.
+  new service's first row, and clears any custom input.
 - One-line **scroll indicators** frame the pane when the log overflows: a
   `↑ N older lines — press Home to jump to oldest` line at the very top whenever
   content is hidden above (`hiddenAbove > 0`, i.e. not scrolled to the top), and a
@@ -417,7 +419,7 @@ enabling mouse reporting takes the mouse from the terminal, and `useDragSelectio
     on each row, and value-mode `selectionCopyText` rejoins rows of one line with
     no separator. So a URI split by the terminal's width still copies unbroken. A
     press in the gutter or hanging indent returns null here and falls back to the
-    single-row scan — which is what still selects a `[package]` name.
+    single-row scan — which is what still selects a `[service]` name.
   - **Triple-click** reuses the gutter rule: inside the value it takes the whole
     `valueRun` in value mode (so the copy has no timestamp/`[name]` prefix), on the
     gutter it takes the rendered row as shown. Like the drag it can only see the
@@ -495,7 +497,7 @@ expiry timers, click targets) and the renderer.
 
 ## Plain / non-TTY mode
 
-`--plain` (and any non-TTY context — `runners/plain.ts` builds
+`--headless` (and any non-TTY context — `runners/plain.ts` builds
 `new ProcessManager(args, { plain: true })`) is unchanged: no alternate screen, no
 Ink log rendering; `addLine` streams each line to stdout. All the interactive
 machinery is gated on `!plain`. Don't regress this path.

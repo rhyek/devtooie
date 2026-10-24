@@ -17,7 +17,7 @@ describe('formatInternalRecord', () => {
     const line = JSON.stringify({
       level: 30,
       component: 'control',
-      package: 'web',
+      service: 'web',
       msg: 'restart',
     });
     const r = formatInternalRecord(line);
@@ -27,7 +27,7 @@ describe('formatInternalRecord', () => {
     expect(r.text).toContain('[INFO]');
     expect(r.text).toContain('restart');
     // the passed variable renders as an indented property...
-    expect(r.text).toContain('package');
+    expect(r.text).toContain('service');
     expect(r.text).toContain('web');
     // ...but the routing field never leaks into the output
     expect(r.text).not.toContain('component');
@@ -58,12 +58,12 @@ describe('createInternalLogger', () => {
   it('emits child-bound component + attrs as JSON, with no pid/hostname/time noise', () => {
     const lines: string[] = [];
     const { control, system } = createInternalLogger((l) => lines.push(l));
-    control.info({ package: 'web' }, 'restart');
+    control.info({ service: 'web' }, 'restart');
     system.warn('shutting down...');
     const recs = lines.map((l) => JSON.parse(l));
     expect(recs[0]).toMatchObject({
       component: 'control',
-      package: 'web',
+      service: 'web',
       msg: 'restart',
       level: 30,
     });

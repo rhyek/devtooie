@@ -34,20 +34,20 @@ function docker(dbState: { State: string; ExitCode?: number }): Exec {
 
 describe('runSessionInfra', () => {
   test('is undefined when the config declares no infra', async () => {
-    defineConfig({ workspaceDir: ws, packageRootDir: 'packages', packages: { web: {} } });
+    defineConfig({ workspaceDir: ws, serviceRootDir: 'packages', services: { web: {} } });
     expect(await runSessionInfra()).toBeUndefined();
   });
 
   test('brings everything up and returns the services and the log of what was printed', async () => {
     defineConfig({
       workspaceDir: ws,
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       infra: {
         'docker-compose': {
           services: { db: { afterReady: ({ log }) => log('2 migrations applied') } },
         },
       },
-      packages: { web: {} },
+      services: { web: {} },
     });
     const seen: string[] = [];
     const infra = await runSessionInfra((e) => seen.push(e.type), {
@@ -61,26 +61,26 @@ describe('runSessionInfra', () => {
     expect(seen).toContain('targets');
   });
 
-  test("carries a routed service's public origin, for the footer", async () => {
+  test("carries a service's resolved urls, for the footer", async () => {
     defineConfig({
       workspaceDir: ws,
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'example.test' },
-      infra: { 'docker-compose': { services: { db: { port: 5432, proxy: { subdomain: 'db' } } } } },
-      packages: { web: {} },
+      infra: { 'docker-compose': { services: { db: { port: 5432, proxy: { subdomain: 'db' }, urls: [''] } } } }, // prettier-ignore
+      services: { web: {} },
     });
     const infra = await runSessionInfra(undefined, { exec: docker({ State: 'running' }) });
     expect(infra?.services).toEqual([
-      { provider: 'docker-compose', name: 'db', publicOrigin: 'https://db.example.test' },
+      { provider: 'docker-compose', name: 'db', urls: ['https://db.example.test'] },
     ]);
   });
 
   test('throws when a service does not come up, naming it and why', async () => {
     defineConfig({
       workspaceDir: ws,
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       infra: { 'docker-compose': {} },
-      packages: { web: {} },
+      services: { web: {} },
     });
     const failure = await runSessionInfra(undefined, {
       exec: docker({ State: 'exited', ExitCode: 1 }),
@@ -92,7 +92,7 @@ describe('runSessionInfra', () => {
   test("a failed callback's error carries what the callback printed, so the reason is visible", async () => {
     defineConfig({
       workspaceDir: ws,
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       infra: {
         'docker-compose': {
           services: {
@@ -106,7 +106,7 @@ describe('runSessionInfra', () => {
           },
         },
       },
-      packages: { web: {} },
+      services: { web: {} },
     });
     const failure = await runSessionInfra(undefined, { exec: docker({ State: 'running' }) }).catch(
       (err: unknown) => err,
@@ -123,7 +123,7 @@ describe('runSessionInfra', () => {
   test('keeps only the tail of a long output', async () => {
     defineConfig({
       workspaceDir: ws,
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       infra: {
         'docker-compose': {
           services: {
@@ -138,7 +138,7 @@ describe('runSessionInfra', () => {
           },
         },
       },
-      packages: { web: {} },
+      services: { web: {} },
     });
     const failure = await runSessionInfra(undefined, { exec: docker({ State: 'running' }) }).catch(
       (err: unknown) => err,

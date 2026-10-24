@@ -23,7 +23,7 @@ import { infraServicesOf, proxyHostsFor, serviceProxyHostsFor } from './config.j
 
 /** One hostname the proxy routes, and where to. */
 export type DevReverseProxyRoute = {
-  /** The full hostname: `<subdomain>.<rootDomain>`, or the bare `rootDomain` for `defaultPackage`. */
+  /** The full hostname: `<subdomain>.<rootDomain>`, or the bare `rootDomain` for `defaultService`. */
   host: string;
   /** The package's or service's resolved port, on loopback. */
   port: number;
@@ -107,7 +107,7 @@ const HOP_BY_HOP = new Set([
  */
 export function routesFromConfig(config: Config<string>): DevReverseProxyRoute[] {
   const routes: DevReverseProxyRoute[] = [];
-  for (const pkg of Object.values(config.packages)) {
+  for (const pkg of Object.values(config.services)) {
     for (const host of proxyHostsFor(config, pkg)) {
       routes.push({
         kind: 'package',
@@ -239,8 +239,8 @@ export async function startDevReverseProxy(opts: {
 
   const restartHint = (name: string) =>
     opts.controlApiPort !== undefined
-      ? `POST http://127.0.0.1:${String(opts.controlApiPort)}/command/restart/${name}`
-      : `POST /command/restart/${name} on the control API`;
+      ? `POST http://127.0.0.1:${String(opts.controlApiPort)}/command/service/restart/${name}`
+      : `POST /command/service/restart/${name} on the control API`;
 
   const urlScheme = opts.urlScheme ?? 'http';
   // `port` (the bound one) is assigned below, before any request can arrive.
@@ -282,7 +282,7 @@ export async function startDevReverseProxy(opts: {
       status: 503,
       title: `${route.package} is ${status}`,
       detail: {
-        package: route.package,
+        service: route.package,
         status,
         host: route.host,
         hint: managed
@@ -290,7 +290,7 @@ export async function startDevReverseProxy(opts: {
           : 'not part of the running devtooie session',
       },
       paragraphs: [
-        `<code>${escapeHtml(route.host)}</code> routes to the package <code>${escapeHtml(route.package)}</code>, which is currently <strong>${escapeHtml(status)}</strong>.`,
+        `<code>${escapeHtml(route.host)}</code> routes to the service <code>${escapeHtml(route.package)}</code>, which is currently <strong>${escapeHtml(status)}</strong>.`,
         how,
         'This page refreshes on its own.',
       ],
@@ -308,7 +308,7 @@ export async function startDevReverseProxy(opts: {
       status: 503,
       title: `${describeTarget(route)} is starting`,
       detail: {
-        service: route.service,
+        infraService: route.service,
         status: 'starting',
         host: route.host,
         hint: 'devtooie is still bringing the infra up',
@@ -332,7 +332,7 @@ export async function startDevReverseProxy(opts: {
       res.destroy();
       return;
     }
-    const target = route.kind === 'package' ? { package: route.package } : { service: route.service }; // prettier-ignore
+    const target = route.kind === 'package' ? { service: route.package } : { infraService: route.service }; // prettier-ignore
     sendProblem(req, res, {
       status: 502,
       title: `${describeTarget(route)} is not answering on port ${String(route.port)}`,
@@ -577,7 +577,7 @@ export async function startDevReverseProxy(opts: {
       m.systemLog.info(
         table,
         `dev reverse proxy listening on 127.0.0.1:${String(port)}` +
-          (routes.length ? '' : ' — nothing to route (no package or infra service declares both `proxy` and `port`)'), // prettier-ignore
+          (routes.length ? '' : ' — nothing to route (no service or infra service declares both `proxy` and `port`)'), // prettier-ignore
       );
     },
     markInfraReady() {

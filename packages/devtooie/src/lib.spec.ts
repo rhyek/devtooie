@@ -34,12 +34,12 @@ import {
   pickNewestLog,
   resolveLogFile,
 } from './lib.js';
-import type { AnyPackageConfig } from './config.js';
+import type { AnyServiceConfig } from './config.js';
 import { defineConfig } from './config.js';
 
 let dir: string;
-function pkg(over: Partial<AnyPackageConfig> & { absoluteDir: string }): AnyPackageConfig {
-  return { name: 'x', relativeDir: 'x', ...over } as AnyPackageConfig;
+function pkg(over: Partial<AnyServiceConfig> & { absoluteDir: string }): AnyServiceConfig {
+  return { name: 'x', relativeDir: 'x', ...over } as AnyServiceConfig;
 }
 
 beforeAll(() => {
@@ -117,7 +117,7 @@ describe('package script spawn spec', () => {
   let ws: string;
   let app: string; // named + versioned, with its own node_modules/.bin
   let bare: string; // no name, no version, no node_modules
-  const run = (p: AnyPackageConfig, script: string, args: string[] = [], env = process.env) => {
+  const run = (p: AnyServiceConfig, script: string, args: string[] = [], env = process.env) => {
     const spec = getExecArgs(p, script, args, env);
     return execa(spec.cmd, spec.args, { cwd: p.absoluteDir, env: spec.env, reject: false });
   };
@@ -283,9 +283,9 @@ describe('resolveDeps (§8)', () => {
   function setup() {
     return Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: '/repo',
-        packages: {
+        services: {
           'reverse-proxy': { selectable: false },
           'core-svc': {
             deps: { runtime: ['reverse-proxy'] },
@@ -295,7 +295,7 @@ describe('resolveDeps (§8)', () => {
           },
           'graphql-codegen': {},
         },
-      }).packages,
+      }).services,
     );
   }
 
@@ -351,10 +351,10 @@ describe('tsconfig project-reference inference', () => {
   it('falls back to tsconfig.json when no tsconfig.build.json exists', () => {
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: ws,
-        packages: { 'lib-a': {}, 'lib-b': {}, 'app-json': {} },
-      }).packages,
+        services: { 'lib-a': {}, 'lib-b': {}, 'app-json': {} },
+      }).services,
     );
     const app = packages.find((p) => p.name === 'app-json')!;
     expect(getTsconfigBuildPackages(app).map((p) => p.name)).toEqual(['lib-a']);
@@ -363,10 +363,10 @@ describe('tsconfig project-reference inference', () => {
   it('prefers tsconfig.build.json over tsconfig.json', () => {
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: ws,
-        packages: { 'lib-a': {}, 'lib-b': {}, 'app-both': {} },
-      }).packages,
+        services: { 'lib-a': {}, 'lib-b': {}, 'app-both': {} },
+      }).services,
     );
     const app = packages.find((p) => p.name === 'app-both')!;
     expect(getTsconfigBuildPackages(app).map((p) => p.name)).toEqual(['lib-b']);
@@ -380,10 +380,10 @@ describe('tsconfig project-reference inference', () => {
     );
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: ws,
-        packages: { 'lib-a': {}, 'lib-b': {}, 'app-jsonc': {} },
-      }).packages,
+        services: { 'lib-a': {}, 'lib-b': {}, 'app-jsonc': {} },
+      }).services,
     );
     const app = packages.find((p) => p.name === 'app-jsonc')!;
     expect(getTsconfigBuildPackages(app).map((p) => p.name)).toEqual(['lib-a', 'lib-b']);
@@ -394,10 +394,10 @@ describe('tsconfig project-reference inference', () => {
     write('packages/app-deep/tsconfig.json', { references: [{ path: '../lib-c' }] });
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: ws,
-        packages: { 'lib-a': {}, 'lib-c': {}, 'app-deep': {} },
-      }).packages,
+        services: { 'lib-a': {}, 'lib-c': {}, 'app-deep': {} },
+      }).services,
     );
     const app = packages.find((p) => p.name === 'app-deep')!;
     expect(getTsconfigBuildPackages(app).map((p) => p.name)).toEqual(['lib-c', 'lib-a']);
@@ -408,10 +408,10 @@ describe('tsconfig project-reference inference', () => {
     fs.writeFileSync(path.join(ws, 'packages/app-broken/tsconfig.json'), 'not json at all');
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: ws,
-        packages: { 'app-broken': {} },
-      }).packages,
+        services: { 'app-broken': {} },
+      }).services,
     );
     expect(getTsconfigBuildPackages(packages[0]!)).toEqual([]);
   });
@@ -424,14 +424,14 @@ describe('tsconfig project-reference inference', () => {
   it('prefers run.tsconfig over tsconfig.build.json', () => {
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: ws,
-        packages: {
+        services: {
           'lib-a': {},
           'lib-b': {},
           'app-custom': { tsconfig: 'tsconfig.app.json' },
         },
-      }).packages,
+      }).services,
     );
     const app = packages.find((p) => p.name === 'app-custom')!;
     expect(getTsconfigBuildPackages(app).map((p) => p.name)).toEqual(['lib-a']);
@@ -472,7 +472,7 @@ describe('make targets', () => {
 
 describe('state + persistence', () => {
   it('round-trips the saved selection', () => {
-    defineConfig({ packageRootDir: 'packages', packages: { web: {}, 'core-svc': {} } });
+    defineConfig({ serviceRootDir: 'packages', services: { web: {}, 'core-svc': {} } });
     resetSelection();
     expect(loadSelection()).toBeNull();
     saveSelection(['web', 'core-svc']);
@@ -482,9 +482,9 @@ describe('state + persistence', () => {
   });
 
   // A saved selection outlives package renames. A name that no longer exists must never reach
-  // the picker or `findPackage` (which throws), and must never be written back.
+  // the picker or `findService` (which throws), and must never be written back.
   test('drops saved names that are not current packages, keeping the valid ones', () => {
-    defineConfig({ packageRootDir: 'packages', packages: { web: {}, api: {} } });
+    defineConfig({ serviceRootDir: 'packages', services: { web: {}, api: {} } });
     fs.writeFileSync(
       path.join(getStateDir(), 'selection.json'),
       JSON.stringify(['@old/name', 'web']),
@@ -498,10 +498,10 @@ describe('state + persistence', () => {
   });
 
   test('never saves a name that is not a current package', () => {
-    defineConfig({ packageRootDir: 'packages', packages: { web: {}, api: {} } });
+    defineConfig({ serviceRootDir: 'packages', services: { web: {}, api: {} } });
     saveSelection(['web', 'api']);
     // The config renames `api` → `backend`; the next run saves what it ran with.
-    defineConfig({ packageRootDir: 'packages', packages: { web: {}, backend: {} } });
+    defineConfig({ serviceRootDir: 'packages', services: { web: {}, backend: {} } });
     saveSelection(loadSelection() ?? []);
     expect(JSON.parse(fs.readFileSync(path.join(getStateDir(), 'selection.json'), 'utf8'))).toEqual(['web']); // prettier-ignore
     saveSelection(['web', 'api']);
@@ -510,7 +510,7 @@ describe('state + persistence', () => {
   });
 
   test('readSelection separates current names from stale ones, pruning the file', () => {
-    defineConfig({ packageRootDir: 'packages', packages: { web: {}, api: {} } });
+    defineConfig({ serviceRootDir: 'packages', services: { web: {}, api: {} } });
     fs.writeFileSync(
       path.join(getStateDir(), 'selection.json'),
       JSON.stringify(['@old/name', 'web', '@gone/too']),
@@ -524,7 +524,7 @@ describe('state + persistence', () => {
   // Renamed package keys must never stop devtooie from running: a stale saved name sends the
   // TUI back to the picker (known names preselected) instead of skipping it on --last-answers.
   test('a stale saved name forces the picker even with --last-answers, preselecting the rest', () => {
-    defineConfig({ packageRootDir: 'packages', packages: { web: {}, api: {} } });
+    defineConfig({ serviceRootDir: 'packages', services: { web: {}, api: {} } });
     fs.writeFileSync(path.join(getStateDir(), 'selection.json'), JSON.stringify(['@old/name', 'web'])); // prettier-ignore
     expect(initialPhaseFor({ packages: [], lastAnswers: true })).toEqual({
       type: 'package-select',
@@ -547,23 +547,23 @@ describe('state + persistence', () => {
   });
 
   test('--last-answers without a picker refuses a selection with stale names, naming them', () => {
-    defineConfig({ packageRootDir: 'packages', packages: { web: {} } });
+    defineConfig({ serviceRootDir: 'packages', services: { web: {} } });
     fs.writeFileSync(path.join(getStateDir(), 'selection.json'), JSON.stringify(['@old/name', 'web'])); // prettier-ignore
-    expect(resolveSelectedNames({ package: [], lastAnswers: true }, '--plain')).toEqual({
+    expect(resolveSelectedNames({ service: [], lastAnswers: true }, '--headless')).toEqual({
       error:
-        'The saved selection names packages that no longer exist (@old/name) — run once without --last-answers to pick again.',
+        'The saved selection names services that no longer exist (@old/name) — run once without --last-answers to pick again.',
     });
     fs.writeFileSync(path.join(getStateDir(), 'selection.json'), JSON.stringify(['@old/name']));
-    expect(resolveSelectedNames({ package: [], lastAnswers: true }, '--plain')).toEqual({
+    expect(resolveSelectedNames({ service: [], lastAnswers: true }, '--headless')).toEqual({
       error:
-        'The saved selection names packages that no longer exist (@old/name) — run once without --last-answers to pick again.',
+        'The saved selection names services that no longer exist (@old/name) — run once without --last-answers to pick again.',
     });
     fs.writeFileSync(path.join(getStateDir(), 'selection.json'), JSON.stringify(['web']));
-    expect(resolveSelectedNames({ package: [], lastAnswers: true }, '--plain')).toEqual({
+    expect(resolveSelectedNames({ service: [], lastAnswers: true }, '--headless')).toEqual({
       names: ['web'],
     });
     resetSelection();
-    expect(resolveSelectedNames({ package: [], lastAnswers: true }, '--plain')).toEqual({
+    expect(resolveSelectedNames({ service: [], lastAnswers: true }, '--headless')).toEqual({
       error: 'No saved selection found — run once without --last-answers first.',
     });
   });
@@ -577,15 +577,15 @@ describe('display sort + runner args', () => {
   function packages() {
     return Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: '/repo',
-        packages: {
+        services: {
           proxy: { selectable: false },
           api: { deps: { runtime: ['proxy'] } },
           web: { deps: { runtime: ['api', 'proxy'] } },
           'lib-x': {},
         },
-      }).packages,
+      }).services,
     );
   }
 
@@ -600,10 +600,10 @@ describe('display sort + runner args', () => {
   it('depScore counts a dep reached via two kinds once per kind', () => {
     const [both] = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: '/repo',
-        packages: { both: { deps: { build: ['leaf'], runtime: ['leaf'] } }, leaf: {} },
-      }).packages,
+        services: { both: { deps: { build: ['leaf'], runtime: ['leaf'] } }, leaf: {} },
+      }).services,
     );
     // `leaf` is a build dep AND a runtime dep of `both`, so it counts twice.
     expect(depScore(both!)).toBe(2);
@@ -638,11 +638,11 @@ describe('display sort + runner args', () => {
   test("buildRunnerArgs carries the loaded config's own env vars", () => {
     const all = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: '/repo',
         env: { vars: { DATA_DIR: '/srv/data' } },
-        packages: { web: {} },
-      }).packages,
+        services: { web: {} },
+      }).services,
     );
     const web = all.find((a) => a.name === 'web')!;
     expect(buildRunnerArgs([web], resolveDeps([web])).envVars).toEqual({ DATA_DIR: '/srv/data' });
@@ -651,15 +651,15 @@ describe('display sort + runner args', () => {
   it('buildRunnerArgs surfaces top-level urls as normalized lines from the loaded config', () => {
     const all = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: '/repo',
         urls: [
           'https://dashboard.internal',
           { label: 'Grafana', url: 'https://grafana.internal' },
           ['https://logs.internal', { label: 'Traces', url: 'https://traces.internal' }],
         ],
-        packages: { web: {} },
-      }).packages,
+        services: { web: {} },
+      }).services,
     );
     const web = all.find((a) => a.name === 'web')!;
     const args = buildRunnerArgs([web], resolveDeps([web]));
@@ -680,19 +680,19 @@ describe('display sort + runner args', () => {
 
   it('buildRunnerArgs carries logTimestamps from the loaded config (default true)', () => {
     const on = Object.values(
-      defineConfig({ packageRootDir: 'packages', workspaceDir: '/repo', packages: { web: {} } })
-        .packages,
+      defineConfig({ serviceRootDir: 'packages', workspaceDir: '/repo', services: { web: {} } })
+        .services,
     );
     const web = on.find((a) => a.name === 'web')!;
     expect(buildRunnerArgs([web], resolveDeps([web])).logTimestamps).toBe(true);
 
     const off = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: '/repo',
         logs: { timestamps: false },
-        packages: { web: {} },
-      }).packages,
+        services: { web: {} },
+      }).services,
     );
     const web2 = off.find((a) => a.name === 'web')!;
     expect(buildRunnerArgs([web2], resolveDeps([web2])).logTimestamps).toBe(false);

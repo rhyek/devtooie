@@ -1,9 +1,9 @@
-# Package lifecycle when you edit code
+# Service lifecycle when you edit code
 
 > Part of the [devtooie](../README.md) documentation.
 
-`command` declares **how a package's dev process behaves**, which tells you (or an
-agent) what to do after editing that package's source. It's a script/target name or
+`command` declares **how a service's dev process behaves**, which tells you (or an
+agent) what to do after editing that service's source. It's a script/target name or
 `[name, { watches, builds, cleans }]`:
 
 - `command: 'dev'` — the default: `{ watches: true, builds: true, cleans: false }`.
@@ -18,23 +18,23 @@ process (defaults to `dev`). The flags:
 - **`builds`** — it (re)builds on start (default `true`). `watches: true` with `builds: false`
   is rejected — a watching script must also build.
 - **`cleans`** — its start is a _clean_ rebuild, with no stale output to clear (default
-  `false`; requires `builds: true`). A `go run .`, for instance. This makes the package
+  `false`; requires `builds: true`). A `go run .`, for instance. This makes the service
   **rebuildable** without separate `clean`/`build` scripts — a rebuild just restarts it.
 
-**After editing** the package's code — what devtooie (or an agent) does:
+**After editing** the service's code — what devtooie (or an agent) does:
 
-| resolved flags                  | after you edit the package's code                       |
-| ------------------------------- | ------------------------------------------------------- |
-| `watches: true` (default)       | nothing — the script reloads itself                     |
-| `watches: false, builds: true`  | `POST /command/restart/<pkg>`                           |
-| `watches: false, builds: false` | `POST /command/rebuild/<pkg>` (clean build, then start) |
+| resolved flags                  | after you edit the service's code                                   |
+| ------------------------------- | ------------------------------------------------------------------- |
+| `watches: true` (default)       | nothing — the script reloads itself                                 |
+| `watches: false, builds: true`  | `POST /command/service/restart/<service>`                           |
+| `watches: false, builds: false` | `POST /command/service/rebuild/<service>` (clean build, then start) |
 
 **The two manual commands** (the `r`/`b` hotkeys and their endpoints):
 
-- **restart** (`POST /command/restart`) — re-runs the dev command; available for any running package.
-- **rebuild** (`POST /command/rebuild`) — a clean rebuild; available only when the package
+- **restart** (`POST /command/service/restart/<name>`) — re-runs the dev command; available for any running service.
+- **rebuild** (`POST /command/service/rebuild/<name>`) — a clean rebuild; available only when the service
   _can_ clean-rebuild: `cleans: true` (rebuild just restarts it), or it has `clean` + `build`
-  (or `build:clean`) scripts. Otherwise it's a no-op (e.g. a plain `node --watch` app).
+  (or `build:clean`) scripts. Otherwise it's refused with a `409` (e.g. a plain `node --watch` app).
 
 The resolved flags are served in the `config` field of [`GET /query/status`](./control-api.md)
 for tooling to read.
@@ -48,15 +48,16 @@ list, so `node_modules` is watched wholesale. A service with a real dependency t
 holding thousands of watch roots, which wastes restarts on files you never edit and, on macOS,
 can exhaust the machine-wide FSEvents budget and fail the watcher with `EMFILE`.
 
-Scope it by naming the directories yourself:
+Scope it by naming the directories yourself — the service's own source, and the source of any
+workspace library it imports:
 
 ```jsonc
 {
   "scripts": {
-    // watches only what this package actually loads at runtime
-    "dev": "node --watch --watch-path=./src --watch-path=../shared/dist src/index.ts",
+    // watches only what this service actually loads at runtime
+    "dev": "node --watch --watch-path=./src --watch-path=../../libs/db/src src/index.ts",
   },
 }
 ```
 
-Other watchers (`tsx watch`, `nodemon`, `tsc --watch`) don't behave this way and need nothing.
+Other watchers (`tsx watch`, `nodemon`) don't behave this way and need nothing.

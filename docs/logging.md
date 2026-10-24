@@ -2,21 +2,21 @@
 
 > Part of the [devtooie](../README.md) documentation.
 
-How devtooie displays and records each package's output. Two things: optional on-screen
+How devtooie displays and records each service's output. Two things: optional on-screen
 **timestamps**, and the **structured-log (JSON) formatting** devtooie applies by default. You rarely
 need to configure either — timestamps are on out of the box, and so is the structured-log
 formatter (most dev processes don't even emit JSON logs). Both are driven by
-the top-level and per-package `logs` option of [`defineConfig`](./configuration.md).
+the top-level and per-service `logs` option of [`defineConfig`](./configuration.md).
 
 ## Timestamps
 
-By default every on-screen log line (both the interactive TUI and `--plain` output) is
+By default every on-screen log line (both the interactive TUI and `--headless` output) is
 prefixed with a local-time (24-hour) stamp. Set `logs.timestamps: false` to turn that off:
 
 ```ts
 export default defineConfig({
   logs: { timestamps: false },
-  packages: {/* … */},
+  services: {/* … */},
 });
 ```
 
@@ -28,20 +28,20 @@ export default defineConfig({
 **The TUI shows the date only when it matters.** While every timestamped line on screen is from
 the same day, rows show just the time, as above; as soon as two days are visible together —
 scrolled back across midnight, or the first lines after it — the full `YYYY-MM-DD HH:MM:SS` stamp
-comes back so the rows can be told apart. `--plain` output and the log file always carry the full
+comes back so the rows can be told apart. `--headless` output and the log file always carry the full
 stamp.
 
 The on-disk session log file always records timestamps (in the same format) regardless of
 this setting; `logs.timestamps` only controls whether they're shown on screen.
 
-**Per-package override.** A package can set its own on-screen visibility with a package-level
+**Per-service override.** A service can set its own on-screen visibility with a service-level
 `logs.timestamps`. When set (`true` or `false`) it wins over the top-level default for that
-package; when omitted, the package inherits the top-level value:
+service; when omitted, the service inherits the top-level value:
 
 ```ts
 export default defineConfig({
   logs: { timestamps: false }, // top-level default
-  packages: {
+  services: {
     api: {}, // inherits → no timestamps on screen
     worker: { logs: { timestamps: true } }, // overrides → timestamps on screen
   },
@@ -53,12 +53,12 @@ export default defineConfig({
 > **You probably don't need this section.** Most dev processes log plain, human-readable text
 > (vite, `tsc`, nodemon, most app servers) — devtooie passes that straight through, untouched. For
 > the apps that _do_ emit structured **JSON** logs in dev, the default formatter already handles the
-> common cases (Go `slog`, pino, winston). Read on only if a package logs JSON in dev **and** the
+> common cases (Go `slog`, pino, winston). Read on only if a service logs JSON in dev **and** the
 > default formatter isn't rendering it the way you want.
 
 Some services log **structured JSON in every environment** (Go's `log/slog`, Node's pino/winston)
 rather than branching the logger on `NODE_ENV`. **devtooie handles this out of the box** — it
-applies a default formatter to _every_ package's output that
+applies a default formatter to _every_ service's output that
 
 - passes **non-JSON** lines through untouched, and
 - pretty-prints a **JSON log** as a **`[LEVEL] message`** header (the `[LEVEL]` colored by severity),
@@ -88,7 +88,7 @@ is shown as:
   port: 3002
 ```
 
-You configure nothing for this. `logs.formatter` only **overrides** the default for a package — to
+You configure nothing for this. `logs.formatter` only **overrides** the default for a service — to
 map a logger's numeric levels, or to rename/hide fields.
 
 ### Levels
@@ -109,13 +109,13 @@ A **string** level is uppercased and matched to devtooie's canonical levels —
 > [`logs.formatter`](#writing-your-own) yourself: it's a plain `(line: string) => string` over the
 > raw line, with no JSON assumption.
 
-Override a package's formatter with one of the `logging` helpers (exported from `devtooie`):
+Override a service's formatter with one of the `logging` helpers (exported from `devtooie`):
 
 ```ts
 import { defineConfig, logging } from 'devtooie';
 
 export default defineConfig({
-  packages: {
+  services: {
     'go-svc': {}, // no config — slog's string levels just work via the default
     api: { logs: { formatter: logging.nodejs.pino.formatter() } }, // pino numeric levels → labels
     web: { logs: { formatter: logging.nodejs.winston.formatter() } }, // winston `message` key + levels
@@ -124,7 +124,7 @@ export default defineConfig({
 ```
 
 - **`logging.formatter(config?)`** — the base factory, and the exact default applied to every
-  package. The ecosystem helpers are this with their defaults changed.
+  service. The ecosystem helpers are this with their defaults changed.
 - **`logging.nodejs.pino.formatter(config?)`** — maps pino/bunyan's **numeric** levels
   (`logging.nodejs.pino.levels`: `10=TRACE … 60=FATAL`).
 - **`logging.nodejs.winston.formatter(config?)`** — uses winston's `message` key and level names
@@ -202,9 +202,9 @@ the startup lines, noise on the heartbeat that repeats every 5s.
 
 ## devtooie's own log lines
 
-Alongside your packages' output, devtooie logs its own events into the same stream — structured the
+Alongside your services' output, devtooie logs its own events into the same stream — structured the
 same way, so they format, filter and land in the log file identically. They use two labelled
-channels, both rendered in a distinct gold so they read apart from package output:
+channels, both rendered in a distinct gold so they read apart from service output:
 
 - **`[devtooie]`** — session lifecycle notices (shutting down, git-branch change).
 - **`[dt:control]`** — mutating commands received over the [control API](control-api.md)
@@ -214,8 +214,8 @@ channels, both rendered in a distinct gold so they read apart from package outpu
 ```
 2026-07-23 16:41:22 [devtooie       ] [WARN] shutting down...
 2026-07-23 16:41:22 [dt:control     ] [INFO] restart
-2026-07-23 16:41:22 [dt:control     ]   package: backend
+2026-07-23 16:41:22 [dt:control     ]   service: backend
 ```
 
-A control line naming a package is tagged with that package, so it shows and hides with the
-package's own output under an active filter.
+A control line naming a service is tagged with that service, so it shows and hides with the
+service's own output under an active filter.

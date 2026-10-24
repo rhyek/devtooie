@@ -31,7 +31,7 @@ type Phase =
 export type LogFileRef = { current: string | undefined };
 
 export type AppProps = {
-  /** Explicit `--package` selections from the CLI; non-empty bypasses the selector entirely. */
+  /** Explicit `--service` selections from the CLI; non-empty bypasses the selector entirely. */
   packages?: string[];
   /** `--last-answers`: reuse the previously saved selection and skip the selector. */
   lastAnswers?: boolean;
@@ -45,7 +45,7 @@ export type AppProps = {
  * that owns the one thing shared across those phases — the control server, received
  * from `BuildProgress` via `onControlReady` and handed to `NativeRunner` once the
  * build completes — plus the interactive selection, persisted via `saveSelection`
- * only when it actually came from the selector (a `--package`/`--last-answers` run
+ * only when it actually came from the selector (a `--service`/`--last-answers` run
  * never touches it).
  */
 export function App({ packages = [], lastAnswers = false, logFile, logFileRef }: AppProps) {

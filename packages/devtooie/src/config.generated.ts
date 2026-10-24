@@ -5,14 +5,14 @@
 // here is intentionally ignored.
 /* eslint-disable */
 
-export type GeneratedPackageConfig = {
-    /** Directory holding the package, relative to `workspaceDir`. Inferred as `<packageRootDir>/<key>` when the config sets `packageRootDir`; required otherwise. Set it to override the inferred one. */
+export type GeneratedServiceConfig = {
+    /** Directory holding the service, relative to `workspaceDir`. Inferred as `<serviceRootDir>/<key>` when the config sets `serviceRootDir`; required otherwise. Set it to override the inferred one. */
     relativeDir?: string | undefined;
     /** Show in the interactive picker (default `true`). */
     selectable?: boolean | undefined;
     /** Shorter label used in the TUI in place of `name`. */
     shortName?: string | undefined;
-    /** Color for this package's log-prefix label, overriding the auto-assigned palette color. Any Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`), `'rgb(175,135,255)'`, or `'ansi256(140)'`. */
+    /** Color for this service's log-prefix label, overriding the auto-assigned palette color. Any Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`), `'rgb(175,135,255)'`, or `'ansi256(140)'`. */
     color?: string | undefined;
     proxy?: {
         subdomain: true | string | string[];
@@ -23,7 +23,7 @@ export type GeneratedPackageConfig = {
     } | undefined;
     port?: (number | any) | undefined;
     command: any;
-    /** Automatically start this package during the run phase (default `true`). When `false`, devtooie leaves it stopped — start it yourself with the `s` hotkey (or a control-API `restart`). Ignored when `command` is `null` (that package never starts). */
+    /** Automatically start this service during the run phase (default `true`). When `false`, devtooie leaves it stopped — start it yourself with the `s` hotkey (or a control-API `start`). Ignored when `command` is `null` (that service never starts). */
     autostart?: boolean | undefined;
     urls?: (((string | any) | {
         label: string;
@@ -37,7 +37,7 @@ export type GeneratedPackageConfig = {
         timeout?: number | undefined;
     }) | undefined;
     waitFor?: string[] | undefined;
-    /** tsconfig file (relative to the package dir) devtooie reads for project references to infer build-time deps. Defaults to `tsconfig.build.json`, then `tsconfig.json`. */
+    /** tsconfig file (relative to the service dir) devtooie reads for project references to infer build-time deps. Defaults to `tsconfig.build.json`, then `tsconfig.json`. */
     tsconfig?: string | undefined;
     deps?: {
         build?: string[] | undefined;
@@ -53,15 +53,15 @@ export type GeneratedPackageConfig = {
 export type GeneratedDefineConfig = {
     /** Fixed control-API port; omit to let devtooie pick one (recorded in `running.<mode>.json`). A fixed port serves the session of one mode at a time. */
     apiPort?: number | undefined;
-    packages: {
+    services: {
         [key: string]: {
-            /** Directory holding the package, relative to `workspaceDir`. Inferred as `<packageRootDir>/<key>` when the config sets `packageRootDir`; required otherwise. Set it to override the inferred one. */
+            /** Directory holding the service, relative to `workspaceDir`. Inferred as `<serviceRootDir>/<key>` when the config sets `serviceRootDir`; required otherwise. Set it to override the inferred one. */
             relativeDir?: string | undefined;
             /** Show in the interactive picker (default `true`). */
             selectable?: boolean | undefined;
             /** Shorter label used in the TUI in place of `name`. */
             shortName?: string | undefined;
-            /** Color for this package's log-prefix label, overriding the auto-assigned palette color. Any Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`), `'rgb(175,135,255)'`, or `'ansi256(140)'`. */
+            /** Color for this service's log-prefix label, overriding the auto-assigned palette color. Any Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`), `'rgb(175,135,255)'`, or `'ansi256(140)'`. */
             color?: string | undefined;
             proxy?: {
                 subdomain: true | string | string[];
@@ -72,7 +72,7 @@ export type GeneratedDefineConfig = {
             } | undefined;
             port?: (number | any) | undefined;
             command: any;
-            /** Automatically start this package during the run phase (default `true`). When `false`, devtooie leaves it stopped — start it yourself with the `s` hotkey (or a control-API `restart`). Ignored when `command` is `null` (that package never starts). */
+            /** Automatically start this service during the run phase (default `true`). When `false`, devtooie leaves it stopped — start it yourself with the `s` hotkey (or a control-API `start`). Ignored when `command` is `null` (that service never starts). */
             autostart?: boolean | undefined;
             urls?: (((string | any) | {
                 label: string;
@@ -86,7 +86,7 @@ export type GeneratedDefineConfig = {
                 timeout?: number | undefined;
             }) | undefined;
             waitFor?: string[] | undefined;
-            /** tsconfig file (relative to the package dir) devtooie reads for project references to infer build-time deps. Defaults to `tsconfig.build.json`, then `tsconfig.json`. */
+            /** tsconfig file (relative to the service dir) devtooie reads for project references to infer build-time deps. Defaults to `tsconfig.build.json`, then `tsconfig.json`. */
             tsconfig?: string | undefined;
             deps?: {
                 build?: string[] | undefined;
@@ -99,7 +99,7 @@ export type GeneratedDefineConfig = {
             } | undefined;
         };
     };
-    packageRootDir?: string | undefined;
+    serviceRootDir?: string | undefined;
     urls?: (((string | any) | {
         label: string;
         url: string | any;
@@ -110,8 +110,8 @@ export type GeneratedDefineConfig = {
     devReverseProxy?: {
         port: number | any;
         rootDomain?: (string | string[] | any) | undefined;
-        /** The package the bare `rootDomain` routes to. Must declare a `port`; needs no `proxy`, and without one its `PUBLIC_ORIGIN` is the bare root. Omit for a 404 there. */
-        defaultPackage?: string | undefined;
+        /** The service the bare `rootDomain` routes to. Must declare a `port`; needs no `proxy`, and without one its `PUBLIC_ORIGIN` is the bare root. Omit for a 404 there. */
+        defaultService?: string | undefined;
         /** Scheme of the public URLs devtooie derives (footer links, `PUBLIC_ORIGIN`). Defaults from the canonical `rootDomain`: `http` on `localhost` (the browser hits the proxy directly, so the URLs carry its `port`), `https` on any other root (a TLS terminator in front, so no port). */
         urlScheme?: ("http" | "https") | undefined;
     } | undefined;
@@ -126,6 +126,14 @@ export type GeneratedDefineConfig = {
                     proxy?: {
                         subdomain: true | string | string[];
                     } | undefined;
+                    urls?: (((string | any) | {
+                        label: string;
+                        url: string | any;
+                    }) | ((string | any) | {
+                        label: string;
+                        url: string | any;
+                    })[])[] | undefined;
+                    beforeDestroy?: any | undefined;
                     afterDestroy?: any | undefined;
                     beforeUp?: any | undefined;
                     afterReady?: any | undefined;
@@ -133,7 +141,7 @@ export type GeneratedDefineConfig = {
             } | undefined;
         } | undefined;
     } | undefined;
-    /** Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`. */
+    /** Root each service's `relativeDir` resolves against. Defaults to `process.cwd()`. */
     workspaceDir?: string | undefined;
     /** Arbitrary values handed to every `port`/`healthcheck`/`urls` callback as `tokens`. */
     tokens?: {

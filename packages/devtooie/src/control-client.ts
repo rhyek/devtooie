@@ -1,19 +1,24 @@
 import fs from 'node:fs';
 import { DEFAULT_MODE } from './env.js';
+import type { ServiceAction } from './command-server.js';
 import type { InfraAction, InfraStatus } from './infra/control.js';
-import type { PackageName } from './register.js';
+import type { ServiceName } from './register.js';
 import { type InstanceInfo, isPortListening, readRunning } from './running.js';
-import { QUIT_REQUEST_TIMEOUT_MS } from './shutdown-timing.js';
+import {
+  QUIT_REQUEST_TIMEOUT_MS,
+  SERVICE_START_REQUEST_TIMEOUT_MS,
+  SERVICE_STOP_REQUEST_TIMEOUT_MS,
+} from './shutdown-timing.js';
 
-/** A package's status on `GET /query/status`. */
-export type SessionPackageStatus = 'running' | 'stopped' | 'waiting' | 'restarting' | 'rebuilding';
+/** An application service's status on `GET /query/status`. */
+export type SessionServiceStatus = 'running' | 'stopped' | 'waiting' | 'restarting' | 'rebuilding';
 
 /**
  * A snapshot of a live devtooie session, as returned by `GET /query/status`. `logFile`,
  * `pid`, and `configPath` are always present (even before the process manager attaches);
- * `packages`, `infra` and `config` are `null` until it does.
+ * `services`, `infra` and `config` are `null` until it does.
  */
-export interface SessionStatus<P extends string = PackageName> {
+export interface SessionStatus<P extends string = ServiceName> {
   pid: number;
   /** Absolute path to the `devtooie.config.*` the session was started with. */
   configPath: string;
@@ -30,8 +35,13 @@ export interface SessionStatus<P extends string = PackageName> {
   startedByAgent: boolean;
   /** Absolute path to the logfile currently being written (rotation-aware), or null. */
   logFile: string | null;
-  /** Each running package's status, or null before the manager attaches. */
-  packages: Partial<Record<P, SessionPackageStatus>> | null;
+  /** Each application service's status, or null before the manager attaches. */
+  services: Partial<Record<P, SessionServiceStatus>> | null;
+  /**
+   * Whether each service is ready: running, and passing its healthcheck when it has one. Same
+   * keys as `services`, and null when it is.
+   */
+  ready: Partial<Record<P, boolean>> | null;
   /**
    * Each infra service's live state, or the action under way on it; null for a config without
    * infra, and before the manager attaches.
@@ -41,44 +51,65 @@ export interface SessionStatus<P extends string = PackageName> {
   config: unknown | null;
   /**
    * The session's dev reverse proxy — its port, root domains, and every public hostname it
-   * routes, to a package or to an infra service — or null when the config declares none.
+   * routes, to an application service or to an infra service — or null when the config declares none.
    */
   devReverseProxy: {
     port: number;
     rootDomain: string;
     rootDomains: string[];
-    routes: ({ host: string; port: number } & ({ package: P } | { service: string }))[];
+    routes: ({ host: string; port: number } & ({ service: P } | { infraService: string }))[];
   } | null;
 }
 
 /**
  * A thin HTTP client for a running instance's localhost control API, its methods named after
- * the endpoint paths: `query.status()` is `GET /query/status`, `command.restart(name)` is
- * `POST /command/restart/<name>`. Bind one with {@link connectControlClient} (which only returns
+ * the endpoint paths: `query.status()` is `GET /query/status`, `command.service.restart(name)`
+ * is `POST /command/service/restart/<name>`. Bind one with {@link connectControlClient} (which only returns
  * a client when an instance is actually up), {@link connectSessionControl} (which also checks
  * the instance is the given config's session in the given mode) or {@link createControlClient}
  * (bound to an explicit port). Reusable by any feature that needs to query or drive a session.
  */
-export interface ControlClient<P extends string = PackageName> {
+export interface ControlClient<P extends string = ServiceName> {
   readonly port: number;
   readonly query: {
     /** `GET /query/status` — full session snapshot, or null if the instance didn't answer with a valid one. */
     status(): Promise<SessionStatus<P> | null>;
   };
   readonly command: {
-    /** `POST /command/restart/<name>` — true if the instance accepted it. */
-    restart(name: P): Promise<boolean>;
-    /** `POST /command/rebuild/<name>` — true if the instance accepted it. */
-    rebuild(name: P): Promise<boolean>;
     /**
-     * `POST /command/infra/<action>/<service>` — true if the instance accepted it. False for a
-     * service the session doesn't have, and while another action on that service is under way.
-     * The action runs in the background: watch `infra` on `query.status()` for where it ends.
+     * `POST /command/service/<action>/<name>`, one method per action — true if the instance
+     * accepted it. False for a service the session doesn't have, for a `rebuild` of one with no
+     * clean build, and for a `start` or `stop` while a restart or rebuild of it is under way.
      */
-    infra(action: InfraAction, service: string): Promise<boolean>;
+    readonly service: {
+      /** Starts a stopped service, or one still waiting on its `waitFor`. True when it already runs. */
+      start(name: P): Promise<boolean>;
+      /** Stops a service, resolving once its process has exited. True when it is already stopped. */
+      stop(name: P): Promise<boolean>;
+      /** Restarts a service (and starts a stopped one). Runs on in the background. */
+      restart(name: P): Promise<boolean>;
+      /** Stops a service, clean-builds it, then starts it. Runs on in the background. */
+      rebuild(name: P): Promise<boolean>;
+    };
+    /**
+     * `POST /command/infra/<action>/<service>`, one method per action — true if the instance
+     * accepted it. False for a service the session doesn't have, and while another action on
+     * that service is under way. The action runs in the background: watch `infra` on
+     * `query.status()` for where it ends.
+     */
+    readonly infra: {
+      /** Starts a stopped service. */
+      start(service: string): Promise<boolean>;
+      /** Stops a service, keeping its data. */
+      stop(service: string): Promise<boolean>;
+      /** Recreates the service's container, keeping its data: `down`, then `up`. */
+      restart(service: string): Promise<boolean>;
+      /** Removes the service and its data, then brings it up again, as `infra up --reset` does. */
+      reset(service: string): Promise<boolean>;
+    };
     /**
      * `POST /command/quit` — graceful shutdown. The target **blocks** the response until its
-     * packages are torn down (ports freed), so this resolves only once that's done (or the
+     * services are torn down (ports freed), so this resolves only once that's done (or the
      * request times out / the target vanishes). Returns `true` if the target acked `ok`.
      */
     quit(): Promise<boolean>;
@@ -91,11 +122,11 @@ export function createControlClient<P extends string = string>(
   timeoutMs = 500,
 ): ControlClient<P> {
   const base = `http://127.0.0.1:${port}`;
-  const post = async (path: string): Promise<boolean> => {
+  const post = async (path: string, timeout = timeoutMs): Promise<boolean> => {
     try {
       const res = await fetch(`${base}${path}`, {
         method: 'POST',
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(timeout),
       });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean };
       return res.ok && body.ok === true;
@@ -103,14 +134,28 @@ export function createControlClient<P extends string = string>(
       return false;
     }
   };
+  const serviceAction = (action: ServiceAction, name: string, timeout?: number) =>
+    post(`/command/service/${action}/${encodeURIComponent(name)}`, timeout);
+  const infraAction = (action: InfraAction) => (service: string) =>
+    post(`/command/infra/${action}/${encodeURIComponent(service)}`);
   return {
     port,
     query: { status: queryStatus },
     command: {
-      restart: (name) => post(`/command/restart/${encodeURIComponent(name)}`),
-      rebuild: (name) => post(`/command/rebuild/${encodeURIComponent(name)}`),
-      infra: (action, service) =>
-        post(`/command/infra/${encodeURIComponent(action)}/${encodeURIComponent(service)}`),
+      service: {
+        // Adding a service to the session builds what it lacks first: that can take minutes.
+        start: (name) => serviceAction('start', name, SERVICE_START_REQUEST_TIMEOUT_MS),
+        // The target answers once the process has exited, which can take its whole grace period.
+        stop: (name) => serviceAction('stop', name, SERVICE_STOP_REQUEST_TIMEOUT_MS),
+        restart: (name) => serviceAction('restart', name),
+        rebuild: (name) => serviceAction('rebuild', name),
+      },
+      infra: {
+        start: infraAction('start'),
+        stop: infraAction('stop'),
+        restart: infraAction('restart'),
+        reset: infraAction('reset'),
+      },
       quit,
     },
   };
@@ -133,7 +178,8 @@ export function createControlClient<P extends string = string>(
         mode: typeof body.mode === 'string' ? body.mode : DEFAULT_MODE,
         startedByAgent: body.startedByAgent === true,
         logFile: typeof body.logFile === 'string' ? body.logFile : null,
-        packages: (body.packages ?? null) as SessionStatus<P>['packages'],
+        services: (body.services ?? null) as SessionStatus<P>['services'],
+        ready: (body.ready ?? null) as SessionStatus<P>['ready'],
         infra: (body.infra ?? null) as SessionStatus<P>['infra'],
         config: body.config ?? null,
         devReverseProxy: (body.devReverseProxy ?? null) as SessionStatus<P>['devReverseProxy'],
@@ -145,7 +191,7 @@ export function createControlClient<P extends string = string>(
 
   async function quit(): Promise<boolean> {
     try {
-      // The target holds this response open until its packages are down, so this
+      // The target holds this response open until its services are down, so this
       // request can take much longer than a probe — use the blocking-quit timeout,
       // not the short default. Returns true only on an explicit `ok` ack.
       const res = await fetch(`${base}/command/quit`, {

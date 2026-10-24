@@ -20,10 +20,16 @@ Every graceful exit funnels through a single `shutdown()` in `NativeRunner`:
 
 | Trigger                        | Path                                                            |
 | ------------------------------ | -------------------------------------------------------------- |
-| **Ctrl+C**                     | `useInput` → `shutdown()`                                      |
-| **Control API `/command/quit`**| `server.setOnQuit(() => void shutdown())` → `shutdown()` (response held until step 5 acks it) |
+| **Ctrl+C, twice**              | `useInput`: the first press only shows a *Press Ctrl+C again to exit* toast and arms `pendingExitRef`; a second within `EXIT_CONFIRM_MS` (2s, the toast's lifetime) → `shutdown()` |
+| **Control API `/command/quit`**| `server.setOnQuit(() => void shutdown())` → `shutdown()` (response held until step 7 acks it) |
 | **Git branch changed**         | `watchGitBranch({ onChange })` → `shutdown()` (stale build)   |
-| **Second Ctrl+C** (impatient)  | `shutdown()` re-entry guard → `forceKillAll()` + `process.exit(1)` |
+| **`SIGHUP` / `SIGINT` / `SIGTERM`** | `installShutdownSignals` → `shutdown()` (no confirmation)  |
+| **Ctrl+C during a shutdown** (impatient) | `shutdown()` re-entry guard → `forceKillAll()` + `process.exit(1)` |
+
+Only the keystroke asks twice: a signal, a quit request or a branch change shuts down at once.
+The confirmation is the run phase's alone — the service picker exits on the first press, and the
+build phase has no input handler, so raw mode is off and Ctrl+C reaches the whole foreground
+process group (devtooie and the builds it runs) as a `SIGINT`.
 
 Because the control-API quit and Ctrl+C share the exact same `shutdown()`, the
 cleanup is identical no matter how the exit was requested.
@@ -32,9 +38,12 @@ cleanup is identical no matter how the exit was requested.
 
 `shutdown()` (`components/NativeRunner.tsx`), in order:
 
-1. **Re-entry guard.** If a shutdown is already in progress, this is a second
-   Ctrl+C — write `MOUSE_DISABLE` (this path exits before the unmount cleanup
-   runs), `manager.forceKillAll()`, and `process.exit(1)` immediately (no waiting).
+1. **Re-entry guard.** If a shutdown is already in progress, this is an impatient
+   Ctrl+C (or a second signal or quit) — write `MOUSE_DISABLE` (this path exits
+   before the unmount cleanup runs), `manager.forceKillAll()`, and
+   `process.exit(1)` immediately (no waiting). `forceKillAll()` reaches the
+   processes step 4 is still waiting on, too: `shutdownAll()` takes them out of
+   the manager's state but keeps them in its `exiting` set until they're gone.
 2. **Hand the mouse back.** Write `MOUSE_DISABLE` so SGR mouse reporting (enabled
    for drag-to-select) is off before the UI collapses; the unmount effect's
    cleanup also writes it, but only once Ink tears the tree down.
@@ -47,24 +56,34 @@ cleanup is identical no matter how the exit was requested.
    waits up to `SHUTDOWN_GRACE_MS` (10s) for each to exit, then SIGKILLs any
    straggler; the outer `SHUTDOWN_TIMEOUT_MS` (15s) is a safety net kept above
    that grace so a stuck child can't hang the exit but the graceful wait still
-   runs in full. (These constants live in `shutdown-timing.ts`.)
-5. **Ack a blocking quit** (`server.ackQuit()`). A `POST /command/quit` holds its
-   HTTP response open; this releases it with `200` now that packages are down and
-   their ports are freed — so a handing-off newer session knows the ports are
-   clear *before* we close the server. A no-op for a Ctrl+C quit (no HTTP request
-   was held). Must run **after** step 4 and **before** step 6.
-6. **Close the control server** (`await server.close()`).
-7. **Dispose the manager** (`manager.dispose()` — env-file watchers, the
-   `process.on('exit')` handler, buffers).
-8. **Hand off to Ink** (`exit()`, from `useApp()`): unmount the tree, which
+   runs in full. (These constants live in `shutdown-timing.ts`.) A stop already
+   under way — a restart caught mid-way — is waited out with the rest. From its first
+   line `shutdownAll()` marks the manager closing, so nothing spawns afterwards —
+   not a restart that was awaiting its stop, nor a control-API start, nor an infra
+   action's next step.
+5. **Finish off anything left** (`manager.forceKillAll()`), in case the graceful
+   pass timed out or failed — while the `process.on('exit')` hook, the backstop
+   for a crash, is still installed (step 8 removes it).
+6. **Arm the safety net:** `setTimeout(() => process.exit(0), EXIT_SAFETY_NET_MS)`
+   (5s). Every child is dead by now; this only keeps a stalled proxy close, server
+   close or Ink teardown from leaving a lingering **parent** process. In the
+   normal path `renderApp` (below) exits within milliseconds and it never fires.
+7. **Close the dev reverse proxy**, then **ack a blocking quit**
+   (`server.ackQuit()`). A `POST /command/quit` holds its HTTP response open; this
+   releases it with `200` now that services are down and their ports are freed —
+   so a handing-off newer session knows the ports are clear *before* we close the
+   server. A no-op for a Ctrl+C quit (no HTTP request was held). Must run
+   **after** step 4 and **before** the server closes.
+8. **Close the control server** (`server.close()`), then **dispose the manager**
+   (`manager.dispose()` — env-file watchers, the `process.on('exit')` handler,
+   buffers).
+9. **Hand off to Ink** (`exit()`, from `useApp()`): unmount the tree, which
    restores the primary screen and resolves `waitUntilExit`.
-9. **Safety net:** `setTimeout(() => process.exit(0), 1500)`. The process normally
-   exits from `renderApp` (below) within milliseconds, so this never fires; it
-   exists only so a stalled teardown can't leave a lingering **parent** process
-   (all children are already dead by step 4).
 
-Everything that could leave something running (steps 4–7) happens **before**
-`exit()`. Nothing about the process-exit mechanism can affect it.
+Steps 4, 7 and 8 run through a `settle()` that swallows a rejection, so one
+failing step can't keep the session from reaching `exit()`. Everything that could leave
+something running (steps 4–8) happens **before** `exit()`. Nothing about the
+process-exit mechanism can affect it.
 
 ## Process exit + screen restore
 
@@ -111,7 +130,7 @@ Result on the primary screen after a session:
 
 ## Plain / non-TTY mode
 
-`--plain` (and any non-TTY context) does not use the alternate screen or the
+`--headless` (and any non-TTY context) does not use the alternate screen or the
 bookend lines, and there's no screen to restore. During a run it funnels quit
 through its own graceful `shutdown()` (`runners/plain.ts`) — the same
 shutdownAll → `server.ackQuit()` → `server.close()` order as the interactive
@@ -132,9 +151,17 @@ there's no process manager to shut down before the run phase attaches one.
   `server.close()` (so the held response socket is still writable). A handoff relies
   on that ordering.
 - **The process must always exit.** The `renderApp` handler is the normal exit;
-  the `NativeRunner` `setTimeout` is the guaranteed fallback. Keep both.
-- **Second Ctrl+C is a hard kill** — `MOUSE_DISABLE` + `forceKillAll()` +
-  `process.exit(1)`, no waiting.
+  the `NativeRunner` `setTimeout` is the guaranteed fallback, armed before the
+  first await that isn't bounded. Keep both.
+- **Ctrl+C asks once, then exits.** The confirmation window and the toast share
+  `EXIT_CONFIRM_MS`, so the window closes when the prompt goes away. Signals, a
+  quit request and a branch change never ask.
+- **Ctrl+C during a shutdown is a hard kill** — `MOUSE_DISABLE` +
+  `forceKillAll()` + `process.exit(1)`, no waiting — and it must reach every
+  process still in its grace period, not just the ones the manager still owns.
+- **Nothing spawns once closing.** Every spawn path in `ProcessManager` (and
+  `InfraControl.run`) checks the closing flag, so a transition already in flight
+  can't start a process after the kill sweep.
 - **The exit line prints after `waitUntilExit`**, never before — otherwise it
   lands on the alternate screen and is discarded on restore.
 - **Release the mouse on every exit.** SGR mouse reporting is on during the run

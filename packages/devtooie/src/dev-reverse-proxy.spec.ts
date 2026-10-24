@@ -125,7 +125,7 @@ function stubManager(initial: Record<string, Status> = {}): StubManager {
 async function proxyFor(
   routes: DevReverseProxyRoute[],
   opts: {
-    defaultPackage?: string;
+    defaultService?: string;
     readyTimeoutMs?: number;
     controlApiPort?: number;
     urlScheme?: 'http' | 'https';
@@ -220,7 +220,7 @@ async function deadPort(): Promise<number> {
 // ---------------------------------------------------------------------------
 
 describe('routing', () => {
-  test('routes by canonical subdomain, alias, and the bare root to defaultPackage', async () => {
+  test('routes by canonical subdomain, alias, and the bare root to defaultService', async () => {
     const web = await upstream('web');
     const api = await upstream('api');
     const proxy = await proxyFor(
@@ -230,7 +230,7 @@ describe('routing', () => {
         route(ROOT, 'web', web.port),
         route(`api.${ROOT}`, 'api', api.port),
       ],
-      { defaultPackage: 'web' },
+      { defaultService: 'web' },
     );
     proxy.attach(stubManager({ web: 'running', api: 'running' }));
 
@@ -256,7 +256,7 @@ describe('routing', () => {
     expect(JSON.parse(reply.body).host).toBe(`web.${ROOT}:8443`);
   });
 
-  test('404s the bare root when there is no defaultPackage', async () => {
+  test('404s the bare root when there is no defaultService', async () => {
     const web = await upstream('web');
     const proxy = await proxyFor([route(`web.${ROOT}`, 'web', web.port)]);
     proxy.attach(stubManager({ web: 'running' }));
@@ -276,7 +276,7 @@ describe('routing', () => {
           route(ROOT, 'web', web.port),
           route(`api.${ROOT}`, 'api', api.port),
         ],
-        { defaultPackage: 'web', urlScheme: 'http' },
+        { defaultService: 'web', urlScheme: 'http' },
       );
       proxy.attach(stubManager({ web: 'running', api: 'running' }));
       const reply = await request(proxy.port, host, { headers: { accept: 'text/html' } });
@@ -306,7 +306,7 @@ describe('root domain aliases', () => {
         route(ROOT, 'web', web.port),
         route(`api.${ROOT}`, 'api', api.port),
       ],
-      { defaultPackage: 'web', rootDomainAliases: [ALIAS] },
+      { defaultService: 'web', rootDomainAliases: [ALIAS] },
     );
     proxy.attach(stubManager({ web: 'running', api: 'running' }));
 
@@ -332,7 +332,7 @@ describe('root domain aliases', () => {
     proxy.attach(stubManager({ web: 'stopped' }));
     const reply = await request(proxy.port, `web.${ALIAS}`);
     expect(reply.status).toBe(503);
-    expect(JSON.parse(reply.body)).toMatchObject({ package: 'web', status: 'stopped', host: `web.${ALIAS}` }); // prettier-ignore
+    expect(JSON.parse(reply.body)).toMatchObject({ service: 'web', status: 'stopped', host: `web.${ALIAS}` }); // prettier-ignore
   });
 
   test('routes an infra service under the alias once the infra is up', async () => {
@@ -524,7 +524,7 @@ describe('status-aware responses', () => {
       expect(html.headers['content-type']).toMatch(/^text\/html/);
       expect(html.body).toContain('web');
       expect(html.body).toContain(status);
-      expect(html.body).toContain('/command/restart/web');
+      expect(html.body).toContain('/command/service/restart/web');
       expect(html.body).toContain('14001');
     },
   );
@@ -538,7 +538,7 @@ describe('status-aware responses', () => {
     });
     expect(json.status).toBe(503);
     expect(json.headers['content-type']).toMatch(/^application\/json/);
-    expect(JSON.parse(json.body)).toMatchObject({ package: 'web', status: 'stopped' });
+    expect(JSON.parse(json.body)).toMatchObject({ service: 'web', status: 'stopped' });
   });
 
   test('replies 503 "starting" before a manager is attached', async () => {
@@ -546,7 +546,7 @@ describe('status-aware responses', () => {
     const proxy = await proxyFor([route(`web.${ROOT}`, 'web', web.port)]);
     const reply = await request(proxy.port, `web.${ROOT}`);
     expect(reply.status).toBe(503);
-    expect(JSON.parse(reply.body)).toMatchObject({ package: 'web', status: 'starting' });
+    expect(JSON.parse(reply.body)).toMatchObject({ service: 'web', status: 'starting' });
   });
 
   test('proxies straight through a running package with no healthcheck', async () => {
@@ -615,7 +615,7 @@ describe('status-aware responses', () => {
     manager.set('web', 'stopped');
     const reply = await pending;
     expect(reply.status).toBe(503);
-    expect(JSON.parse(reply.body)).toMatchObject({ package: 'web', status: 'stopped' });
+    expect(JSON.parse(reply.body)).toMatchObject({ service: 'web', status: 'stopped' });
   });
 
   test('logs one devtooie entry on attach: the listener as the message, one route per attr', async () => {
@@ -659,7 +659,7 @@ describe('infra services', () => {
     const proxy = await proxyFor([serviceRoute(`s3.${ROOT}`, 'store', store.port)]);
     const before = await request(proxy.port, `s3.${ROOT}`, { headers: { accept: 'application/json' } }); // prettier-ignore
     expect(before.status).toBe(503);
-    expect(JSON.parse(before.body)).toMatchObject({ service: 'store', status: 'starting' });
+    expect(JSON.parse(before.body)).toMatchObject({ infraService: 'store', status: 'starting' });
     // The process manager attaching is not the signal: packages may be up while infra isn't.
     proxy.attach(stubManager());
     const html = await request(proxy.port, `s3.${ROOT}`, { headers: { accept: 'text/html' } });
@@ -669,7 +669,7 @@ describe('infra services', () => {
     expect(html.body).toContain('store');
     expect(html.body).toContain('starting');
     // …and no restart hint: there is no package to restart.
-    expect(html.body).not.toContain('/command/restart');
+    expect(html.body).not.toContain('/command/service/restart');
   });
 
   test('drops a websocket upgrade until the infra step has finished', async () => {
@@ -752,7 +752,11 @@ describe('infra services', () => {
     expect(html.body).toContain('infra service store');
     expect(html.body).toContain(String(port));
     const json = await request(proxy.port, `s3.${ROOT}`, { headers: { accept: 'application/json' } }); // prettier-ignore
-    expect(JSON.parse(json.body)).toMatchObject({ service: 'store', port, code: 'ECONNREFUSED' });
+    expect(JSON.parse(json.body)).toMatchObject({
+      infraService: 'store',
+      port,
+      code: 'ECONNREFUSED',
+    });
   });
 
   test('turns a reset connection into the same 502', async () => {
@@ -764,7 +768,7 @@ describe('infra services', () => {
     proxy.markInfraReady();
     const json = await request(proxy.port, `s3.${ROOT}`, { headers: { accept: 'application/json' } }); // prettier-ignore
     expect(json.status).toBe(502);
-    expect(JSON.parse(json.body)).toMatchObject({ service: 'store', port });
+    expect(JSON.parse(json.body)).toMatchObject({ infraService: 'store', port });
     // A reset that lands while the request is still being written surfaces as EPIPE instead.
     expect(['ECONNRESET', 'EPIPE']).toContain(JSON.parse(json.body).code);
   });
@@ -800,11 +804,11 @@ describe('infra services', () => {
 });
 
 describe('routesFromConfig', () => {
-  test('lists every hostname of every routable package, bare root last for defaultPackage', () => {
+  test('lists every hostname of every routable package, bare root last for defaultService', () => {
     const config = defineConfig({
-      packageRootDir: 'packages',
-      devReverseProxy: { port: 4000, rootDomain: ROOT, defaultPackage: 'web' },
-      packages: {
+      serviceRootDir: 'packages',
+      devReverseProxy: { port: 4000, rootDomain: ROOT, defaultService: 'web' },
+      services: {
         web: {
           port: 3000,
           proxy: { subdomain: ['web', 'www'] },
@@ -825,8 +829,8 @@ describe('routesFromConfig', () => {
 
   test('adds every enabled infra service with a proxy, aliases included, after the packages', () => {
     const config = defineConfig({
-      packageRootDir: 'packages',
-      devReverseProxy: { port: 4000, rootDomain: ROOT, defaultPackage: 'web' },
+      serviceRootDir: 'packages',
+      devReverseProxy: { port: 4000, rootDomain: ROOT, defaultService: 'web' },
       infra: {
         'docker-compose': {
           services: {
@@ -844,7 +848,7 @@ describe('routesFromConfig', () => {
           },
         },
       },
-      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
+      services: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
     expect(routesFromConfig(config)).toEqual([
       { kind: 'package', host: `web.${ROOT}`, package: 'web', port: 3000, hasHealthcheck: false },
@@ -855,11 +859,11 @@ describe('routesFromConfig', () => {
     ]);
   });
 
-  test('routes the bare root to a defaultPackage that declares no proxy, and nothing else', () => {
+  test('routes the bare root to a defaultService that declares no proxy, and nothing else', () => {
     const config = defineConfig({
-      packageRootDir: 'packages',
-      devReverseProxy: { port: 4000, rootDomain: ROOT, defaultPackage: 'landing' },
-      packages: { landing: { port: 3000 }, worker: { port: 3001 } },
+      serviceRootDir: 'packages',
+      devReverseProxy: { port: 4000, rootDomain: ROOT, defaultService: 'landing' },
+      services: { landing: { port: 3000 }, worker: { port: 3001 } },
     });
     expect(routesFromConfig(config)).toEqual([
       { kind: 'package', host: ROOT, package: 'landing', port: 3000, hasHealthcheck: false },
@@ -869,7 +873,7 @@ describe('routesFromConfig', () => {
   test('is empty without a proxy block', () => {
     expect(
       routesFromConfig(
-        defineConfig({ packageRootDir: 'packages', packages: { web: { port: 3000 } } }),
+        defineConfig({ serviceRootDir: 'packages', services: { web: { port: 3000 } } }),
       ),
     ).toEqual([]);
   });

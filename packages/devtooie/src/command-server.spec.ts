@@ -11,10 +11,10 @@ afterEach(async () => {
 function fakeManager(overrides: Partial<ControlManager> = {}): ControlManager {
   return {
     getAllStatuses: () => ({}),
+    getAllReadiness: () => ({}),
     getConfig: () => null,
     getLogFile: () => '/manager/current.log',
-    restart: () => true,
-    rebuild: () => true,
+    runPackage: () => Promise.resolve('accepted'),
     getInfraStatuses: () => null,
     runInfra: () => 'accepted',
     quit: () => {},
@@ -24,7 +24,7 @@ function fakeManager(overrides: Partial<ControlManager> = {}): ControlManager {
 }
 
 describe('command-server', () => {
-  it('GET /query/status serves identity with null packages/config before attach', async () => {
+  it('GET /query/status serves identity with null services/config before attach', async () => {
     vi.stubEnv('DEVTOOIE_MODE', 'test');
     server = await startCommandServer({
       onQuit: () => {},
@@ -40,7 +40,8 @@ describe('command-server', () => {
       mode: 'test',
       startedByAgent: expect.any(Boolean),
       logFile: '/ws/logs/1.log',
-      packages: null,
+      services: null,
+      ready: null,
       infra: null,
       config: null,
       devReverseProxy: null,
@@ -77,10 +78,10 @@ describe('command-server', () => {
       rootDomain: 'example.test',
       rootDomains: ['example.test', 'example.localhost'],
       routes: [
-        { host: 'web.example.test', package: 'web', port: 3000 },
-        { host: 'example.test', package: 'web', port: 3000 },
-        // a service route names its `service` instead
-        { host: 'mail.example.test', service: 'mail', port: 8025 },
+        { host: 'web.example.test', service: 'web', port: 3000 },
+        { host: 'example.test', service: 'web', port: 3000 },
+        // an infra service route names its `infraService` instead
+        { host: 'mail.example.test', infraService: 'mail', port: 8025 },
       ],
     });
   });
@@ -96,6 +97,7 @@ describe('command-server', () => {
     server.attach(
       fakeManager({
         getAllStatuses: () => ({ web: 'running' }),
+        getAllReadiness: () => ({ web: true }),
         getConfig: () => ({ packages: [] }),
         getLogFile: () => '/ws/logs/2-rotated.log',
       }),
@@ -108,7 +110,8 @@ describe('command-server', () => {
       mode: 'development',
       startedByAgent: expect.any(Boolean),
       logFile: '/ws/logs/2-rotated.log',
-      packages: { web: 'running' },
+      services: { web: 'running' },
+      ready: { web: true },
       infra: null,
       config: { packages: [] },
       devReverseProxy: null,
@@ -130,12 +133,96 @@ describe('command-server', () => {
     }
   });
 
-  it('POST /command/restart/<known-pkg> returns 202, unknown returns 404', async () => {
+  test('POST /command/service/<action>/<name> answers by how the action went', async () => {
     server = await startCommandServer({ onQuit: () => {}, port: 0 });
-    server.attach(fakeManager({ restart: (name) => name === 'web' }));
+    const runs: string[] = [];
+    server.attach(
+      fakeManager({
+        runPackage: (name, action) => {
+          runs.push(`${action} ${name}`);
+          if (name !== 'web' && name !== 'api') {
+            return Promise.resolve('unknown');
+          }
+          if (name === 'api') {
+            return Promise.resolve(action === 'rebuild' ? 'unavailable' : 'busy');
+          }
+          return Promise.resolve(action === 'start' || action === 'stop' ? 'done' : 'accepted');
+        },
+      }),
+    );
     const base = `http://127.0.0.1:${server.port}`;
-    expect((await fetch(`${base}/command/restart/web`, { method: 'POST' })).status).toBe(202);
-    expect((await fetch(`${base}/command/restart/nope`, { method: 'POST' })).status).toBe(404);
+    const post = async (p: string) => {
+      const res = await fetch(`${base}${p}`, { method: 'POST' });
+      return { status: res.status, body: (await res.json()) as { ok: boolean; error?: string } };
+    };
+    expect(await post('/command/service/restart/web')).toEqual({ status: 202, body: { ok: true } });
+    expect(await post('/command/service/rebuild/web')).toEqual({ status: 202, body: { ok: true } });
+    expect(await post('/command/service/stop/web')).toEqual({ status: 200, body: { ok: true } });
+    expect(await post('/command/service/start/web')).toEqual({ status: 200, body: { ok: true } });
+    expect(await post('/command/service/stop/api')).toEqual({
+      status: 409,
+      body: { ok: false, error: 'service "api" is restarting or rebuilding' },
+    });
+    expect(await post('/command/service/rebuild/api')).toEqual({
+      status: 409,
+      body: { ok: false, error: 'service "api" has no clean rebuild' },
+    });
+    expect((await post('/command/service/start/nope')).status).toBe(404);
+    expect((await post('/command/service/explode/web')).status).toBe(404);
+    expect(runs).toEqual([
+      'restart web',
+      'rebuild web',
+      'stop web',
+      'start web',
+      'stop api',
+      'rebuild api',
+      'start nope',
+    ]);
+  });
+
+  test('POST /command/service/start/<name> answers 500 when adding the service failed its build', async () => {
+    server = await startCommandServer({ onQuit: () => {}, port: 0 });
+    server.attach(fakeManager({ runPackage: () => Promise.resolve('failed') }));
+    const res = await fetch(`http://127.0.0.1:${server.port}/command/service/start/api`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({
+      ok: false,
+      error: 'service "api" could not be added: a build failed (see the session log)',
+    });
+  });
+
+  test('POST /command/service/stop/<name> answers only once the stop is done', async () => {
+    server = await startCommandServer({ onQuit: () => {}, port: 0 });
+    let finish!: () => void;
+    server.attach(
+      fakeManager({
+        runPackage: () =>
+          new Promise((resolve) => {
+            finish = () => resolve('done');
+          }),
+      }),
+    );
+    const answer = fetch(`http://127.0.0.1:${server.port}/command/service/stop/web`, {
+      method: 'POST',
+    }).then((r) => r.status);
+    const early = await Promise.race([
+      answer.then(() => true),
+      new Promise<boolean>((r) => setTimeout(() => r(false), 150)),
+    ]);
+    expect(early).toBe(false);
+    finish();
+    expect(await answer).toBe(200);
+  });
+
+  test('the old /command/restart and /command/rebuild routes are gone', async () => {
+    server = await startCommandServer({ onQuit: () => {}, port: 0 });
+    server.attach(fakeManager());
+    const base = `http://127.0.0.1:${server.port}`;
+    for (const p of ['/command/restart/web', '/command/rebuild/web']) {
+      expect((await fetch(`${base}${p}`, { method: 'POST' })).status, p).toBe(404);
+    }
   });
 
   test('GET /query/status reports the infra services, and POST /command/infra/<action>/<service> runs one', async () => {
@@ -161,21 +248,12 @@ describe('command-server', () => {
     expect((await post('/command/infra/start/mail')).status).toBe(404);
     expect((await post('/command/infra/explode/db')).status).toBe(404);
     expect(runs).toEqual(['reset db', 'stop cache', 'start mail']);
-    expect(logged[0]).toEqual({ command: 'infra reset', attrs: { service: 'db' } });
-  });
-
-  it('POST /command/rebuild/<known-pkg> returns 202', async () => {
-    server = await startCommandServer({ onQuit: () => {}, port: 0 });
-    server.attach(fakeManager({ rebuild: (name) => name === 'web' }));
-    const res = await fetch(`http://127.0.0.1:${server.port}/command/rebuild/web`, {
-      method: 'POST',
-    });
-    expect(res.status).toBe(202);
+    expect(logged[0]).toEqual({ command: 'infra reset', attrs: { infraService: 'db' } });
   });
 
   it('mutating commands 503 before the manager attaches', async () => {
     server = await startCommandServer({ onQuit: () => {}, port: 0 });
-    const res = await fetch(`http://127.0.0.1:${server.port}/command/restart/web`, {
+    const res = await fetch(`http://127.0.0.1:${server.port}/command/service/restart/web`, {
       method: 'POST',
     });
     expect(res.status).toBe(503);
@@ -217,12 +295,12 @@ describe('command-server', () => {
     server = await startCommandServer({ onQuit: () => server!.ackQuit(), port: 0 });
     server.attach(fakeManager({ logControl: (command, attrs) => logged.push({ command, attrs }) }));
     const base = `http://127.0.0.1:${server.port}`;
-    await fetch(`${base}/command/restart/web`, { method: 'POST' });
-    await fetch(`${base}/command/rebuild/api`, { method: 'POST' });
+    await fetch(`${base}/command/service/restart/web`, { method: 'POST' });
+    await fetch(`${base}/command/service/stop/api`, { method: 'POST' });
     await fetch(`${base}/command/quit`, { method: 'POST' });
     expect(logged).toEqual([
-      { command: 'restart', attrs: { package: 'web' } },
-      { command: 'rebuild', attrs: { package: 'api' } },
+      { command: 'restart', attrs: { service: 'web' } },
+      { command: 'stop', attrs: { service: 'api' } },
       { command: 'quit', attrs: undefined },
     ]);
   });

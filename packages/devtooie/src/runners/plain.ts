@@ -22,12 +22,9 @@ export async function runPlain(
   server: Awaited<ReturnType<typeof startCommandServer>>,
   devReverseProxy: DevReverseProxyServer | null = null,
 ): Promise<void> {
-  // The proxy holds requests until a package's healthcheck passes, so it needs readiness
-  // probed even though a plain session shows none on screen.
-  const manager = new ProcessManager(args, {
-    plain: true,
-    probeReadiness: devReverseProxy !== null,
-  });
+  // Readiness is probed though a headless session shows none on screen: `/query/status` reports
+  // it (what `--detach --wait` waits on), and the proxy holds requests until a healthcheck passes.
+  const manager = new ProcessManager(args, { plain: true, probeReadiness: true });
 
   let stopBranchWatch = (): void => {};
   let shuttingDown = false;

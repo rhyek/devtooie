@@ -101,4 +101,15 @@ describe('InfraControl', () => {
   test('refuses a service it does not have', () => {
     expect(control().infra.run('cache', 'start')).toBe('unknown');
   });
+
+  test('starts nothing once stopped: no new action, and no further step of one under way', async () => {
+    // A shutdown stops the control and kills what is running; an action asked for after that, or
+    // the next step of one already under way, would outlive the session.
+    const { infra, lines } = control();
+    infra.run('db', 'restart');
+    infra.stop();
+    expect(infra.run('broken', 'start')).toBe('busy');
+    await settled(infra, 'db');
+    expect(lines.some((l) => l.includes('infra up db'))).toBe(false);
+  });
 });

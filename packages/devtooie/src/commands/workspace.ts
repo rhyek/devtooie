@@ -1,5 +1,5 @@
 import {
-  type AnyPackageConfig,
+  type AnyServiceConfig,
   type Config,
   getLoadedConfig,
   getRegisteredPackages,
@@ -54,7 +54,7 @@ export function applyWorkspaceEnv(config: Config<string> | null): void {
  * Loads `devtooie.config.ts` and applies the workspace's environment, printing a clear hint and
  * exiting 1 if there is no config or it won't load.
  */
-export async function loadConfigOrExit(): Promise<AnyPackageConfig[]> {
+export async function loadConfigOrExit(): Promise<AnyServiceConfig[]> {
   try {
     const packages = await loadConfig();
     applyWorkspaceEnv(getLoadedConfig());
@@ -87,7 +87,7 @@ export function validatePackageNames(names: string[]): void {
   const registered = new Set(getRegisteredPackages().map((p) => p.name));
   const unknown = names.filter((n) => !registered.has(n));
   if (unknown.length > 0) {
-    console.error(`Unknown package${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}`);
+    console.error(`Unknown service${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}`);
     process.exit(1);
   }
 }

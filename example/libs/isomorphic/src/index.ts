@@ -1,8 +1,8 @@
 // The Todo model shared by the backend (validation + response shape) and the frontend
-// (types + form constraints). This is the "isomorphic" package: pure, dependency-free
-// TypeScript that runs on the Node server and — via its compiled `dist` — in the browser
-// bundle. Edit it while devtooie is running and its `tsc --watch` re-emits `dist`, which
-// both apps pick up live.
+// (types + form constraints). This is the "isomorphic" library: pure, dependency-free
+// TypeScript that runs on the Node server and in the browser bundle, as source — no build.
+// Edit it while devtooie is running and both apps pick it up live: the backend's `node --watch`
+// restarts, and Vite hot-reloads the frontend.
 
 /** Longest a todo title may be. Enforced by the backend, hinted by the frontend's input. */
 export const TITLE_MAX_LENGTH = 200;

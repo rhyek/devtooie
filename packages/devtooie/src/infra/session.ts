@@ -64,8 +64,8 @@ export async function runSessionInfra(
           ...event.services.map((name) => ({
             provider: event.provider,
             name,
-            publicOrigin: declared.find((d) => d.provider === event.provider && d.name === name)
-              ?.service.publicOrigin,
+            urls: declared.find((d) => d.provider === event.provider && d.name === name)?.service
+              .urls,
           })),
         );
       } else if (event.type === 'output') {

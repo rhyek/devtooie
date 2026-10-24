@@ -31,6 +31,20 @@ export const SHUTDOWN_TIMEOUT_MS = SHUTDOWN_GRACE_MS + 5_000;
 export const QUIT_REQUEST_TIMEOUT_MS = SHUTDOWN_TIMEOUT_MS + 1_000;
 
 /**
+ * Client-side timeout for `POST /command/service/stop/<name>`, which the target answers once
+ * the service's process has exited: within `SHUTDOWN_GRACE_MS`, or just after the SIGKILL that
+ * ends it. Kept above the grace so a service taking all of it still gets its answer.
+ */
+export const SERVICE_STOP_REQUEST_TIMEOUT_MS = SHUTDOWN_GRACE_MS + 2_000;
+
+/**
+ * Client-side timeout for `POST /command/service/start/<name>`, which the target answers once
+ * the service has started — after building the dependencies it lacks, when the start adds it to
+ * the session, which can take minutes.
+ */
+export const SERVICE_START_REQUEST_TIMEOUT_MS = 300_000;
+
+/**
  * How long a handoff waits — measured from when it first asked the old instance
  * to quit — for that instance's process to actually vanish before force-killing
  * its tree. Sits above `SHUTDOWN_TIMEOUT_MS` so an instance taking its full

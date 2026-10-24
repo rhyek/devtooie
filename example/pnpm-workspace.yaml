@@ -1,2 +1,5 @@
 packages:
-  - 'packages/*'
+  # The application services devtooie runs.
+  - 'apps/*'
+  # The source-only libraries they import.
+  - 'libs/*'

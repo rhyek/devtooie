@@ -6,6 +6,7 @@ import React, {
   useReducer,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import path from 'node:path';
 import {
@@ -128,6 +129,18 @@ const INFRA_DOT_STATUS: Record<InfraStatus, PackageStatus> = {
  */
 const RESET_CONFIRM_MS = 5000;
 
+/**
+ * How long a Ctrl+C waits for the second one that confirms the exit — the "press again" toast's
+ * lifetime, so the window closes when the prompt goes away.
+ */
+const EXIT_CONFIRM_MS = 2000;
+
+/**
+ * How long a shutdown may take, once every child is dead, to close the proxy and the control
+ * server and tear the UI down, before the process is exited regardless.
+ */
+const EXIT_SAFETY_NET_MS = 5000;
+
 /** Rendered rows scrolled per mouse-wheel notch. */
 const WHEEL_STEP = 3;
 
@@ -193,9 +206,8 @@ function renderLineText(line: UrlLine): string {
 }
 
 /**
- * The url a package's heading links to in place of a line under it: the one link of a package
- * whose `urls` is a single unlabelled entry, else `undefined`. The `infra` group never collapses —
- * its heading names the group, not a service.
+ * The url a package's or service's heading links to in place of a line under it: its one link
+ * when its `urls` is a single unlabelled entry, else `undefined`.
  */
 function headingUrl(group: PackageUrlGroup): string | undefined {
   if (group.urls.length !== 1 || group.urls[0]?.length !== 1) {
@@ -220,36 +232,54 @@ function estimateRightColumnWidth(urlGroups: PackageUrlGroup[], topLevelUrls: Ur
   return maxWidth;
 }
 
+/** A group with one unlabelled link shows it as its heading, with no line under it. */
+function collapseHeading(group: PackageUrlGroup): PackageUrlGroup & { url?: string } {
+  const url = headingUrl(group);
+  return { ...group, urls: url === undefined ? group.urls : [], url };
+}
+
 /**
  * The right-hand footer column of links: workspace-wide (top-level) links first, then a
- * dim rule, then a bold-headed group per package. The rule shows only when both are
- * present. A line with several links renders them space-separated on one row. A package
- * whose `urls` is one unlabelled link has its heading link there, with no line under it.
+ * dim rule, then a bold-headed group per package, then the infra services' groups under an
+ * `infra` caption. The rule shows only when both are present. A line with several links
+ * renders them space-separated on one row. A package or service whose `urls` is one
+ * unlabelled link has its heading link there, with no line under it.
  */
 export function LinksColumn({
   topLevelUrls,
   packageUrlGroups,
-  infraUrls = [],
+  infraUrlGroups = [],
 }: {
   topLevelUrls: UrlLine[];
   packageUrlGroups: PackageUrlGroup[];
-  /** The public URLs of the infra services the dev reverse proxy routes, one line each. */
-  infraUrls?: UrlLine[];
+  /** A group per infra service that declares `urls`, headed by the service's name. */
+  infraUrlGroups?: PackageUrlGroup[];
 }): React.ReactElement | null {
-  // A package with one unlabelled link shows it as its heading, with no line under it.
-  const packageGroups = packageUrlGroups.map((group) => {
-    const url = headingUrl(group);
-    return { ...group, urls: url === undefined ? group.urls : [], url };
-  });
-  // The infra links are one more group, under the packages', headed like the `infra:` row.
-  const groups: (PackageUrlGroup & { url?: string })[] = infraUrls.length
-    ? [...packageGroups, { name: 'infra', selected: false, urls: infraUrls }]
-    : packageGroups;
-  if (topLevelUrls.length === 0 && groups.length === 0) {
+  const packageGroups = packageUrlGroups.map(collapseHeading);
+  const serviceGroups = infraUrlGroups.map(collapseHeading);
+  if (topLevelUrls.length === 0 && packageGroups.length === 0 && serviceGroups.length === 0) {
     return null;
   }
-  const showSeparator = topLevelUrls.length > 0 && groups.length > 0;
-  const separatorRule = '┈'.repeat(estimateRightColumnWidth(groups, topLevelUrls));
+  const showSeparator = topLevelUrls.length > 0 && packageGroups.length + serviceGroups.length > 0;
+  const separatorRule = '┈'.repeat(
+    estimateRightColumnWidth([...packageGroups, ...serviceGroups], topLevelUrls),
+  );
+  const renderGroup = (group: PackageUrlGroup & { url?: string }, key: string) => (
+    <React.Fragment key={key}>
+      {group.url === undefined ? (
+        <Text bold={group.selected}>{group.name}</Text>
+      ) : (
+        <Text bold={group.selected} wrap="truncate" color={LINK_COLOR}>
+          {hyperlink(group.url, group.name)}
+        </Text>
+      )}
+      {group.urls.map((line, j) => (
+        <Text key={j} wrap="truncate" color={LINK_COLOR}>
+          {renderLineText(line)}
+        </Text>
+      ))}
+    </React.Fragment>
+  );
   return (
     <Box flexDirection="column" alignItems="flex-end" flexShrink={0}>
       {topLevelUrls.map((line, i) => (
@@ -259,23 +289,11 @@ export function LinksColumn({
         </Text>
       ))}
       {showSeparator && <Text dimColor>{separatorRule}</Text>}
-      {groups.map((group, i) => (
-        // Keyed by position too: a package may share the `infra` group's name.
-        <React.Fragment key={`${String(i)}-${group.name}`}>
-          {group.url === undefined ? (
-            <Text bold={group.selected}>{group.name}</Text>
-          ) : (
-            <Text bold={group.selected} wrap="truncate" color={LINK_COLOR}>
-              {hyperlink(group.url, group.name)}
-            </Text>
-          )}
-          {group.urls.map((line, j) => (
-            <Text key={j} wrap="truncate" color={LINK_COLOR}>
-              {renderLineText(line)}
-            </Text>
-          ))}
-        </React.Fragment>
-      ))}
+      {packageGroups.map((group) => renderGroup(group, `package-${group.name}`))}
+      {/* Captioned so an infra service's name doesn't read as an application service's; in the default
+          text color, like a heading that isn't a link, so it stands apart from the links under it. */}
+      {serviceGroups.length > 0 && <Text>infra</Text>}
+      {serviceGroups.map((group) => renderGroup(group, `service-${group.name}`))}
     </Box>
   );
 }
@@ -289,8 +307,11 @@ function initialStatus(name: string, healthchecks: RunnerArgs['healthchecks']): 
 // usePackageStatuses — the 5-state status model + healthcheck polling
 // ---------------------------------------------------------------------------
 
-function usePackageStatuses(args: RunnerArgs, manager: ProcessManager) {
-  const packages = useMemo(() => args.sortedPackages, [args.sortedPackages]);
+function usePackageStatuses(args: RunnerArgs, manager: ProcessManager, servicesVersion: number) {
+  // A service added to the session goes into `args.sortedPackages` in place, so the version is
+  // what says the list changed.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const packages = useMemo(() => [...args.sortedPackages], [args.sortedPackages, servicesVersion]);
   const healthchecks = args.healthchecks;
 
   const [statuses, setStatuses] = useState<Map<string, PackageStatus>>(() => {
@@ -313,7 +334,9 @@ function usePackageStatuses(args: RunnerArgs, manager: ProcessManager) {
       setStatuses((prev) => {
         let changed = false;
         const next = new Map(prev);
-        for (const [name, tuiStatus] of prev) {
+        // Over the current list, so a service added to the session gets its entry here.
+        for (const { name } of packages) {
+          const tuiStatus = prev.get(name) ?? 'stopped';
           const mgrStatus = manager.getStatus(name);
           if (!mgrStatus) {
             continue;
@@ -340,7 +363,7 @@ function usePackageStatuses(args: RunnerArgs, manager: ProcessManager) {
             default:
               target = tuiStatus;
           }
-          if (target !== tuiStatus) {
+          if (target !== prev.get(name)) {
             next.set(name, target);
             changed = true;
           }
@@ -349,7 +372,7 @@ function usePackageStatuses(args: RunnerArgs, manager: ProcessManager) {
       });
     }, 2000);
     return () => clearInterval(interval);
-  }, [manager, healthchecks]);
+  }, [manager, healthchecks, packages]);
 
   const markStarted = useCallback(
     (name: string) => {
@@ -424,6 +447,13 @@ export function NativeRunner({
 
   const [gitBranch] = useState(getGitBranch);
 
+  const [manager] = useState(() => new ProcessManager(args));
+  // Bumped when a service joins the session: `args.sortedPackages` and the maps grow in place.
+  const servicesVersion = useSyncExternalStore(
+    useCallback((fn: () => void) => manager.subscribeServices(fn), [manager]),
+    () => manager.getServicesVersion(),
+  );
+
   const displayPackages = useMemo(
     () =>
       args.sortedPackages.map((pkg) => ({
@@ -431,7 +461,8 @@ export function NativeRunner({
         displayName: pkg.shortName ?? pkg.name,
         selected: args.selectedSet.has(pkg.name),
       })),
-    [args.sortedPackages, args.selectedSet],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [args.sortedPackages, args.selectedSet, servicesVersion],
   );
 
   const packageUrlGroups = useMemo<PackageUrlGroup[]>(() => {
@@ -448,18 +479,20 @@ export function NativeRunner({
       });
     }
     return groups;
-  }, [args.sortedPackages, args.selectedSet]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [args.sortedPackages, args.selectedSet, servicesVersion]);
 
   const topLevelUrls = useMemo<UrlLine[]>(() => args.topLevelUrls ?? [], [args.topLevelUrls]);
-  const infraUrls = useMemo<UrlLine[]>(
+  const infraUrlGroups = useMemo<PackageUrlGroup[]>(
     () =>
       (args.infra?.services ?? []).flatMap((service) =>
-        service.publicOrigin === undefined ? [] : [[{ url: service.publicOrigin }]],
+        service.urls === undefined || service.urls.length === 0
+          ? []
+          : [{ name: service.name, selected: false, urls: service.urls.map(normalizeUrlEntry) }],
       ),
     [args.infra],
   );
 
-  const [manager] = useState(() => new ProcessManager(args));
   // The footer cursor runs over the packages, then the infra services: `cursor` past the last
   // package is a service.
   const infraNames = manager.infra?.services ?? [];
@@ -471,6 +504,8 @@ export function NativeRunner({
   const itemRefs = useRef<(DOMElement | null)[]>([]);
   /** The reset awaiting its confirming `t`, if one was asked for. */
   const pendingResetRef = useRef<{ service: string; toastId: number; at: number } | null>(null);
+  /** The first Ctrl+C, awaiting the second that confirms the exit. */
+  const pendingExitRef = useRef<{ toastId: number; at: number } | null>(null);
   useEffect(() => {
     devReverseProxy?.attach(manager);
   }, [devReverseProxy, manager]);
@@ -522,7 +557,7 @@ export function NativeRunner({
     markWaiting,
     markAllStarted,
     markAllStopped,
-  } = usePackageStatuses(args, manager);
+  } = usePackageStatuses(args, manager, servicesVersion);
 
   const shuttingDownRef = useRef(false);
 
@@ -544,26 +579,39 @@ export function NativeRunner({
     process.stdout.write(MOUSE_DISABLE);
     setShuttingDown(true);
     markAllStopped();
-    await Promise.race([
-      manager.shutdownAll(),
-      new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_TIMEOUT_MS)),
-    ]);
+    // Every step below is best-effort: a failing one must not keep the session from exiting.
+    const settle = async (step: () => unknown): Promise<void> => {
+      try {
+        await step();
+      } catch {
+        /* the exit goes ahead regardless */
+      }
+    };
+    await settle(() =>
+      Promise.race([
+        manager.shutdownAll(),
+        new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_TIMEOUT_MS)),
+      ]),
+    );
+    // Whatever the graceful pass left (it timed out, or failed) dies now, while the exit hook that
+    // would otherwise be the last word is still installed — `dispose()` below removes it.
+    manager.forceKillAll();
+    // Safety net, armed before anything else is awaited: force-exit if closing the proxy or the
+    // server, or Ink's teardown, ever stalls, so a session whose children are all dead can't leave
+    // a lingering parent process. In the normal path renderApp exits first and this never fires.
+    setTimeout(() => process.exit(0), EXIT_SAFETY_NET_MS);
     // The proxy first: it destroys every open socket (proxied websockets included), so a
     // lingering connection can't hold the exit.
-    await devReverseProxy?.close();
+    await settle(() => devReverseProxy?.close());
     // Packages are down and their ports freed — ack any blocking `/command/quit`
     // now (e.g. a newer session handing off), before we close the server below.
-    server.ackQuit();
-    await server.close();
-    manager.dispose();
+    await settle(() => server.ackQuit());
+    await settle(() => server.close());
+    await settle(() => manager.dispose());
     // Ink's teardown drives the exit from here: `exit()` unmounts, restores the
     // primary screen, and resolves `waitUntilExit` in renderApp, which prints the
     // "exited after …" line on the restored screen and exits the process.
     exit();
-    // Safety net: force-exit if that teardown ever stalls, so a fully-cleaned-up
-    // session (every child already killed above) can't leave a lingering parent
-    // process. In the normal path renderApp exits first and this never fires.
-    setTimeout(() => process.exit(0), 1500);
   }, [manager, server, devReverseProxy, exit, markAllStopped]);
 
   // Terminal-delivered signals route to the same graceful shutdown as Ctrl+C. Ctrl+C itself
@@ -740,9 +788,23 @@ export function NativeRunner({
   };
 
   useInput((input, key) => {
-    // Ctrl+C always works, regardless of mode.
+    // Ctrl+C works in every mode, and takes two presses: the first only asks, and a second while
+    // that prompt is up exits. Once shutting down, a further one is the impatient hard kill.
     if (input === 'c' && key.ctrl) {
-      void shutdown();
+      const pending = pendingExitRef.current;
+      if (shuttingDownRef.current || (pending && Date.now() - pending.at < EXIT_CONFIRM_MS)) {
+        if (pending) {
+          toasts.dismiss(pending.toastId);
+        }
+        pendingExitRef.current = null;
+        void shutdown();
+        return;
+      }
+      const toastId = toasts.notify({
+        message: 'Press Ctrl+C again to exit',
+        duration: EXIT_CONFIRM_MS,
+      });
+      pendingExitRef.current = { toastId, at: Date.now() };
       return;
     }
 
@@ -1066,7 +1128,7 @@ export function NativeRunner({
     <LinksColumn
       topLevelUrls={topLevelUrls}
       packageUrlGroups={packageUrlGroups}
-      infraUrls={infraUrls}
+      infraUrlGroups={infraUrlGroups}
     />
   );
 
@@ -1097,7 +1159,7 @@ export function NativeRunner({
     { key: '^c', label: 'quit' },
   ];
 
-  // Hotkeys for the focused package or infra service — rendered directly under the package
+  // Hotkeys for the focused package or infra service — rendered directly above the package
   // dots. The selection hint (and its separator) only makes sense with more than one item to
   // move the cursor between; ↑/↓ join it once infra puts a second row below the packages.
   const selectHints: HotkeyHintItem[] =
@@ -1209,7 +1271,7 @@ export function NativeRunner({
       })}
       <Text dimColor>
         {displayPackages.length > 1
-          ? '  ↑↓: navigate   ←→: package   enter: run   esc: cancel'
+          ? '  ↑↓: navigate   ←→: service   enter: run   esc: cancel'
           : '  ↑↓: navigate   enter: run   esc: cancel'}
       </Text>
     </>
@@ -1220,7 +1282,7 @@ export function NativeRunner({
     </>
   );
 
-  // Per-package hotkeys sit directly under the dots (no vertical gap) — only in
+  // The hotkeys for the selected item sit directly above the dots (no vertical gap) — only in
   // normal mode, where the top section shows the session-level hotkeys.
   const isNormal = !shuttingDown && !isFilter && !isCommands;
 
@@ -1261,43 +1323,42 @@ export function NativeRunner({
       >
         <Box flexDirection="column" flexGrow={1}>
           {topSection}
-          <Box marginTop={1}>{packageStatusDots}</Box>
-          {infraServices.length > 0 && (
-            // The session's infra, listed right under the packages and selectable with them.
-            // Each dot is the service's live state, or pulses while an action runs.
-            <Box flexWrap="wrap" columnGap={2}>
-              <Text color={ACCENT_COLOR}>infra:</Text>
-              {infraServices.map((service, j) => {
-                const index = displayPackages.length + j;
-                const status = INFRA_DOT_STATUS[manager.infra?.status(service.name) ?? 'running'];
-                const dim = status === 'starting' && !pulse;
-                const isFocused = index === cursor;
-                return (
-                  <Box
-                    key={`${service.provider}/${service.name}`}
-                    flexShrink={0}
-                    ref={(el: DOMElement | null) => {
-                      itemRefs.current[index] = el;
-                    }}
-                  >
-                    <Text color={STATUS_COLORS[status]} dimColor={dim}>
-                      ●
-                    </Text>
-                    <Text> </Text>
-                    <Text bold={isFocused} underline={isFocused}>
-                      {service.name}
-                    </Text>
-                  </Box>
-                );
-              })}
-            </Box>
-          )}
-          {/* The hotkeys act on whichever item — package or service — is selected above. */}
-          {isNormal && (
-            <Box marginTop={1}>
-              <HotkeyHints hints={packageHints} />
-            </Box>
-          )}
+          {/* One stack: the hotkeys for the selected item, then the packages and the infra
+              services they act on. */}
+          <Box flexDirection="column" marginTop={1}>
+            {isNormal && <HotkeyHints hints={packageHints} />}
+            {packageStatusDots}
+            {infraServices.length > 0 && (
+              // The session's infra, listed right under the packages and selectable with them.
+              // Each dot is the service's live state, or pulses while an action runs.
+              <Box flexWrap="wrap" columnGap={2}>
+                <Text color={ACCENT_COLOR}>infra:</Text>
+                {infraServices.map((service, j) => {
+                  const index = displayPackages.length + j;
+                  const status = INFRA_DOT_STATUS[manager.infra?.status(service.name) ?? 'running'];
+                  const dim = status === 'starting' && !pulse;
+                  const isFocused = index === cursor;
+                  return (
+                    <Box
+                      key={`${service.provider}/${service.name}`}
+                      flexShrink={0}
+                      ref={(el: DOMElement | null) => {
+                        itemRefs.current[index] = el;
+                      }}
+                    >
+                      <Text color={STATUS_COLORS[status]} dimColor={dim}>
+                        ●
+                      </Text>
+                      <Text> </Text>
+                      <Text bold={isFocused} underline={isFocused}>
+                        {service.name}
+                      </Text>
+                    </Box>
+                  );
+                })}
+              </Box>
+            )}
+          </Box>
           <Box flexDirection="column" marginTop={1}>
             <Box columnGap={2}>
               <Text>

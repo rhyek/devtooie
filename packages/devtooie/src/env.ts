@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import type { AnyPackageConfig } from './config.js';
+import type { AnyServiceConfig } from './config.js';
 import { findPassthrough } from './infra/argv.js';
 
 /** The mode used when neither `--mode` nor `DEVTOOIE_MODE` says otherwise. */
@@ -92,8 +92,8 @@ export interface EnvResolution {
   /** Every candidate path (whether or not it exists), ascending precedence. */
   candidates: string[];
   /**
-   * The names the package's own files assign, as against the workspace's. When `relativeDir`
-   * is the workspace root the one scope is the package's, so this is every file's names.
+   * The names the service's own files assign, as against the workspace's. When `relativeDir`
+   * is the workspace root the one scope is the service's, so this is every file's names.
    */
   packageNames: Set<string>;
 }
@@ -101,7 +101,7 @@ export interface EnvResolution {
 interface ResolveEnvOptions {
   /** Workspace root. */
   cwd: string;
-  /** Package directory relative to `cwd`; `'.'` collapses package scope onto the workspace. */
+  /** Service directory relative to `cwd`; `'.'` collapses service scope onto the workspace. */
   relativeDir: string;
   /** Filenames to look for at each scope (defaults to the active mode's {@link envFileNames}). */
   files?: string[];
@@ -122,7 +122,7 @@ interface ResolveEnvOptions {
 
 /**
  * Every candidate `.env` path, ascending precedence: all workspace-scope files (in
- * `files` order), then all package-scope files (in `files` order). Package scope always
+ * `files` order), then all service-scope files (in `files` order). Service scope always
  * outranks workspace scope. When `relativeDir` resolves to `cwd`, the two scopes collapse
  * into one.
  */
@@ -168,7 +168,7 @@ export function baseEnvs(workspaceDir: string): Envs {
 
 /**
  * A snapshot of `process.env` with `undefined`-valued keys dropped, so it can be used as a
- * plain string map. Used as the base layer a package's env files are merged over, and (after
+ * plain string map. Used as the base layer a service's env files are merged over, and (after
  * {@link hideDollars}) as the `${VAR}`-expansion source in {@link resolveEnv}.
  */
 export function ambientEnv(): Record<string, string> {
@@ -181,6 +181,52 @@ export function ambientEnv(): Record<string, string> {
   return env;
 }
 
+/**
+ * Names, comma-separated, the variables devtooie gave a child that the shell devtooie was started
+ * in didn't — the `.env` values, the config's own variables, `PORT`. A devtooie started from such a
+ * child (an e2e suite that `devtooie run` started, say) drops them first, so they don't count as
+ * its ambient environment and beat its own `.env` files. `DEVTOOIE_MODE` is never listed: a
+ * nested devtooie keeps the mode it was started in.
+ */
+export const INJECTED_ENV_VAR = 'DEVTOOIE_INJECTED_ENV';
+
+/**
+ * Drops what an outer devtooie listed in {@link INJECTED_ENV_VAR}, and the list itself. The CLI
+ * calls it first, before anything reads the environment.
+ */
+export function dropInjectedEnv(env: NodeJS.ProcessEnv = process.env): void {
+  const list = env[INJECTED_ENV_VAR];
+  if (list === undefined) {
+    return;
+  }
+  for (const key of list.split(',')) {
+    if (key !== '' && key !== 'DEVTOOIE_MODE') {
+      delete env[key];
+    }
+  }
+  delete env[INJECTED_ENV_VAR];
+}
+
+/**
+ * `layer` with {@link INJECTED_ENV_VAR} added: every variable of the child's environment — this
+ * process's own, with `layer` merged over it — that the shell devtooie was started in didn't
+ * set, or set to another value.
+ */
+function withInjectedList(layer: Record<string, string>): Record<string, string> {
+  const shell = shellEnv ?? ambientEnv();
+  const child: NodeJS.ProcessEnv = { ...process.env, ...layer };
+  const injected = Object.keys(child)
+    .filter(
+      (key) =>
+        key !== INJECTED_ENV_VAR &&
+        key !== 'DEVTOOIE_MODE' &&
+        child[key] !== undefined &&
+        child[key] !== shell[key],
+    )
+    .sort();
+  return { ...layer, [INJECTED_ENV_VAR]: injected.join(',') };
+}
+
 /** The environment devtooie was started with, once {@link captureShellEnv} has recorded it. */
 let shellEnv: Record<string, string> | undefined;
 
@@ -191,11 +237,20 @@ let shellEnv: Record<string, string> | undefined;
  * The CLI calls this once, before it merges the workspace's `.env` files into its own
  * `process.env`. From then on `process.env` holds file values next to the shell's, and nothing
  * in it says which is which — but only a variable the shell set is entitled to win over a file.
- * A workspace file's value that counted as ambient would beat the package file meant to
+ * A workspace file's value that counted as ambient would beat the service file meant to
  * override it, and would keep beating the workspace file itself after an edit.
  */
 export function captureShellEnv(): void {
   shellEnv = ambientEnv();
+}
+
+/**
+ * The environment devtooie was started with ({@link captureShellEnv}), or this process's own
+ * when it wasn't recorded — what a devtooie this one starts should get as its own, without the
+ * `.env` values this process has merged into `process.env` since.
+ */
+export function shellEnvironment(): Record<string, string> {
+  return { ...(shellEnv ?? ambientEnv()) };
 }
 
 /**
@@ -301,8 +356,8 @@ function asEnvSource(
 }
 
 /**
- * Resolves the `.env` files for a package into a flat, expanded variable map without touching
- * `process.env`. Only files that exist are loaded; a later file (or a package-scope file)
+ * Resolves the `.env` files for a service into a flat, expanded variable map without touching
+ * `process.env`. Only files that exist are loaded; a later file (or a service-scope file)
  * overrides an earlier one, and every file overrides the config's own `vars`.
  *
  * The **ambient environment wins** over the files — matching Next.js, Vite, dotenv-flow and
@@ -349,7 +404,7 @@ export function resolveEnv(opts: ResolveEnvOptions): EnvResolution {
   const fromVars = asEnvSource(vars, '__DEVTOOIE_VAR_');
   const final = { ...winning, ...fromAmbient.placeholders, ...fromVars.placeholders };
   const standIn = dollarStandIn([...Object.values(final), ...texts]);
-  // dotenvx's parser, taken from the package it lives in: `@dotenvx/dotenvx` wraps the same
+  // dotenvx's parser, taken from the service it lives in: `@dotenvx/dotenvx` wraps the same
   // call in a CLI's worth of tooling, which costs every command its load time. It reads from
   // `processEnv` for `$VAR` lookups but writes to neither it nor the real process.env, so
   // nothing is mutated.
@@ -382,16 +437,16 @@ interface EnvLayerOptions {
 }
 
 /**
- * The environment layer for a package's child process: the config's own variables and its
- * `.env` files, resolved together, with the package's configured `port` as `PORT` and, under
- * the dev reverse proxy, its public origin as `PUBLIC_ORIGIN`. Those two are the package's own,
+ * The environment layer for a service's child process: the config's own variables and its
+ * `.env` files, resolved together, with the service's configured `port` as `PORT` and, under
+ * the dev reverse proxy, its public origin as `PUBLIC_ORIGIN`. Those two are the service's own,
  * so they win over a value set workspace-wide — by the config's variables or a workspace `.env`
- * file — and only a file of the package's own replaces them. Excludes `process.env` — merge
+ * file — and only a file of the service's own replaces them. Excludes `process.env` — merge
  * this over it at spawn time (`Object.assign({}, process.env, layer)`). Shared by the TUI/plain
  * session and `devtooie exec` so both build the same env.
  */
 export function packageEnvLayer(
-  pkg: AnyPackageConfig,
+  pkg: AnyServiceConfig,
   opts: EnvLayerOptions,
 ): Record<string, string> {
   const { env, packageNames } = resolveEnv({ ...opts, relativeDir: pkg.relativeDir });
@@ -407,14 +462,14 @@ export function packageEnvLayer(
       env[name] = value;
     }
   }
-  return env;
+  return withInjectedList(env);
 }
 
 /**
- * The environment layer for what belongs to no package — infra, and `devtooie exec` / `run`
- * outside every package: the config's own variables and the workspace-scope `.env` files,
+ * The environment layer for what belongs to no service — infra, and `devtooie exec` / `run`
+ * outside every service: the config's own variables and the workspace-scope `.env` files,
  * resolved together. Excludes `process.env`, like {@link packageEnvLayer}.
  */
 export function workspaceEnvLayer(opts: EnvLayerOptions): Record<string, string> {
-  return resolveEnv({ ...opts, relativeDir: '.' }).env;
+  return withInjectedList(resolveEnv({ ...opts, relativeDir: '.' }).env);
 }

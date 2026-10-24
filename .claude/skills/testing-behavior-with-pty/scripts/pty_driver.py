@@ -14,7 +14,7 @@ and bytes the child "draws" come back when you read the master.
 Typical use (see the devtooie example at the bottom, guarded by __main__):
 
     with PtyDriver(["node", "dist/cli.js"], cwd="/path/to/app") as d:
-        d.wait_for("Select packages to run")   # sync on an on-screen landmark
+        d.wait_for("Select services to run")   # sync on an on-screen landmark
         d.press("enter")                        # confirm the selector
         d.wait_for("rebuild", timeout=180)      # run phase is up
         d.press("m")                            # open a menu
@@ -263,7 +263,7 @@ if __name__ == "__main__":
     cli = os.path.join(app_dir, "node_modules", "devtooie", "dist", "cli.js")
 
     with PtyDriver(["node", cli], cwd=app_dir, capture_path="/tmp/pty_capture.txt") as d:
-        if not d.wait_for("Select packages to run", timeout=30):
+        if not d.wait_for("Select services to run", timeout=30):
             print("FAIL: package selector never appeared")
             sys.exit(1)
         d.press("enter")  # confirm default selection

@@ -8,8 +8,8 @@ description: >-
   interactive terminal UI / keystroke-driven CLI (menus, hotkeys, cursor or
   selection movement, modes like filter/commands, scrolling, the footer,
   live-updating log output) and need to confirm it actually works as the user
-  expects. Especially the devtooie fullscreen Ink TUI: the package selector,
-  the command (`m`) menu, the log viewport, and per-package hotkeys. Also
+  expects. Especially the devtooie fullscreen Ink TUI: the service selector,
+  the command (`m`) menu, the log viewport, and per-service hotkeys. Also
   trigger when the user says "verify it works", "make sure it works as
   expected", "test the menu/hotkey/TUI", or when typecheck and unit tests can't
   exercise the real key-input-to-screen behavior. Terminal UIs only — for
@@ -59,15 +59,15 @@ APP = "/Users/you/Dev/.../example"
 CLI = f"{APP}/node_modules/devtooie/dist/cli.js"
 
 with PtyDriver(["node", CLI], cwd=APP, capture_path="/tmp/cap.txt") as d:
-    d.wait_for("Select packages to run")      # sync on a landmark, not a sleep
-    d.press("enter")                           # confirm the package selector
+    d.wait_for("Select services to run")      # sync on a landmark, not a sleep
+    d.press("enter")                           # confirm the service selector
     d.wait_for("rebuild", timeout=180)         # run phase is up
 
     d.press("m")                               # open the command menu
     before = d.find_last(r"Commands for (\S+)")
-    d.press("right")                           # switch package inside the menu
+    d.press("right")                           # switch service inside the menu
     after = d.find_last(r"Commands for (\S+)")
-    assert after != before, f"→ did not switch package: {before} -> {after}"
+    assert after != before, f"→ did not switch service: {before} -> {after}"
     print(f"OK: right switched {before} -> {after}")
 
     d.press("esc"); d.press("ctrl-c", "ctrl-c")
@@ -116,11 +116,11 @@ observed behavior is the verification, so quote it back to the user.
 
 Useful strings to `wait_for` / assert against in this repo's TUI:
 
-- `"Select packages to run"` — the package selector (press `enter` to confirm).
-- `"rebuild"` — a per-package hotkey hint that only renders in the run phase
+- `"Select services to run"` — the service selector (press `enter` to confirm).
+- `"rebuild"` — a per-service hotkey hint that only renders in the run phase
   (`NativeRunner`), so it's a good "run phase is up" signal.
 - `Commands for (\S+)` — the `m`-menu header; the captured group is the currently
-  focused package, so it's how you see `←`/`→` switching packages.
+  focused service, so it's how you see `←`/`→` switching services.
 - `❯` — the cursor marker on the focused menu row (`last_line_with("❯")`), e.g.
   `❯ > _` is the empty custom-command input row.
 

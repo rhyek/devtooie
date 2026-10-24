@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { AnyPackageConfig, Config } from './config.js';
+import type { AnyServiceConfig, Config } from './config.js';
 
 export class NoProjectConfigError extends Error {}
 
@@ -75,7 +75,7 @@ export function findWorkspaceRoot(cwd: string = process.cwd()): string | null {
   }
 }
 
-export async function loadConfig(cwd: string = process.cwd()): Promise<AnyPackageConfig[]> {
+export async function loadConfig(cwd: string = process.cwd()): Promise<AnyServiceConfig[]> {
   const configPath = findConfigPath(cwd);
   if (!configPath) {
     throw new NoProjectConfigError('no devtooie.config.ts found — run `devtooie init`');
@@ -88,8 +88,8 @@ export async function loadConfig(cwd: string = process.cwd()): Promise<AnyPackag
   if (registered.length) {
     return registered;
   }
-  if (mod.default?.packages) {
-    return Object.values(mod.default.packages);
+  if (mod.default?.services) {
+    return Object.values(mod.default.services);
   }
   throw new Error(
     `config module ${path.basename(configPath)} did not export a defineConfig default`,

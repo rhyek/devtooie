@@ -37,18 +37,18 @@ function scriptedDocker() {
 const configWith = (infra: Parameters<typeof defineConfig>[0]['infra']) =>
   defineConfig({
     workspaceDir: ws,
-    packageRootDir: 'packages',
+    serviceRootDir: 'packages',
     tokens: { region: 'eu' },
     infra,
-    packages: { web: {} },
+    services: { web: {} },
   });
 
 describe('InfraManager', () => {
   test('is null for a config with no infra', () => {
     const config = defineConfig({
       workspaceDir: ws,
-      packageRootDir: 'packages',
-      packages: { web: {} },
+      serviceRootDir: 'packages',
+      services: { web: {} },
     });
     expect(InfraManager.fromConfig(config)).toBeNull();
   });
@@ -69,10 +69,10 @@ describe('InfraManager', () => {
     const { exec, calls } = scriptedDocker();
     const config = defineConfig({
       workspaceDir: ws,
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       env: { vars: { DATA_DIR: '/srv/data', CACHE_DIR: '/srv/cache' } },
       infra: { 'docker-compose': {} },
-      packages: { web: {} },
+      services: { web: {} },
     });
     const manager = InfraManager.fromConfig(config, { exec })!;
     expect((await manager.up()).ok).toBe(true);

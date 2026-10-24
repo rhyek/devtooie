@@ -3,9 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  type AnyPackageConfig,
+  type AnyServiceConfig,
   defineConfig,
-  findPackage,
+  findService,
   getRegisteredPackages,
   getLoadedConfig,
   getWorkspaceDir,
@@ -13,7 +13,7 @@ import {
 } from './config.js';
 import { packageEnvLayer } from './env.js';
 
-/** `defineConfig`'s options as seen with `packageRootDir` set (so `relativeDir` is optional). */
+/** `defineConfig`'s options as seen with `serviceRootDir` set (so `relativeDir` is optional). */
 type RootedOpts = Parameters<
   typeof defineConfig<Record<never, never>, Record<string, unknown>, string, 'packages'>
 >[0];
@@ -21,7 +21,7 @@ type RootedOpts = Parameters<
 describe('command / autostart', () => {
   it('resolves an omitted command to the `dev` default', () => {
     const packages = Object.values(
-      defineConfig({ packageRootDir: 'packages', packages: { svc: {} } }).packages,
+      defineConfig({ serviceRootDir: 'packages', services: { svc: {} } }).services,
     );
     expect(packages[0]!.command).toEqual({
       name: 'dev',
@@ -33,15 +33,15 @@ describe('command / autostart', () => {
 
   it('passes `command: null` through (no dev process)', () => {
     const packages = Object.values(
-      defineConfig({ packageRootDir: 'packages', packages: { lib: { command: null } } }).packages,
+      defineConfig({ serviceRootDir: 'packages', services: { lib: { command: null } } }).services,
     );
     expect(packages[0]!.command).toBeNull();
   });
 
   it('honors autostart and leaves it undefined (⇒ true) by default', () => {
     const packages = Object.values(
-      defineConfig({ packageRootDir: 'packages', packages: { a: { autostart: false }, b: {} } })
-        .packages,
+      defineConfig({ serviceRootDir: 'packages', services: { a: { autostart: false }, b: {} } })
+        .services,
     );
     expect(packages[0]!.autostart).toBe(false);
     expect(packages[1]!.autostart).toBeUndefined();
@@ -49,41 +49,41 @@ describe('command / autostart', () => {
 });
 
 describe('defineConfig path resolution', () => {
-  test('infers relativeDir from packageRootDir + key, resolving path against cwd', () => {
-    const cfg = defineConfig({ packageRootDir: 'apps', packages: { svc: {}, '@scope/x': {} } });
-    expect(cfg.packages.svc.relativeDir).toBe('apps/svc');
-    expect(cfg.packages.svc.absoluteDir).toBe(path.resolve(process.cwd(), 'apps/svc'));
-    expect(cfg.packages['@scope/x'].relativeDir).toBe('apps/@scope/x');
+  test('infers relativeDir from serviceRootDir + key, resolving path against cwd', () => {
+    const cfg = defineConfig({ serviceRootDir: 'apps', services: { svc: {}, '@scope/x': {} } });
+    expect(cfg.services.svc.relativeDir).toBe('apps/svc');
+    expect(cfg.services.svc.absoluteDir).toBe(path.resolve(process.cwd(), 'apps/svc'));
+    expect(cfg.services['@scope/x'].relativeDir).toBe('apps/@scope/x');
   });
 
-  test('normalizes a trailing slash on packageRootDir', () => {
-    const cfg = defineConfig({ packageRootDir: 'apps/', packages: { svc: {} } });
-    expect(cfg.packages.svc.relativeDir).toBe('apps/svc');
+  test('normalizes a trailing slash on serviceRootDir', () => {
+    const cfg = defineConfig({ serviceRootDir: 'apps/', services: { svc: {} } });
+    expect(cfg.services.svc.relativeDir).toBe('apps/svc');
   });
 
   test('lets relativeDir override the inferred directory', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
-      packages: { svc: { relativeDir: 'apps/svc' }, other: {} },
+      serviceRootDir: 'packages',
+      services: { svc: { relativeDir: 'apps/svc' }, other: {} },
     });
-    expect(cfg.packages.svc.relativeDir).toBe('apps/svc');
-    expect(cfg.packages.other.relativeDir).toBe('packages/other');
+    expect(cfg.services.svc.relativeDir).toBe('apps/svc');
+    expect(cfg.services.other.relativeDir).toBe('packages/other');
   });
 
-  test('requires relativeDir when there is no packageRootDir, naming the package', () => {
+  test('requires relativeDir when there is no serviceRootDir, naming the package', () => {
     expect(() =>
-      // @ts-expect-error relativeDir is required without packageRootDir
-      defineConfig({ packages: { svc: { port: 3000 } } }),
-    ).toThrow(/svc has no `relativeDir`, and the config sets no `packageRootDir` to infer it from/);
+      // @ts-expect-error relativeDir is required without serviceRootDir
+      defineConfig({ services: { svc: { port: 3000 } } }),
+    ).toThrow(/svc has no `relativeDir`, and the config sets no `serviceRootDir` to infer it from/);
   });
 
   it('honors explicit relativeDir and workspaceDir', () => {
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: '/repo',
-        packages: { svc: { relativeDir: 'apps/svc' } },
-      }).packages,
+        services: { svc: { relativeDir: 'apps/svc' } },
+      }).services,
     );
     expect(packages[0]!.absoluteDir).toBe(path.resolve('/repo', 'apps/svc'));
   });
@@ -91,18 +91,18 @@ describe('defineConfig path resolution', () => {
 
 describe('meta defaults', () => {
   it('leaves apiPort undefined when unset (random port chosen at startup)', () => {
-    const cfg = defineConfig({ packageRootDir: 'packages', packages: { svc: {} } });
+    const cfg = defineConfig({ serviceRootDir: 'packages', services: { svc: {} } });
     expect(cfg.apiPort).toBeUndefined();
   });
 
   it('passes through a pinned apiPort and exposes it via getLoadedConfig', () => {
-    const cfg = defineConfig({ packageRootDir: 'packages', apiPort: 5000, packages: { svc: {} } });
+    const cfg = defineConfig({ serviceRootDir: 'packages', apiPort: 5000, services: { svc: {} } });
     expect(cfg.apiPort).toBe(5000);
     expect(getLoadedConfig()?.apiPort).toBe(5000);
   });
 
   it("defaults envFiles to the development mode's set", () => {
-    const cfg = defineConfig({ packageRootDir: 'packages', packages: { svc: {} } });
+    const cfg = defineConfig({ serviceRootDir: 'packages', services: { svc: {} } });
     expect(cfg.envFiles).toEqual([
       '.env',
       '.env.local',
@@ -115,7 +115,7 @@ describe('meta defaults', () => {
   it('follows DEVTOOIE_MODE for both envFiles and envMode', () => {
     process.env.DEVTOOIE_MODE = 'test';
     try {
-      const cfg = defineConfig({ packageRootDir: 'packages', packages: { svc: {} } });
+      const cfg = defineConfig({ serviceRootDir: 'packages', services: { svc: {} } });
       expect(cfg.envFiles).toEqual(['.env', '.env.local', '.env.test', '.env.test.local']);
       expect(cfg.envMode).toBe('test');
     } finally {
@@ -126,33 +126,33 @@ describe('meta defaults', () => {
   it('rejects the removed env.files option instead of silently ignoring it', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         // @ts-expect-error - `files` was removed; the schema must say so rather than strip it.
         env: { files: ['.env', '.env.test'] },
-        packages: { svc: {} },
+        services: { svc: {} },
       }),
     ).toThrow(/Unrecognized key: "files"/);
   });
 
   it('carries env.override through to the resolved config', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       env: { override: ['NODE_OPTIONS'] },
-      packages: { svc: {} },
+      services: { svc: {} },
     });
     expect(cfg.envOverride).toEqual(['NODE_OPTIONS']);
   });
 
   it('defaults logTimestamps to true', () => {
-    const cfg = defineConfig({ packageRootDir: 'packages', packages: { svc: {} } });
+    const cfg = defineConfig({ serviceRootDir: 'packages', services: { svc: {} } });
     expect(cfg.logTimestamps).toBe(true);
   });
 
   it('honors a logs.timestamps override', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       logs: { timestamps: false },
-      packages: { svc: {} },
+      services: { svc: {} },
     });
     expect(cfg.logTimestamps).toBe(false);
   });
@@ -162,8 +162,8 @@ describe('logs (per-package)', () => {
   it('passes a logs.formatter through unchanged (not a validating wrapper)', () => {
     const fmt = (line: string): string => `[fmt] ${line}`;
     const packages = Object.values(
-      defineConfig({ packageRootDir: 'packages', packages: { svc: { logs: { formatter: fmt } } } })
-        .packages,
+      defineConfig({ serviceRootDir: 'packages', services: { svc: { logs: { formatter: fmt } } } })
+        .services,
     );
     expect(packages[0]!.logs?.formatter).toBe(fmt);
     expect(packages[0]!.logs?.formatter!('hi')).toBe('[fmt] hi');
@@ -172,9 +172,9 @@ describe('logs (per-package)', () => {
   it('stores a package-level logs.timestamps override', () => {
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
-        packages: { a: { logs: { timestamps: true } }, b: {} },
-      }).packages,
+        serviceRootDir: 'packages',
+        services: { a: { logs: { timestamps: true } }, b: {} },
+      }).services,
     );
     expect(packages[0]!.logs?.timestamps).toBe(true);
     expect(packages[1]!.logs).toBeUndefined();
@@ -182,7 +182,7 @@ describe('logs (per-package)', () => {
 
   it('leaves logs undefined when not set', () => {
     const packages = Object.values(
-      defineConfig({ packageRootDir: 'packages', packages: { svc: {} } }).packages,
+      defineConfig({ serviceRootDir: 'packages', services: { svc: {} } }).services,
     );
     expect(packages[0]!.logs).toBeUndefined();
   });
@@ -190,9 +190,9 @@ describe('logs (per-package)', () => {
   it('rejects a non-function logs.formatter', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         // @ts-expect-error logs.formatter must be a function
-        packages: { svc: { logs: { formatter: 'nope' } } },
+        services: { svc: { logs: { formatter: 'nope' } } },
       }),
     ).toThrow(/logs\.formatter/);
   });
@@ -202,15 +202,15 @@ describe('tokens', () => {
   it('merges the package tokens over the config tokens, package winning', () => {
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         tokens: { domain: 'example.com', scheme: 'https' },
-        packages: {
+        services: {
           api: {
             tokens: { region: 'us-east', scheme: 'http' },
             healthcheck: ({ tokens }) => `${tokens.scheme}://${tokens.region}.${tokens.domain}`,
           },
         },
-      }).packages,
+      }).services,
     );
     expect(packages[0]!.healthcheck?.url).toBe('http://us-east.example.com');
   });
@@ -218,8 +218,8 @@ describe('tokens', () => {
   it('keeps one package tokens out of another package', () => {
     const seen: (string | undefined)[] = [];
     defineConfig({
-      packageRootDir: 'packages',
-      packages: {
+      serviceRootDir: 'packages',
+      services: {
         api: { tokens: { region: 'us-east' } },
         web: {
           healthcheck: ({ tokens }) => {
@@ -235,20 +235,20 @@ describe('tokens', () => {
   it('gives a package with no tokens of its own just the config tokens', () => {
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         tokens: { domain: 'example.com' },
-        packages: { web: { healthcheck: ({ tokens }) => `https://${tokens.domain}` } },
-      }).packages,
+        services: { web: { healthcheck: ({ tokens }) => `https://${tokens.domain}` } },
+      }).services,
     );
     expect(packages[0]!.healthcheck?.url).toBe('https://example.com');
   });
 
   it('hands workspace-wide urls only the config tokens', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       tokens: { domain: 'example.com' },
       urls: [({ tokens }) => `https://status.${tokens.domain}`],
-      packages: { api: { tokens: { region: 'us-east' } } },
+      services: { api: { tokens: { region: 'us-east' } } },
     });
     expect(cfg.urls![0]).toBe('https://status.example.com');
   });
@@ -258,9 +258,9 @@ describe('tokens', () => {
   // the inference regresses. See docs/configuration.md#callbacks-instead-of-interpolation.
   it('types each package tokens from what it declares', () => {
     defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       tokens: { domain: 'example.com' },
-      packages: {
+      services: {
         api: {
           tokens: { region: 'us-east' },
           // both the config token and this package's own are known keys
@@ -284,9 +284,9 @@ describe('tokens', () => {
   // TypeScript replaces an inference that fails its constraint with the constraint itself.
   it('keeps sibling tokens exact when a package omits tokens entirely', () => {
     defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       tokens: { domain: 'example.com' },
-      packages: {
+      services: {
         // declares tokens, and still gets exact types despite the siblings below
         api: {
           tokens: { region: 'us-east' },
@@ -309,8 +309,8 @@ describe('tokens', () => {
   it('rejects a non-string token value', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
-        packages: {
+        serviceRootDir: 'packages',
+        services: {
           // @ts-expect-error token values must be strings
           api: { tokens: { port: 8080 } },
         },
@@ -321,8 +321,8 @@ describe('tokens', () => {
   it('type-checks waitFor and deps against the package keys', () => {
     // The valid direction compiles and loads.
     defineConfig({
-      packageRootDir: 'packages',
-      packages: {
+      serviceRootDir: 'packages',
+      services: {
         api: { healthcheck: 'http://localhost/health' },
         web: { waitFor: ['api'], deps: { runtime: ['api'], build: ['api'], dev: ['api'] } },
       },
@@ -330,8 +330,8 @@ describe('tokens', () => {
     // The invalid direction is a compile error *and* a load-time error.
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
-        packages: {
+        serviceRootDir: 'packages',
+        services: {
           api: {},
           edge: {
             // @ts-expect-error no package named `ghost`
@@ -342,8 +342,8 @@ describe('tokens', () => {
     ).toThrow(/waitFor "ghost"/);
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
-        packages: {
+        serviceRootDir: 'packages',
+        services: {
           api: {},
           edge: {
             // @ts-expect-error no package named `nope`
@@ -357,27 +357,27 @@ describe('tokens', () => {
 
 describe('package keys', () => {
   it('rejects an integer-like package name (JS would reorder the keys)', () => {
-    expect(() => defineConfig({ packageRootDir: 'packages', packages: { 2: {} } })).toThrow(
+    expect(() => defineConfig({ serviceRootDir: 'packages', services: { 2: {} } })).toThrow(
       /is a number/,
     );
   });
 
   it('preserves declaration order of the keys', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
-      packages: { zebra: {}, alpha: {}, middle: {} },
+      serviceRootDir: 'packages',
+      services: { zebra: {}, alpha: {}, middle: {} },
     });
-    expect(Object.keys(cfg.packages)).toEqual(['zebra', 'alpha', 'middle']);
+    expect(Object.keys(cfg.services)).toEqual(['zebra', 'alpha', 'middle']);
   });
 
   it('exposes each package resolved tokens on the config', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       tokens: { domain: 'example.com' },
-      packages: { api: { tokens: { region: 'us-east' } }, web: {} },
+      services: { api: { tokens: { region: 'us-east' } }, web: {} },
     });
-    expect(cfg.packages.api.tokens).toEqual({ domain: 'example.com', region: 'us-east' });
-    expect(cfg.packages.web.tokens).toEqual({ domain: 'example.com' });
+    expect(cfg.services.api.tokens).toEqual({ domain: 'example.com', region: 'us-east' });
+    expect(cfg.services.web.tokens).toEqual({ domain: 'example.com' });
   });
 });
 
@@ -385,11 +385,11 @@ describe('url/healthcheck callbacks', () => {
   it('resolves a healthcheck callback with the package port', () => {
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
-        packages: {
+        serviceRootDir: 'packages',
+        services: {
           core: { port: 3001, healthcheck: ({ port }) => `http://localhost:${port}/health` },
         },
-      }).packages,
+      }).services,
     );
     expect(packages[0]!.healthcheck?.url).toBe('http://localhost:3001/health');
   });
@@ -397,9 +397,9 @@ describe('url/healthcheck callbacks', () => {
   it('hands the config tokens to a callback (string and object urls)', () => {
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         tokens: { domain: 'example.com', proxyport: '8443' },
-        packages: {
+        services: {
           web: {
             urls: [
               {
@@ -409,7 +409,7 @@ describe('url/healthcheck callbacks', () => {
             ],
           },
         },
-      }).packages,
+      }).services,
     );
     expect(packages[0]!.urls![0]).toEqual({ label: 'home', url: 'https://app.example.com:8443' });
   });
@@ -417,9 +417,9 @@ describe('url/healthcheck callbacks', () => {
   it('resolves callbacks inside a per-package array (same-line) url entry, keeping its shape', () => {
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         tokens: { domain: 'example.com' },
-        packages: {
+        services: {
           web: {
             port: 3000,
             urls: [
@@ -430,7 +430,7 @@ describe('url/healthcheck callbacks', () => {
             ],
           },
         },
-      }).packages,
+      }).services,
     );
     expect(packages[0]!.urls![0]).toEqual([
       'http://localhost:3000',
@@ -442,15 +442,15 @@ describe('url/healthcheck callbacks', () => {
     // Interpolation is gone: a `$port` in a literal is just a character sequence now.
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
-        packages: {
+        serviceRootDir: 'packages',
+        services: {
           core: {
             port: 3001,
             healthcheck: 'http://localhost:$port/health',
             urls: ['https://example.test/$name'],
           },
         },
-      }).packages,
+      }).services,
     );
     expect(packages[0]!.healthcheck?.url).toBe('http://localhost:$port/health');
     expect(packages[0]!.urls![0]).toBe('https://example.test/$name');
@@ -459,9 +459,9 @@ describe('url/healthcheck callbacks', () => {
   it('reports the package and field when a callback returns a non-string', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         // @ts-expect-error a url callback must return a string
-        packages: { core: { port: 3001, healthcheck: ({ port }) => port } },
+        services: { core: { port: 3001, healthcheck: ({ port }) => port } },
       }),
     ).toThrow(/core healthcheck: callback returned 3001/);
   });
@@ -472,34 +472,34 @@ describe('url/healthcheck callbacks', () => {
   it('throws, naming the package, when a callback reads a port the package has not declared', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
-        packages: {
+        serviceRootDir: 'packages',
+        services: {
           core: {
             healthcheck: ({ port }) => `http://localhost:${port}/health`,
           },
         },
       }),
-    ).toThrow(/core: a callback read `port`, but this package declares no `port`/);
+    ).toThrow(/core: a callback read `port`, but this service declares no `port`/);
   });
 
   it('leaves a portless package alone when its callbacks never read the port', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       tokens: { host: 'example.test' },
-      packages: {
+      services: {
         core: { selectable: true, healthcheck: ({ tokens }) => `https://${tokens.host}/health` },
       },
     });
-    expect(cfg.packages.core.healthcheck?.url).toBe('https://example.test/health');
-    expect(cfg.packages.core.port).toBeUndefined();
+    expect(cfg.services.core.healthcheck?.url).toBe('https://example.test/health');
+    expect(cfg.services.core.port).toBeUndefined();
   });
 });
 
 describe('healthcheck', () => {
-  const health = (api: RootedOpts['packages'][string]) =>
+  const health = (api: RootedOpts['services'][string]) =>
     Object.values(
-      defineConfig({ packageRootDir: 'packages', packages: { api } as RootedOpts['packages'] })
-        .packages,
+      defineConfig({ serviceRootDir: 'packages', services: { api } as RootedOpts['services'] })
+        .services,
     )[0]!.healthcheck;
 
   it('normalizes a bare URL to `{ url, timeout }` with the default timeout', () => {
@@ -518,9 +518,9 @@ describe('healthcheck', () => {
 
   it('resolves a callback inside the object form, with the package context', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       tokens: { host: 'api.internal' },
-      packages: {
+      services: {
         api: {
           port: 4321,
           healthcheck: {
@@ -530,7 +530,7 @@ describe('healthcheck', () => {
         },
       },
     });
-    expect(cfg.packages.api.healthcheck).toEqual({
+    expect(cfg.services.api.healthcheck).toEqual({
       url: 'http://api.internal:4321/health',
       timeout: 4000,
     });
@@ -546,9 +546,9 @@ describe('healthcheck', () => {
   it('names the package and field when a callback in the object form returns a non-string', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         // @ts-expect-error a url callback must return a string
-        packages: { api: { port: 3001, healthcheck: { url: ({ port }) => port } } },
+        services: { api: { port: 3001, healthcheck: { url: ({ port }) => port } } },
       }),
     ).toThrow(/api healthcheck: callback returned 3001/);
   });
@@ -556,9 +556,9 @@ describe('healthcheck', () => {
   it('rejects a misspelled key rather than silently keeping the default', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         // @ts-expect-error `timout` is not a healthcheck option
-        packages: { api: { healthcheck: { url: 'http://localhost/health', timout: 9000 } } },
+        services: { api: { healthcheck: { url: 'http://localhost/health', timout: 9000 } } },
       }),
     ).toThrow(/invalid devtooie config/);
   });
@@ -567,8 +567,8 @@ describe('healthcheck', () => {
     for (const timeout of [0, -1, 1.5]) {
       expect(() =>
         defineConfig({
-          packageRootDir: 'packages',
-          packages: { api: { healthcheck: { url: 'http://localhost/health', timeout } } },
+          serviceRootDir: 'packages',
+          services: { api: { healthcheck: { url: 'http://localhost/health', timeout } } },
         }),
       ).toThrow(/invalid devtooie config/);
     }
@@ -577,8 +577,8 @@ describe('healthcheck', () => {
   it('satisfies a waitFor dependency declared in the object form', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
-        packages: {
+        serviceRootDir: 'packages',
+        services: {
           api: { healthcheck: { url: 'http://localhost/health', timeout: 3000 } },
           web: { waitFor: ['api'] },
         },
@@ -590,17 +590,17 @@ describe('healthcheck', () => {
 describe('top-level urls', () => {
   it('resolves a callback in a bare-string top-level url', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       tokens: { domain: 'example.com' },
       urls: [({ tokens }) => `https://grafana.${tokens.domain}`],
-      packages: { svc: {} },
+      services: { svc: {} },
     });
     expect(cfg.urls![0]).toBe('https://grafana.example.com');
   });
 
   it('resolves a callback in an object top-level url and keeps the label', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       tokens: { domain: 'example.com', proxyport: '8443' },
       urls: [
         {
@@ -608,14 +608,14 @@ describe('top-level urls', () => {
           url: ({ tokens }) => `https://grafana.${tokens.domain}:${tokens.proxyport}`,
         },
       ],
-      packages: { svc: {} },
+      services: { svc: {} },
     });
     expect(cfg.urls![0]).toEqual({ label: 'Grafana', url: 'https://grafana.example.com:8443' });
   });
 
   it('resolves callbacks inside a top-level array (same-line) url entry, keeping its shape', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       tokens: { domain: 'example.com' },
       urls: [
         [
@@ -623,7 +623,7 @@ describe('top-level urls', () => {
           { label: 'Logs', url: ({ tokens }) => `https://logs.${tokens.domain}` },
         ],
       ],
-      packages: { svc: {} },
+      services: { svc: {} },
     });
     expect(cfg.urls![0]).toEqual([
       'https://grafana.example.com',
@@ -633,35 +633,35 @@ describe('top-level urls', () => {
 
   it('leaves a literal top-level url verbatim', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       urls: ['https://dashboard.internal'],
-      packages: { svc: {} },
+      services: { svc: {} },
     });
     expect(cfg.urls![0]).toBe('https://dashboard.internal');
   });
 
   it('leaves urls undefined when none are given', () => {
-    const cfg = defineConfig({ packageRootDir: 'packages', packages: { svc: {} } });
+    const cfg = defineConfig({ serviceRootDir: 'packages', services: { svc: {} } });
     expect(cfg.urls).toBeUndefined();
   });
 
   it('throws when a top-level url callback reads a port (those links have no package)', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         // @ts-expect-error a workspace-wide url has no package, so no `port` in its context
         urls: [({ port }) => `http://localhost:${port}`],
-        packages: { svc: { port: 3001 } },
+        services: { svc: { port: 3001 } },
       }),
-    ).toThrow(/those links belong to no package/);
+    ).toThrow(/those links belong to no service/);
   });
 });
 
 describe('command', () => {
   const cmd = (fields: object) =>
     Object.values(
-      defineConfig({ packageRootDir: 'packages', packages: { a: { ...fields } as never } })
-        .packages,
+      defineConfig({ serviceRootDir: 'packages', services: { a: { ...fields } as never } })
+        .services,
     )[0]!.command;
 
   it('defaults to dev / watches:true / builds:true / cleans:false when omitted', () => {
@@ -730,9 +730,9 @@ describe('command', () => {
   it('getDevScript returns the configured command name, else dev', () => {
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
-        packages: { a: { command: 'start' }, b: {}, c: {} },
-      }).packages,
+        serviceRootDir: 'packages',
+        services: { a: { command: 'start' }, b: {}, c: {} },
+      }).services,
     );
     expect(getDevScript(packages[0]!)).toBe('start');
     expect(getDevScript(packages[1]!)).toBe('dev');
@@ -741,11 +741,11 @@ describe('command', () => {
 
   it('rejects the illegal combos at the type level', () => {
     // @ts-expect-error watches:true requires builds:true
-    const a = (): unknown => defineConfig({ packageRootDir: 'packages', packages: { a: {   command: ['x', { watches: true, builds: false }]  } } }); // prettier-ignore
+    const a = (): unknown => defineConfig({ serviceRootDir: 'packages', services: { a: {   command: ['x', { watches: true, builds: false }]  } } }); // prettier-ignore
     // @ts-expect-error builds:false requires watches:false
-    const b = (): unknown => defineConfig({ packageRootDir: 'packages', packages: { a: {   command: ['x', { builds: false }]  } } }); // prettier-ignore
+    const b = (): unknown => defineConfig({ serviceRootDir: 'packages', services: { a: {   command: ['x', { builds: false }]  } } }); // prettier-ignore
     // @ts-expect-error cleans:true requires builds:true
-    const c = (): unknown => defineConfig({ packageRootDir: 'packages', packages: { a: {   command: ['x', { watches: false, builds: false, cleans: true }]  } } }); // prettier-ignore
+    const c = (): unknown => defineConfig({ serviceRootDir: 'packages', services: { a: {   command: ['x', { watches: false, builds: false, cleans: true }]  } } }); // prettier-ignore
     void a;
     void b;
     void c;
@@ -753,51 +753,67 @@ describe('command', () => {
 });
 
 describe('validation', () => {
+  test('names the spelling of a renamed key: `services`, `serviceRootDir`, `defaultService`', () => {
+    const define = (opts: unknown) => () =>
+      defineConfig(opts as Parameters<typeof defineConfig>[0]);
+    expect(define({ packageRootDir: 'apps', packages: { web: {} } })).toThrow(
+      '`packages` is spelled `services`: rename it.\n' +
+        '`packageRootDir` is spelled `serviceRootDir`: rename it.',
+    );
+    expect(
+      define({
+        serviceRootDir: 'apps',
+        devReverseProxy: { defaultPackage: 'web' },
+        services: { web: { port: 3000 } },
+      }),
+    ).toThrow('`devReverseProxy.defaultPackage` is spelled `devReverseProxy.defaultService`: rename it.'); // prettier-ignore
+  });
+
   it('throws when waitFor targets a package without a healthcheck', () => {
     expect(() =>
-      defineConfig({ packageRootDir: 'packages', packages: { a: { waitFor: ['b'] }, b: {} } }),
+      defineConfig({ serviceRootDir: 'packages', services: { a: { waitFor: ['b'] }, b: {} } }),
     ).toThrow(/waitFor "b".*no healthcheck/);
   });
 
   it('throws when waitFor targets a missing package', () => {
     expect(() =>
-      defineConfig({ packageRootDir: 'packages', packages: { a: { waitFor: ['ghost' as any] } } }),
+      defineConfig({ serviceRootDir: 'packages', services: { a: { waitFor: ['ghost' as any] } } }),
     ).toThrow(/waitFor "ghost"/);
   });
 
   it('throws when a dep names a missing package, saying which category', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         // @ts-expect-error also a compile error — the load-time check is the backstop
-        packages: { a: { deps: { runtime: ['ghost'] } } },
+        services: { a: { deps: { runtime: ['ghost'] } } },
       }),
-    ).toThrow(/a has deps\.runtime "ghost" but no such package exists/);
+    ).toThrow(/a has deps\.runtime "ghost" but no such service exists/);
   });
 
   it('accepts deps that name real packages', () => {
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
-        packages: { a: { deps: { build: ['b'], runtime: ['b'] } }, b: {} },
-      }).packages,
+        serviceRootDir: 'packages',
+        services: { a: { deps: { build: ['b'], runtime: ['b'] } }, b: {} },
+      }).services,
     );
     expect(packages[0]!.deps).toEqual({ build: ['b'], runtime: ['b'] });
   });
 });
 
-describe('registry + findPackage', () => {
+describe('registry + findService', () => {
   it('populates the registry on define and looks packages up by name', () => {
-    defineConfig({ packageRootDir: 'packages', packages: { alpha: {}, beta: {} } });
+    defineConfig({ serviceRootDir: 'packages', services: { alpha: {}, beta: {} } });
     expect(getRegisteredPackages().map((p) => p.name)).toEqual(
       expect.arrayContaining(['alpha', 'beta']),
     );
-    expect(findPackage('alpha').name).toBe('alpha');
+    expect(findService('alpha').name).toBe('alpha');
   });
 
   it('throws for an unknown package', () => {
-    defineConfig({ packageRootDir: 'packages', packages: { alpha: {} } });
-    expect(() => findPackage('nope')).toThrow(/nope/);
+    defineConfig({ serviceRootDir: 'packages', services: { alpha: {} } });
+    expect(() => findService('nope')).toThrow(/nope/);
   });
 });
 
@@ -818,10 +834,10 @@ describe('port callback', () => {
     fs.writeFileSync(path.join(ws, '.env.development'), 'BACKEND_PORT=4321\n');
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: ws,
-        packages: { api: { port: ({ envs }) => Number(envs.BACKEND_PORT) } },
-      }).packages,
+        services: { api: { port: ({ envs }) => Number(envs.BACKEND_PORT) } },
+      }).services,
     );
     expect(packages[0]!.port).toBe(4321);
   });
@@ -830,10 +846,10 @@ describe('port callback', () => {
     process.env.DEVTOOIE_TEST_PORT = '5555';
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: ws,
-        packages: { api: { port: ({ envs }) => Number(envs.DEVTOOIE_TEST_PORT) } },
-      }).packages,
+        services: { api: { port: ({ envs }) => Number(envs.DEVTOOIE_TEST_PORT) } },
+      }).services,
     );
     expect(packages[0]!.port).toBe(5555);
   });
@@ -843,10 +859,10 @@ describe('port callback', () => {
     fs.writeFileSync(path.join(ws, '.env.development'), 'DEVTOOIE_TEST_PORT=6666\n');
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: ws,
-        packages: { api: { port: ({ envs }) => Number(envs.DEVTOOIE_TEST_PORT) } },
-      }).packages,
+        services: { api: { port: ({ envs }) => Number(envs.DEVTOOIE_TEST_PORT) } },
+      }).services,
     );
     expect(packages[0]!.port).toBe(5555);
   });
@@ -856,11 +872,11 @@ describe('port callback', () => {
     fs.writeFileSync(path.join(ws, '.env.development'), 'DEVTOOIE_TEST_PORT=6666\n');
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: ws,
         env: { override: ['DEVTOOIE_TEST_PORT'] },
-        packages: { api: { port: ({ envs }) => Number(envs.DEVTOOIE_TEST_PORT) } },
-      }).packages,
+        services: { api: { port: ({ envs }) => Number(envs.DEVTOOIE_TEST_PORT) } },
+      }).services,
     );
     expect(packages[0]!.port).toBe(6666);
   });
@@ -870,10 +886,10 @@ describe('port callback', () => {
     fs.writeFileSync(path.join(ws, 'packages/api/.env.development'), 'BACKEND_PORT=7777\n');
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: ws,
-        packages: { api: { port: ({ envs }) => Number(envs.BACKEND_PORT) } },
-      }).packages,
+        services: { api: { port: ({ envs }) => Number(envs.BACKEND_PORT) } },
+      }).services,
     );
     expect(packages[0]!.port).toBe(7777);
   });
@@ -885,10 +901,10 @@ describe('port callback', () => {
       fs.writeFileSync(path.join(ws, '.env.development'), 'BACKEND_PORT=4321\n');
       const packages = Object.values(
         defineConfig({
-          packageRootDir: 'packages',
+          serviceRootDir: 'packages',
           workspaceDir: ws,
-          packages: { api: { port: ({ envs }) => Number(envs.BACKEND_PORT) } },
-        }).packages,
+          services: { api: { port: ({ envs }) => Number(envs.BACKEND_PORT) } },
+        }).services,
       );
       expect(packages[0]!.port).toBe(8888);
     } finally {
@@ -900,16 +916,16 @@ describe('port callback', () => {
     fs.writeFileSync(path.join(ws, '.env.development'), 'BACKEND_PORT=4321\n');
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: ws,
-        packages: {
+        services: {
           api: {
             port: ({ envs }) => Number(envs.BACKEND_PORT),
             healthcheck: ({ port }) => `http://localhost:${port}/health`,
             urls: [({ port }) => `http://localhost:${port}/todos`],
           },
         },
-      }).packages,
+      }).services,
     );
     expect(packages[0]!.healthcheck?.url).toBe('http://localhost:4321/health');
     expect(packages[0]!.urls).toEqual(['http://localhost:4321/todos']);
@@ -919,12 +935,12 @@ describe('port callback', () => {
     fs.writeFileSync(path.join(ws, '.env.development'), 'PUBLIC_HOST=api.internal\n');
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: ws,
-        packages: {
+        services: {
           api: { port: 3001, healthcheck: ({ envs }) => `http://${envs.PUBLIC_HOST}/health` },
         },
-      }).packages,
+      }).services,
     );
     expect(packages[0]!.healthcheck?.url).toBe('http://api.internal/health');
   });
@@ -932,10 +948,10 @@ describe('port callback', () => {
   it('treats an undefined return as no port', () => {
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: ws,
-        packages: { api: { port: () => undefined } },
-      }).packages,
+        services: { api: { port: () => undefined } },
+      }).services,
     );
     expect(packages[0]!.port).toBeUndefined();
   });
@@ -944,9 +960,9 @@ describe('port callback', () => {
     fs.writeFileSync(path.join(ws, '.env.development'), 'OTHER=1\n');
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: ws,
-        packages: { api: { port: ({ envs }) => Number(envs.BACKEND_PORT) } },
+        services: { api: { port: ({ envs }) => Number(envs.BACKEND_PORT) } },
       }),
     ).toThrow(/api: port callback returned NaN[\s\S]*\.env\.development/);
   });
@@ -954,9 +970,9 @@ describe('port callback', () => {
   it('says so when no env file was found at all', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: ws,
-        packages: { api: { port: ({ envs }) => Number(envs.BACKEND_PORT) } },
+        services: { api: { port: ({ envs }) => Number(envs.BACKEND_PORT) } },
       }),
     ).toThrow(/no env files were found/);
   });
@@ -964,10 +980,10 @@ describe('port callback', () => {
   it('still accepts a literal numeric port', () => {
     const packages = Object.values(
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: ws,
-        packages: { api: { port: 3001, healthcheck: 'http://localhost:3001/health' } },
-      }).packages,
+        services: { api: { port: 3001, healthcheck: 'http://localhost:3001/health' } },
+      }).services,
     );
     expect(packages[0]!.port).toBe(3001);
     expect(packages[0]!.healthcheck?.url).toBe('http://localhost:3001/health');
@@ -977,7 +993,7 @@ describe('port callback', () => {
 describe('getWorkspaceDir', () => {
   it('reports the root package paths resolved against, not the config file directory', () => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-ws-')));
-    defineConfig({ packageRootDir: 'packages', workspaceDir: dir, packages: { svc: {} } });
+    defineConfig({ serviceRootDir: 'packages', workspaceDir: dir, services: { svc: {} } });
     try {
       // What decides whether a port holder belongs to this workspace — a config living in a
       // subdirectory can point `workspaceDir` somewhere else entirely.
@@ -989,7 +1005,7 @@ describe('getWorkspaceDir', () => {
   });
 
   it('defaults to the process cwd', () => {
-    defineConfig({ packageRootDir: 'packages', packages: { svc: {} } });
+    defineConfig({ serviceRootDir: 'packages', services: { svc: {} } });
     expect(getWorkspaceDir()).toBe(path.resolve(process.cwd()));
   });
 });
@@ -1001,62 +1017,62 @@ describe('proxy', () => {
   test('a top-level `subdomain` is an error saying to move it under `proxy`', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
-        packages: { api: { subdomain: 'api' } as unknown as Record<never, never> },
+        serviceRootDir: 'packages',
+        services: { api: { subdomain: 'api' } as unknown as Record<never, never> },
       }),
     ).toThrow(
-      /packages\.api\.subdomain: a package's subdomain goes under `proxy` — `proxy: \{ subdomain: … \}`/,
+      /services\.api\.subdomain: a service's subdomain goes under `proxy` — `proxy: \{ subdomain: … \}`/,
     );
     // Every form of it, `true` included — none may be stripped and leave the package unrouted.
     for (const subdomain of [true, ['api', 'www']]) {
       expect(() =>
         defineConfig({
-          packageRootDir: 'packages',
-          packages: { api: { subdomain } as unknown as Record<never, never> },
+          serviceRootDir: 'packages',
+          services: { api: { subdomain } as unknown as Record<never, never> },
         }),
-      ).toThrow(/packages\.api\.subdomain: .*under `proxy`/);
+      ).toThrow(/services\.api\.subdomain: .*under `proxy`/);
     }
   });
 
   test('rejects an unknown option in the block, and a block with no subdomain', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         // @ts-expect-error `proxy` takes `subdomain` only
-        packages: { api: { proxy: { subdomain: 'api', host: 'x' } } },
+        services: { api: { proxy: { subdomain: 'api', host: 'x' } } },
       }),
-    ).toThrow(/packages\.api\.proxy: Unrecognized key: "host"/);
+    ).toThrow(/services\.api\.proxy: Unrecognized key: "host"/);
     expect(() =>
       // @ts-expect-error `subdomain` is required: `proxy: {}` would route nothing
-      defineConfig({ packageRootDir: 'packages', packages: { api: { proxy: {} } } }),
-    ).toThrow(/packages\.api\.proxy\.subdomain/);
+      defineConfig({ serviceRootDir: 'packages', services: { api: { proxy: {} } } }),
+    ).toThrow(/services\.api\.proxy\.subdomain/);
     expect(() =>
-      defineConfig({ packageRootDir: 'packages', packages: { api: { proxy: { subdomain: [] } } } }),
-    ).toThrow(/packages\.api\.proxy\.subdomain/);
+      defineConfig({ serviceRootDir: 'packages', services: { api: { proxy: { subdomain: [] } } } }),
+    ).toThrow(/services\.api\.proxy\.subdomain/);
   });
 
   test('accepts a single subdomain and exposes it unchanged on the resolved package', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
-      packages: { api: { proxy: { subdomain: 'api' } } },
+      serviceRootDir: 'packages',
+      services: { api: { proxy: { subdomain: 'api' } } },
     });
-    expect(cfg.packages.api.proxy?.subdomain).toBe('api');
+    expect(cfg.services.api.proxy?.subdomain).toBe('api');
   });
 
   test('accepts an array of subdomains and exposes it unchanged on the resolved package', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
-      packages: { api: { proxy: { subdomain: ['api', 'api-legacy'] } } },
+      serviceRootDir: 'packages',
+      services: { api: { proxy: { subdomain: ['api', 'api-legacy'] } } },
     });
-    expect(cfg.packages.api.proxy?.subdomain).toEqual(['api', 'api-legacy']);
+    expect(cfg.services.api.proxy?.subdomain).toEqual(['api', 'api-legacy']);
   });
 
   test("`true` is the package's own name, resolved to that string everywhere it is read", () => {
     const seen: (string | undefined)[] = [];
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: { port: 4000 },
-      packages: {
+      services: {
         'web-api': {
           proxy: { subdomain: true },
           port: 3001,
@@ -1069,23 +1085,23 @@ describe('proxy', () => {
         },
       },
     });
-    expect(cfg.packages['web-api'].proxy?.subdomain).toBe('web-api');
+    expect(cfg.services['web-api'].proxy?.subdomain).toBe('web-api');
     expect(seen).toEqual(['web-api']);
-    expect(cfg.packages['web-api'].publicOrigin).toBe('http://web-api.localhost:4000');
-    expect(JSON.parse(JSON.stringify(cfg)).packages['web-api'].proxy?.subdomain).toBe('web-api');
+    expect(cfg.services['web-api'].publicOrigin).toBe('http://web-api.localhost:4000');
+    expect(JSON.parse(JSON.stringify(cfg)).services['web-api'].proxy?.subdomain).toBe('web-api');
   });
 
   test('`true` on a name that is not a DNS label is an error asking for an explicit one', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
-        packages: { '@scope/web': { proxy: { subdomain: true } } },
+        serviceRootDir: 'packages',
+        services: { '@scope/web': { proxy: { subdomain: true } } },
       }),
     ).toThrow(/@scope\/web[\s\S]*subdomain: true[\s\S]*DNS label[\s\S]*explicit/);
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
-        packages: { Web_API: { proxy: { subdomain: true } } },
+        serviceRootDir: 'packages',
+        services: { Web_API: { proxy: { subdomain: true } } },
       }),
     ).toThrow(/Web_API[\s\S]*subdomain: true/);
   });
@@ -1093,8 +1109,8 @@ describe('proxy', () => {
   test('`true` still collides with another package claiming the same label', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
-        packages: {
+        serviceRootDir: 'packages',
+        services: {
           api: { proxy: { subdomain: true } },
           legacy: { proxy: { subdomain: ['old', 'api'] } },
         },
@@ -1105,22 +1121,22 @@ describe('proxy', () => {
   test('rejects `false`: leave the field out for no subdomain', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
-        packages: { api: { proxy: { subdomain: false as unknown as true } } },
+        serviceRootDir: 'packages',
+        services: { api: { proxy: { subdomain: false as unknown as true } } },
       }),
     ).toThrow(/subdomain/);
   });
 
   test('leaves the resolved subdomain undefined when the package declares none', () => {
-    const cfg = defineConfig({ packageRootDir: 'packages', packages: { api: {} } });
-    expect(cfg.packages.api.proxy?.subdomain).toBeUndefined();
+    const cfg = defineConfig({ serviceRootDir: 'packages', services: { api: {} } });
+    expect(cfg.services.api.proxy?.subdomain).toBeUndefined();
   });
 
   test('rejects two packages declaring the same subdomain, naming both', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
-        packages: { api: { proxy: { subdomain: 'app' } }, web: { proxy: { subdomain: 'app' } } },
+        serviceRootDir: 'packages',
+        services: { api: { proxy: { subdomain: 'app' } }, web: { proxy: { subdomain: 'app' } } },
       }),
     ).toThrow(/api.*web.*"app"|"app".*api.*web/);
   });
@@ -1128,8 +1144,8 @@ describe('proxy', () => {
   test('rejects an alias that collides with another package subdomain', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
-        packages: {
+        serviceRootDir: 'packages',
+        services: {
           api: { proxy: { subdomain: ['api', 'app'] } },
           web: { proxy: { subdomain: 'app' } },
         },
@@ -1139,9 +1155,9 @@ describe('proxy', () => {
 
   test('hands a callback the canonical subdomain, the first entry', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       tokens: { domain: 'example.test' },
-      packages: {
+      services: {
         api: {
           proxy: { subdomain: ['api', 'api-legacy'] },
           urls: [({ subdomain, tokens }) => `https://${subdomain}.${tokens.domain}`],
@@ -1152,8 +1168,8 @@ describe('proxy', () => {
         },
       },
     });
-    expect(cfg.packages.api.urls).toEqual(['https://api.example.test']);
-    expect(cfg.packages.web.healthcheck?.url).toBe('https://web.example.test/health');
+    expect(cfg.services.api.urls).toEqual(['https://api.example.test']);
+    expect(cfg.services.web.healthcheck?.url).toBe('https://web.example.test/health');
   });
 
   // Unlike `port`, a missing subdomain is plain `undefined` — no throwing getter. The field is
@@ -1161,8 +1177,8 @@ describe('proxy', () => {
   test('hands a callback `undefined` when the package declares no subdomain', () => {
     const seen: unknown[] = [];
     const cfg = defineConfig({
-      packageRootDir: 'packages',
-      packages: {
+      serviceRootDir: 'packages',
+      services: {
         core: {
           port: 3001,
           urls: [
@@ -1175,21 +1191,21 @@ describe('proxy', () => {
       },
     });
     expect(seen).toEqual([undefined]);
-    expect(cfg.packages.core.urls).toEqual(['http://localhost:3001']);
+    expect(cfg.services.core.urls).toEqual(['http://localhost:3001']);
   });
 
   test('offers no subdomain to workspace-wide urls', () => {
     const seen: unknown[] = [];
     defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       urls: [
-        // @ts-expect-error workspace-wide links belong to no package, so there's no subdomain
+        // @ts-expect-error workspace-wide links belong to no service, so there's no subdomain
         ({ subdomain }) => {
           seen.push(subdomain);
           return 'https://example.test';
         },
       ],
-      packages: { api: { proxy: { subdomain: 'api' } } },
+      services: { api: { proxy: { subdomain: 'api' } } },
     });
     expect(seen).toEqual([undefined]);
   });
@@ -1198,8 +1214,8 @@ describe('proxy', () => {
   // root domain, and case or dots would make two spellings of one route.
   test.each(['api', 'api-v2', 'a1', '0x'])('accepts the DNS label %j', (subdomain) => {
     expect(
-      defineConfig({ packageRootDir: 'packages', packages: { api: { proxy: { subdomain } } } })
-        .packages.api.proxy?.subdomain,
+      defineConfig({ serviceRootDir: 'packages', services: { api: { proxy: { subdomain } } } })
+        .services.api.proxy?.subdomain,
     ).toBe(subdomain);
   });
 
@@ -1207,33 +1223,33 @@ describe('proxy', () => {
     'rejects %j, naming the package and the field',
     (subdomain) => {
       expect(() =>
-        defineConfig({ packageRootDir: 'packages', packages: { api: { proxy: { subdomain } } } }),
-      ).toThrow(/packages\.api\.proxy\.subdomain: .*lowercase letters, digits, and hyphens/);
+        defineConfig({ serviceRootDir: 'packages', services: { api: { proxy: { subdomain } } } }),
+      ).toThrow(/services\.api\.proxy\.subdomain: .*lowercase letters, digits, and hyphens/);
     },
   );
 
   test('rejects a label longer than the 63-character DNS limit', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
-        packages: { api: { proxy: { subdomain: 'a'.repeat(64) } } },
+        serviceRootDir: 'packages',
+        services: { api: { proxy: { subdomain: 'a'.repeat(64) } } },
       }),
-    ).toThrow(/packages\.api\.proxy\.subdomain: .*at most 63 characters/);
+    ).toThrow(/services\.api\.proxy\.subdomain: .*at most 63 characters/);
     expect(
       defineConfig({
-        packageRootDir: 'packages',
-        packages: { api: { proxy: { subdomain: 'a'.repeat(63) } } },
-      }).packages.api.proxy?.subdomain,
+        serviceRootDir: 'packages',
+        services: { api: { proxy: { subdomain: 'a'.repeat(63) } } },
+      }).services.api.proxy?.subdomain,
     ).toHaveLength(63);
   });
 
   test('validates every entry of an array, aliases included', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
-        packages: { api: { proxy: { subdomain: ['api', 'Api-Legacy'] } } },
+        serviceRootDir: 'packages',
+        services: { api: { proxy: { subdomain: ['api', 'Api-Legacy'] } } },
       }),
-    ).toThrow(/packages\.api\.proxy\.subdomain\.1: .*lowercase letters, digits, and hyphens/);
+    ).toThrow(/services\.api\.proxy\.subdomain\.1: .*lowercase letters, digits, and hyphens/);
   });
 });
 
@@ -1242,12 +1258,12 @@ describe('proxy', () => {
 describe('devReverseProxy', () => {
   const withProxy = (
     proxy: RootedOpts['devReverseProxy'],
-    packages: RootedOpts['packages'] = { web: { port: 3000, proxy: { subdomain: 'web' } } },
-  ) => defineConfig({ packageRootDir: 'packages', devReverseProxy: proxy, packages });
+    services: RootedOpts['services'] = { web: { port: 3000, proxy: { subdomain: 'web' } } },
+  ) => defineConfig({ serviceRootDir: 'packages', devReverseProxy: proxy, services });
 
   test('is absent from the resolved config when the block is omitted', () => {
     expect(
-      defineConfig({ packageRootDir: 'packages', packages: { web: {} } }).devReverseProxy,
+      defineConfig({ serviceRootDir: 'packages', services: { web: {} } }).devReverseProxy,
     ).toBeUndefined();
   });
 
@@ -1257,21 +1273,21 @@ describe('devReverseProxy', () => {
       port: 4000,
       rootDomain: 'example.test',
       rootDomains: ['example.test'],
-      defaultPackage: undefined,
+      defaultService: undefined,
       urlScheme: 'https',
     });
   });
 
   test('resolves port and rootDomain callbacks over the workspace context', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       tokens: { tld: 'test' },
       devReverseProxy: {
         port: ({ envs }) => Number(envs.DEVTOOIE_SPEC_PROXY_PORT ?? '4100'),
         rootDomain: ({ tokens }) => `example.${tokens.tld}`,
         urlScheme: 'http',
       },
-      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
+      services: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
     expect(cfg.devReverseProxy).toMatchObject({
       port: 4100,
@@ -1310,21 +1326,21 @@ describe('devReverseProxy', () => {
         port: 4000,
         rootDomain: 'example.test',
         rootDomains: ['example.test', 'example.localhost'],
-        defaultPackage: undefined,
+        defaultService: undefined,
         urlScheme: 'https',
       });
-      expect(cfg.packages.web!.publicOrigin).toBe('https://web.example.test');
+      expect(cfg.services.web!.publicOrigin).toBe('https://web.example.test');
     });
 
     test('accepts an array from the callback', () => {
       const cfg = defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         tokens: { tld: 'test' },
         devReverseProxy: {
           port: 4000,
           rootDomain: ({ tokens }) => [`example.${tokens.tld}`, 'example.localhost'],
         },
-        packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
+        services: { web: { port: 3000, proxy: { subdomain: 'web' } } },
       });
       expect(cfg.devReverseProxy).toMatchObject({
         rootDomain: 'example.test',
@@ -1335,11 +1351,11 @@ describe('devReverseProxy', () => {
     test('derives the urlScheme default from the canonical entry only', () => {
       expect(withProxy({ port: 4000, rootDomain: ['localhost', 'example.test'] })).toMatchObject({
         devReverseProxy: { urlScheme: 'http' },
-        packages: { web: { publicOrigin: 'http://web.localhost:4000' } },
+        services: { web: { publicOrigin: 'http://web.localhost:4000' } },
       });
       expect(withProxy({ port: 4000, rootDomain: ['example.test', 'localhost'] })).toMatchObject({
         devReverseProxy: { urlScheme: 'https' },
-        packages: { web: { publicOrigin: 'https://web.example.test' } },
+        services: { web: { publicOrigin: 'https://web.example.test' } },
       });
     });
 
@@ -1394,24 +1410,24 @@ describe('devReverseProxy', () => {
     ).toThrow(/Unrecognized key: "enabled"/);
   });
 
-  test('rejects a defaultPackage that names no declared package', () => {
+  test('rejects a defaultService that names no declared service', () => {
     expect(() =>
       defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         // @ts-expect-error also a compile error — the load-time check is the backstop
-        devReverseProxy: { port: 4000, rootDomain: 'example.test', defaultPackage: 'ghost' },
-        packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
+        devReverseProxy: { port: 4000, rootDomain: 'example.test', defaultService: 'ghost' },
+        services: { web: { port: 3000, proxy: { subdomain: 'web' } } },
       }),
-    ).toThrow(/devReverseProxy\.defaultPackage "ghost" names no declared package/);
+    ).toThrow(/devReverseProxy\.defaultService "ghost" names no declared service/);
   });
 
-  test('rejects a defaultPackage with no port', () => {
+  test('rejects a defaultService with no port', () => {
     expect(() =>
       withProxy(
-        { port: 4000, rootDomain: 'example.test', defaultPackage: 'lib' },
+        { port: 4000, rootDomain: 'example.test', defaultService: 'lib' },
         { web: { port: 3000, proxy: { subdomain: 'web' } }, lib: {} },
       ),
-    ).toThrow(/devReverseProxy\.defaultPackage "lib" has no `port`/);
+    ).toThrow(/devReverseProxy\.defaultService "lib" has no `port`/);
   });
 
   test('rejects a package that declares a subdomain but no port', () => {
@@ -1426,9 +1442,9 @@ describe('devReverseProxy', () => {
   test('leaves a subdomain-without-port package alone when there is no proxy block', () => {
     expect(
       defineConfig({
-        packageRootDir: 'packages',
-        packages: { docs: { proxy: { subdomain: 'docs' } } },
-      }).packages.docs.port,
+        serviceRootDir: 'packages',
+        services: { docs: { proxy: { subdomain: 'docs' } } },
+      }).services.docs.port,
     ).toBe(undefined);
   });
 
@@ -1440,68 +1456,68 @@ describe('devReverseProxy', () => {
 
   test('adds no footer link of its own: urls hold only what the config lists', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
-      devReverseProxy: { port: 4000, rootDomain: 'example.test', defaultPackage: 'web' },
-      packages: {
+      serviceRootDir: 'packages',
+      devReverseProxy: { port: 4000, rootDomain: 'example.test', defaultService: 'web' },
+      services: {
         web: { port: 3000, proxy: { subdomain: ['web', 'www'] }, urls: [({ port }) => `http://localhost:${port}`] }, // prettier-ignore
         api: { port: 3001, proxy: { subdomain: 'api' } },
         worker: { port: 3002 },
         lib: {},
       },
     });
-    expect(cfg.packages.web.urls).toEqual(['http://localhost:3000']);
-    expect(cfg.packages.api.urls).toBeUndefined();
-    expect(cfg.packages.worker.urls).toBeUndefined();
-    expect(cfg.packages.lib.urls).toBeUndefined();
+    expect(cfg.services.web.urls).toEqual(['http://localhost:3000']);
+    expect(cfg.services.api.urls).toBeUndefined();
+    expect(cfg.services.worker.urls).toBeUndefined();
+    expect(cfg.services.lib.urls).toBeUndefined();
     // The public origin is still there for a `''` entry (and PUBLIC_ORIGIN) to build on.
-    expect(cfg.packages.web.publicOrigin).toBe('https://web.example.test');
+    expect(cfg.services.web.publicOrigin).toBe('https://web.example.test');
   });
 
   test('uses urlScheme for the public origin (http carries the proxy port)', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'example.test', urlScheme: 'http' },
-      packages: { web: { port: 3000, proxy: { subdomain: 'web' }, urls: ['/'] } },
+      services: { web: { port: 3000, proxy: { subdomain: 'web' }, urls: ['/'] } },
     });
-    expect(cfg.packages.web.publicOrigin).toBe('http://web.example.test:4000');
-    expect(cfg.packages.web.urls).toEqual(['http://web.example.test:4000']);
+    expect(cfg.services.web.publicOrigin).toBe('http://web.example.test:4000');
+    expect(cfg.services.web.urls).toEqual(['http://web.example.test:4000']);
   });
 
   test('exposes the public origin of a routable package on the resolved config, and nothing for the rest', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'example.test' },
-      packages: {
+      services: {
         web: { port: 3000, proxy: { subdomain: ['web', 'www'] } },
         worker: { port: 3002 },
       },
     });
-    expect(cfg.packages.web.publicOrigin).toBe('https://web.example.test');
-    expect(cfg.packages.worker.publicOrigin).toBeUndefined();
+    expect(cfg.services.web.publicOrigin).toBe('https://web.example.test');
+    expect(cfg.services.worker.publicOrigin).toBeUndefined();
     const noProxy = defineConfig({
-      packageRootDir: 'packages',
-      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
+      serviceRootDir: 'packages',
+      services: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
-    expect(noProxy.packages.web.publicOrigin).toBeUndefined();
+    expect(noProxy.services.web.publicOrigin).toBeUndefined();
   });
 
-  test('gives a defaultPackage with no proxy the bare root as its public origin', () => {
+  test('gives a defaultService with no proxy the bare root as its public origin', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: {
         port: 4000,
         rootDomain: ['example.test', 'example.localhost'],
-        defaultPackage: 'landing',
+        defaultService: 'landing',
       },
-      packages: { landing: { port: 3000, urls: ['', '/pricing'] }, worker: { port: 3001 } },
+      services: { landing: { port: 3000, urls: ['', '/pricing'] }, worker: { port: 3001 } },
     });
-    expect(cfg.packages.landing.publicOrigin).toBe('https://example.test');
-    expect(cfg.packages.landing.urls).toEqual([
+    expect(cfg.services.landing.publicOrigin).toBe('https://example.test');
+    expect(cfg.services.landing.urls).toEqual([
       'https://example.test',
       'https://example.test/pricing',
     ]);
-    expect(cfg.packages.worker.publicOrigin).toBeUndefined();
-    expect(packageEnvLayer(cfg.packages.landing, { cwd: os.tmpdir() })).toMatchObject({
+    expect(cfg.services.worker.publicOrigin).toBeUndefined();
+    expect(packageEnvLayer(cfg.services.landing, { cwd: os.tmpdir() })).toMatchObject({
       PORT: '3000',
       PUBLIC_ORIGIN: 'https://example.test',
     });
@@ -1509,20 +1525,20 @@ describe('devReverseProxy', () => {
 
   test('carries the proxy port on the bare-root origin under http', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
-      devReverseProxy: { port: 4000, defaultPackage: 'landing' },
-      packages: { landing: { port: 3000 } },
+      serviceRootDir: 'packages',
+      devReverseProxy: { port: 4000, defaultService: 'landing' },
+      services: { landing: { port: 3000 } },
     });
-    expect(cfg.packages.landing.publicOrigin).toBe('http://localhost:4000');
+    expect(cfg.services.landing.publicOrigin).toBe('http://localhost:4000');
   });
 
-  test('keeps the subdomain origin for a defaultPackage that declares a subdomain', () => {
+  test('keeps the subdomain origin for a defaultService that declares a subdomain', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
-      devReverseProxy: { port: 4000, rootDomain: 'example.test', defaultPackage: 'web' },
-      packages: { web: { port: 3000, proxy: { subdomain: 'www' } } },
+      serviceRootDir: 'packages',
+      devReverseProxy: { port: 4000, rootDomain: 'example.test', defaultService: 'web' },
+      services: { web: { port: 3000, proxy: { subdomain: 'www' } } },
     });
-    expect(cfg.packages.web.publicOrigin).toBe('https://www.example.test');
+    expect(cfg.services.web.publicOrigin).toBe('https://www.example.test');
   });
 
   test('injects PUBLIC_ORIGIN next to PORT, and an explicit .env PUBLIC_ORIGIN wins', () => {
@@ -1532,20 +1548,20 @@ describe('devReverseProxy', () => {
       fs.mkdirSync(path.join(dir, 'packages/api'), { recursive: true });
       fs.writeFileSync(path.join(dir, 'packages/api/.env'), 'PUBLIC_ORIGIN=https://api.override\n');
       const cfg = defineConfig({
-        packageRootDir: 'packages',
+        serviceRootDir: 'packages',
         workspaceDir: dir,
         devReverseProxy: { port: 4000, rootDomain: 'example.test' },
-        packages: {
+        services: {
           web: { port: 3000, proxy: { subdomain: 'web' } },
           api: { port: 3001, proxy: { subdomain: 'api' } },
         },
       });
-      const layer = (pkg: AnyPackageConfig) => packageEnvLayer(pkg, { cwd: dir });
-      expect(layer(cfg.packages.web)).toMatchObject({
+      const layer = (pkg: AnyServiceConfig) => packageEnvLayer(pkg, { cwd: dir });
+      expect(layer(cfg.services.web)).toMatchObject({
         PORT: '3000',
         PUBLIC_ORIGIN: 'https://web.example.test',
       });
-      expect(layer(cfg.packages.api)).toMatchObject({
+      expect(layer(cfg.services.api)).toMatchObject({
         PORT: '3001',
         PUBLIC_ORIGIN: 'https://api.override',
       });
@@ -1561,21 +1577,21 @@ describe('devReverseProxy', () => {
 describe('public URL port', () => {
   test('is the proxy port under http', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
-      devReverseProxy: { port: 4000, rootDomain: 'localhost', defaultPackage: 'web' },
-      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
+      serviceRootDir: 'packages',
+      devReverseProxy: { port: 4000, rootDomain: 'localhost', defaultService: 'web' },
+      services: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
-    expect(cfg.packages.web.publicOrigin).toBe('http://web.localhost:4000');
-    expect(cfg.packages.web.urls).toBeUndefined();
+    expect(cfg.services.web.publicOrigin).toBe('http://web.localhost:4000');
+    expect(cfg.services.web.urls).toBeUndefined();
   });
 
   test('is absent under https', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'localhost', urlScheme: 'https' },
-      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
+      services: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
-    expect(cfg.packages.web.publicOrigin).toBe('https://web.localhost');
+    expect(cfg.services.web.publicOrigin).toBe('https://web.localhost');
   });
 });
 
@@ -1585,46 +1601,46 @@ describe('public URL port', () => {
 describe('devReverseProxy defaults from rootDomain', () => {
   test('rootDomain defaults to localhost, with http and the proxy port', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: { port: 4000 },
-      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
+      services: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
     expect(cfg.devReverseProxy).toEqual({
       port: 4000,
       rootDomain: 'localhost',
       rootDomains: ['localhost'],
-      defaultPackage: undefined,
+      defaultService: undefined,
       urlScheme: 'http',
     });
-    expect(cfg.packages.web.publicOrigin).toBe('http://web.localhost:4000');
+    expect(cfg.services.web.publicOrigin).toBe('http://web.localhost:4000');
   });
 
   test('a custom rootDomain implies https with no port', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
-      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
+      services: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
     expect(cfg.devReverseProxy).toMatchObject({ urlScheme: 'https' });
     expect(cfg.devReverseProxy).not.toHaveProperty('urlPort');
-    expect(cfg.packages.web.publicOrigin).toBe('https://web.myproject.example.test');
+    expect(cfg.services.web.publicOrigin).toBe('https://web.myproject.example.test');
   });
 
   test('an explicit urlScheme overrides the root-derived default', () => {
     const plainTerminator = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test', urlScheme: 'http' },
-      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
+      services: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
-    expect(plainTerminator.packages.web.publicOrigin).toBe(
+    expect(plainTerminator.services.web.publicOrigin).toBe(
       'http://web.myproject.example.test:4000',
     );
     const tlsOnLocalhost = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: { port: 4000, urlScheme: 'https' },
-      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
+      services: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
-    expect(tlsOnLocalhost.packages.web.publicOrigin).toBe('https://web.localhost');
+    expect(tlsOnLocalhost.services.web.publicOrigin).toBe('https://web.localhost');
   });
 });
 
@@ -1633,10 +1649,10 @@ describe('devReverseProxy defaults from rootDomain', () => {
 describe('path urls', () => {
   test('resolve against http://localhost:<port> without a proxy', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
-      packages: { api: { port: 3001, urls: ['/todos', { label: 'health', url: '/health' }] } },
+      serviceRootDir: 'packages',
+      services: { api: { port: 3001, urls: ['/todos', { label: 'health', url: '/health' }] } },
     });
-    expect(cfg.packages.api.urls).toEqual([
+    expect(cfg.services.api.urls).toEqual([
       'http://localhost:3001/todos',
       { label: 'health', url: 'http://localhost:3001/health' },
     ]);
@@ -1644,9 +1660,9 @@ describe('path urls', () => {
 
   test('resolve against the public origin under the proxy, and only that', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
-      packages: {
+      services: {
         api: {
           port: 3001,
           proxy: { subdomain: 'api' },
@@ -1654,7 +1670,7 @@ describe('path urls', () => {
         },
       },
     });
-    expect(cfg.packages.api.urls).toEqual([
+    expect(cfg.services.api.urls).toEqual([
       'https://api.myproject.example.test/todos',
       [
         { label: 'a', url: 'https://api.myproject.example.test/a' },
@@ -1665,42 +1681,42 @@ describe('path urls', () => {
 
   test('fall back to localhost for a package the proxy does not route', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: { port: 4000 },
-      packages: { worker: { port: 3002, urls: ['/metrics'] } },
+      services: { worker: { port: 3002, urls: ['/metrics'] } },
     });
-    expect(cfg.packages.worker.urls).toEqual(['http://localhost:3002/metrics']);
+    expect(cfg.services.worker.urls).toEqual(['http://localhost:3002/metrics']);
   });
 
   test('a callback may return a path too', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
-      packages: { api: { port: 3001, urls: [({ tokens }) => `/${tokens.section ?? 'todos'}`] } },
+      serviceRootDir: 'packages',
+      services: { api: { port: 3001, urls: [({ tokens }) => `/${tokens.section ?? 'todos'}`] } },
     });
-    expect(cfg.packages.api.urls).toEqual(['http://localhost:3001/todos']);
+    expect(cfg.services.api.urls).toEqual(['http://localhost:3001/todos']);
   });
 
   test('leave absolute urls alone', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: { port: 4000 },
-      packages: {
+      services: {
         api: { port: 3001, proxy: { subdomain: 'api' }, urls: ['https://status.example.test'] },
       },
     });
-    expect(cfg.packages.api.urls).toEqual(['https://status.example.test']);
+    expect(cfg.services.api.urls).toEqual(['https://status.example.test']);
   });
 
   test('reject a path on a package with no port to base it on, naming both', () => {
     expect(() =>
-      defineConfig({ packageRootDir: 'packages', packages: { docs: { urls: ['/index.html'] } } }),
-    ).toThrow(/docs urls: "\/index\.html" is a path, but this package declares no `port`/);
+      defineConfig({ serviceRootDir: 'packages', services: { docs: { urls: ['/index.html'] } } }),
+    ).toThrow(/docs urls: "\/index\.html" is a path, but this service declares no `port`/);
   });
 
   test('reject a path in the workspace-wide urls', () => {
     expect(() =>
-      defineConfig({ packageRootDir: 'packages', urls: ['/status'], packages: { api: {} } }),
-    ).toThrow(/top-level url: "\/status" is a path, but workspace-wide urls belong to no package/);
+      defineConfig({ serviceRootDir: 'packages', urls: ['/status'], services: { api: {} } }),
+    ).toThrow(/top-level url: "\/status" is a path, but workspace-wide urls belong to no service/);
   });
 });
 
@@ -1710,40 +1726,40 @@ describe('path urls', () => {
 describe('path healthchecks', () => {
   test('resolve against http://localhost:<port>, bare and in the object form', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
-      packages: {
+      serviceRootDir: 'packages',
+      services: {
         api: { port: 3001, healthcheck: '/health' },
         web: { port: 3000, healthcheck: { url: '/', timeout: 5000 } },
       },
     });
-    expect(cfg.packages.api.healthcheck).toEqual({ url: 'http://localhost:3001/health', timeout: 1500 }); // prettier-ignore
-    expect(cfg.packages.web.healthcheck).toEqual({ url: 'http://localhost:3000', timeout: 5000 });
+    expect(cfg.services.api.healthcheck).toEqual({ url: 'http://localhost:3001/health', timeout: 1500 }); // prettier-ignore
+    expect(cfg.services.web.healthcheck).toEqual({ url: 'http://localhost:3000', timeout: 5000 });
   });
 
   test('ignore the public origin even for a package the proxy routes', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
-      packages: {
+      services: {
         api: { port: 3001, proxy: { subdomain: 'api' }, healthcheck: '/health', urls: ['/todos'] },
       },
     });
-    expect(cfg.packages.api.healthcheck?.url).toBe('http://localhost:3001/health');
-    expect(cfg.packages.api.urls).toContain('https://api.myproject.example.test/todos');
+    expect(cfg.services.api.healthcheck?.url).toBe('http://localhost:3001/health');
+    expect(cfg.services.api.urls).toContain('https://api.myproject.example.test/todos');
   });
 
   test('a callback may return a path too', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
-      packages: { api: { port: 3001, healthcheck: () => '/ready' } },
+      serviceRootDir: 'packages',
+      services: { api: { port: 3001, healthcheck: () => '/ready' } },
     });
-    expect(cfg.packages.api.healthcheck?.url).toBe('http://localhost:3001/ready');
+    expect(cfg.services.api.healthcheck?.url).toBe('http://localhost:3001/ready');
   });
 
   test('reject a path on a package with no port, naming both', () => {
     expect(() =>
-      defineConfig({ packageRootDir: 'packages', packages: { docs: { healthcheck: '/' } } }),
-    ).toThrow(/docs healthcheck: "\/" is a path, but this package declares no `port`/);
+      defineConfig({ serviceRootDir: 'packages', services: { docs: { healthcheck: '/' } } }),
+    ).toThrow(/docs healthcheck: "\/" is a path, but this service declares no `port`/);
   });
 });
 
@@ -1751,9 +1767,9 @@ describe('path healthchecks', () => {
 describe('paths without a leading slash', () => {
   test('urls: `todos` is `/todos`', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
-      packages: {
+      services: {
         api: {
           port: 3001,
           proxy: { subdomain: 'api' },
@@ -1762,44 +1778,44 @@ describe('paths without a leading slash', () => {
         worker: { port: 3002, urls: ['metrics'] },
       },
     });
-    expect(cfg.packages.api.urls).toEqual([
+    expect(cfg.services.api.urls).toEqual([
       'https://api.myproject.example.test/todos',
       { label: 'x', url: 'https://api.myproject.example.test/a/b?c=1' },
     ]);
-    expect(cfg.packages.worker.urls).toEqual(['http://localhost:3002/metrics']);
+    expect(cfg.services.worker.urls).toEqual(['http://localhost:3002/metrics']);
   });
 
   test("'' is the origin itself, with no trailing slash", () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
-      packages: {
+      services: {
         api: { port: 3001, proxy: { subdomain: 'api' }, urls: [''], healthcheck: '' },
         worker: { port: 3002, urls: [{ label: 'root', url: '' }] },
       },
     });
-    expect(cfg.packages.api.urls).toEqual(['https://api.myproject.example.test']);
-    expect(cfg.packages.api.healthcheck?.url).toBe('http://localhost:3001');
-    expect(cfg.packages.worker.urls).toEqual([{ label: 'root', url: 'http://localhost:3002' }]);
+    expect(cfg.services.api.urls).toEqual(['https://api.myproject.example.test']);
+    expect(cfg.services.api.healthcheck?.url).toBe('http://localhost:3001');
+    expect(cfg.services.worker.urls).toEqual([{ label: 'root', url: 'http://localhost:3002' }]);
   });
 
   test('healthcheck: `health` is `/health`', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
-      packages: { api: { port: 3001, healthcheck: 'health' } },
+      serviceRootDir: 'packages',
+      services: { api: { port: 3001, healthcheck: 'health' } },
     });
-    expect(cfg.packages.api.healthcheck?.url).toBe('http://localhost:3001/health');
+    expect(cfg.services.api.healthcheck?.url).toBe('http://localhost:3001/health');
   });
 
   test('anything with a scheme is left alone', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
-      packages: {
+      serviceRootDir: 'packages',
+      services: {
         api: { port: 3001, healthcheck: 'HTTP://127.0.0.1:3001/health', urls: ['ws://localhost:3001/socket'] }, // prettier-ignore
       },
     });
-    expect(cfg.packages.api.healthcheck?.url).toBe('HTTP://127.0.0.1:3001/health');
-    expect(cfg.packages.api.urls).toEqual(['ws://localhost:3001/socket']);
+    expect(cfg.services.api.healthcheck?.url).toBe('HTTP://127.0.0.1:3001/health');
+    expect(cfg.services.api.urls).toEqual(['ws://localhost:3001/socket']);
   });
 });
 
@@ -1807,9 +1823,9 @@ describe('paths without a leading slash', () => {
 describe('paths with a trailing slash', () => {
   test('urls: `/todos/` is `/todos`, with or without the proxy', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
-      packages: {
+      services: {
         api: {
           port: 3001,
           proxy: { subdomain: 'api' },
@@ -1818,11 +1834,11 @@ describe('paths with a trailing slash', () => {
         worker: { port: 3002, urls: ['/metrics/', ['jobs/', '/queues//']] },
       },
     });
-    expect(cfg.packages.api.urls).toEqual([
+    expect(cfg.services.api.urls).toEqual([
       'https://api.myproject.example.test/todos',
       { label: 'x', url: 'https://api.myproject.example.test/a/b' },
     ]);
-    expect(cfg.packages.worker.urls).toEqual([
+    expect(cfg.services.worker.urls).toEqual([
       'http://localhost:3002/metrics',
       ['http://localhost:3002/jobs', 'http://localhost:3002/queues'],
     ]);
@@ -1830,39 +1846,39 @@ describe('paths with a trailing slash', () => {
 
   test("urls: `/` is `''`, the origin itself", () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'myproject.example.test' },
-      packages: {
+      services: {
         api: { port: 3001, proxy: { subdomain: 'api' }, urls: ['/'] },
         worker: { port: 3002, urls: ['/', '//'] },
       },
     });
-    expect(cfg.packages.api.urls).toEqual(['https://api.myproject.example.test']);
-    expect(cfg.packages.worker.urls).toEqual(['http://localhost:3002', 'http://localhost:3002']);
+    expect(cfg.services.api.urls).toEqual(['https://api.myproject.example.test']);
+    expect(cfg.services.worker.urls).toEqual(['http://localhost:3002', 'http://localhost:3002']);
   });
 
   test('healthcheck: `/health/` is `/health`, and `/` the origin', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
-      packages: {
+      serviceRootDir: 'packages',
+      services: {
         api: { port: 3001, healthcheck: '/health/' },
         web: { port: 3000, healthcheck: '/' },
         worker: { port: 3002, healthcheck: () => 'ready/' },
       },
     });
-    expect(cfg.packages.api.healthcheck?.url).toBe('http://localhost:3001/health');
-    expect(cfg.packages.web.healthcheck?.url).toBe('http://localhost:3000');
-    expect(cfg.packages.worker.healthcheck?.url).toBe('http://localhost:3002/ready');
+    expect(cfg.services.api.healthcheck?.url).toBe('http://localhost:3001/health');
+    expect(cfg.services.web.healthcheck?.url).toBe('http://localhost:3000');
+    expect(cfg.services.worker.healthcheck?.url).toBe('http://localhost:3002/ready');
   });
 
   test('only the path loses its slash, never a query or fragment', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
-      packages: {
+      serviceRootDir: 'packages',
+      services: {
         api: { port: 3001, urls: ['/a/b/?c=1', '/login?next=/', '/docs/#intro/', '/?tab=/'] },
       },
     });
-    expect(cfg.packages.api.urls).toEqual([
+    expect(cfg.services.api.urls).toEqual([
       'http://localhost:3001/a/b?c=1',
       'http://localhost:3001/login?next=/',
       'http://localhost:3001/docs#intro/',
@@ -1872,13 +1888,13 @@ describe('paths with a trailing slash', () => {
 
   test('an absolute url keeps its trailing slash', () => {
     const cfg = defineConfig({
-      packageRootDir: 'packages',
-      packages: {
+      serviceRootDir: 'packages',
+      services: {
         api: { port: 3001, healthcheck: 'http://127.0.0.1:3001/health/', urls: ['https://status.example.test/'] }, // prettier-ignore
       },
     });
-    expect(cfg.packages.api.healthcheck?.url).toBe('http://127.0.0.1:3001/health/');
-    expect(cfg.packages.api.urls).toEqual(['https://status.example.test/']);
+    expect(cfg.services.api.healthcheck?.url).toBe('http://127.0.0.1:3001/health/');
+    expect(cfg.services.api.urls).toEqual(['https://status.example.test/']);
   });
 });
 
@@ -1892,14 +1908,14 @@ describe('infra', () => {
   const withInfra = (infra: unknown) =>
     defineConfig({
       workspaceDir: ws,
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       infra: infra as RootedOpts['infra'],
-      packages: { web: {} },
+      services: { web: {} },
     });
 
   test('is absent from the resolved config when the block is omitted', () => {
     expect(
-      defineConfig({ packageRootDir: 'packages', packages: { web: {} } }).infra,
+      defineConfig({ serviceRootDir: 'packages', services: { web: {} } }).infra,
     ).toBeUndefined();
   });
 
@@ -1972,7 +1988,7 @@ describe('infra', () => {
     const seen: unknown[] = [];
     const cfg = defineConfig({
       workspaceDir: ws,
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       tokens: { region: 'eu' },
       infra: {
         'docker-compose': {
@@ -1989,7 +2005,7 @@ describe('infra', () => {
           },
         },
       },
-      packages: { web: {} },
+      services: { web: {} },
     });
     const services = cfg.infra!['docker-compose']!.services;
     expect(services.db!.enabled).toBe(true);
@@ -2023,14 +2039,14 @@ describe('infra service port and proxy', () => {
   >;
   const withServices = (
     services: Services,
-    opts: Partial<Pick<RootedOpts, 'devReverseProxy' | 'packages'>> = {},
+    opts: Partial<Pick<RootedOpts, 'devReverseProxy' | 'services'>> = {},
   ) =>
     defineConfig({
       workspaceDir: ws,
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       devReverseProxy: opts.devReverseProxy,
       infra: { 'docker-compose': { services } },
-      packages: opts.packages ?? { web: { port: 3000, proxy: { subdomain: 'web' } } },
+      services: opts.services ?? { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
   const proxied = { devReverseProxy: { port: 4000, rootDomain: 'example.test' } };
 
@@ -2039,7 +2055,7 @@ describe('infra service port and proxy', () => {
     const seen: unknown[] = [];
     const cfg = defineConfig({
       workspaceDir: ws,
-      packageRootDir: 'packages',
+      serviceRootDir: 'packages',
       tokens: { tld: 'test' },
       devReverseProxy: { port: 4000, rootDomain: 'example.test' },
       infra: {
@@ -2057,7 +2073,7 @@ describe('infra service port and proxy', () => {
           },
         },
       },
-      packages: { web: { port: 3000, proxy: { subdomain: 'web' } } },
+      services: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
     const services = cfg.infra!['docker-compose']!.services;
     expect(seen).toEqual(['test']);
@@ -2094,6 +2110,75 @@ describe('infra service port and proxy', () => {
     expect(cfg.infra!['docker-compose']!.services.mail!.publicOrigin).toBe(
       'http://mail.localhost:4000',
     );
+  });
+
+  test('resolves `urls` like a package: paths on the public origin, labels and absolute urls kept', () => {
+    const services = withServices(
+      {
+        mail: { port: 8025, proxy: { subdomain: 'mail' }, urls: ['', { label: 'inbox', url: '/inbox' }] }, // prettier-ignore
+        store: { port: 9000, urls: [['https://console.example.test', '/minio']] },
+        db: { port: 5432 },
+      },
+      proxied,
+    ).infra!['docker-compose']!.services;
+    expect(services.mail!.urls).toEqual([
+      'https://mail.example.test',
+      { label: 'inbox', url: 'https://mail.example.test/inbox' },
+    ]);
+    // Not routed by the proxy: a path is based on the service's port on loopback.
+    expect(services.store!.urls).toEqual([
+      ['https://console.example.test', 'http://localhost:9000/minio'],
+    ]);
+    // No `urls`, no links: devtooie adds none of its own.
+    expect(services.db!.urls).toBeUndefined();
+  });
+
+  test("a `urls` callback gets the workspace context with the service's port and subdomain", () => {
+    const seen: unknown[] = [];
+    withServices(
+      {
+        mail: {
+          port: 8025,
+          proxy: { subdomain: ['mail', 'smtp'] },
+          urls: [
+            (ctx) => {
+              seen.push({ port: ctx.port, subdomain: ctx.subdomain, mode: ctx.envs.DEVTOOIE_MODE });
+              return '/';
+            },
+          ],
+        },
+      },
+      proxied,
+    );
+    expect(seen).toEqual([{ port: 8025, subdomain: 'mail', mode: 'development' }]);
+  });
+
+  test("rejects a path in a service's `urls` when it has no port, naming the service", () => {
+    expect(() => withServices({ mail: { urls: ['/'] } })).toThrow(
+      /infra service "mail" urls: "\/" is a path, but this service declares no `port`/,
+    );
+    expect(() =>
+      withServices({ mail: { urls: [({ port }) => `http://localhost:${port}`] } }),
+    ).toThrow(
+      /infra service "mail" urls: a callback read `port`, but this service declares no `port`/,
+    );
+  });
+
+  test("doesn't resolve a disabled service's `urls`", () => {
+    let calls = 0;
+    const mail = withServices({
+      mail: {
+        enabled: false,
+        urls: [
+          () => {
+            calls += 1;
+            return '/';
+          },
+        ],
+      },
+    }).infra!['docker-compose']!.services.mail!;
+    expect(calls).toBe(0);
+    expect(mail.urls).toBeUndefined();
   });
 
   test("a service switched off for the mode gets no public origin, and its port callback doesn't run", () => {
@@ -2152,11 +2237,11 @@ describe('infra service port and proxy', () => {
     for (const opts of [{}, proxied]) {
       expect(() =>
         withServices({ mail: { port: 3000, proxy: { subdomain: 'mail' } } }, opts),
-      ).toThrow(/infra service "mail" has port 3000, which is also the package web's/);
+      ).toThrow(/infra service "mail" has port 3000, which is also the service web's/);
     }
     // A service with no proxy still claims its port on the host.
     expect(() => withServices({ db: { port: 3000 } })).toThrow(
-      /infra service "db" has port 3000, which is also the package web's/,
+      /infra service "db" has port 3000, which is also the service web's/,
     );
   });
 
@@ -2230,19 +2315,19 @@ describe('env vars', () => {
     delete process.env.DEVTOOIE_TEST_AMBIENT;
   });
 
-  const base = () => ({ packageRootDir: 'packages' as const, workspaceDir: ws });
+  const base = () => ({ serviceRootDir: 'packages' as const, workspaceDir: ws });
 
   test('stores a literal env.vars record on the resolved config', () => {
     const cfg = defineConfig({
       ...base(),
       env: { vars: { DATA_DIR: '/srv/data' } },
-      packages: { api: {} },
+      services: { api: {} },
     });
     expect(cfg.envVars).toEqual({ DATA_DIR: '/srv/data' });
   });
 
   test('is undefined on a config that declares none', () => {
-    const cfg = defineConfig({ ...base(), env: { override: true }, packages: { api: {} } });
+    const cfg = defineConfig({ ...base(), env: { override: true }, services: { api: {} } });
     expect(cfg.envVars).toBeUndefined();
   });
 
@@ -2257,7 +2342,7 @@ describe('env vars', () => {
           BUCKET: `${tokens.tier}-${String(envs.REGION)}-${String(envs.DEVTOOIE_TEST_AMBIENT)}`,
         }),
       },
-      packages: { api: {} },
+      services: { api: {} },
     });
     expect(cfg.envVars).toEqual({ BUCKET: 'dev-eu-from-shell' });
   });
@@ -2267,7 +2352,7 @@ describe('env vars', () => {
     const cfg = defineConfig({
       ...base(),
       env: ({ envs }) => ({ BUCKET: `dev-${String(envs.REGION)}` }),
-      packages: { api: {} },
+      services: { api: {} },
     });
     expect(cfg.envVars).toEqual({ BUCKET: 'dev-eu' });
     expect(cfg.envOverride).toBeUndefined();
@@ -2277,7 +2362,7 @@ describe('env vars', () => {
     const cfg = defineConfig({
       ...base(),
       env: { vars: { DATA_DIR: '/srv/data' }, override: ['NODE_OPTIONS'] },
-      packages: { api: {} },
+      services: { api: {} },
     });
     expect(cfg.envOverride).toEqual(['NODE_OPTIONS']);
   });
@@ -2286,7 +2371,7 @@ describe('env vars', () => {
     const cfg = defineConfig({
       ...base(),
       env: ({ envs }) => ({ KEPT: 'yes', DROPPED: envs.DEVTOOIE_SPEC_NO_SUCH_VAR }),
-      packages: { api: {} },
+      services: { api: {} },
     });
     expect(cfg.envVars).toEqual({ KEPT: 'yes' });
   });
@@ -2298,7 +2383,7 @@ describe('env vars', () => {
         ...base(),
         // @ts-expect-error - a variable's value must be a string (or undefined).
         env: ({ envs }) => ({ DB_PORT: Number(envs.DB_PORT) }),
-        packages: { api: {} },
+        services: { api: {} },
       }),
     ).toThrow(
       /env\.vars: DB_PORT is 5432 \(a number\) — an environment variable must be a string[\s\S]*env files loaded: .*\.env\.development/,
@@ -2311,7 +2396,7 @@ describe('env vars', () => {
         ...base(),
         // @ts-expect-error - a variable's value must be a string (or undefined).
         env: { vars: { DB_PORT: 5432 } },
-        packages: { api: {} },
+        services: { api: {} },
       }),
     ).toThrow(
       /env\.vars: DB_PORT is 5432 \(a number\) — an environment variable must be a string$/,
@@ -2324,7 +2409,7 @@ describe('env vars', () => {
         ...base(),
         // @ts-expect-error - `vars` is a record of variables or a callback.
         env: { vars: 'DATA_DIR=/srv/data' },
-        packages: { api: {} },
+        services: { api: {} },
       }),
     ).toThrow(/env\.vars: env\.vars must be an object of variables or a function/);
   });
@@ -2335,7 +2420,7 @@ describe('env vars', () => {
         ...base(),
         // @ts-expect-error - callbacks are synchronous.
         env: async () => ({ DATA_DIR: '/srv/data' }),
-        packages: { api: {} },
+        services: { api: {} },
       }),
     ).toThrow(
       /env\.vars: callback returned \[object Promise\] \(expected an object of variables\)/,
@@ -2347,7 +2432,7 @@ describe('env vars', () => {
       defineConfig({
         ...base(),
         env: { vars: { 'DATA DIR': '/srv/data' } },
-        packages: { api: {} },
+        services: { api: {} },
       }),
     ).toThrow(/env\.vars: "DATA DIR" is not a valid environment variable name/);
   });
@@ -2379,12 +2464,12 @@ describe('env vars', () => {
         env: ({ envs }) => ({
           SEEN: [envs.DEVTOOIE_MODE, envs.DEVTOOIE_CWD, envs.DEVTOOIE_WORKSPACE_DIR].join('|'),
         }),
-        packages: {
+        services: {
           api: { urls: [({ envs }) => `file://${String(envs.DEVTOOIE_WORKSPACE_DIR)}`] },
         },
       });
       expect(cfg.envVars).toEqual({ SEEN: `development|${process.cwd()}|${path.resolve(ws)}` });
-      expect(cfg.packages.api.urls).toEqual([`file://${path.resolve(ws)}`]);
+      expect(cfg.services.api.urls).toEqual([`file://${path.resolve(ws)}`]);
     });
 
     test('leaves the ones the environment already has as they are', () => {
@@ -2392,7 +2477,7 @@ describe('env vars', () => {
       const cfg = defineConfig({
         ...base(),
         env: ({ envs }) => ({ SEEN: envs.DEVTOOIE_WORKSPACE_DIR }),
-        packages: { api: {} },
+        services: { api: {} },
       });
       expect(cfg.envVars).toEqual({ SEEN: '/from/the/cli' });
     });
@@ -2404,7 +2489,7 @@ describe('env vars', () => {
         ...base(),
         // @ts-expect-error - the callback must return a record of variables.
         env: () => 'DATA_DIR=/srv/data',
-        packages: { api: {} },
+        services: { api: {} },
       }),
     ).toThrow(/env\.vars: callback returned "DATA_DIR=\/srv\/data" \(expected an object/);
   });
@@ -2431,7 +2516,7 @@ describe('env vars', () => {
           },
         },
       },
-      packages: {
+      services: {
         api: {
           port: ({ envs }) => Number(envs.BASE_PORT),
           urls: [({ envs, port }) => `http://${envs.HOST!}:${String(port)}`],
@@ -2440,8 +2525,8 @@ describe('env vars', () => {
     });
     expect(cfg.devReverseProxy).toMatchObject({ port: 4150, rootDomain: 'dev.example' });
     expect(cfg.urls).toEqual(['https://docs.dev.example']);
-    expect(cfg.packages.api.port).toBe(4100);
-    expect(cfg.packages.api.urls).toEqual(['http://dev.example:4100']);
+    expect(cfg.services.api.port).toBe(4100);
+    expect(cfg.services.api.urls).toEqual(['http://dev.example:4100']);
     expect(seen.infra).toBe('dev.example');
   });
 
@@ -2453,7 +2538,7 @@ describe('env vars', () => {
       ...base(),
       env: { vars: { BACKEND_PORT: '4321', REGION: 'us', TIER: 'dev' } },
       urls: [({ envs }) => `https://${envs.REGION!}.example:${envs.BACKEND_PORT!}`],
-      packages: {
+      services: {
         api: {
           port: ({ envs }) => {
             seen.region = envs.REGION;
@@ -2464,7 +2549,7 @@ describe('env vars', () => {
       },
     });
     expect(cfg.urls).toEqual(['https://eu.example:6666']);
-    expect(cfg.packages.api.port).toBe(7777);
+    expect(cfg.services.api.port).toBe(7777);
     expect(seen).toEqual({ region: 'eu', tier: 'dev' });
   });
 
@@ -2475,7 +2560,7 @@ describe('env vars', () => {
       defineConfig({
         ...base(),
         env: { vars: { DEVTOOIE_TEST_AMBIENT: 'from-config' }, override },
-        packages: {
+        services: {
           api: {
             port: ({ envs }) => {
               seen = envs.DEVTOOIE_TEST_AMBIENT;
@@ -2496,7 +2581,7 @@ describe('env vars', () => {
       ...base(),
       env: { vars: { HOST: 'dev.example' } },
       urls: [({ envs }) => envs.API_URL!],
-      packages: { api: {} },
+      services: { api: {} },
     });
     expect(cfg.urls).toEqual(['http://dev.example:4100']);
   });
@@ -2506,7 +2591,7 @@ describe('env vars', () => {
       ...base(),
       env: { vars: { COMPOSE_PROJECT_NAME: 'pinned' } },
       infra: { 'docker-compose': true },
-      packages: { api: {} },
+      services: { api: {} },
     });
     expect(cfg.infra?.['docker-compose']?.projectName).toBe('pinned');
   });
@@ -2517,7 +2602,7 @@ describe('env vars', () => {
         ...base(),
         // @ts-expect-error - `files` was removed; the schema must say so rather than strip it.
         env: { vars: { DATA_DIR: '/srv/data' }, files: ['.env'] },
-        packages: { api: {} },
+        services: { api: {} },
       }),
     ).toThrow(/Unrecognized key: "files"/);
   });

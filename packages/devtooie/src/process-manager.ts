@@ -3,10 +3,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import chalk from 'chalk';
 import { execa, type ResultPromise } from 'execa';
-import type { AnyPackageConfig, ResolvedHealthcheck } from './config.js';
-import { getDevScript, getLoadedConfig } from './config.js';
+import type { AnyServiceConfig, ResolvedHealthcheck } from './config.js';
+import { getDevScript, getLoadedConfig, getRegisteredPackages } from './config.js';
 import { defaultFormatter } from './log-formatter.js';
-import type { ControlManager } from './command-server.js';
+import type { ControlManager, ServiceAction, ServiceRunOutcome } from './command-server.js';
 import { debugLog } from './debug-log.js';
 import { currentMode, envFileNames, packageEnvLayer, type EnvOverride } from './env.js';
 import {
@@ -17,12 +17,16 @@ import {
 } from './infra/control.js';
 import { watchEnvFiles, type WatchTarget } from './env-watch.js';
 import {
+  canRebuild,
   exitCodeOf,
   getDefaultLogFile,
   getExecArgs,
+  getExtraCommands,
   getRebuildCommands,
   hasDevScript,
+  hasScript,
   logTimestamp,
+  resolveDeps,
   stripAnsi,
 } from './lib.js';
 import { updateRunning } from './running.js';
@@ -44,11 +48,14 @@ const devtooieLabel = (text: string) => chalk.hex(DEVTOOIE_LABEL_COLOR)(text);
 /** What infra's startup lines are filed under for the log filter: typing `infra` finds them. */
 const INFRA_SEARCH_NAME = 'infra';
 
+/** A service's name on screen: its `shortName`, or its key. */
+const displayName = (a: AnyServiceConfig) => a.shortName ?? a.name;
+
 type ProcessState = 'running' | 'stopped' | 'waiting';
 type Status = ProcessState | 'rebuilding' | 'restarting';
 
 interface ManagedProcess {
-  pkg: AnyPackageConfig;
+  pkg: AnyServiceConfig;
   proc: ResultPromise | null;
   status: ProcessState;
   /** Colored `"[name] "` prefix rendered before every line for this package. */
@@ -149,7 +156,7 @@ export function resolveColorSpec(spec: string): (s: string) => string {
  * The color function for a package's log prefix: its `run.color` override when set, else the
  * palette slot for its position `index` in the run.
  */
-export function packagePrefixColor(pkg: AnyPackageConfig, index: number): (s: string) => string {
+export function packagePrefixColor(pkg: AnyServiceConfig, index: number): (s: string) => string {
   return pkg.color ? resolveColorSpec(pkg.color) : PALETTE[index % PALETTE.length]!;
 }
 
@@ -261,6 +268,18 @@ export class ProcessManager implements ControlManager {
   private exitHandler: () => void;
   private disposed = false;
   /**
+   * Set once the session starts shutting down (or is hard-killed): from then on nothing new is
+   * spawned. A restart or rebuild already awaiting its stop, a control-API start, a waiter being
+   * released — any of them landing after the kill sweep would start a process nothing kills.
+   */
+  private closing = false;
+  /**
+   * Processes a `stop()` or `shutdownAll()` has taken out of the managed state and is still
+   * waiting out. The hard kill and the exit hook SIGKILL these too: by the time an impatient second
+   * Ctrl+C (or a crash) arrives, a process ignoring its SIGTERM is no longer anyone's `proc`.
+   */
+  private readonly exiting = new Set<ResultPromise>();
+  /**
    * Every child this session has spawned, `pid → the directory it was spawned in`, mirrored into
    * the session record so the next session can sweep them if this one is SIGKILLed (see
    * {@link ChildRecord}). Retained past exit — see {@link ProcessManager.trackChild}.
@@ -270,24 +289,25 @@ export class ProcessManager implements ControlManager {
   private listeners = new Set<() => void>();
   /** Monotonic buffer version, used as the useSyncExternalStore snapshot. */
   private version = 0;
+  /**
+   * The runner args the session started from. A service added later goes into them too
+   * (`sortedPackages`, `selectedSet`, the maps), so a UI that reads them sees it.
+   */
+  private readonly runnerArgs: RunnerArgs;
+  /** Width the names were padded to when the session started; a longer one added later isn't. */
+  private maxNameLen: number;
+  /** Notified when a service joins the session (see {@link subscribeServices}). */
+  private serviceListeners = new Set<() => void>();
+  /** Bumped when a service joins the session: a UI's snapshot of the service list. */
+  private servicesVersion = 0;
+  /** Adds run one at a time, so two that share a dependency don't both add it. */
+  private addQueue: Promise<unknown> = Promise.resolve();
   private notifyScheduled = false;
   /** Memoized group-aware filter result, keyed by {@link version}. */
   private visibleCache: { version: number; lines: readonly BufferedLine[] } | null = null;
 
   constructor(
-    {
-      sortedPackages,
-      rebuildableSet,
-      waitForMap,
-      healthchecks,
-      logFile,
-      envFiles,
-      envOverride,
-      envVars,
-      cwd,
-      logTimestamps = true,
-      infra,
-    }: RunnerArgs,
+    runnerArgs: RunnerArgs,
     {
       plain = false,
       probeReadiness = false,
@@ -304,6 +324,20 @@ export class ProcessManager implements ControlManager {
       infraCli?: string[];
     } = {},
   ) {
+    const {
+      sortedPackages,
+      rebuildableSet,
+      waitForMap,
+      healthchecks,
+      logFile,
+      envFiles,
+      envOverride,
+      envVars,
+      cwd,
+      logTimestamps = true,
+      infra,
+    } = runnerArgs;
+    this.runnerArgs = runnerArgs;
     this.plain = plain;
     this.probeReadiness = probeReadiness;
     this.defaultShowTimestamps = logTimestamps;
@@ -315,30 +349,12 @@ export class ProcessManager implements ControlManager {
     this.envVars = envVars;
     this.cwd = cwd ?? process.cwd();
 
-    const displayName = (a: AnyPackageConfig) => a.shortName ?? a.name;
     const maxNameLen = sortedPackages.reduce((m, a) => Math.max(m, displayName(a).length), 0);
+    this.maxNameLen = maxNameLen;
     this.prefixWidth = maxNameLen + 3; // "[" + padded name + "]" + " "
 
     for (let i = 0; i < sortedPackages.length; i++) {
-      const pkg = sortedPackages[i]!;
-      const color = packagePrefixColor(pkg, i);
-      const label = displayName(pkg);
-      const padded = label + ' '.repeat(maxNameLen - label.length);
-      const shortName = pkg.shortName;
-      const searchName = (shortName ? `${pkg.name} ${shortName}` : pkg.name).toLowerCase();
-      // Effective on-screen timestamp visibility: the package's own `logs.timestamps` if set,
-      // else the top-level default. Keyed by searchName so every line for this package (output,
-      // status, and control lines) renders the same.
-      this.showTsBySearchName.set(searchName, pkg.logs?.timestamps ?? this.defaultShowTimestamps);
-      this.processes.set(pkg.name, {
-        pkg,
-        proc: null,
-        status: 'stopped',
-        prefix: color(`[${padded}]`) + ' ',
-        searchName,
-        canDev: hasDevScript(pkg),
-        extraProcs: new Set(),
-      });
+      this.register(sortedPackages[i]!, i);
     }
 
     // devtooie's own two channels carry a label (never an empty slot) in the shared gold. Both are
@@ -403,6 +419,30 @@ export class ProcessManager implements ControlManager {
           });
   }
 
+  /** Adds `pkg` to the session's processes, stopped, with its prefix in palette slot `index`. */
+  private register(pkg: AnyServiceConfig, index: number): ManagedProcess {
+    const color = packagePrefixColor(pkg, index);
+    const label = displayName(pkg);
+    const padded = label + ' '.repeat(Math.max(0, this.maxNameLen - label.length));
+    const shortName = pkg.shortName;
+    const searchName = (shortName ? `${pkg.name} ${shortName}` : pkg.name).toLowerCase();
+    // Effective on-screen timestamp visibility: the package's own `logs.timestamps` if set,
+    // else the top-level default. Keyed by searchName so every line for this package (output,
+    // status, and control lines) renders the same.
+    this.showTsBySearchName.set(searchName, pkg.logs?.timestamps ?? this.defaultShowTimestamps);
+    const managed: ManagedProcess = {
+      pkg,
+      proc: null,
+      status: 'stopped',
+      prefix: color(`[${padded}]`) + ' ',
+      searchName,
+      canDev: hasDevScript(pkg),
+      extraProcs: new Set(),
+    };
+    this.processes.set(pkg.name, managed);
+    return managed;
+  }
+
   /**
    * Sink for {@link createInternalLogger}: render each NDJSON record and buffer it through the
    * same path package output takes, so devtooie's own logs format, group, filter and land in the
@@ -441,34 +481,194 @@ export class ProcessManager implements ControlManager {
     for (const [name, managed] of this.processes) {
       if (managed.pkg.autostart === false) {
         // Opted out of auto-start: leave it stopped (not waiting) for a manual start via the
-        // `s` hotkey or a control-API `restart`.
+        // `s` hotkey or a control-API `start`.
         continue;
       }
-      const waitFor = this.waitForMap[name];
-      if (waitFor && waitFor.length > 0 && managed.canDev) {
-        managed.status = 'waiting';
-        this.addLine(
-          managed.prefix,
-          chalk.cyan(`waiting for ${waitFor.join(', ')}...`),
-          managed.searchName,
-          false,
-        );
-      } else {
-        this.start(name);
-      }
+      this.launch(name, managed);
     }
-    if ([...this.processes.values()].some((m) => m.status === 'waiting')) {
-      this.startWaitingPoll();
-    }
+    this.ensureWaitingPoll();
     this.syncProbes();
     this.startEnvWatchers();
     debugLog(`startAll: done, buffer.length=${this.buffer.length}`);
   }
 
-  private startWaitingPoll(): void {
+  /** Starts `name`, or — when it `waitFor`s others — marks it waiting for them. */
+  private launch(name: string, managed: ManagedProcess): void {
+    const waitFor = this.waitForMap[name];
+    if (waitFor && waitFor.length > 0 && managed.canDev) {
+      managed.status = 'waiting';
+      this.addLine(
+        managed.prefix,
+        chalk.cyan(`waiting for ${waitFor.join(', ')}...`),
+        managed.searchName,
+        false,
+      );
+    } else {
+      this.start(name);
+    }
+  }
+
+  /** Polls the waiting services' dependencies while any service waits; a no-op when it already is. */
+  private ensureWaitingPoll(): void {
+    if (
+      this.waitingPollTimer ||
+      ![...this.processes.values()].some((m) => m.status === 'waiting')
+    ) {
+      return;
+    }
     this.waitingPollTimer = setInterval(() => {
       this.pollWaitingPackages();
     }, WAIT_FOR_POLL_MS);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Services added to a running session
+  // ---------------------------------------------------------------------------
+
+  /** The session's services, in the order a UI lists them: as it started, then each one added. */
+  getSessionServices(): AnyServiceConfig[] {
+    return [...this.processes.values()].map((m) => m.pkg);
+  }
+
+  /** Calls `fn` whenever a service joins the session; returns the unsubscribe. */
+  subscribeServices(fn: () => void): () => void {
+    this.serviceListeners.add(fn);
+    return () => this.serviceListeners.delete(fn);
+  }
+
+  /** Changes whenever a service joins the session — a snapshot for `useSyncExternalStore`. */
+  getServicesVersion(): number {
+    return this.servicesVersion;
+  }
+
+  /**
+   * Brings a configured service the session wasn't started with into it: the service, and the
+   * runtime and build dependencies the session doesn't have yet. The new build dependencies are
+   * built first (their output goes to the log, under their own names); then each new service is
+   * started — or set waiting on its `waitFor` — as at the session's start. Resolves `false` when
+   * a build fails, leaving the new services in the session, stopped.
+   */
+  addService(name: string): Promise<boolean> {
+    const run = this.addQueue.then(() => this.performAdd(name));
+    this.addQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async performAdd(name: string): Promise<boolean> {
+    if (this.processes.has(name)) {
+      return true;
+    }
+    if (this.closing) {
+      return false;
+    }
+    const target = getRegisteredPackages().find((p) => p.name === name);
+    if (!target) {
+      return false;
+    }
+    const deps = resolveDeps([target]);
+    const added = deps.allPackages.filter((p) => !this.processes.has(p.name));
+    const args = this.runnerArgs;
+    for (const pkg of added) {
+      const managed = this.register(pkg, this.processes.size);
+      args.sortedPackages.push(pkg);
+      if (pkg.waitFor?.length) {
+        this.waitForMap[pkg.name] = pkg.waitFor;
+      }
+      if (pkg.healthcheck) {
+        this.healthchecks[pkg.name] = pkg.healthcheck;
+      }
+      if (canRebuild(pkg)) {
+        this.rebuildableSet.add(pkg.name);
+      }
+      const extra = getExtraCommands(pkg);
+      if (extra.length) {
+        args.extraCommandsMap[pkg.name] = extra;
+      }
+      if (deps.buildSet.has(pkg.name)) {
+        args.buildDepSet.add(pkg.name);
+      }
+      this.addLine(managed.prefix, chalk.cyan('added to the session'), managed.searchName, false);
+    }
+    args.selectedSet.add(name);
+    this.notifyServices();
+
+    for (const pkg of added.filter((p) => deps.buildSet.has(p.name) && hasScript(p, 'build'))) {
+      if (!(await this.buildAdded(this.processes.get(pkg.name)!))) {
+        return false;
+      }
+    }
+    // The builds above take a while; a shutdown that began meanwhile has the last word.
+    if (this.closing) {
+      return false;
+    }
+    // The new services' own `.env` files are watched from here on, like the rest.
+    this.envWatchDispose?.();
+    this.envWatchDispose = null;
+    for (const pkg of added) {
+      const managed = this.processes.get(pkg.name)!;
+      if (pkg.autostart === false && pkg.name !== name) {
+        continue;
+      }
+      this.launch(pkg.name, managed);
+    }
+    this.ensureWaitingPoll();
+    this.syncProbes();
+    this.startEnvWatchers();
+    return true;
+  }
+
+  /** Runs a newly added build dependency's `build`, its output in the log; `false` if it fails. */
+  private async buildAdded(managed: ManagedProcess): Promise<boolean> {
+    if (this.closing) {
+      return false;
+    }
+    this.addLine(managed.prefix, chalk.yellow('building...'), managed.searchName, false);
+    const { cmd, args, env } = getExecArgs(managed.pkg, 'build', [], this.packageEnv(managed.pkg));
+    const proc = execa(cmd, args, {
+      cwd: managed.pkg.absoluteDir,
+      env,
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+      reject: false,
+      buffer: false,
+      detached: true,
+    });
+    managed.extraProcs.add(proc);
+    this.trackChild(proc, managed.pkg.absoluteDir);
+    for (const [stream, isError] of [
+      [proc.stdout, false],
+      [proc.stderr, true],
+    ] as const) {
+      stream?.on('data', (data: Buffer) => {
+        for (const line of stripTitleSequences(data.toString()).split('\n')) {
+          if (line) {
+            this.addOutput(managed, line, isError);
+          }
+        }
+      });
+    }
+    let result;
+    try {
+      result = await proc;
+    } finally {
+      managed.extraProcs.delete(proc);
+    }
+    const ok = result.exitCode === 0;
+    this.addLine(
+      managed.prefix,
+      ok ? chalk.green('built') : chalk.red(`build failed (exit ${String(exitCodeOf(result))})`),
+      managed.searchName,
+      !ok,
+    );
+    return ok;
+  }
+
+  private notifyServices(): void {
+    this.servicesVersion++;
+    for (const fn of this.serviceListeners) {
+      fn();
+    }
   }
 
   /**
@@ -629,7 +829,7 @@ export class ProcessManager implements ControlManager {
 
   start(name: string): void {
     const managed = this.processes.get(name);
-    if (!managed || managed.status === 'running' || !managed.canDev) {
+    if (this.closing || !managed || managed.status === 'running' || !managed.canDev) {
       return;
     }
 
@@ -698,7 +898,7 @@ export class ProcessManager implements ControlManager {
    * as `PUBLIC_ORIGIN`) — which only a file of the package's own overrides. Re-resolved on
    * every spawn so a restart picks up edited `.env` values. Never mutates `process.env`.
    */
-  private packageEnv(pkg: AnyPackageConfig): NodeJS.ProcessEnv {
+  private packageEnv(pkg: AnyServiceConfig): NodeJS.ProcessEnv {
     return Object.assign(
       {},
       process.env,
@@ -748,7 +948,7 @@ export class ProcessManager implements ControlManager {
       targets,
       onError: (dir, error) => {
         this.systemLog.warn(
-          `stopped watching ${dir} for .env changes (${error.message}); edits there won't auto-restart packages`,
+          `stopped watching ${dir} for .env changes (${error.message}); edits there won't auto-restart services`,
         );
       },
     });
@@ -777,6 +977,13 @@ export class ProcessManager implements ControlManager {
 
   async stop(name: string): Promise<void> {
     const managed = this.processes.get(name);
+    if (managed?.status === 'waiting') {
+      // Not started yet, so nothing to kill: leaving `waiting` is what keeps it from starting
+      // once its dependencies are ready.
+      managed.status = 'stopped';
+      this.syncProbes();
+      return;
+    }
     if (!managed?.proc) {
       return;
     }
@@ -786,6 +993,7 @@ export class ProcessManager implements ControlManager {
     // Drops its readiness too: a waiter must never release against a dependency that just stopped.
     this.syncProbes();
     this.addLine(managed.prefix, chalk.yellow('stopping...'), managed.searchName, false);
+    this.exiting.add(proc);
     this.killTree(proc);
 
     const forceKill = setTimeout(() => {
@@ -800,6 +1008,7 @@ export class ProcessManager implements ControlManager {
 
     await proc;
     clearTimeout(forceKill);
+    this.exiting.delete(proc);
     this.addLine(managed.prefix, chalk.red('stopped'), managed.searchName, false);
   }
 
@@ -821,6 +1030,10 @@ export class ProcessManager implements ControlManager {
     this.transitions.set(name, 'restarting');
     try {
       await this.stop(name);
+      // A shutdown that began during the stop has the last word: nothing starts, nothing to report.
+      if (this.closing) {
+        return;
+      }
       this.start(name);
       this.addLine(managed.prefix, chalk.green('restarted'), managed.searchName, false);
     } finally {
@@ -851,11 +1064,17 @@ export class ProcessManager implements ControlManager {
     this.transitions.set(name, 'rebuilding');
     try {
       await this.stop(name);
+      if (this.closing) {
+        return;
+      }
       this.addLine(managed.prefix, chalk.yellow('rebuilding...'), managed.searchName, false);
       // A clean rebuild is `build:clean`, or `clean` then `build` sequentially when the
       // package has no combined script/target — resolved identically for scripts and make.
       const commands = getRebuildCommands(managed.pkg, this.packageEnv(managed.pkg));
       for (const { cmd, args, env } of commands) {
+        if (this.closing) {
+          return;
+        }
         const buildProc = execa(cmd, args, {
           cwd: managed.pkg.absoluteDir,
           env,
@@ -890,6 +1109,9 @@ export class ProcessManager implements ControlManager {
           }
           return;
         }
+      }
+      if (this.closing) {
+        return;
       }
       this.addLine(managed.prefix, chalk.green('rebuild complete'), managed.searchName, false);
       this.start(name);
@@ -943,6 +1165,9 @@ export class ProcessManager implements ControlManager {
     displayLabel: string,
     useShell: boolean,
   ): void {
+    if (this.closing) {
+      return;
+    }
     const pfx = managed.prefix;
     const { searchName } = managed;
 
@@ -1006,8 +1231,12 @@ export class ProcessManager implements ControlManager {
     void this.shutdownAll();
   }
 
-  /** Immediate, synchronous SIGKILL of every tracked process group. No waiting. */
+  /**
+   * Immediate, synchronous SIGKILL of every process group this session has — the managed ones and
+   * those a stop or graceful shutdown is still waiting out — and nothing spawned after. No waiting.
+   */
   killAll(): void {
+    this.closing = true;
     if (this.waitingPollTimer) {
       clearInterval(this.waitingPollTimer);
       this.waitingPollTimer = null;
@@ -1020,12 +1249,16 @@ export class ProcessManager implements ControlManager {
         this.killTree(extra, 'SIGKILL');
       }
     }
+    for (const proc of this.exiting) {
+      this.killTree(proc, 'SIGKILL');
+    }
     this.infra?.stop();
     this.infra?.kill('SIGKILL');
   }
 
   /** Graceful shutdown: SIGTERM everything, wait up to 10s, then SIGKILL stragglers. */
   async shutdownAll(): Promise<void> {
+    this.closing = true;
     if (this.waitingPollTimer) {
       clearInterval(this.waitingPollTimer);
       this.waitingPollTimer = null;
@@ -1052,6 +1285,11 @@ export class ProcessManager implements ControlManager {
     for (const proc of this.infra?.takeLiving() ?? []) {
       living.push({ proc });
     }
+    // A stop already under way (a restart's, say) has its process out of the managed state, but
+    // it's still this session's: wait it out with the rest, rather than leave it to the hard kill.
+    for (const proc of this.exiting) {
+      living.push({ proc });
+    }
 
     if (living.length === 0) {
       return;
@@ -1059,7 +1297,9 @@ export class ProcessManager implements ControlManager {
 
     this.systemLog.warn('shutting down...');
 
+    // Still reachable by a hard kill (or the exit hook) while they're given their grace.
     for (const { proc } of living) {
+      this.exiting.add(proc);
       this.killTree(proc);
     }
 
@@ -1085,30 +1325,13 @@ export class ProcessManager implements ControlManager {
       } catch {
         /* already gone */
       }
+      this.exiting.delete(proc);
     }
   }
 
-  /** Immediate SIGKILL of every process group, no waiting (second Ctrl+C / hard exit). */
+  /** Immediate SIGKILL of every process group, no waiting (second Ctrl+C / hard exit). See {@link killAll}. */
   forceKillAll(): void {
-    this.infra?.kill('SIGKILL');
-    for (const [, managed] of this.processes) {
-      if (managed.proc?.pid) {
-        try {
-          process.kill(-managed.proc.pid, 'SIGKILL');
-        } catch {
-          /* already gone */
-        }
-      }
-      for (const extra of managed.extraProcs) {
-        if (extra.pid) {
-          try {
-            process.kill(-extra.pid, 'SIGKILL');
-          } catch {
-            /* already gone */
-          }
-        }
-      }
-    }
+    this.killAll();
   }
 
   /** SIGKILL every process group across every live `ProcessManager` instance. */
@@ -1256,6 +1479,19 @@ export class ProcessManager implements ControlManager {
     return this.transitions.get(name) ?? managed.status;
   }
 
+  /**
+   * ControlManager entry point: whether each service is ready — running, and passing its
+   * healthcheck when it has one. A service with no healthcheck is ready while it runs.
+   */
+  getAllReadiness(): Record<string, boolean> {
+    const out: Record<string, boolean> = {};
+    for (const name of this.processes.keys()) {
+      out[name] =
+        this.getStatus(name) === 'running' && (!this.healthchecks[name] || this.isReady(name));
+    }
+    return out;
+  }
+
   getAllStatuses(): Record<string, string> {
     const out: Record<string, string> = {};
     for (const name of this.processes.keys()) {
@@ -1272,6 +1508,49 @@ export class ProcessManager implements ControlManager {
   /** ControlManager entry point: every infra service's status, or `null` for a session without infra. */
   getInfraStatuses(): Record<string, InfraStatus> | null {
     return this.infra?.statuses() ?? null;
+  }
+
+  /**
+   * ControlManager entry point: an action on a service. `restart` and `rebuild` are `accepted`
+   * and run on; `start` and `stop` are `done` once the service has started, or its process has
+   * exited. `start` and `stop` are `busy` while a restart or rebuild is under way. A `start` of a
+   * configured service the session doesn't have adds it (see {@link addService}).
+   */
+  async runPackage(name: string, action: ServiceAction): Promise<ServiceRunOutcome> {
+    const managed = this.processes.get(name);
+    if (!managed) {
+      const configured = getRegisteredPackages().some((p) => p.name === name);
+      if (!configured) {
+        return 'unknown';
+      }
+      // A configured service the session wasn't started with: a start brings it in, and it is
+      // already as stopped as a stop would leave it.
+      if (action === 'start') {
+        return (await this.addService(name)) ? 'done' : 'failed';
+      }
+      return action === 'stop' ? 'done' : 'unknown';
+    }
+    switch (action) {
+      case 'restart':
+        return this.restart(name) ? 'accepted' : 'unknown';
+      case 'rebuild':
+        return this.rebuild(name) ? 'accepted' : 'unavailable';
+      case 'start':
+        if (this.transitions.has(name)) {
+          return 'busy';
+        }
+        if (!managed.canDev) {
+          return 'unavailable';
+        }
+        this.start(name);
+        return 'done';
+      case 'stop':
+        if (this.transitions.has(name)) {
+          return 'busy';
+        }
+        await this.stop(name);
+        return 'done';
+    }
   }
 
   /** ControlManager entry point: start an action on an infra service (see {@link InfraControl.run}). */
@@ -1497,9 +1776,9 @@ export class ProcessManager implements ControlManager {
   /**
    * Emit a `[dt:control]` line noting a mutating command received over the control API, with the
    * variables that command carried as structured attrs — e.g.
-   * `logControl('restart', { package: 'web' })` renders `[INFO] restart` above an indented
-   * `package: web`. When `attrs.package` names a known package the line is tagged with that
-   * package's search name, so it shows/hides with the package under an active filter; otherwise
+   * `logControl('restart', { service: 'web' })` renders `[INFO] restart` above an indented
+   * `service: web`. When `attrs.service` names a known service the line is tagged with that
+   * service's search name, so it shows/hides with the service under an active filter; otherwise
    * it's tagged `dt:control`.
    */
   logControl(command: string, attrs?: Record<string, unknown>): void {

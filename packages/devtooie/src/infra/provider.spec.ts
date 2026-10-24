@@ -120,6 +120,7 @@ function recording(calls: string[], service: string): InfraServiceCallbacks {
     calls.push(`${name}:${service}:reset=${String(ctx.reset)}`);
   };
   return {
+    beforeDestroy: record('beforeDestroy'),
     afterDestroy: record('afterDestroy'),
     beforeUp: record('beforeUp'),
     afterReady: record('afterReady'),
@@ -145,11 +146,12 @@ describe('InfraProvider.up', () => {
     });
   });
 
-  test('--reset destroys the services it is about to start, then calls afterDestroy', async () => {
+  test('--reset destroys the services it is about to start, between beforeDestroy and afterDestroy', async () => {
     const provider = new FakeProvider();
     Object.assign(provider['serviceConfig'], { db: recording(provider.calls, 'db') });
     await provider.up({ reset: true });
     expect(provider.calls).toEqual([
+      'beforeDestroy:db:reset=true',
       'destroyServices:db,redis',
       'afterDestroy:db:reset=true',
       'beforeUp:db:reset=true',
@@ -158,10 +160,62 @@ describe('InfraProvider.up', () => {
     ]);
   });
 
+  test("a service's callbacks share one `data` for the run, and the next run starts empty", async () => {
+    const seen: string[] = [];
+    const note = (phase: string) => async (ctx: InfraCallbackContext) => {
+      seen.push(`${phase}:${ctx.service}:${JSON.stringify(ctx.data)}`);
+      ctx.data[phase] = ctx.service;
+    };
+    const callbacks: InfraServiceCallbacks = {
+      beforeDestroy: note('beforeDestroy'),
+      afterDestroy: note('afterDestroy'),
+      beforeUp: note('beforeUp'),
+      afterReady: note('afterReady'),
+    };
+    const provider = new FakeProvider({ callbacks: { db: callbacks, redis: callbacks } });
+    await provider.up({ reset: true, services: ['db'] });
+    expect(seen).toEqual([
+      'beforeDestroy:db:{}',
+      'afterDestroy:db:{"beforeDestroy":"db"}',
+      'beforeUp:db:{"beforeDestroy":"db","afterDestroy":"db"}',
+      'afterReady:db:{"beforeDestroy":"db","afterDestroy":"db","beforeUp":"db"}',
+    ]);
+    seen.length = 0;
+    await provider.up({});
+    // A new run, and each service its own object.
+    expect(seen.sort()).toEqual([
+      'afterReady:db:{"beforeUp":"db"}',
+      'afterReady:redis:{"beforeUp":"redis"}',
+      'beforeUp:db:{}',
+      'beforeUp:redis:{}',
+    ]);
+  });
+
   test('--reset with services named destroys only those', async () => {
     const provider = new FakeProvider();
     await provider.up({ reset: true, services: ['redis'] });
     expect(provider.calls).toEqual(['destroyServices:redis', 'start:redis']);
+  });
+
+  test('a beforeDestroy failure under --reset destroys and starts nothing', async () => {
+    const provider = new FakeProvider({
+      callbacks: {
+        db: {
+          beforeDestroy: async () => {
+            throw new Error('api still connected');
+          },
+        },
+      },
+    });
+    const summary = await provider.up({ reset: true });
+    expect(provider.calls).toEqual([]);
+    expect(summary).toEqual({
+      ok: false,
+      services: [
+        { service: 'db', ok: false, error: 'beforeDestroy failed: api still connected' },
+        { service: 'redis', ok: false, error: 'not destroyed: db failed in beforeDestroy' },
+      ],
+    });
   });
 
   test('a beforeUp failure starts nothing and fails every target', async () => {
@@ -445,12 +499,16 @@ describe('InfraProvider callback context', () => {
 });
 
 describe('InfraProvider.destroy', () => {
-  test('with no services destroys everything; afterDestroy sees reset: false', async () => {
+  test('with no services destroys everything; the callbacks around it see reset: false', async () => {
     const provider = new FakeProvider();
     Object.assign(provider['serviceConfig'], { db: recording(provider.calls, 'db') });
     const events: InfraEvent[] = [];
     const summary = await provider.destroy({ onEvent: (e) => events.push(e) });
-    expect(provider.calls).toEqual(['destroyAll', 'afterDestroy:db:reset=false']);
+    expect(provider.calls).toEqual([
+      'beforeDestroy:db:reset=false',
+      'destroyAll',
+      'afterDestroy:db:reset=false',
+    ]);
     expect(summary.ok).toBe(true);
     expect(events[0]).toEqual({
       type: 'targets',
@@ -465,6 +523,27 @@ describe('InfraProvider.destroy', () => {
     const provider = new FakeProvider();
     await provider.destroy({ services: ['db'] });
     expect(provider.calls).toEqual(['destroyServices:db']);
+  });
+
+  test('a beforeDestroy that throws removes nothing and fails every target', async () => {
+    const provider = new FakeProvider({
+      callbacks: {
+        db: {
+          beforeDestroy: async () => {
+            throw new Error('api still connected');
+          },
+        },
+      },
+    });
+    const summary = await provider.destroy({});
+    expect(provider.calls).toEqual([]);
+    expect(summary).toEqual({
+      ok: false,
+      services: [
+        { service: 'db', ok: false, error: 'beforeDestroy failed: api still connected' },
+        { service: 'redis', ok: false, error: 'not destroyed: db failed in beforeDestroy' },
+      ],
+    });
   });
 
   test('an afterDestroy that throws fails its service', async () => {

@@ -74,7 +74,7 @@ export interface InfraRunRequest {
 export type Emit = (event: InfraEvent) => void;
 
 /** The callbacks that run before the start; `afterReady` has its own path and context. */
-type CallbackName = 'afterDestroy' | 'beforeUp';
+type CallbackName = 'beforeDestroy' | 'afterDestroy' | 'beforeUp';
 
 const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -243,8 +243,8 @@ export abstract class InfraProvider {
   }
 
   /**
-   * Brings the targets up and waits until each is ready: (with `reset`) destroy them and run
-   * `afterDestroy`, then `beforeUp`, one start for all of them, a readiness poll, and each
+   * Brings the targets up and waits until each is ready: (with `reset`) `beforeDestroy`,
+   * destroy them and `afterDestroy`, then `beforeUp`, one start for all of them, a readiness poll, and each
    * service's `afterReady` the moment *it* is ready.
    *
    * A failure before the services are started aborts the run and fails every target. After
@@ -270,6 +270,9 @@ export abstract class InfraProvider {
         // Exactly the services about to be started, never the whole project: a reset must not
         // take the data of a service it isn't bringing back — one disabled in this mode, say.
         run.setAll('destroying');
+        if (!(await this.runPhase('beforeDestroy', run, reset))) {
+          return run.summary();
+        }
         await this.destroyServices(targets, emit);
         if (!(await this.runPhase('afterDestroy', run, reset))) {
           return run.summary();
@@ -292,9 +295,10 @@ export abstract class InfraProvider {
   }
 
   /**
-   * Removes the targets and their data, then calls `afterDestroy({ reset: false })`. With no
+   * Calls `beforeDestroy({ reset: false })`, removes the targets and their data, then calls
+   * `afterDestroy({ reset: false })`. A `beforeDestroy` failure removes nothing. With no
    * services named it removes the whole project — disabled services' leftovers included — and
-   * the targets, for `afterDestroy`, are the enabled ones.
+   * the targets, for the callbacks, are the enabled ones.
    */
   async destroy(req: Omit<InfraRunRequest, 'reset'> = {}): Promise<InfraRunSummary> {
     const emit = req.onEvent ?? (() => {});
@@ -302,6 +306,9 @@ export abstract class InfraProvider {
     const run = new Run(targets, emit, this.runtime.connectControl);
     emit({ type: 'targets', provider: this.key, action: 'destroy', services: targets });
     run.setAll('destroying');
+    if (!(await this.runPhase('beforeDestroy', run, false))) {
+      return run.summary();
+    }
     try {
       await (everything ? this.destroyAll(emit) : this.destroyServices(targets, emit));
     } catch (err) {
@@ -367,8 +374,9 @@ export abstract class InfraProvider {
 
   /**
    * Runs one callback for every target that has it, and decides the run: `true` to carry on.
-   * If any failed, that service fails with its own error and the rest fail as not started —
-   * these phases come before the single start, so there is no partial way forward.
+   * If any failed, that service fails with its own error and the rest fail as not started (or,
+   * for `beforeDestroy`, not destroyed) — these phases come before the single start or destroy,
+   * so there is no partial way forward.
    */
   private async runPhase(name: CallbackName, run: Run, reset: boolean): Promise<boolean> {
     const failures = await this.runCallbacks(name, run, reset);
@@ -377,7 +385,8 @@ export abstract class InfraProvider {
     }
     const culprits = [...failures.keys()].join(', ');
     for (const service of run.targets) {
-      run.fail(service, failures.get(service) ?? `not started: ${culprits} failed in ${name}`);
+      const skipped = name === 'beforeDestroy' ? 'not destroyed' : 'not started';
+      run.fail(service, failures.get(service) ?? `${skipped}: ${culprits} failed in ${name}`);
     }
     return false;
   }
@@ -396,7 +405,7 @@ export abstract class InfraProvider {
           return;
         }
         try {
-          await callback(this.context(service, reset, run.emit, await run.control()));
+          await callback(this.context(service, reset, run, await run.control()));
         } catch (err) {
           failures.set(service, `${name} failed: ${errorMessage(err)}`);
         }
@@ -469,7 +478,7 @@ export abstract class InfraProvider {
       run.set(service, 'starting', 'afterReady');
       try {
         await callback({
-          ...this.context(service, reset, run.emit, await run.control()),
+          ...this.context(service, reset, run, await run.control()),
           fresh,
         });
       } catch (err) {
@@ -494,10 +503,11 @@ export abstract class InfraProvider {
   private context(
     service: string,
     reset: boolean,
-    emit: Emit,
+    run: Run,
     control: ControlClient | undefined,
   ): InfraCallbackContext {
     const { workspaceDir, mode, tokens, exec } = this.runtime;
+    const { emit } = run;
     const envs = { ...this.runtime.envs, ...this.extraEnv() };
     const output = (line: string, isError: boolean) =>
       emit({ type: 'output', service, line, isError });
@@ -537,6 +547,7 @@ export abstract class InfraProvider {
         }
       },
       control,
+      data: run.data(service),
     };
   }
 }
@@ -545,6 +556,7 @@ export abstract class InfraProvider {
 class Run {
   private readonly results = new Map<string, InfraServiceResult>();
   private session: Promise<ControlClient | undefined> | null = null;
+  private readonly dataByService = new Map<string, Record<string, unknown>>();
 
   constructor(
     readonly targets: string[],
@@ -561,6 +573,16 @@ class Run {
       ? this.connectControl().catch(() => undefined)
       : Promise.resolve(undefined);
     return this.session;
+  }
+
+  /** The callbacks' `data` for `service`: one object for the whole run, empty when it starts. */
+  data(service: string): Record<string, unknown> {
+    let data = this.dataByService.get(service);
+    if (!data) {
+      data = {};
+      this.dataByService.set(service, data);
+    }
+    return data;
   }
 
   set(service: string, status: InfraServiceStatus, detail?: string): void {

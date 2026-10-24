@@ -1,4 +1,12 @@
-import type { PortResolver, ProxyInput, ResolvedProxy, TokenRecord } from '../config.js';
+import type {
+  ServiceContext,
+  PortResolver,
+  ProxyInput,
+  ResolvedProxy,
+  TokenRecord,
+  UrlEntry,
+  UrlEntryInput,
+} from '../config.js';
 import type { ControlClient } from '../control-client.js';
 import type { Envs, Mode } from '../env.js';
 
@@ -41,8 +49,8 @@ export interface InfraCallbackContext<T = TokenRecord> {
    * plus whatever the provider adds (`COMPOSE_PROJECT_NAME`). It includes `DEVTOOIE_MODE`.
    *
    * It is the whole environment {@link run} and {@link compose} give their commands. Workspace
-   * scope only: a package's own `.env` files, and the `PORT`/`PUBLIC_ORIGIN` devtooie injects
-   * into a package's process, aren't in it.
+   * scope only: a service's own `.env` files, and the `PORT`/`PUBLIC_ORIGIN` devtooie injects
+   * into a service's process, aren't in it.
    */
   envs: Envs;
   /** The config's top-level `tokens`, typed from what the config declares. */
@@ -64,15 +72,23 @@ export interface InfraCallbackContext<T = TokenRecord> {
   log: (message: string) => void;
   /**
    * A client for the running dev session of this config in this mode, its methods named after
-   * the control API's paths: `query.status()`, `command.restart(name)`, `command.rebuild(name)`,
-   * `command.infra(action, service)`, `command.quit()`. `undefined` when no such session is
-   * running — `infra up` from a terminal with no session up, say.
+   * the control API's paths: `query.status()`, `command.service.stop(name)` (and `start`,
+   * `restart`, `rebuild`), `command.infra.reset(service)` (and `start`, `stop`, `restart`),
+   * `command.quit()`. `undefined` when no such session is running — `infra up` from a terminal
+   * with no session up, say.
    *
    * It is bound when the run's first callback starts. At a session's own start its infra comes
-   * up before its packages, so `packages` is still `null` there and `restart`/`rebuild` return
+   * up before its services, so `services` is still `null` there and the service commands return
    * `false`. Don't `quit()` from a callback: the session ends the run that is calling it.
    */
   control?: ControlClient;
+  /**
+   * One object per service for the whole run, empty when the run starts: what a callback
+   * writes to it, the service's later callbacks in the same run read. So a `beforeDestroy` can
+   * leave a note for its `afterReady` — `data.apiWasRunning = true`. Nothing is kept between
+   * runs, and another service's callbacks get their own.
+   */
+  data: Record<string, unknown>;
 }
 
 export type InfraCallback<T = TokenRecord> = (ctx: InfraCallbackContext<T>) => void | Promise<void>;
@@ -96,6 +112,13 @@ export interface InfraReadyContext<T = TokenRecord> extends InfraCallbackContext
 
 /** The callbacks a service can attach. They run around devtooie's built-in steps, never instead. */
 export interface InfraServiceCallbacks<T = TokenRecord> {
+  /**
+   * Before the service's container and volumes are removed — on `infra destroy` and on
+   * `infra up --reset` (`reset` tells them apart). For whatever must let go of the data first,
+   * such as a service holding connections to it: `control?.command.service.stop('api')`. A
+   * failure stops the run before anything is removed.
+   */
+  beforeDestroy?: InfraCallback<T>;
   /**
    * After the service's container and volumes are removed — on `infra destroy` and on
    * `infra up --reset`. For state the provider can't see, such as a bind-mounted directory.
@@ -142,20 +165,28 @@ export interface InfraServiceInput<T = TokenRecord> extends InfraServiceCallback
   /**
    * The port the service answers on at `localhost` — the host side of its port mapping, which
    * devtooie doesn't read from the provider's own file. A literal, or a callback over the
-   * workspace context `{ envs, tokens }` resolved once at load, like a package's `port`:
+   * workspace context `{ envs, tokens }` resolved once at load, like a service's `port`:
    * `port: ({ envs }) => Number(envs.MAIL_UI_PORT)`. Required with `proxy`. Not resolved for a
-   * disabled service. It must differ from every package's port and from the dev reverse
+   * disabled service. It must differ from every service's port and from the dev reverse
    * proxy's.
    */
   port?: number | PortResolver<T>;
   /**
    * Route `<subdomain>.<rootDomain>` to this service's `port` through the dev reverse proxy,
-   * as for a package. `subdomain: true` is the service's key. Needs `port`. See {@link ProxyInput}.
+   * as for a service. `subdomain: true` is the service's key. Needs `port`. See {@link ProxyInput}.
    */
   proxy?: ProxyInput;
+  /**
+   * Links shown under the service's name in the footer's `infra` group — the same entries a
+   * service's `urls` takes. A path (`''`, `'/inbox'`) is based on the service's public origin
+   * under the dev reverse proxy, else on `http://localhost:<port>`; a callback gets
+   * `{ envs, tokens, port, subdomain }`. One unlabelled link makes the service's name the link.
+   * A service with no `urls` shows none. Not resolved for a disabled service.
+   */
+  urls?: UrlEntryInput<ServiceContext<T>>[];
 }
 
-/** A service's config, resolved: `enabled` decided, `port` and `proxy` settled, the callbacks as written. */
+/** A service's config, resolved: `enabled` decided, `port`, `proxy` and `urls` settled, the callbacks as written. */
 export interface ResolvedInfraService extends InfraServiceCallbacks {
   enabled: boolean;
   /** The service's port on `localhost`, with any callback resolved; never set for a disabled service. */
@@ -168,6 +199,8 @@ export interface ResolvedInfraService extends InfraServiceCallbacks {
    * has no `devReverseProxy`, the service declares no `proxy`, or it is disabled.
    */
   publicOrigin?: string;
+  /** The service's footer links, resolved; never set for a disabled service. */
+  urls?: UrlEntry[];
 }
 
 /** The `docker-compose` provider's options. `{}` — or `true` in its place — is a complete config. */

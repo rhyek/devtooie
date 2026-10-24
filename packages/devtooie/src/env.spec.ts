@@ -6,6 +6,7 @@ import primitives from '@dotenvx/primitives';
 import {
   ambientEnv,
   assignedNames,
+  dropInjectedEnv,
   envCandidatePaths,
   envFileNames,
   hideDollars,
@@ -14,7 +15,13 @@ import {
   resolveMode,
   workspaceEnvLayer,
 } from './env.js';
-import type { AnyPackageConfig } from './config.js';
+import type { AnyServiceConfig } from './config.js';
+
+/** A layer without its `DEVTOOIE_INJECTED_ENV` list, for the assertions about what it resolves. */
+function withoutList(layer: Record<string, string>): Record<string, string> {
+  const { DEVTOOIE_INJECTED_ENV: _list, ...vars } = layer;
+  return vars;
+}
 
 let cwd: string;
 beforeEach(() => {
@@ -629,13 +636,13 @@ describe('resolveEnv expansion safety', () => {
 });
 
 describe('packageEnvLayer', () => {
-  const mkPkg = (over: Partial<AnyPackageConfig>): AnyPackageConfig =>
-    ({ name: 'api', relativeDir: 'packages/api', path: '/x', ...over }) as AnyPackageConfig;
+  const mkPkg = (over: Partial<AnyServiceConfig>): AnyServiceConfig =>
+    ({ name: 'api', relativeDir: 'packages/api', path: '/x', ...over }) as AnyServiceConfig;
 
   it('injects the package port as PORT, below its resolved .env vars', () => {
     write('.env', 'A=1\n');
     const layer = packageEnvLayer(mkPkg({ port: 3001 }), { cwd });
-    expect(layer).toEqual({ PORT: '3001', A: '1' });
+    expect(withoutList(layer)).toEqual({ PORT: '3001', A: '1' });
   });
 
   it('omits PORT when the package has no port, and an explicit .env PORT wins', () => {
@@ -650,7 +657,7 @@ describe('packageEnvLayer', () => {
       cwd,
       vars: { B: 'config', C: 'config' },
     });
-    expect(layer).toEqual({ PORT: '3001', A: '1', B: 'file', C: 'config' });
+    expect(withoutList(layer)).toEqual({ PORT: '3001', A: '1', B: 'file', C: 'config' });
   });
 
   test("keeps the injected PORT over one set workspace-wide: in a .env file or the config's vars", () => {
@@ -695,8 +702,8 @@ describe('packageEnvLayer', () => {
   test("lets the package's own .env file replace a config var the workspace's leaves alone", () => {
     write('packages/api/.env', 'B=package\n');
     const vars = { B: 'config' };
-    expect(packageEnvLayer(mkPkg({}), { cwd, vars })).toEqual({ B: 'package' });
-    expect(workspaceEnvLayer({ cwd, vars })).toEqual({ B: 'config' });
+    expect(withoutList(packageEnvLayer(mkPkg({}), { cwd, vars }))).toEqual({ B: 'package' });
+    expect(withoutList(workspaceEnvLayer({ cwd, vars }))).toEqual({ B: 'config' });
   });
 });
 
@@ -714,16 +721,47 @@ describe('assignedNames', () => {
   });
 });
 
+describe('DEVTOOIE_INJECTED_ENV', () => {
+  test("lists what a child gets that the shell didn't set, never DEVTOOIE_MODE", () => {
+    vi.stubEnv('FROM_SHELL', 'shell');
+    vi.stubEnv('DEVTOOIE_MODE', 'test');
+    write('.env', 'FROM_FILE=1\nFROM_SHELL=file\n');
+    const layer = workspaceEnvLayer({ cwd, vars: { FROM_CONFIG: 'x' } });
+    const listed = layer.DEVTOOIE_INJECTED_ENV!.split(',');
+    expect(listed).toEqual(expect.arrayContaining(['FROM_FILE', 'FROM_CONFIG']));
+    // The shell's own value wins over the file, so the child's is the shell's: not listed.
+    expect(listed).not.toContain('FROM_SHELL');
+    expect(listed).not.toContain('DEVTOOIE_MODE');
+  });
+
+  test("a service's layer lists its PORT", () => {
+    const pkg = { name: 'api', relativeDir: 'packages/api', path: '/x', port: 3001 } as unknown as AnyServiceConfig; // prettier-ignore
+    expect(packageEnvLayer(pkg, { cwd }).DEVTOOIE_INJECTED_ENV!.split(',')).toContain('PORT');
+  });
+
+  test('dropInjectedEnv removes the listed variables and the list, keeping DEVTOOIE_MODE', () => {
+    const env: NodeJS.ProcessEnv = {
+      DEVTOOIE_INJECTED_ENV: 'A,PORT,DEVTOOIE_MODE',
+      A: 'outer',
+      PORT: '3001',
+      DEVTOOIE_MODE: 'test',
+      HOME: '/home/x',
+    };
+    dropInjectedEnv(env);
+    expect(env).toEqual({ DEVTOOIE_MODE: 'test', HOME: '/home/x' });
+  });
+});
+
 describe('workspaceEnvLayer', () => {
   test("is the workspace-scope .env vars, never a package's", () => {
     write('.env', 'A=1\n');
     write('packages/api/.env', 'A=2\n');
-    expect(workspaceEnvLayer({ cwd })).toEqual({ A: '1' });
+    expect(withoutList(workspaceEnvLayer({ cwd }))).toEqual({ A: '1' });
   });
 
   test("ranks the config's own vars below the .env files", () => {
     write('.env', 'A=1\nB=file\n');
-    expect(workspaceEnvLayer({ cwd, vars: { B: 'config', C: 'config' } })).toEqual({
+    expect(withoutList(workspaceEnvLayer({ cwd, vars: { B: 'config', C: 'config' } }))).toEqual({
       A: '1',
       B: 'file',
       C: 'config',

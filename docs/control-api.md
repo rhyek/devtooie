@@ -22,7 +22,8 @@ not that one is running — query the port to find out.
     "mode": "development", // the mode it runs in — one session per mode
     "startedByAgent": false, // was this session launched by a coding agent?
     "logFile": "/abs/.../node_modules/.devtooie/logs/development/1784784120727.log", // current logfile (rotation-aware)
-    "packages": { "web": "running", "api": "waiting" }, // running | stopped | waiting | restarting | rebuilding; null until the build and infra steps finish
+    "services": { "web": "running", "api": "waiting" }, // running | stopped | waiting | restarting | rebuilding; null until the build and infra steps finish
+    "ready": { "web": true, "api": false }, // running and passing its healthcheck (or it has none); null while services is
     "infra": { "db": "running", "redis": "restarting" }, // running | starting | stopped | stopping | restarting | resetting; null without infra
     "config": {/* … */}, // the resolved config; null until the build and infra steps finish
     "devReverseProxy": {
@@ -31,8 +32,8 @@ not that one is running — query the port to find out.
       "rootDomain": "myproject.example.test", // the canonical root
       "rootDomains": ["myproject.example.test", "myproject.localhost"], // every root routed, canonical first
       "routes": [
-        { "host": "web.myproject.example.test", "package": "web", "port": 3000 },
-        { "host": "s3.myproject.example.test", "service": "store", "port": 9000 }, // an infra service
+        { "host": "web.myproject.example.test", "service": "web", "port": 3000 },
+        { "host": "s3.myproject.example.test", "infraService": "store", "port": 9000 }, // an infra service
       ],
     },
   }
@@ -44,8 +45,11 @@ not that one is running — query the port to find out.
   a person, detected from the environment variables agents set (`CLAUDECODE`, `CURSOR_AGENT`,
   `AGENT`, and friends); it decides whether a starting session may quit this one without
   asking — see [Taking over a running session](./cli.md#taking-over-a-running-session).
-  `packages` and `config` are `null` until the process manager attaches — after the build and after the config's
-  [infra](./infra.md) is up — then populated. `config` is fully
+  `services` and `config` are `null` until the process manager attaches — after the build and after the config's
+  [infra](./infra.md) is up — then populated. `ready` has the same keys as `services`: `true` for a
+  service that is running and passing its [`healthcheck`](./configuration.md#readiness-probing),
+  or running with none, else `false`; it is `null` while `services` is. Every session, headless
+  included, probes healthchecks to fill it. `config` is fully
   **resolved** (defaults applied, `command` normalized to `{ name, watches, builds, cleans }`)
   as loaded at startup — restart devtooie to pick up edits. `logFile` tracks in-session
   log rotation, so it's always the file currently being written. The same resolved `config`,
@@ -58,27 +62,41 @@ not that one is running — query the port to find out.
   `devReverseProxy` is present
   from the start (the proxy binds before anything else) and lists every hostname it routes
   under the canonical `rootDomain` (each answers under every entry of `rootDomains` alike): a
-  package route names its `package`, an infra service route its `service` — see
+  application service route names its `service`, an infra service route its `infraService` — see
   [Dev reverse proxy](./dev-reverse-proxy.md).
 
-- `POST /command/restart/<name>` / `POST /command/rebuild/<name>` — restart
-  or rebuild-then-restart a package (`202` if accepted, `404` for an unknown package).
+- `POST /command/service/<action>/<name>` — `start`, `stop`, `restart` or `rebuild` one
+  application service. `start` and `stop` answer `200` once done — `stop` once the service's
+  process has exited, which can take its whole shutdown grace — and succeed for a service already
+  started or stopped; a `start` also starts a service still waiting on its `waitFor`. `restart`
+  re-runs the dev command, starting a stopped service; `rebuild` stops, clean-builds, then
+  starts. Both answer `202` once accepted and run on in the background. `409` for a `start` or
+  `stop` while a restart or rebuild of the service is under way, and for a `rebuild` of a
+  service that can't clean-rebuild; `404` for a name that isn't in the config, or an unknown
+  action.
+
+  A service that is in the config but not in the session can be started too: `start` adds it to
+  the session along with the runtime and build dependencies the session lacks, builds those build
+  dependencies, then starts them, and answers `200` once started. If a build fails it answers
+  `500` with `service "<name>" could not be added: a build failed (see the session log)`. `stop`
+  on such a service answers `200`, since it isn't running.
 - `POST /command/infra/<action>/<service>` — `start`, `stop`, `restart` or `reset` one of the
   session's infra services: the same `devtooie infra` commands as the footer's `s`/`r`/`t`
-  hotkeys (see [In a dev session](./infra.md#in-a-dev-session)). `reset` deletes the service's
-  data, with no confirmation. `202` once accepted — the action runs in the background, and the
-  service's `infra` status shows it under way, then where it ended; `409` while another action
-  on that service is running; `404` for a service the session doesn't have, or an unknown action.
+  hotkeys (see [In a dev session](./infra.md#in-a-dev-session)). `reset` deletes the infra
+  service's data, with no confirmation. `202` once accepted — the action runs in the background,
+  and the infra service's `infra` status shows it under way, then where it ended; `409` while
+  another action on it is running; `404` for an infra service the session doesn't have, or an
+  unknown action.
 - `POST /command/quit` — graceful shutdown (same as Ctrl+C). **Blocks** until the session's
-  packages are torn down and their ports freed, then returns `200` (see
+  services are torn down and their ports freed, then returns `200` (see
   [Graceful shutdown](#graceful-shutdown)) — so once the request returns, the ports are clear.
-  It can take up to ~15s if a package is slow to exit.
+  It can take up to ~15s if a service is slow to exit.
 
 This is what lets a second `devtooie` invocation hand off from a running one — once that
 takeover is authorized, see [Taking over a running session](cli.md#taking-over-a-running-session)
 — what [`devtooie logs`](cli.md#devtooie-logs) locates the current logfile with, and what an
 external tool (or the agent skill) uses to drive a session headlessly. An infra callback gets
-it as methods named after these paths — `control.command.restart('api')` — see
+it as methods named after these paths — `control.command.service.stop('api')` — see
 [Driving the session: `control`](./infra.md#driving-the-session-control).
 
 ## Graceful shutdown
@@ -86,22 +104,24 @@ it as methods named after these paths — `control.command.restart('api')` — s
 Ctrl+C, `POST /command/quit`, and the termination signals **`SIGHUP`**, `SIGINT` and `SIGTERM` all
 funnel through the same graceful shutdown, so the teardown is identical however it's triggered.
 `SIGHUP` matters most in practice: it's what a closing terminal window, a killed tmux pane, or a
-dropped SSH connection delivers, and it must tear packages down rather than leave them running
-without a parent. Each package is given a chance to exit cleanly before it's forced, in three
-phases:
+dropped SSH connection delivers, and it must tear services down rather than leave them running
+without a parent. In the interactive UI, once services are running, Ctrl+C asks first: the first
+press shows _Press Ctrl+C again to exit_ for two seconds, and a second press within them shuts
+down. The service picker, and a `--headless` session, exit on the first press. Each service is
+given a chance to exit cleanly before it's forced, in three phases:
 
-1. **`SIGTERM`** to every package's **process group** — the package and anything it spawned (a
-   package manager, a nested dev server) all receive it together. This is a package's cue to run
+1. **`SIGTERM`** to every service's **process group** — the service and anything it spawned (a
+   package manager, a nested dev server) all receive it together. This is a service's cue to run
    its own cleanup and exit.
-2. **Grace period** — devtooie waits up to **10 seconds** for each package to exit on its own.
-3. **`SIGKILL`** to the process group of any package still alive when the grace period elapses.
+2. **Grace period** — devtooie waits up to **10 seconds** for each service to exit on its own.
+3. **`SIGKILL`** to the process group of any service still alive when the grace period elapses.
 
 The whole sequence is bounded by a safety net (~15s) so a wedged child can't hang the exit. Once
-every package is down (ports freed), the control server closes and the process exits. A **second**
-Ctrl+C (or a repeat `POST /command/quit`) while a shutdown is already in progress skips the grace
-and `SIGKILL`s everything immediately.
+every service is down (ports freed), the control server closes and the process exits. Ctrl+C
+(or a repeat `POST /command/quit`) while a shutdown is already in progress skips the grace and
+`SIGKILL`s everything immediately.
 
-A **blocking `POST /command/quit`** is acknowledged at the end of phase 3 — packages down and ports
+A **blocking `POST /command/quit`** is acknowledged at the end of phase 3 — services down and ports
 freed, just before the control server closes — so a caller that awaits the response knows the ports
 are clear the moment it returns. This is what lets a newer `devtooie` invocation hand off cleanly
 from a running one: it issues the quit, waits for that ack, then binds the ports itself (force-killing
@@ -110,12 +130,12 @@ the old process only if it overruns its graceful window).
 ### Orphan cleanup at startup
 
 `SIGKILL` can't be trapped, so a devtooie killed outright (or lost to a crashed terminal) leaves its
-packages running, reparented to PID 1. To keep those from accumulating one generation per lost
+services running, reparented to PID 1. To keep those from accumulating one generation per lost
 session, devtooie records the processes it spawns in its mode's `node_modules/.devtooie/running.<mode>.json`
 and, on the next start in that mode, reaps whatever is still running. A session in another mode is
 never swept.
 
-Records are matched as **process groups**, not single pids. Packages are spawned detached, so each
+Records are matched as **process groups**, not single pids. Services are spawned detached, so each
 recorded pid is also its group id — and the group outlives its leader. A dev command that wraps the
 real worker (`env-cmd -- tsx watch …`, a package manager, any `foo -- bar` shim) exits as soon as it
 has spawned, leaving the worker running in that group with no parent. Checking whether the recorded
@@ -124,10 +144,10 @@ of the group must still be running in the directory the record was written with,
 a recycled number can't take an unrelated process with it, and a group containing devtooie itself
 is never touched.
 
-This sweep reaches packages that never bind a port, which the port check below cannot.
+This sweep reaches services that never bind a port, which the port check below cannot.
 
 devtooie also frees its configured dev ports at startup, but only from processes belonging to **this
 workspace**. A configured port is a claim on a number, not ownership of it: if another project (or
-any other program) is listening there, devtooie reports it and leaves it running, and the package
-that wanted the port fails to bind as it normally would. The same goes for a port held by a package
+any other program) is listening there, devtooie reports it and leaves it running, and the service
+that wanted the port fails to bind as it normally would. The same goes for a port held by a service
 of this project's session in another mode: devtooie names that mode and leaves it running.

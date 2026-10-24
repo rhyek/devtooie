@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import path from 'node:path';
 import { Box, Text, useApp, useWindowSize } from 'ink';
 import Spinner from 'ink-spinner';
-import { findPackage, getRegisteredPackages, getLoadedConfig } from '../config.js';
+import { findService, getRegisteredPackages, getLoadedConfig } from '../config.js';
 import { startCommandServer } from '../command-server.js';
 import { debugLog } from '../debug-log.js';
 import { ACCENT_COLOR, DANGER_COLOR, OK_COLOR, ON_ACCENT_COLOR } from '../colors.js';
@@ -73,7 +73,7 @@ export function BuildProgress({
   const devReverseProxyRef = useRef<DevReverseProxyServer | null>(null);
   const handedOffRef = useRef(false);
 
-  const selectedPackages = selectedNames.map(findPackage);
+  const selectedPackages = selectedNames.map(findService);
   const deps = resolveDeps(selectedPackages);
 
   const buildDepNames = [...deps.buildSet];

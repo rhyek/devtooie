@@ -1,4 +1,4 @@
-import { describe, it, test, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { describe, it, test, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -17,7 +17,7 @@ import {
   type Selection,
 } from './selection.js';
 import { stripAnsi } from './lib.js';
-import type { AnyPackageConfig } from './config.js';
+import { defineConfig, type AnyServiceConfig } from './config.js';
 import type { RunnerArgs } from './runners/types.js';
 
 let dir: string;
@@ -85,8 +85,8 @@ describe('package prefix colors', () => {
     chalk.level = original;
   });
 
-  const p = (color?: string): AnyPackageConfig =>
-    ({ name: 'a', relativeDir: 'a', path: '/x', color }) as AnyPackageConfig;
+  const p = (color?: string): AnyServiceConfig =>
+    ({ name: 'a', relativeDir: 'a', path: '/x', color }) as AnyServiceConfig;
 
   it('resolveColorSpec: hex (with or without #)', () => {
     expect(resolveColorSpec('#af87ff')('x')).toBe(chalk.hex('#af87ff')('x'));
@@ -118,11 +118,11 @@ describe('package prefix colors', () => {
   });
 });
 
-function pkg(): AnyPackageConfig {
+function pkg(): AnyServiceConfig {
   return { name: 'fixture', relativeDir: '.', absoluteDir: dir };
 }
 
-function runnerArgs(a: AnyPackageConfig): RunnerArgs {
+function runnerArgs(a: AnyServiceConfig): RunnerArgs {
   return {
     sortedPackages: [a],
     selectedSet: new Set([a.name]),
@@ -177,22 +177,22 @@ describe('on-screen log timestamps', () => {
   // A control line tagged with a package's name shares that package's timestamp resolution,
   // so it's a spawn-free way to observe the per-package override.
   it("a package's logs.timestamps: true overrides a top-level default of false", () => {
-    const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', absoluteDir: dir, logs: { timestamps: true } }; // prettier-ignore
+    const p: AnyServiceConfig = { name: 'fixture', relativeDir: '.', absoluteDir: dir, logs: { timestamps: true } }; // prettier-ignore
     manager = new ProcessManager({ ...runnerArgs(p), logTimestamps: false });
-    manager.logControl('hi', { package: 'fixture' });
+    manager.logControl('hi', { service: 'fixture' });
     expect(lastRow(manager)).toMatch(TS);
   });
 
   it("a package's logs.timestamps: false overrides a top-level default of true", () => {
-    const p: AnyPackageConfig = { name: 'fixture', relativeDir: '.', absoluteDir: dir, logs: { timestamps: false } }; // prettier-ignore
+    const p: AnyServiceConfig = { name: 'fixture', relativeDir: '.', absoluteDir: dir, logs: { timestamps: false } }; // prettier-ignore
     manager = new ProcessManager({ ...runnerArgs(p), logTimestamps: true });
-    manager.logControl('hi', { package: 'fixture' });
+    manager.logControl('hi', { service: 'fixture' });
     expect(lastRow(manager)).not.toMatch(TS);
   });
 
   it('a package without logs.timestamps inherits the top-level default', () => {
     manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: true });
-    manager.logControl('hi', { package: 'fixture' });
+    manager.logControl('hi', { service: 'fixture' });
     expect(lastRow(manager)).toMatch(TS);
   });
 
@@ -400,6 +400,76 @@ describe('wrapping a line too wide for the terminal', () => {
 });
 
 describe('ProcessManager', () => {
+  describe('a service the session was not started with', () => {
+    let ws: string;
+    const idle = 'node -e "setInterval(()=>{},1e9)"';
+    const write = (name: string, scripts: Record<string, string>) => {
+      fs.mkdirSync(path.join(ws, 'apps', name), { recursive: true });
+      fs.writeFileSync(
+        path.join(ws, 'apps', name, 'package.json'),
+        JSON.stringify({ name, version: '1.0.0', scripts }),
+      );
+    };
+    beforeAll(() => {
+      ws = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-add-service-'));
+      write('web', { dev: idle });
+      write('api', { dev: idle });
+      write('db', { dev: idle });
+      write('lib', { build: 'exit 3' });
+      write('broken', { dev: idle });
+    });
+    afterAll(() => fs.rmSync(ws, { recursive: true, force: true }));
+
+    const session = () => {
+      const config = defineConfig({
+        workspaceDir: ws,
+        serviceRootDir: 'apps',
+        services: {
+          web: {},
+          api: { deps: { runtime: ['db'] } },
+          db: {},
+          lib: {},
+          broken: { deps: { build: ['lib'] } },
+        },
+      });
+      const web = config.services.web as unknown as AnyServiceConfig;
+      return new ProcessManager(
+        { ...runnerArgs(web), logFile: path.join(ws, 'session.log'), cwd: ws },
+        { plain: true },
+      );
+    };
+
+    test('a start brings it into the session with its runtime deps, and starts them', async () => {
+      manager = session();
+      let notified = 0;
+      manager.subscribeServices(() => notified++);
+      expect(await manager.runPackage('api', 'start')).toBe('done');
+      expect(manager.getSessionServices().map((p) => p.name)).toEqual(['web', 'api', 'db']);
+      expect(manager.getStatus('api')).toBe('running');
+      expect(manager.getStatus('db')).toBe('running');
+      expect(notified).toBe(1);
+      // Already in the session now: a second start changes nothing.
+      expect(await manager.runPackage('api', 'start')).toBe('done');
+      expect(manager.getSessionServices()).toHaveLength(3);
+    }, 15_000);
+
+    test('a stop of one it does not have is done; a name the config lacks is unknown', async () => {
+      manager = session();
+      expect(await manager.runPackage('api', 'stop')).toBe('done');
+      expect(manager.getStatus('api')).toBeNull();
+      expect(await manager.runPackage('ghost', 'start')).toBe('unknown');
+    });
+
+    test('a build dependency that fails to build fails the start, and nothing is started', async () => {
+      manager = session();
+      expect(await manager.runPackage('broken', 'start')).toBe('failed');
+      expect(manager.getStatus('broken')).toBe('stopped');
+      expect(fs.readFileSync(path.join(ws, 'session.log'), 'utf8')).toMatch(
+        /build failed \(exit 3\)/,
+      );
+    }, 15_000);
+  });
+
   it('starts a package, tracks it as running, then stops it cleanly', async () => {
     manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
 
@@ -427,34 +497,94 @@ describe('ProcessManager', () => {
     expect(manager.getStatus('fixture')).toBe('running');
   }, 10_000);
 
-  it('ControlManager adapter: restart/rebuild return false for an unknown package', () => {
+  test('ControlManager adapter: every package action is unknown for a package not in the session', async () => {
     manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
-    expect(manager.restart('does-not-exist')).toBe(false);
-    expect(manager.rebuild('does-not-exist')).toBe(false);
+    for (const action of ['start', 'stop', 'restart', 'rebuild'] as const) {
+      expect(await manager.runPackage('does-not-exist', action), action).toBe('unknown');
+    }
     expect(manager.getStatus('does-not-exist')).toBeNull();
+    // Known, but with no clean rebuild.
+    expect(await manager.runPackage('fixture', 'rebuild')).toBe('unavailable');
+  });
+
+  test('ControlManager adapter: stop answers once the process has exited, and start starts it again', async () => {
+    manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
+    expect(await manager.runPackage('fixture', 'start')).toBe('done');
+    expect(manager.getStatus('fixture')).toBe('running');
+    await waitForLog(logFile, /fixture/);
+
+    expect(await manager.runPackage('fixture', 'stop')).toBe('done');
+    expect(manager.getStatus('fixture')).toBe('stopped');
+    expect(fs.readFileSync(logFile, 'utf8')).toMatch(/\bstopped\b/);
+    // Already stopped: nothing to do, and still done.
+    expect(await manager.runPackage('fixture', 'stop')).toBe('done');
+
+    expect(await manager.runPackage('fixture', 'start')).toBe('done');
+    expect(manager.getStatus('fixture')).toBe('running');
+  }, 15_000);
+
+  test('ControlManager adapter: a running service with no healthcheck is ready; a stopped one is not', async () => {
+    manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
+    expect(manager.getAllReadiness()).toEqual({ fixture: false });
+    manager.start('fixture');
+    expect(manager.getAllReadiness()).toEqual({ fixture: true });
+    await manager.stop('fixture');
+    expect(manager.getAllReadiness()).toEqual({ fixture: false });
+  }, 15_000);
+
+  test('ControlManager adapter: a service with a healthcheck is ready only once it passes', async () => {
+    const server = http.createServer((_req, res) => res.end('ok'));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const url = `http://127.0.0.1:${String((server.address() as { port: number }).port)}/`;
+    try {
+      manager = new ProcessManager(
+        { ...runnerArgs(pkg()), healthchecks: { fixture: { url, timeout: 1000 } } },
+        { plain: true, probeReadiness: true },
+      );
+      manager.start('fixture');
+      expect(manager.getAllReadiness()).toEqual({ fixture: false });
+      const deadline = Date.now() + 8000;
+      while (!manager.getAllReadiness().fixture && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(manager.getAllReadiness()).toEqual({ fixture: true });
+    } finally {
+      server.close();
+    }
+  }, 15_000);
+
+  test('ControlManager adapter: stopping a package still waiting on its dependencies keeps it from starting', async () => {
+    manager = new ProcessManager(
+      { ...runnerArgs(pkg()), waitForMap: { fixture: ['never-ready'] } },
+      { plain: true },
+    );
+    manager.startAll();
+    expect(manager.getStatus('fixture')).toBe('waiting');
+    expect(await manager.runPackage('fixture', 'stop')).toBe('done');
+    expect(manager.getStatus('fixture')).toBe('stopped');
   });
 
   it('logControl writes the command as a [dt:control] line with its variables beneath', () => {
     manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
-    manager.logControl('restart', { package: 'fixture' });
+    manager.logControl('restart', { service: 'fixture' });
     manager.logControl('quit');
     const contents = fs.readFileSync(logFile, 'utf8');
     expect(contents).toContain('[dt:control] [INFO] restart');
     // the command's variables render as indented properties on their own prefixed line
-    expect(contents).toContain('[dt:control]   package: fixture');
+    expect(contents).toContain('[dt:control]   service: fixture');
     expect(contents).toContain('[dt:control] [INFO] quit');
     // the routing field never leaks into the output
     expect(contents).not.toContain('component');
   });
 
   it('logControl pads the [dt:control] label to align with the widest service name', () => {
-    const wide: AnyPackageConfig = {
+    const wide: AnyServiceConfig = {
       name: 'payments-worker',
       relativeDir: '.',
       absoluteDir: dir,
     };
     manager = new ProcessManager(runnerArgs(wide), { plain: true });
-    manager.logControl('restart', { package: 'payments-worker' });
+    manager.logControl('restart', { service: 'payments-worker' });
     const contents = fs.readFileSync(logFile, 'utf8');
     // "dt:control" (10) padded to "payments-worker" width (15) → 5 trailing spaces.
     expect(contents).toContain('[dt:control     ] [INFO] restart');
@@ -618,7 +748,7 @@ describe('ProcessManager env injection', () => {
   });
 
   it('injects resolved .env vars into the spawned dev process', async () => {
-    const a: AnyPackageConfig = { name: 'envfixture', relativeDir: '.', absoluteDir: envDir };
+    const a: AnyServiceConfig = { name: 'envfixture', relativeDir: '.', absoluteDir: envDir };
     mgr = new ProcessManager(
       {
         sortedPackages: [a],
@@ -644,7 +774,7 @@ describe('ProcessManager env injection', () => {
 
   test("gives the spawned dev process the config's own vars, under its .env vars", async () => {
     const varsLog = path.join(envDir, 'devlog-vars.txt');
-    const a: AnyPackageConfig = { name: 'envfixture', relativeDir: '.', absoluteDir: envDir };
+    const a: AnyServiceConfig = { name: 'envfixture', relativeDir: '.', absoluteDir: envDir };
     disposeManager(mgr);
     mgr = new ProcessManager(
       {
@@ -696,7 +826,7 @@ describe('ProcessManager PORT injection', () => {
   });
 
   it("injects a package's run.port as the PORT env var", async () => {
-    const a: AnyPackageConfig = {
+    const a: AnyServiceConfig = {
       name: 'portfix',
       relativeDir: '.',
       absoluteDir: portDir,
@@ -767,7 +897,7 @@ describe('ProcessManager child NODE_ENV inheritance', () => {
   });
 
   function makeManager(): ProcessManager {
-    const a: AnyPackageConfig = { name: 'nodeenvfix', relativeDir: '.', absoluteDir: dir };
+    const a: AnyServiceConfig = { name: 'nodeenvfix', relativeDir: '.', absoluteDir: dir };
     return new ProcessManager(
       {
         sortedPackages: [a],
@@ -846,7 +976,7 @@ describe('ProcessManager NODE_ENV from a .env file', () => {
 
   it("uses the package's .env.development NODE_ENV even when the shell leaves it unset", async () => {
     delete process.env.NODE_ENV; // shell has no NODE_ENV
-    const a: AnyPackageConfig = { name: 'nodeenvdotenv', relativeDir: '.', absoluteDir: dir };
+    const a: AnyServiceConfig = { name: 'nodeenvdotenv', relativeDir: '.', absoluteDir: dir };
     mgr = new ProcessManager(
       {
         sortedPackages: [a],
@@ -898,7 +1028,7 @@ describe('ProcessManager env-change restart', () => {
   });
 
   it('restarts a running package when its .env changes, picking up the new value', async () => {
-    const a: AnyPackageConfig = { name: 'wfixture', relativeDir: '.', absoluteDir: d };
+    const a: AnyServiceConfig = { name: 'wfixture', relativeDir: '.', absoluteDir: d };
     m = new ProcessManager(
       {
         sortedPackages: [a],
@@ -954,7 +1084,7 @@ describe('ProcessManager logs.formatter', () => {
   });
 
   function argsWith(formatter?: (line: string) => string): RunnerArgs {
-    const a: AnyPackageConfig = {
+    const a: AnyServiceConfig = {
       name: 'fmtfix',
       relativeDir: '.',
       absoluteDir: fmtDir,
@@ -1111,7 +1241,7 @@ describe('ProcessManager stderr color through a formatter', () => {
   });
 
   function argsFor(formatter?: (line: string) => string): RunnerArgs {
-    const a: AnyPackageConfig = {
+    const a: AnyServiceConfig = {
       name: 'errfix',
       relativeDir: '.',
       absoluteDir: errDir,
@@ -1193,7 +1323,7 @@ describe('ProcessManager healthcheck probing', () => {
     extra: Partial<RunnerArgs>,
     opts: { plain?: boolean } = {},
   ): ProcessManager {
-    const packages: AnyPackageConfig[] = names.map((name) => ({
+    const packages: AnyServiceConfig[] = names.map((name) => ({
       name,
       relativeDir: '.',
       absoluteDir: hcDir,
@@ -1352,7 +1482,7 @@ describe('ProcessManager rebuild (clean + build)', () => {
   });
 
   it('runs clean then build (in order) and restarts when there is no build:clean', async () => {
-    const a: AnyPackageConfig = { name: 'rbfix', relativeDir: '.', absoluteDir: rbDir };
+    const a: AnyServiceConfig = { name: 'rbfix', relativeDir: '.', absoluteDir: rbDir };
     mgr = new ProcessManager(
       {
         sortedPackages: [a],
@@ -1470,7 +1600,7 @@ describe('ProcessManager package script execution', () => {
     );
     fakeBin(pkgDir, 'localbin');
     log = path.join(pkgDir, 'devlog.txt');
-    const a: AnyPackageConfig = {
+    const a: AnyServiceConfig = {
       name: 'scriptfix',
       relativeDir: path.basename(pkgDir),
       absoluteDir: pkgDir,
@@ -1669,4 +1799,169 @@ describe('ProcessManager package script execution', () => {
           );
     expect([null, 'sh', 'dash']).toContain(between);
   }, 15_000);
+});
+
+describe('ProcessManager shutdown', () => {
+  let root: string;
+  let pidFile: string;
+  let mgr: ProcessManager | undefined;
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  /** Whether `pid` is still a live process. */
+  function alive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** The pid of every dev process started so far, oldest first (each start appends its own). */
+  function pids(): number[] {
+    return fs.existsSync(pidFile)
+      ? fs.readFileSync(pidFile, 'utf8').split('\n').filter(Boolean).map(Number)
+      : [];
+  }
+
+  async function until(pred: () => boolean, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!pred() && Date.now() < deadline) {
+      await wait(25);
+    }
+  }
+
+  /**
+   * A session over one service whose dev process records its pid. On SIGTERM it ignores the signal
+   * (`stubborn`), takes half a second to clean up — writing `cleaned` next to the pid file — and
+   * exits (`slow`), or just exits.
+   */
+  async function session(onTerm: 'stubborn' | 'slow' | 'exit'): Promise<ProcessManager> {
+    const handlers = {
+      stubborn: "process.on('SIGTERM', () => {});",
+      slow: `process.on('SIGTERM', () => setTimeout(() => { require('fs').writeFileSync(${JSON.stringify(path.join(root, 'cleaned'))}, ''); process.exit(0); }, 500));`,
+      exit: '',
+    };
+    const script = [
+      `require('fs').appendFileSync(${JSON.stringify(pidFile)}, process.pid + '\\n');`,
+      handlers[onTerm],
+      'setInterval(() => {}, 1e9);',
+    ].join(' ');
+    fs.writeFileSync(path.join(root, 'child.js'), script);
+    fs.writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ name: 'sdfix', version: '1.0.0', scripts: { dev: 'node child.js' } }),
+    );
+    const a: AnyServiceConfig = { name: 'sdfix', relativeDir: '.', absoluteDir: root };
+    mgr = new ProcessManager(
+      {
+        sortedPackages: [a],
+        selectedSet: new Set([a.name]),
+        buildDepSet: new Set(),
+        rebuildableSet: new Set(),
+        waitForMap: {},
+        healthchecks: {},
+        extraCommandsMap: {},
+        logFile: path.join(root, 'devlog.txt'),
+        cwd: root,
+      },
+      { plain: true },
+    );
+    mgr.start('sdfix');
+    await until(() => pids().length > 0, 8000);
+    // Past node's startup, so the SIGTERM handler is in place before anything signals it.
+    await wait(200);
+    return mgr;
+  }
+
+  beforeEach(() => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-pm-shutdown-')));
+    pidFile = path.join(root, 'pids.txt');
+  });
+  afterEach(() => {
+    // Whatever a failing case left running dies here, by the pids it recorded.
+    for (const pid of pids()) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        /* already gone */
+      }
+    }
+    disposeManager(mgr);
+    mgr = undefined;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  // A graceful shutdown takes each process out of the manager's state before it waits on them,
+  // and an impatient second Ctrl+C — or a crash, through the exit hook — must still reach them.
+  test.each(['forceKillAll', 'killAll'] as const)(
+    '%s kills a process still within a graceful shutdown’s grace period',
+    async (kill) => {
+      const m = await session('stubborn');
+      const [pid] = pids();
+      const graceful = m.shutdownAll();
+      await wait(300);
+      expect(alive(pid!)).toBe(true); // it ignored the SIGTERM
+
+      m[kill]();
+      await until(() => !alive(pid!), 2000);
+      expect(alive(pid!)).toBe(false);
+      await graceful;
+    },
+    20_000,
+  );
+
+  test('forceKillAll kills a process a stop is still waiting on', async () => {
+    const m = await session('stubborn');
+    const [pid] = pids();
+    const stopping = m.stop('sdfix');
+    await wait(300);
+    expect(alive(pid!)).toBe(true);
+
+    m.forceKillAll();
+    await until(() => !alive(pid!), 2000);
+    expect(alive(pid!)).toBe(false);
+    await stopping;
+  }, 20_000);
+
+  test('waits for a service that takes a while to exit, and lets it finish its cleanup', async () => {
+    const m = await session('slow');
+    const [pid] = pids();
+    const cleaned = path.join(root, 'cleaned');
+    const started = Date.now();
+    await m.shutdownAll();
+    const took = Date.now() - started;
+    // Not done until the service is: its half-second cleanup ran in full, and it's gone.
+    expect(took).toBeGreaterThanOrEqual(450);
+    expect(fs.existsSync(cleaned)).toBe(true);
+    expect(alive(pid!)).toBe(false);
+  }, 20_000);
+
+  test('a stop under way when the shutdown begins is given its grace, not killed outright', async () => {
+    // What `shutdown()` does: the graceful pass, then a hard kill of whatever it left.
+    const m = await session('slow');
+    m.restart('sdfix');
+    await m.shutdownAll();
+    m.forceKillAll();
+    await wait(800);
+    expect(fs.existsSync(path.join(root, 'cleaned'))).toBe(true);
+  }, 20_000);
+
+  test('a restart under way when the shutdown begins starts nothing after it', async () => {
+    const m = await session('exit');
+    m.restart('sdfix');
+    await m.shutdownAll();
+    await wait(1000);
+    expect(pids()).toHaveLength(1);
+    expect(m.getStatus('sdfix')).toBe('stopped');
+  }, 20_000);
+
+  test('a start asked for after the shutdown began starts nothing', async () => {
+    const m = await session('exit');
+    await m.shutdownAll();
+    m.start('sdfix');
+    m.runCustomCommand('sdfix', 'node child.js');
+    await wait(1000);
+    expect(pids()).toHaveLength(1);
+  }, 20_000);
 });

@@ -1,9 +1,9 @@
-import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, test, expect, beforeAll, afterAll, afterEach, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execa } from 'execa';
 
 /**
@@ -70,14 +70,14 @@ async function traced(args: string[], opts: { cwd?: string } = {}) {
 }
 
 /**
- * Starts a `--plain` session, stops it once `until` has been printed (a package having started,
+ * Starts a `--headless` session, stops it once `until` has been printed (a package having started,
  * unless told otherwise), and resolves with its output and what it loaded.
  */
 async function tracedPlainSession(names: string[], until = '] started') {
   const out = nextTraceFile();
   const child = execa(
     'node',
-    ['--import', traceHook, cli, '--plain', ...names.flatMap((name) => ['-p', name])],
+    ['--import', traceHook, cli, '--headless', ...names.flatMap((name) => ['-s', name])],
     { cwd: ws, env: { TRACE_OUT: out }, reject: false },
   );
   let output = '';
@@ -154,7 +154,7 @@ beforeAll(async () => {
     [
       "import { defineConfig } from 'devtooie';",
       'export default defineConfig({',
-      "  packageRootDir: 'packages',",
+      "  serviceRootDir: 'packages',",
       '  env: {',
       '    vars: ({ envs }) => ({',
       '      ROOT_DIR: envs.DEVTOOIE_WORKSPACE_DIR,',
@@ -164,13 +164,15 @@ beforeAll(async () => {
       '    }),',
       "    override: ['PINNED_DIR', 'APPENDED'],",
       '  },',
-      '  packages: {',
+      '  services: {',
       '    lib: {},',
       '    envbuild: {},',
       '    wide: {},',
       "    app: { deps: { build: ['lib'] } },",
       '    broken: {},',
       '    killed: {},',
+      '    idle: {},',
+      '    portonly: { port: 21051 },',
       '  },',
       '});',
       '',
@@ -198,6 +200,8 @@ beforeAll(async () => {
     env: script('console.log(process.env.APP_VAR)'),
     rootdir: script('console.log(process.env.ROOT_DIR)'),
     appended: script('console.log(process.env.APPENDED)'),
+    // A devtooie started from inside one: the script runs `devtooie exec` for `wide`.
+    nested: `node "$NESTED_CLI" exec -s wide -- ${script("console.log(String(process.env.APP_VAR)+'|'+String(process.env.FROM_SHELL))")}`,
     whoami: script(
       "console.log(process.env.npm_package_name+' '+process.env.npm_package_version+' '+process.env.npm_lifecycle_event)",
     ),
@@ -234,6 +238,9 @@ beforeAll(async () => {
     ),
   });
   writePackage('killed', { dev: 'true', build: script("process.kill(process.pid,'SIGKILL')") });
+  writePackage('idle', { dev: script('setInterval(()=>{},1e9)') });
+  // A port, and no process: an origin to report.
+  writePackage('portonly', {});
 }, 120_000);
 
 afterAll(() => {
@@ -244,26 +251,26 @@ afterAll(() => {
 describe('devtooie run', () => {
   test('forwards the operands to the script, intact', async () => {
     const args = ['a b', '--c=$HOME', "it's", '*'];
-    const result = await devtooie(['run', '-p', 'app', 'argv', '--', ...args]);
+    const result = await devtooie(['run', '-s', 'app', 'argv', '--', ...args]);
     expect(JSON.parse(lastLine(result.stdout))).toEqual(['x', ...args]);
     expect(result.exitCode).toBe(0);
   });
 
   test("exits with the script's exit code", async () => {
-    expect((await devtooie(['run', '-p', 'app', 'fail'])).exitCode).toBe(7);
+    expect((await devtooie(['run', '-s', 'app', 'fail'])).exitCode).toBe(7);
   });
 
   test('exits with 128 + the signal number when a signal kills the script', async () => {
-    expect((await devtooie(['run', '-p', 'app', 'kill'])).exitCode).toBe(137);
+    expect((await devtooie(['run', '-s', 'app', 'kill'])).exitCode).toBe(137);
   });
 
   test("gives the script the package's .env values", async () => {
-    const result = await devtooie(['run', '-p', 'app', 'env']);
+    const result = await devtooie(['run', '-s', 'app', 'env']);
     expect(lastLine(result.stdout)).toBe('from-app-env-file');
   });
 
   test('runs the script in the package directory, wherever it was invoked from', async () => {
-    const result = await devtooie(['run', '-p', 'app', 'cwd']);
+    const result = await devtooie(['run', '-s', 'app', 'cwd']);
     expect(lastLine(result.stdout)).toBe(app);
   });
 
@@ -273,12 +280,12 @@ describe('devtooie run', () => {
   });
 
   test("resolves binaries from the package's and the workspace root's node_modules/.bin", async () => {
-    const result = await devtooie(['run', '-p', 'app', 'bins']);
+    const result = await devtooie(['run', '-s', 'app', 'bins']);
     expect(result.stdout.trim().split('\n').slice(-2)).toEqual(['localbin-OK', 'rootbin-OK']);
   });
 
   test('tells the script which package and script it is', async () => {
-    const result = await devtooie(['run', '-p', 'app', 'whoami'], {
+    const result = await devtooie(['run', '-s', 'app', 'whoami'], {
       // What `pnpm devtooie` at the workspace root would have left in the environment.
       env: { npm_package_name: 'wsroot', npm_package_version: '0.0.1', npm_lifecycle_event: 'x' },
     });
@@ -286,20 +293,20 @@ describe('devtooie run', () => {
   });
 
   test("prints nothing but the script's own output", async () => {
-    const result = await devtooie(['run', '-p', 'app', 'hook']);
+    const result = await devtooie(['run', '-s', 'app', 'hook']);
     expect(result.stdout).toBe('MAIN');
     expect(result.stderr).toBe('');
   });
 
   test('does not run pre<name> and post<name> scripts', async () => {
-    const result = await devtooie(['run', '-p', 'app', 'hook']);
+    const result = await devtooie(['run', '-s', 'app', 'hook']);
     expect(lastLine(result.stdout)).toBe('MAIN');
     expect(result.stdout).not.toContain('PRE');
     expect(result.stdout).not.toContain('POST');
   });
 
   test("ignores a package manager's script-shell setting", async () => {
-    const result = await devtooie(['run', '-p', 'app', 'hook'], {
+    const result = await devtooie(['run', '-s', 'app', 'hook'], {
       env: {
         npm_config_script_shell: '/usr/bin/false',
         pnpm_config_script_shell: '/usr/bin/false',
@@ -310,13 +317,13 @@ describe('devtooie run', () => {
   });
 
   test('refuses a script the package does not have', async () => {
-    const result = await devtooie(['run', '-p', 'app', 'nope']);
+    const result = await devtooie(['run', '-s', 'app', 'nope']);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain(`No "nope" script or make target found in ${app}.`);
   });
 
   test('fails when no script is named', async () => {
-    const result = await devtooie(['run', '-p', 'app']);
+    const result = await devtooie(['run', '-s', 'app']);
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain("missing required argument 'script'");
   });
@@ -326,7 +333,7 @@ describe('devtooie exec', () => {
   const PRINT = ['sh', '-c', 'pwd; echo $APP_VAR'];
 
   test('runs a literal command in the package directory, with its .env values', async () => {
-    const result = await devtooie(['exec', '-p', 'app', '--', ...PRINT]);
+    const result = await devtooie(['exec', '-s', 'app', '--', ...PRINT]);
     expect(result.stdout).toBe(`${app}\nfrom-app-env-file`);
     expect(result.exitCode).toBe(0);
   });
@@ -337,23 +344,33 @@ describe('devtooie exec', () => {
   });
 
   test("exits with the command's exit code", async () => {
-    expect((await devtooie(['exec', '-p', 'app', '--', 'sh', '-c', 'exit 5'])).exitCode).toBe(5);
+    expect((await devtooie(['exec', '-s', 'app', '--', 'sh', '-c', 'exit 5'])).exitCode).toBe(5);
   });
 
   test('fails when no command is given', async () => {
-    const result = await devtooie(['exec', '-p', 'app']);
+    const result = await devtooie(['exec', '-s', 'app']);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain('exec requires a command (after `--`).');
   });
 
   test('does not take a script name: -c is not an option', async () => {
-    const result = await devtooie(['exec', '-p', 'app', '-c', 'hook']);
+    const result = await devtooie(['exec', '-s', 'app', '-c', 'hook']);
     expect(result.exitCode).not.toBe(0);
     expect(result.stdout).not.toContain('MAIN');
   });
 });
 
 describe('environment variables', () => {
+  test('a devtooie started by a devtooie child drops what the outer one added, not the shell', async () => {
+    const result = await devtooie(['run', '-s', 'app', 'nested'], {
+      env: { NESTED_CLI: cli, FROM_SHELL: 'shell' },
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    // APP_VAR came from app's .env file through the outer run: the inner exec, for `wide`, which
+    // has no .env file of its own, doesn't see it. FROM_SHELL came from the shell, and survives.
+    expect(lastLine(result.stdout)).toBe('undefined|shell');
+  });
+
   const print = (...names: string[]) => ['sh', '-c', names.map((n) => `echo "$${n}"`).join('; ')];
 
   test('tells a command where devtooie was invoked and where the workspace root is', async () => {
@@ -373,28 +390,28 @@ describe('environment variables', () => {
   });
 
   test('expands a reference to the workspace root in a .env file', async () => {
-    const result = await devtooie(['exec', '-p', 'app', '--', ...print('APP_DATA')]);
+    const result = await devtooie(['exec', '-s', 'app', '--', ...print('APP_DATA')]);
     expect(result.stdout).toBe(`${ws}/data`);
   });
 
   test("gives a package's command the config's own vars, under its .env file", async () => {
-    const result = await devtooie(['exec', '-p', 'app', '--', ...print('ROOT_DIR', 'APP_PINNED')]);
+    const result = await devtooie(['exec', '-s', 'app', '--', ...print('ROOT_DIR', 'APP_PINNED')]);
     expect(result.stdout).toBe(`${ws}\nfrom-app-env-file`);
   });
 
   test("lets the shell win over one of the config's own vars", async () => {
-    const args = ['exec', '-p', 'app', '--', ...print('SHELL_SET')];
+    const args = ['exec', '-s', 'app', '--', ...print('SHELL_SET')];
     expect((await devtooie(args)).stdout).toBe('from-config');
     expect((await devtooie(args, { env: { SHELL_SET: 'from-shell' } })).stdout).toBe('from-shell');
   });
 
   test("expands a .env file's reference to one of the config's own vars", async () => {
-    const result = await devtooie(['exec', '-p', 'app', '--', ...print('APP_ROOT_REF')]);
+    const result = await devtooie(['exec', '-s', 'app', '--', ...print('APP_ROOT_REF')]);
     expect(result.stdout).toBe(`${ws}/ref`);
   });
 
   test("gives a package's script the config's own vars", async () => {
-    const result = await devtooie(['run', '-p', 'app', 'rootdir']);
+    const result = await devtooie(['run', '-s', 'app', 'rootdir']);
     expect(lastLine(result.stdout)).toBe(ws);
   });
 
@@ -405,7 +422,7 @@ describe('environment variables', () => {
 
   test("gives a build script the config's own vars", async () => {
     fs.writeFileSync(order, '');
-    const result = await devtooie(['--build', '-p', 'envbuild']);
+    const result = await devtooie(['--build', '-s', 'envbuild']);
     expect(result.exitCode).toBe(0);
     expect(fs.readFileSync(order, 'utf8')).toBe(`${ws}|/from/config/storage`);
   });
@@ -416,7 +433,7 @@ describe('environment variables', () => {
     const expected = '/from/config\n/from/config/storage';
 
     test("gives a package's command the config's value, and a .env reference to it the same", async () => {
-      const result = await devtooie(['exec', '-p', 'app', '--', ...PRINT], { env });
+      const result = await devtooie(['exec', '-s', 'app', '--', ...PRINT], { env });
       expect(result.stdout).toBe(expected);
     });
 
@@ -426,17 +443,17 @@ describe('environment variables', () => {
 
     test('extends a variable the shell exports exactly once, for a command and a script', async () => {
       const shell = { APPENDED: '--base' };
-      const command = await devtooie(['exec', '-p', 'app', '--', ...print('APPENDED')], {
+      const command = await devtooie(['exec', '-s', 'app', '--', ...print('APPENDED')], {
         env: shell,
       });
       expect(command.stdout).toBe('--base --flag');
-      const scripted = await devtooie(['run', '-p', 'app', 'appended'], { env: shell });
+      const scripted = await devtooie(['run', '-s', 'app', 'appended'], { env: shell });
       expect(lastLine(scripted.stdout)).toBe('--base --flag');
     });
 
     test('does the same for a build script', async () => {
       fs.writeFileSync(order, '');
-      const result = await devtooie(['--build', '-p', 'envbuild'], { env });
+      const result = await devtooie(['--build', '-s', 'envbuild'], { env });
       expect(result.exitCode).toBe(0);
       expect(fs.readFileSync(order, 'utf8')).toBe(`${ws}|/from/config/storage`);
     });
@@ -445,7 +462,7 @@ describe('environment variables', () => {
 
 describe('devtooie cmd', () => {
   test('is not a subcommand', async () => {
-    const result = await devtooie(['cmd', '-p', 'app', '--', 'echo', 'MAIN']);
+    const result = await devtooie(['cmd', '-s', 'app', '--', 'echo', 'MAIN']);
     expect(result.exitCode).not.toBe(0);
     expect(result.stdout).not.toContain('MAIN');
   });
@@ -457,34 +474,156 @@ describe('devtooie --build', () => {
   });
 
   test('builds a build dependency before the package that needs it', async () => {
-    const result = await devtooie(['--build', '-p', 'app']);
+    const result = await devtooie(['--build', '-s', 'app']);
     expect(fs.readFileSync(order, 'utf8')).toBe('lib app ');
     expect(result.stdout).toContain('build complete');
     expect(result.exitCode).toBe(0);
   });
 
   test("a build script resolves binaries from the package's and the workspace root's node_modules/.bin", async () => {
-    const result = await devtooie(['--build', '-p', 'app']);
+    const result = await devtooie(['--build', '-s', 'app']);
     expect(result.stdout).toContain('rootbin-OK');
     expect(result.stdout).toContain('localbin-OK');
   });
 
   test('--rebuild runs build:clean for the selected package', async () => {
-    const result = await devtooie(['--rebuild', '-p', 'app']);
+    const result = await devtooie(['--rebuild', '-s', 'app']);
     expect(fs.readFileSync(order, 'utf8')).toBe('lib app-clean ');
     expect(result.exitCode).toBe(0);
   });
 
   test('a build script that fails fails the command', async () => {
-    const result = await devtooie(['--build', '-p', 'broken']);
+    const result = await devtooie(['--build', '-s', 'broken']);
     expect(result.exitCode).not.toBe(0);
     expect(result.stdout).not.toContain('build complete');
   });
 
   test('a build script killed by a signal fails the command', async () => {
-    const result = await devtooie(['--build', '-p', 'killed']);
+    const result = await devtooie(['--build', '-s', 'killed']);
     expect(result.exitCode).not.toBe(0);
     expect(result.stdout).not.toContain('build complete');
+  });
+});
+
+describe('devtooie --headless --detach', () => {
+  /** Sessions a test started, quit after it whatever happened. */
+  const started: { pid: number; port: number }[] = [];
+  afterEach(async () => {
+    for (const { pid, port } of started.splice(0)) {
+      await fetch(`http://127.0.0.1:${String(port)}/command/quit`, { method: 'POST' }).catch(
+        () => {},
+      );
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        /* already gone */
+      }
+    }
+    // The record outlives its session, and would point `logs` at this session's directory.
+    fs.rmSync(path.join(ws, 'node_modules', '.devtooie', 'running.development.json'), {
+      force: true,
+    });
+  });
+
+  const detach = async (args: string[]) => {
+    // Its own log directory: the logfiles here would otherwise be the newest the `logs` tests find.
+    const logDir = path.join(ws, 'detach-logs');
+    const result = await devtooie(['--headless', '--detach', '--log-dir', logDir, ...args], {
+      env: { CI: '1' },
+    });
+    const report = JSON.parse(lastLine(result.stdout)) as {
+      ok: boolean;
+      session: string;
+      pid: number;
+      port: number;
+      services: string[];
+      logFile: string | null;
+    };
+    if (report.session === 'started') {
+      started.push({ pid: report.pid, port: report.port });
+    }
+    return { result, report };
+  };
+
+  test('starts a session in the background, then reuses it, starting what it lacks', async () => {
+    const first = await detach(['-s', 'wide', '--wait']);
+    expect(first.result.exitCode, first.result.stderr).toBe(0);
+    expect(first.report).toMatchObject({ ok: true, session: 'started', services: ['wide'] });
+    expect(first.report.logFile).toMatch(/\.log$/);
+    // The command returned, and the session it started runs on.
+    expect(() => process.kill(first.report.pid, 0)).not.toThrow();
+
+    const again = await detach(['-s', 'wide', '--wait']);
+    expect(again.report).toMatchObject({ ok: true, session: 'reused', pid: first.report.pid, services: [] }); // prettier-ignore
+
+    const more = await detach(['-s', 'idle', '--wait']);
+    expect(more.report).toMatchObject({ ok: true, session: 'reused', services: ['idle'] });
+    const status = (await (
+      await fetch(`http://127.0.0.1:${String(first.report.port)}/query/status`)
+    ).json()) as { services: Record<string, string>; ready: Record<string, boolean> };
+    expect(status.ready).toMatchObject({ wide: true, idle: true });
+  }, 120_000);
+
+  describe('startStack()', () => {
+    type StackModule = typeof import('./stack.js');
+    /** The compiled module, so the CLI it runs is the one compiled beside it. */
+    const load = () => import(pathToFileURL(path.join(buildDir, 'stack.js')).href) as Promise<StackModule>; // prettier-ignore
+    const startStack = async (services: string[]) => {
+      const { startStack, stackEnvironment } = await load();
+      try {
+        const stack = await startStack({
+          services,
+          cwd: app,
+          logDir: path.join(ws, 'detach-logs'),
+          env: stackEnvironment({ ...process.env, CI: '1' }),
+        });
+        if (stack.session === 'started') {
+          started.push({ pid: stack.pid, port: stack.port });
+        }
+        return stack;
+      } catch (error) {
+        // A failed start quits its session; its record would still point `logs` here.
+        fs.rmSync(path.join(ws, 'node_modules', '.devtooie', 'running.development.json'), {
+          force: true,
+        });
+        throw error;
+      }
+    };
+
+    test('starts a stack, reuses it, and stops only the one it started', async () => {
+      const first = await startStack(['wide']);
+      expect(first).toMatchObject({ session: 'started', mode: 'development', rootDomain: null, services: ['wide'] }); // prettier-ignore
+      // Every configured service's origin, selected or not.
+      expect(first.origins).toEqual({ portonly: 'http://localhost:21051' });
+      expect((await first.control.query.status())?.ready).toMatchObject({ wide: true });
+
+      const again = await startStack(['idle']);
+      expect(again).toMatchObject({ session: 'reused', pid: first.pid, port: first.port, services: ['idle'] }); // prettier-ignore
+      expect((await again.control.query.status())?.ready).toMatchObject({ wide: true, idle: true });
+      await again.stop();
+      expect(await first.control.query.status()).not.toBeNull();
+
+      await first.stop();
+      expect(await first.control.query.status()).toBeNull();
+    }, 120_000);
+
+    test("throws devtooie's error, after quitting the session it started", async () => {
+      await expect(startStack(['broken'])).rejects.toThrow(
+        /stopped while starting.*\(log: .*\.log\)/,
+      );
+      // Nothing was left running: the next call starts a session of its own.
+      expect((await startStack(['idle'])).session).toBe('started');
+    }, 120_000);
+
+    test('throws what devtooie printed when it gave no answer', async () => {
+      await expect(startStack(['nope'])).rejects.toThrow(/no answer:\n.*nope/s);
+    });
+  });
+
+  test('refuses --detach without --headless, naming it', async () => {
+    const result = await devtooie(['--detach', '-s', 'wide']);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('--detach needs --headless.');
   });
 });
 
@@ -505,7 +644,7 @@ describe('what a command loads', () => {
   });
 
   test('logs --path finds the newest logfile without loading the config', async () => {
-    await devtooie(['exec', '-p', 'app', '--', 'true']);
+    await devtooie(['exec', '-s', 'app', '--', 'true']);
     const { result, packages, evaluatedConfig } = await traced(['logs', '--path'], { cwd: app });
     expect(result.stdout).toMatch(/node_modules\/\.devtooie\/logs\/.+\.log$/);
     expect(result.exitCode).toBe(0);
@@ -514,7 +653,7 @@ describe('what a command loads', () => {
   });
 
   test('logs prints that logfile', async () => {
-    await devtooie(['exec', '-p', 'app', '--', 'echo', 'in-the-log']);
+    await devtooie(['exec', '-s', 'app', '--', 'echo', 'in-the-log']);
     const result = await devtooie(['logs']);
     expect(result.stdout).toContain('in-the-log');
     expect(result.exitCode).toBe(0);
@@ -528,21 +667,21 @@ describe('what a command loads', () => {
   });
 
   test('exec loads nothing a session needs', async () => {
-    const { result, packages } = await traced(['exec', '-p', 'app', '--', 'echo', 'ran']);
+    const { result, packages } = await traced(['exec', '-s', 'app', '--', 'echo', 'ran']);
     expect(result.stdout).toBe('ran');
     expectNotLoaded(packages, [...SESSION_ONLY, 'string-width', 'wrap-ansi']);
   });
 
   test('run loads nothing a session needs', async () => {
-    const { result, packages } = await traced(['run', '-p', 'app', 'cwd']);
+    const { result, packages } = await traced(['run', '-s', 'app', 'cwd']);
     expect(lastLine(result.stdout)).toBe(app);
     expectNotLoaded(packages, [...SESSION_ONLY, 'string-width', 'wrap-ansi']);
   });
 
   test('show-config prints the resolved config, loading nothing that runs a command', async () => {
     const { result, packages } = await traced(['show-config']);
-    const config = JSON.parse(result.stdout) as { packages: Record<string, { name: string }> };
-    expect(config.packages.app?.name).toBe('app');
+    const config = JSON.parse(result.stdout) as { services: Record<string, { name: string }> };
+    expect(config.services.app?.name).toBe('app');
     expectNotLoaded(packages, ['execa', ...SESSION_ONLY]);
   });
 
@@ -552,18 +691,18 @@ describe('what a command loads', () => {
     expectNotLoaded(packages, ['pino', '@clack/prompts', 'typescript', 'ink', 'react']);
   });
 
-  test('a --plain session loads no TUI, no prompt library and no TypeScript', async () => {
+  test('a --headless session loads no TUI, no prompt library and no TypeScript', async () => {
     const { output, packages } = await tracedPlainSession(['app']);
     expect(output).toMatch(/\[app\] started/);
     expectNotLoaded(packages, ['ink', 'react', '@clack/prompts', 'typescript']);
   }, 30_000);
 
-  test('a --plain session loads the row-wrapping packages only for a line that needs them', async () => {
+  test('a --headless session loads the row-wrapping packages only for a line that needs them', async () => {
     const { packages } = await tracedPlainSession(['app']);
     expectNotLoaded(packages, ['string-width', 'wrap-ansi', 'slice-ansi']);
   }, 30_000);
 
-  test('a --plain session still wraps a long line to the terminal width, gutter on every row', async () => {
+  test('a --headless session still wraps a long line to the terminal width, gutter on every row', async () => {
     const { output, packages } = await tracedPlainSession(['wide'], 'done');
     const rows = output.split('\n').filter((line) => /\[wide\] x+$/.test(line));
     // Piped, the terminal is taken as 120 columns: a 20-column timestamp, `[wide] `, the text.
@@ -574,7 +713,7 @@ describe('what a command loads', () => {
   }, 30_000);
 
   test("no command loads the env parser's CLI tooling", async () => {
-    const { packages } = await traced(['exec', '-p', 'app', '--', 'true']);
+    const { packages } = await traced(['exec', '-s', 'app', '--', 'true']);
     expectNotLoaded(packages, ['@dotenvx/dotenvx', '@dotenvx/tooling']);
   });
 });

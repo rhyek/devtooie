@@ -44,14 +44,15 @@ const SNAPSHOT = {
   mode: 'test',
   startedByAgent: true,
   logFile: '/ws/node_modules/.devtooie/logs/171.log',
-  packages: { web: 'running' },
+  services: { web: 'running' },
+  ready: { web: true },
   infra: { db: 'running' },
   config: { packages: [] },
   devReverseProxy: {
     port: 21050,
     rootDomain: 'localhost',
     rootDomains: ['localhost'],
-    routes: [{ host: 'web.localhost', package: 'web', port: 3000 }],
+    routes: [{ host: 'web.localhost', service: 'web', port: 3000 }],
   },
 };
 
@@ -100,18 +101,41 @@ describe('createControlClient', () => {
     expect(await createControlClient(port, 200).query.status()).toBeNull();
   });
 
-  test('command.restart() returns true on 202 and false on 404', async () => {
+  test('command.service.* posts the action and package, and is false for a refused one', async () => {
+    const hits: string[] = [];
     const port = await startServer((req, res) => {
-      const ok = req.url === '/command/restart/web';
-      res.writeHead(ok ? 202 : 404, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok }));
+      hits.push(`${req.method} ${req.url}`);
+      const code = req.url?.endsWith('/web') ? (req.url.includes('/stop/') ? 200 : 202) : 404;
+      res.writeHead(code, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: code !== 404 }));
     });
     const client = createControlClient(port);
-    expect(await client.command.restart('web')).toBe(true);
-    expect(await client.command.restart('nope')).toBe(false);
+    expect(await client.command.service.restart('web')).toBe(true);
+    expect(await client.command.service.rebuild('web')).toBe(true);
+    expect(await client.command.service.stop('web')).toBe(true);
+    expect(await client.command.service.start('nope')).toBe(false);
+    expect(hits).toEqual([
+      'POST /command/service/restart/web',
+      'POST /command/service/rebuild/web',
+      'POST /command/service/stop/web',
+      'POST /command/service/start/nope',
+    ]);
   });
 
-  test('command.infra() posts the action and service, and is false for a busy or unknown one', async () => {
+  test('command.service.stop() and start() wait past the default timeout', async () => {
+    const port = await startServer((_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      }, 300);
+    });
+    const client = createControlClient(port, 100);
+    expect(await client.command.service.stop('web')).toBe(true);
+    expect(await client.command.service.start('web')).toBe(true); // a start may build first: it waits too
+    expect(await client.command.service.restart('web')).toBe(false); // the default wait, timed out
+  });
+
+  test('command.infra.* posts the action and service, and is false for a busy or unknown one', async () => {
     const hits: string[] = [];
     const port = await startServer((req, res) => {
       hits.push(`${req.method} ${req.url}`);
@@ -121,13 +145,15 @@ describe('createControlClient', () => {
       res.end(JSON.stringify({ ok: code === 202 }));
     });
     const client = createControlClient(port);
-    expect(await client.command.infra('reset', 'db')).toBe(true);
-    expect(await client.command.infra('stop', 'db')).toBe(false);
-    expect(await client.command.infra('start', 'cache')).toBe(false);
+    expect(await client.command.infra.reset('db')).toBe(true);
+    expect(await client.command.infra.stop('db')).toBe(false);
+    expect(await client.command.infra.start('cache')).toBe(false);
+    expect(await client.command.infra.restart('cache')).toBe(false);
     expect(hits).toEqual([
       'POST /command/infra/reset/db',
       'POST /command/infra/stop/db',
       'POST /command/infra/start/cache',
+      'POST /command/infra/restart/cache',
     ]);
   });
 

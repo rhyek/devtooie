@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { execa } from 'execa';
-import { type AnyPackageConfig, getLoadedConfig } from '../config.js';
+import { type AnyServiceConfig, getLoadedConfig } from '../config.js';
 import { envFileNames, packageEnvLayer, workspaceEnvLayer } from '../env.js';
 import {
   NoProjectConfigError,
@@ -25,7 +25,7 @@ import { applyWorkspaceEnv, exitOnConfigLoadFailure } from './workspace.js';
 export interface OneOffOptions {
   /** The directory devtooie was invoked in — which package you are "inside". */
   invocationCwd: string;
-  /** The root `-p/--package` values; at most one names the target. */
+  /** The root `-s/--service` values; at most one names the target. */
   packageNames: string[];
   /** The `--log-dir` override, if any. */
   logDir?: string;
@@ -128,14 +128,14 @@ async function resolveOneOffTargetOrExit(
     vars: config.envVars,
   };
 
-  const configPackages = Object.values(config.packages);
+  const configPackages = Object.values(config.services);
   // The same layer the session spawns the package with: `PORT`, `PUBLIC_ORIGIN` under the dev
   // reverse proxy, then the config's own variables and its `.env` files.
-  const layerFor = (pkg: AnyPackageConfig) => packageEnvLayer(pkg, layerOpts);
+  const layerFor = (pkg: AnyServiceConfig) => packageEnvLayer(pkg, layerOpts);
   if (explicitName !== undefined) {
     const pkg = configPackages.find((p) => p.name === explicitName);
     if (!pkg) {
-      console.error(`Package "${explicitName}" not found in the devtooie config.`);
+      console.error(`Service "${explicitName}" not found in the devtooie config.`);
       process.exit(1);
     }
     return { dir: pkg.absoluteDir, envLayer: layerFor(pkg) };
@@ -154,7 +154,7 @@ async function oneOffTargetOrExit(
   opts: OneOffOptions,
 ): Promise<{ dir: string; envLayer: Record<string, string> }> {
   if (opts.packageNames.length > 1) {
-    console.error(`${subcommand} targets a single package — pass --package at most once.`);
+    console.error(`${subcommand} targets a single service — pass --service at most once.`);
     process.exit(1);
   }
   return resolveOneOffTargetOrExit(opts.invocationCwd, opts.packageNames[0]);
@@ -198,7 +198,7 @@ export async function runScriptCommand(
   const { dir, envLayer } = await oneOffTargetOrExit('run', opts);
   // getExecArgs/hasScript key off `.absoluteDir` only, so a minimal package view over the
   // resolved dir suffices.
-  const pkgAtDir = { absoluteDir: dir } as AnyPackageConfig;
+  const pkgAtDir = { absoluteDir: dir } as AnyServiceConfig;
   if (!hasScript(pkgAtDir, script)) {
     console.error(`No "${script}" script or make target found in ${dir}.`);
     process.exit(1);

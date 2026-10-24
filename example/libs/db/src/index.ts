@@ -6,9 +6,8 @@ import { pool } from './pool.ts';
 // @example/db is a *source-consumption* package: its package.json `exports` point straight at this
 // file — there's no build, no `dist`, no emit. The backend imports `@example/db` and Node's native
 // TypeScript support type-strips this source on the fly. It's wired purely by the pnpm
-// `workspace:*` link, with no TypeScript project reference — the counterpart to `@example/isomorphic`,
-// which is instead compiled to `dist` and consumed via a tsconfig project reference. (The `Todo`
-// import here is type-only, so it's erased at runtime.)
+// `workspace:*` link, like `@example/isomorphic`, and neither is in the devtooie config: devtooie
+// runs the services that import them.
 //
 // The database is the Postgres service in the workspace's docker-compose.yaml, which devtooie's
 // `infra` brings up before the backend starts. Its schema is created by `src/migrate.ts`, run

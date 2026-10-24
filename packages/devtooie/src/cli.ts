@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import type { RootOptions } from './commands/default.js';
-import { captureShellEnv, resolveMode } from './env.js';
+import { rootOptionsRefusal } from './commands/root-options.js';
+import { captureShellEnv, dropInjectedEnv, resolveMode } from './env.js';
 import { handleShellError } from './errors.js';
 import { passthroughArgs } from './infra/argv.js';
 import { findWorkspaceRoot } from './load-config.js';
@@ -16,6 +17,11 @@ import { findWorkspaceRoot } from './load-config.js';
  * "inside".
  */
 const INVOCATION_CWD = process.cwd();
+
+// First of all: a devtooie started from a process another devtooie started inherits that one's
+// `.env` values and `PORT`. They are not this invocation's ambient environment (see
+// `INJECTED_ENV_VAR`), so drop them before the mode, or anything else, is read from it.
+dropInjectedEnv();
 
 // Resolved from raw argv and published to the environment before anything else runs: the config
 // (whose `port`/`urls` callbacks resolve `.env` files) is loaded by the command's action, which
@@ -56,14 +62,14 @@ function anchorAtWorkspaceRoot(invocationCwd: string): void {
   captureShellEnv();
 }
 
-/** Commander option-parser for repeatable `-p/--package <name>` flags. */
+/** Commander option-parser for repeatable `-s/--service <name>` flags. */
 function collect(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
 
 /** What `exec` and `run` take from the root options. */
 const oneOffOptions = () => {
-  const { package: packageNames, logDir } = program.opts<RootOptions>();
+  const { service: packageNames, logDir } = program.opts<RootOptions>();
   return { invocationCwd: INVOCATION_CWD, packageNames, logDir };
 };
 
@@ -79,19 +85,33 @@ const MODE_HELP =
 
 const program = new Command()
   .name('devtooie')
-  .description("Dependency-aware CLI for a monorepo's local dev packages")
+  .description("Dependency-aware CLI for a monorepo's local dev services")
   .option(
-    '-p, --package <name>',
-    'package to run (repeatable, bypasses the interactive selector)',
+    '-s, --service <name>',
+    'service to run (repeatable, bypasses the interactive selector)',
     collect,
     [],
   )
   .option(MODE_FLAGS, MODE_HELP)
   .option('--ui', 'run the interactive TUI (default)')
-  .option('--plain', 'run without the TUI, streaming logs to stdout')
+  .option(
+    '--headless',
+    'run without the TUI, streaming logs to stdout (needs -s or --last-answers)',
+  )
+  .option('--detach', 'with --headless: start the session in the background and return')
+  .option('--wait', 'with --detach: return once infra and every service is healthy')
+  .option(
+    '--wait-timeout <seconds>',
+    'with --wait: how long to wait before failing (default: 300)',
+    (value) => Number(value),
+  )
+  // Not shown: only there to name its spelling, `--headless`.
+  .addOption(new Option('--plain').hideHelp())
+  // Not shown: what `--detach` starts its background session with (see commands/detach.ts).
+  .addOption(new Option('--detached-session').hideHelp())
   .option('--last-answers', 'skip the selector and reuse the last saved selection', false)
   .option('--phase <phase>', 'pipeline phase: "dev" (default) or "build"', 'dev')
-  .option('--build', 'build the selected packages + their build-time deps, then exit', false)
+  .option('--build', 'build the selected services + their build-time deps, then exit', false)
   .option(
     '--rebuild',
     "like --build, but clears each build target's dist/ first (implies --build)",
@@ -121,7 +141,7 @@ program
 
 program
   .command('reset')
-  .description('clear the saved package selection')
+  .description('clear the saved service selection')
   .action(async () => {
     const { resetSelection } = await import('./lib.js');
     resetSelection();
@@ -131,8 +151,8 @@ program
 
 program
   .command('resolvedeps')
-  .description('print the build/dev/runtime deps for a single package, as JSON')
-  .argument('<package>', 'configured package name to resolve dependencies for')
+  .description('print the build/dev/runtime deps for a single service, as JSON')
+  .argument('<service>', 'configured service name to resolve dependencies for')
   .action(async (packageName: string) => {
     const { resolveDepsCommand } = await import('./commands/inspect.js');
     await resolveDepsCommand(packageName);
@@ -154,7 +174,7 @@ program
 program
   .command('exec')
   .description(
-    "run a one-off command with a package's environment (its dir + resolved .env); package inferred from the cwd or named with -p/--package",
+    "run a one-off command with a service's environment (its dir + resolved .env); service inferred from the cwd or named with -s/--service",
   )
   // Also declared on the root, but Commander rejects a root-only option that appears after a
   // subcommand — so both `devtooie --mode test exec …` and `devtooie exec --mode test …` work.
@@ -169,7 +189,7 @@ program
 program
   .command('run')
   .description(
-    "run one of a package's scripts or make targets with its environment (its dir + resolved .env); package inferred from the cwd or named with -p/--package",
+    "run one of a service's scripts or make targets with its environment (its dir + resolved .env); service inferred from the cwd or named with -s/--service",
   )
   .option(MODE_FLAGS, MODE_HELP) // see `exec`
   .argument('<script>', 'the package.json script or make target to run')
@@ -264,12 +284,9 @@ async function runInfraPassthrough(provider: string, args: string[]): Promise<ne
 program.action(async () => {
   const opts = program.opts<RootOptions>();
 
-  if (opts.ui && opts.plain) {
-    console.error('Cannot use both --ui and --plain.');
-    process.exit(1);
-  }
-  if (opts.phase !== 'dev' && opts.phase !== 'build') {
-    console.error('--phase must be "dev" or "build".');
+  const refusal = rootOptionsRefusal(opts);
+  if (refusal) {
+    console.error(refusal);
     process.exit(1);
   }
 

@@ -48,14 +48,14 @@ importers:
         specifier: ^8.63.0
         version: 8.63.0(eslint@10.6.0(jiti@2.7.0))(typescript@6.0.3)
 
-  packages/backend:
+  apps/backend:
     dependencies:
       '@example/db':
         specifier: workspace:*
-        version: link:../db
+        version: link:../../libs/db
       '@example/isomorphic':
         specifier: workspace:*
-        version: link:../isomorphic
+        version: link:../../libs/isomorphic
       express:
         specifier: ^5.2.1
         version: 5.2.1
@@ -67,24 +67,11 @@ importers:
         specifier: ^5.0.6
         version: 5.0.6
 
-  packages/db:
+  apps/frontend:
     dependencies:
       '@example/isomorphic':
         specifier: workspace:*
-        version: link:../isomorphic
-      pg:
-        specifier: ^8.23.1
-        version: 8.23.1
-    devDependencies:
-      '@types/pg':
-        specifier: ^8.23.1
-        version: 8.23.1
-
-  packages/frontend:
-    dependencies:
-      '@example/isomorphic':
-        specifier: workspace:*
-        version: link:../isomorphic
+        version: link:../../libs/isomorphic
       '@tailwindcss/vite':
         specifier: ^4.3.2
         version: 4.3.2(vite@8.1.3(@types/node@26.1.0)(jiti@2.7.0))
@@ -159,7 +146,20 @@ importers:
         specifier: ^8.1.3
         version: 8.1.3(@types/node@26.1.0)(jiti@2.7.0)
 
-  packages/isomorphic: {}
+  libs/db:
+    dependencies:
+      '@example/isomorphic':
+        specifier: workspace:*
+        version: link:../isomorphic
+      pg:
+        specifier: ^8.23.1
+        version: 8.23.1
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
+
+  libs/isomorphic: {}
 
 packages:
 

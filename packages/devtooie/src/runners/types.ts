@@ -1,4 +1,4 @@
-import type { AnyPackageConfig, ResolvedHealthcheck, UrlLine } from '../config.js';
+import type { AnyServiceConfig, ResolvedHealthcheck, UrlEntry, UrlLine } from '../config.js';
 import type { EnvOverride } from '../env.js';
 import type { InfraWatch } from '../infra/provider.js';
 import type { InfraServiceState } from '../infra/types.js';
@@ -13,11 +13,8 @@ export interface InfraLogLine {
 
 /** What a session's infra step hands the run phase. */
 export interface SessionInfra {
-  /**
-   * The services brought up, for the footer — each with its public origin when the dev reverse
-   * proxy routes it.
-   */
-  services: { provider: string; name: string; publicOrigin?: string }[];
+  /** The services brought up, for the footer — each with the links its `urls` declares. */
+  services: { provider: string; name: string; urls?: UrlEntry[] }[];
   /** Everything infra printed on the way up, written at the top of the session log. */
   log: InfraLogLine[];
   /**
@@ -28,7 +25,7 @@ export interface SessionInfra {
 }
 
 export interface RunnerArgs {
-  sortedPackages: AnyPackageConfig[];
+  sortedPackages: AnyServiceConfig[];
   selectedSet: Set<string>;
   buildDepSet: Set<string>;
   rebuildableSet: Set<string>;

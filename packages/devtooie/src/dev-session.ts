@@ -366,7 +366,7 @@ export async function shutdownInstance(port: number, pid: number): Promise<void>
  * would be killed outright.)
  */
 export async function startSessionDevReverseProxy(opts: {
-  /** The control API's port, so a "package stopped" page can spell out the restart URL. */
+  /** The control API's port, so a "service stopped" page can spell out the restart URL. */
   controlApiPort?: number;
 }): Promise<DevReverseProxyServer | null> {
   const config = getLoadedConfig();

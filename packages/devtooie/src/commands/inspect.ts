@@ -1,4 +1,4 @@
-import { findPackage } from '../config.js';
+import { findService } from '../config.js';
 import { loadConfigOrExit, loadedConfigOrExit, validatePackageNames } from './workspace.js';
 
 // The read-only commands that print what the config resolves to.
@@ -18,7 +18,7 @@ export async function resolveDepsCommand(packageName: string): Promise<never> {
   validatePackageNames([packageName]);
   // Only here, not up top: `show-config` has no use for what resolving dependencies loads.
   const { DepType, resolveDeps } = await import('../lib.js');
-  const packages = [findPackage(packageName)];
+  const packages = [findService(packageName)];
   const selectedNames = new Set(packages.map((p) => p.name));
 
   const build = resolveDeps(packages, [DepType.BUILD]);

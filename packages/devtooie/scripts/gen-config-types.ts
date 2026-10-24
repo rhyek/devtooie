@@ -7,7 +7,7 @@ import { zodToTs, createTypeAlias, printNode, createAuxiliaryTypeStore } from 'z
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import path from 'node:path';
-import { PackageConfigSchema, DefineConfigSchema } from '../src/config-schema.ts';
+import { ServiceConfigSchema, DefineConfigSchema } from '../src/config-schema.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const outFile = path.join(here, '..', 'src', 'config.generated.ts');
@@ -42,7 +42,7 @@ const header = `// AUTO-GENERATED from config-schema.ts by scripts/gen-config-ty
 `;
 
 const body = [
-  gen(PackageConfigSchema, 'GeneratedPackageConfig'),
+  gen(ServiceConfigSchema, 'GeneratedServiceConfig'),
   gen(DefineConfigSchema, 'GeneratedDefineConfig'),
 ].join('\n\n');
 

@@ -8,11 +8,24 @@ import { loadConfigOrExit, validatePackageNames } from './workspace.js';
 
 /** The root command's options. */
 export interface RootOptions {
-  package: string[];
+  service: string[];
   /** Declared for --help/validation; the value in force is read from argv by resolveMode. */
   mode?: string;
   ui?: boolean;
+  headless?: boolean;
+  /** `--headless` only: start the session in the background and return. */
+  detach?: boolean;
+  /** `--detach` only: return once infra and every service is healthy. */
+  wait?: boolean;
+  /** `--wait` only: seconds before giving up. */
+  waitTimeout?: number;
+  /** Hidden: only accepted to be refused with its spelling. */
   plain?: boolean;
+  /**
+   * Hidden: this is the background session a `--detach` started. It never takes over a running
+   * session: it exits with `DETACHED_FOUND_SESSION_EXIT`, and the `--detach` reuses that one.
+   */
+  detachedSession?: boolean;
   lastAnswers: boolean;
   phase: string;
   build: boolean;
@@ -27,7 +40,7 @@ export interface RootOptions {
  * saved selection is already pruned of names that are no longer packages.
  */
 export function resolveSelectedNamesOrExit(
-  opts: { package: string[]; lastAnswers: boolean },
+  opts: { service: string[]; lastAnswers: boolean },
   usage: string,
 ): string[] {
   const result = resolveSelectedNames(opts, usage);
@@ -51,7 +64,7 @@ export async function runDefaultAction(opts: RootOptions): Promise<void> {
   }
 
   // Validate --package names before mounting/running anything.
-  validatePackageNames(opts.package);
+  validatePackageNames(opts.service);
 
   const phase: 'dev' | 'build' =
     opts.rebuild || opts.build ? 'build' : (opts.phase as 'dev' | 'build');
@@ -64,6 +77,11 @@ export async function runDefaultAction(opts: RootOptions): Promise<void> {
       handleShellError(err);
     }
     return;
+  }
+
+  if (opts.detach) {
+    const { runDetached } = await import('./detach.js');
+    await runDetached(opts);
   }
 
   // Only now: a build has no use for what a session loads.

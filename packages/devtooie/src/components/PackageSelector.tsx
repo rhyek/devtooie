@@ -1,12 +1,12 @@
 import { Box, Text, useApp, useInput, useWindowSize } from 'ink';
 import React, { useMemo, useState } from 'react';
-import type { AnyPackageConfig } from '../config.js';
+import type { AnyServiceConfig } from '../config.js';
 import { ACCENT_COLOR, MUTED_COLOR, OK_COLOR, ON_ACCENT_COLOR, WARN_COLOR } from '../colors.js';
 import { HotkeyHints } from './HotkeyHints.js';
 
 export type PackageSelectorProps = {
   /** Selectable packages in display order, as returned by `getSelectablePackages()`. */
-  items: AnyPackageConfig[];
+  items: AnyServiceConfig[];
   /** App name -> its runtime dep pkg names, as returned by `getRuntimeDepsMap()`. */
   runtimeDeps: Record<string, string[]>;
   initialSelected?: string[];
@@ -94,7 +94,7 @@ export function PackageSelector({
         </Text>
       </Box>
       <Box marginTop={1}>
-        <Text bold>Select packages to run</Text>
+        <Text bold>Select services to run</Text>
       </Box>
       <HotkeyHints
         hints={[
@@ -108,7 +108,7 @@ export function PackageSelector({
       />
       {items.length === 0 ? (
         <Box marginTop={1}>
-          <Text color={WARN_COLOR}>No selectable packages configured.</Text>
+          <Text color={WARN_COLOR}>No selectable services configured.</Text>
         </Box>
       ) : (
         <Box flexDirection="column" marginTop={1}>

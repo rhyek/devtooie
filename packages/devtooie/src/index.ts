@@ -1,6 +1,6 @@
-export { defineConfig, PackageType, findPackage, proxyHostsFor } from './config.js';
+export { defineConfig, ServiceType, findService, proxyHostsFor } from './config.js';
 // devtooie's log utilities: `logging.formatter(config)` builds a structured-log formatter for a
-// package's `logs.formatter` (and is the default applied to every package); the ecosystem helpers
+// service's `logs.formatter` (and is the default applied to every service); the ecosystem helpers
 // `logging.nodejs.{pino,winston}.formatter` are the same with adjusted defaults.
 export { logging } from './log-formatter.js';
 export type {
@@ -14,20 +14,20 @@ export type {
 // without adding a direct dependency (devtooie already bundles it).
 export { z } from 'zod';
 export type {
-  PackageConfigInput,
+  ServiceConfigInput,
   DefineConfigOptions,
-  ResolvedPackageConfig,
-  AnyPackageConfig,
+  ResolvedServiceConfig,
+  AnyServiceConfig,
   Config,
   DevReverseProxyInput,
   ProxyInput,
   ResolvedProxy,
   ResolvedDevReverseProxy,
-  PackageTypeValue,
+  ServiceTypeValue,
   ConfigContext,
-  PackageContext,
+  ServiceContext,
   TokenRecord,
-  PackageTokens,
+  ServiceTokens,
   PortResolver,
   UrlResolver,
   UrlValue,
@@ -37,7 +37,7 @@ export type {
   UrlEntry,
   Command,
 } from './config.js';
-export type { Register, PackageConfig, PackageName } from './register.js';
+export type { Register, ServiceConfig, ServiceName } from './register.js';
 export type {
   InfraInput,
   DockerComposeInfraInput,
@@ -53,8 +53,12 @@ export type {
   ResolvedDockerComposeInfra,
   ResolvedInfraService,
 } from './infra/types.js';
+// A test suite's stack: a detached headless session, started or reused, waited on until healthy.
+export { startStack, stackEnvironment } from './stack.js';
+export type { StartStackOptions, Stack } from './stack.js';
 // What an infra callback's `control` is: a client for the running session's control API.
-export type { ControlClient, SessionStatus, SessionPackageStatus } from './control-client.js';
+export type { ControlClient, SessionStatus, SessionServiceStatus } from './control-client.js';
+export type { ServiceAction } from './command-server.js';
 export type { InfraAction, InfraStatus } from './infra/control.js';
 export {
   resolveEnv,

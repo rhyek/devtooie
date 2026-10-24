@@ -5,7 +5,7 @@ import path from 'node:path';
 import { Writable } from 'node:stream';
 import React from 'react';
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
-import type { AnyPackageConfig } from '../config.js';
+import type { AnyServiceConfig } from '../config.js';
 import { stripAnsi } from '../lib.js';
 import { ProcessManager } from '../process-manager.js';
 import type { RunnerArgs } from '../runners/types.js';
@@ -32,7 +32,7 @@ afterEach(() => {
 });
 
 function newManager(): ProcessManager {
-  const pkg: AnyPackageConfig = {
+  const pkg: AnyServiceConfig = {
     name: 'fixture',
     relativeDir: '.',
     absoluteDir: dir,

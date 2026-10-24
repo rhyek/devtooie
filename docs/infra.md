@@ -2,9 +2,9 @@
 
 > Part of the [devtooie](../README.md) documentation.
 
-Your packages usually need things that aren't packages: a database, a cache, a message broker.
-Declare them under `infra` and devtooie brings them up, waits until they're ready, and runs your
-setup steps (migrations, seeding) — as a command, and at the start of every dev session.
+Your application services usually need infra services alongside them: a database, a cache, a
+message broker. Declare them under `infra` and devtooie brings them up, waits until they're
+ready, and runs your setup steps (migrations, seeding) — as a command, and at the start of every dev session.
 
 ```ts
 // devtooie.config.ts
@@ -12,7 +12,7 @@ export default defineConfig({
   infra: {
     'docker-compose': true,
   },
-  packages: {/* … */},
+  services: {/* … */},
 });
 ```
 
@@ -50,30 +50,30 @@ Every one of these exits when it's done. None stays up streaming logs.
 
 ## In a dev session
 
-`devtooie` (the TUI or `--plain`) runs the same `up` **after building and before starting the
-packages**, for every enabled service. The startup screen shows a row per service while it happens, and
-the footer lists them once the session is running:
+`devtooie` (the TUI or `--headless`) runs the same `up` **after building and before starting the
+application services**, for every enabled infra service. The startup screen shows a row per
+infra service while it happens, and the footer lists them once the session is running:
 
 ```
+←→↑↓: select │ r: restart  b: rebuild  s: stop  m: commands
 ● api  ● web
 infra:  ● db  ● redis
-
-←→↑↓: select │ r: restart  b: rebuild  s: stop  m: commands
 
 cwd: example  git: main
 ```
 
-- **Quitting devtooie leaves the services running**, so the next start finds them up and takes
+- **Quitting devtooie leaves the infra services running**, so the next start finds them up and takes
   well under a second.
-- **A service that doesn't come up stops the session.** The packages aren't started against
-  infrastructure that isn't there; you get the service, the reason, and the tail of its logs.
+- **An infra service that doesn't come up stops the session.** The application services aren't
+  started against infrastructure that isn't there; you get the infra service, the reason, and the tail of its logs.
 - What infra printed on the way up is at the top of the session log, as `[infra:<service>]`
   lines (type `infra` in the `f` filter to see only those).
-- **Each service's dot is its live state**: green running, yellow (pulsing) starting or while
+- **Each infra service's dot is its live state**: green running, yellow (pulsing) starting or while
   an action runs on it, red stopped. It follows the containers themselves, so one stopped
   outside devtooie turns red within a second or two.
-- **Select a service with the arrow keys** — `←`/`→` walk the packages and then the services,
-  `↑`/`↓` move between the rows — and its hotkeys replace the package ones:
+- **Select an infra service with the arrow keys** — `←`/`→` walk the application services and then
+  the infra services, `↑`/`↓` move between the rows — and its hotkeys replace the application
+  service ones:
   - `s` — start or stop it (`devtooie infra up` / `down`).
   - `r` — restart it: `down`, then `up`, so the container is recreated and its data kept.
   - `t` — reset it (`infra up --reset`), which **deletes its data**, so it asks for a second
@@ -81,8 +81,8 @@ cwd: example  git: main
 
   Their output goes into the session log under `[infra:<service>]`. The control API runs the
   same actions — see [Control API](./control-api.md).
-- A service the [dev reverse proxy routes](#reaching-a-service-through-the-dev-reverse-proxy)
-  also has its public URL in the footer's link column, under an `infra` heading.
+- A service's [`urls`](#a-services-footer-links) are in the footer's link column, under an `infra`
+  caption.
 
 `--build`, `devtooie exec`, `run`, `show-config`, `logs` and the other subcommands never touch infra.
 
@@ -98,6 +98,8 @@ infra: {
         enabled: ({ mode }) => mode !== 'test',
         port: ({ envs }) => Number(envs.DB_PORT), // optional: the host port, for `proxy`
         proxy: { subdomain: 'db' },               // optional: route it through devReverseProxy
+        urls: [''],                               // optional: footer links
+        beforeDestroy: async (ctx) => {},
         afterDestroy: async (ctx) => {},
         beforeUp: async (ctx) => {},
         afterReady: async (ctx) => {},
@@ -111,7 +113,7 @@ infra: {
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `file`         | The compose file, relative to `workspaceDir`. Omit it and Compose discovers the file itself (`compose.yaml`, `docker-compose.yaml`, plus any override file).                                                                                                          |
 | `readyTimeout` | How long `up` waits for the services to become ready, in ms. Default: 5 minutes.                                                                                                                                                                                      |
-| `services`     | Per-service options, keyed by Compose service name: [`enabled`](#turning-a-service-off), [`port` and `proxy`](#reaching-a-service-through-the-dev-reverse-proxy), and the [callbacks](#callbacks). A service doesn't have to be listed to run. A key that isn't a service in the compose file is an error, reported before anything is started. |
+| `services`     | Per-service options, keyed by Compose service name: [`enabled`](#turning-a-service-off), [`port` and `proxy`](#reaching-a-service-through-the-dev-reverse-proxy), [`urls`](#a-services-footer-links), and the [callbacks](#callbacks). A service doesn't have to be listed to run. A key that isn't a service in the compose file is an error, reported before anything is started. |
 
 **Which services run:** all the services Compose reports for the file — minus any you
 [turn off](#turning-a-service-off) — or the ones you name on the command line.
@@ -172,7 +174,7 @@ Compose entirely.
 
 A service a browser has to reach — an S3-compatible object store, a mail catcher's web UI —
 can be routed by the [dev reverse proxy](./dev-reverse-proxy.md) at `<subdomain>.<rootDomain>`,
-like a package. Give it a `port` and a `proxy`:
+like an application service. Give it a `port` and a `proxy`:
 
 ```ts
 services: {
@@ -184,12 +186,12 @@ services: {
 
 - **`port`** is the port the service answers on at `localhost` — the host side of its port
   mapping. devtooie doesn't read it from the compose file. A literal, or a callback over the
-  workspace context `{ envs, tokens }`, resolved once at load like a package's `port`; it isn't
-  resolved for a disabled service. It equals no package's port, no other service's, and not the
+  workspace context `{ envs, tokens }`, resolved once at load like an application service's `port`; it isn't
+  resolved for a disabled service. It equals no application service's port, no other infra service's, and not the
   proxy's.
-- **`proxy`** is the same block a package takes — `subdomain` is a label, an array of them (the
+- **`proxy`** is the same block an application service takes — `subdomain` is a label, an array of them (the
   first canonical, the rest aliases), or `true` for the service's key — and requires `port`.
-  Its subdomains are unique across packages and services. See
+  Its subdomains are unique across application and infra services. See
   [`proxy`](./dev-reverse-proxy.md#proxy).
 
 These are options of the service, not of the provider, so they mean the same for every
@@ -205,29 +207,51 @@ devtooie show-config | jq '.infra["docker-compose"].services.mail'
 # { "enabled": true, "port": 21054, "proxy": { "subdomain": "mail" }, "publicOrigin": "http://mail.localhost:21050" }
 ```
 
+## A service's footer links
+
+A service shows links in the footer's link column only when it lists them in `urls`, which
+takes the same entries as an application service's [`urls`](./configuration.md):
+
+```ts
+services: {
+  mail: { port: 21054, proxy: { subdomain: true }, urls: [''] }, // the web UI, at its origin
+  store: { port: 9000, urls: [{ label: 'console', url: '/minio' }] },
+}
+```
+
+- **A path** — `''` for the origin itself, `'/inbox'` for a page on it — is based on the
+  service's public origin when the [dev reverse proxy](#reaching-a-service-through-the-dev-reverse-proxy)
+  routes it, else on `http://localhost:<port>`. A path needs `port`; a full URL doesn't.
+- **A callback** gets `{ envs, tokens, port, subdomain }`, as an application service's does.
+- **The footer lists them under an `infra` caption**, below the application services' links. A service whose
+  `urls` is one unlabelled link shows its name as that link; otherwise its name heads its
+  lines, as an application service's does.
+- **A disabled service shows none**, and its `urls` aren't resolved.
+
 ## Callbacks
 
 Optional and async. They run **around** devtooie's built-in steps — they don't replace them —
 and each is named for when it runs:
 
-| Callback       | Runs                                                                                                                                                                                                                      |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `afterDestroy` | After the service's container and volumes are removed: on `infra destroy` and on `infra up --reset`. For state Compose can't see, such as a bind-mounted directory.                                                       |
-| `beforeUp`     | On every `infra up`, after any destroy and before the services are started. If one fails, nothing is started.                                                                                                             |
-| `afterReady`   | On every `infra up`, once the service is ready — **including when it was already running**, and so at every session start. For migrations, which have to be idempotent, and for seeding behind [`fresh`](#seeding-fresh). |
+| Callback        | Runs                                                                                                                                                                                                                                            |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `beforeDestroy` | Before the service's container and volumes are removed: on `infra destroy` and on `infra up --reset`. For whatever has to let go of the data first, such as an application service holding connections to it. If one fails, nothing is removed. |
+| `afterDestroy`  | After the service's container and volumes are removed: on `infra destroy` and on `infra up --reset`. For state Compose can't see, such as a bind-mounted directory.                                                                             |
+| `beforeUp`      | On every `infra up`, after any destroy and before the services are started. If one fails, nothing is started.                                                                                                                                   |
+| `afterReady`    | On every `infra up`, once the service is ready — **including when it was already running**, and so at every session start. For migrations, which have to be idempotent, and for seeding behind [`fresh`](#seeding-fresh).                       |
 
 `afterReady` runs every time on purpose: pull a branch with new migrations, start a session,
 and they're applied — even though the database never stopped.
 
-So the full order of `infra up --reset db` is: destroy → `afterDestroy` → `beforeUp` → start →
-wait until ready → `afterReady`.
+So the full order of `infra up --reset db` is: `beforeDestroy` → destroy → `afterDestroy` →
+`beforeUp` → start → wait until ready → `afterReady`.
 
 ```ts
 db: {
   afterReady: async ({ run, fresh }) => {
-    await run('pnpm', ['migrate'], { cwd: 'packages/db' }); // every time: idempotent
+    await run('pnpm', ['migrate'], { cwd: 'libs/db' }); // every time: idempotent
     if (fresh) {
-      await run('pnpm', ['seed'], { cwd: 'packages/db' }); // only into a new database
+      await run('pnpm', ['seed'], { cwd: 'libs/db' }); // only into a new database
     }
   },
 },
@@ -248,6 +272,7 @@ Each callback receives one object:
 | `run`          | `run(command, args?, opts?)` — runs any other command, with `envs` as its environment: a migration or seed script gets the mode's variables and `DEVTOOIE_MODE` with nothing passed by hand.                                                                                                                                                                                    |
 | `log`          | `log(message)` — writes a line to devtooie's infra output.                                                                                                                                                                                                                                                                                                                      |
 | `control`      | A client for this config's running dev session, in this mode, or `undefined` when none is running — see [Driving the session: `control`](#driving-the-session-control).                                                                                                                                                                                                         |
+| `data`         | An object the service's callbacks share for the run, empty when it starts: what `beforeDestroy` writes to it, `afterReady` reads. Nothing is kept between runs. See [Driving the session: `control`](#driving-the-session-control).                                                                                                                                             |
 
 ### Seeding: `fresh`
 
@@ -273,8 +298,9 @@ the run where `fresh` is `true`** — the migration errors before the seed — i
 time, and the seed doesn't run. Give the service a clean start with
 `devtooie infra up --reset <service>`.
 
-`reset` is narrower: it's `true` only when this run was `infra up --reset`. Use `fresh` to seed;
-`reset` is for the rare step that should follow a deliberate reset and nothing else.
+`reset` is narrower: it's `true` only when this run was `infra up --reset`, in every callback
+of the run. Use `fresh` to seed; `reset` is for a step that belongs to a deliberate reset and
+nothing else, such as [stopping an application service around it](#driving-the-session-control).
 
 ### The helpers
 
@@ -288,18 +314,18 @@ time, and the seed doesn't run. Give the service a clean start with
 **A command started with `run` or `compose` gets `envs` as its whole environment**, with any `env`
 option merged on top. That includes `DEVTOOIE_MODE`, the config's `env.vars`, and everything in
 the mode's workspace-scope `.env` files, so a migration or seed script sees the same
-`DATABASE_URL` and the same mode the packages do, with nothing passed by hand:
+`DATABASE_URL` and the same mode the application services do, with nothing passed by hand:
 
 ```ts
 // DATABASE_URL and DEVTOOIE_MODE are already in the script's environment
-await run('pnpm', ['seed'], { cwd: 'packages/db' });
+await run('pnpm', ['seed'], { cwd: 'libs/db' });
 ```
 
 Two limits:
 
-- **It is the workspace scope only.** A variable defined in a package's own `.env` file isn't in
-  `envs` — setting `cwd` to that package doesn't add it — and neither are the `PORT` and
-  `PUBLIC_ORIGIN` devtooie injects into a package's process. Pass those with `env`, or keep what
+- **It is the workspace scope only.** A variable defined in an application service's own `.env`
+  file isn't in `envs` — setting `cwd` to that service doesn't add it — and neither are the `PORT`
+  and `PUBLIC_ORIGIN` devtooie injects into an application service's process. Pass those with `env`, or keep what
   a callback needs in the workspace-scope files.
 - **`compose` always runs against this project.** Its `env` option can't change
   `COMPOSE_PROJECT_NAME`.
@@ -309,8 +335,9 @@ where devtooie is showing infra output: the terminal for `infra up`, the startup
 session log for the TUI. A child process you spawn yourself with inherited stdio draws straight
 over the TUI.
 
-A callback that throws fails its service: an `afterReady` failure fails only that service, while
-an `afterDestroy` or `beforeUp` failure stops the run before anything is started.
+A callback that throws fails its service: an `afterReady` failure fails only that service, a
+`beforeDestroy` failure stops the run before anything is removed, and an `afterDestroy` or
+`beforeUp` failure stops it before anything is started.
 
 ### Driving the session: `control`
 
@@ -319,49 +346,65 @@ an `afterDestroy` or `beforeUp` failure stops the run before anything is started
 `undefined` when no such session is running — `infra up` from a terminal with no session up,
 say — so reach it with `?.`.
 
-| Method                                   | Endpoint                                                                                        |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `control.query.status()`                 | `GET /query/status` — resolves with the snapshot, or `null` if the session didn't answer.       |
-| `control.command.restart(name)`          | `POST /command/restart/<name>`                                                                  |
-| `control.command.rebuild(name)`          | `POST /command/rebuild/<name>`                                                                  |
-| `control.command.infra(action, service)` | `POST /command/infra/<action>/<service>`, `action` being `start`, `stop`, `restart` or `reset`. |
-| `control.command.quit()`                 | `POST /command/quit`                                                                            |
+| Method                                    | Endpoint                                                                                           |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `control.query.status()`                  | `GET /query/status` — resolves with the snapshot, or `null` if the session didn't answer.          |
+| `control.command.service.<action>(name)`  | `POST /command/service/<action>/<name>`, `<action>` being `start`, `stop`, `restart` or `rebuild`. |
+| `control.command.infra.<action>(service)` | `POST /command/infra/<action>/<service>`, `<action>` being `start`, `stop`, `restart` or `reset`.  |
+| `control.command.quit()`                  | `POST /command/quit`                                                                               |
 
 The `command` methods resolve `true` when the session accepted the command, and `false` when it
-didn't: a package or service it doesn't have, or one busy with another action. They resolve
-once the command is accepted, not when it's done; `query.status()` shows where it ends.
-`restart` and `rebuild` take your package names, typed once you
-[register them](./configuration.md#advanced-typed-package-names).
+didn't: an application service that isn't in the config, or one that couldn't be added to the
+session; an infra service the session doesn't have; or one busy with another action.
+`service.start` and `service.stop` resolve once they're done — `stop` once the application
+service's process has exited — and are `true` for one already started or stopped. The others
+resolve once the command is accepted; `query.status()` shows where it ends. The `service`
+methods take your application service names, typed once you
+[register them](./configuration.md#advanced-typed-service-names).
 
-The case it's for: a package that creates state in a service's data when it boots — a job
-queue's schema, say — keeps running against data a reset has wiped. Restart it after a fresh
-start:
+The case it's for: an application service that holds on to an infra service's data while it runs — connections to a
+database, a job queue whose schema it creates when it boots. A reset pulls the data out from
+under it. Stop it before the destroy, if it was running, and start it again once the new
+database is migrated and seeded:
 
 ```ts
 db: {
-  afterReady: async ({ run, fresh, control }) => {
-    await run('pnpm', ['migrate'], { cwd: 'packages/db' });
+  beforeDestroy: async ({ reset, control, data }) => {
+    const status = await control?.query.status();
+    if (reset && status?.services?.api === 'running') {
+      data.apiWasRunning = await control?.command.service.stop('api');
+    }
+  },
+  afterReady: async ({ run, fresh, control, data }) => {
+    await run('pnpm', ['migrate'], { cwd: 'libs/db' });
     if (fresh) {
-      await run('pnpm', ['seed'], { cwd: 'packages/db' });
-      const status = await control?.query.status();
-      if (status?.packages?.api === 'running') {
-        await control?.command.restart('api');
-      }
+      await run('pnpm', ['seed'], { cwd: 'libs/db' });
+    }
+    if (data.apiWasRunning) {
+      await control?.command.service.start('api');
     }
   },
 },
 ```
 
+`data` ties the two together: it's one object for all of a service's callbacks in a run, so
+what `beforeDestroy` writes there, `afterReady` reads. An application service that was already
+stopped is left stopped. The next run's `data` starts empty, and each infra service has its own.
+
 - **It only drives this project's session.** A session's record outlives it, and every
   project's control API takes its port from the same range, so devtooie binds `control` only to
   a session that reports this config file and this mode. Anything else is `undefined`.
-- **At a session's own start the packages aren't running yet.** The session brings its infra up
-  first, so `status.packages` is `null` there and `restart`/`rebuild` resolve `false`. The
+- **At a session's own start the application services aren't running yet.** The session brings
+  its infra up first, so `status.services` is `null` there and the `service` methods resolve
+  `false`. The
   example above acts on a reset made while the session runs: the footer's `t`,
   `POST /command/infra/reset/db`, or `devtooie infra up --reset db` from another terminal.
-- **Leave the callback's own service alone.** A run the session started — from the footer or
-  the control API — keeps the service busy until its callbacks end, so `command.infra` on it
+- **Leave the callback's own infra service alone.** A run the session started — from the footer
+  or the control API — keeps the infra service busy until its callbacks end, so `command.infra.*` on it
   resolves `false`; from a terminal it would start a second run on a service still in this one.
+- **An application service stopped in `beforeDestroy` stays stopped if the run fails before
+  `afterReady` starts it** — in the destroy, `beforeUp`, the start, or a migration that throws
+  first. Start it from the footer (`s`) or with `POST /command/service/start/<name>`.
 - **Don't `quit()` from a callback**: the session ends the run that is calling it.
 
 ## Modes: one Compose project each
@@ -410,7 +453,7 @@ the next `up`. No callbacks.
 
 ### `devtooie infra destroy [services...]`
 
-Removes the services **and their data**, then runs `afterDestroy`. See
+Runs `beforeDestroy`, removes the services **and their data**, then runs `afterDestroy`. See
 [What destroy removes](#what-destroy-removes).
 
 ### `devtooie infra docker-compose [args...]`
@@ -423,7 +466,7 @@ exactly as they do when you run Compose directly, and the exit code is Compose's
 devtooie infra docker-compose ps
 devtooie infra docker-compose logs -f db
 devtooie infra docker-compose exec db psql -U example
-cd packages/db && devtooie infra docker-compose cp ./dump.sql db:/tmp/  # relative to where you are
+cd libs/db && devtooie infra docker-compose cp ./dump.sql db:/tmp/  # relative to where you are
 ```
 
 **The mode goes before `docker-compose`**: `devtooie -m test infra docker-compose ps`. After that

@@ -34,7 +34,7 @@ to version-pinned absolute URLs so the npm page works. Because the skill loads `
 ## Documentation — keep in lockstep
 
 Whenever a change affects how devtooie is configured, invoked, or driven — `defineConfig`
-options, the package schema, tokens, CLI flags, or the control API — update **all** the docs
+options, the service schema, tokens, CLI flags, or the control API — update **all** the docs
 in the same change, not later. The human-facing docs are split by topic; the agent-facing
 doc is a single consolidated file that **duplicates** their content, so it is the easiest to
 leave stale — treat keeping it current as mandatory.
@@ -54,8 +54,8 @@ Human-facing:
   (fields, dependencies, TypeScript project references, typed package names). Links out to
   `docs/logging.md` for the `logs` option.
 - `docs/logging.md` — timestamps and structured-log (JSON) formatting: the top-level and
-  per-package `logs` options, the default formatter, the `logging` helpers, writing your own.
-- `docs/package-lifecycle.md` — how `command` flags decide
+  per-service `logs` options, the default formatter, the `logging` helpers, writing your own.
+- `docs/service-lifecycle.md` — how `command` flags decide
   restart-vs-rebuild after a code edit.
 - `docs/cli.md` — every CLI flag and subcommand, plus `devtooie env`.
 - `docs/control-api.md` — the localhost HTTP control-API reference.
@@ -63,10 +63,12 @@ Human-facing:
 Agent-facing:
 
 - `packages/devtooie/docs/agents.md` — a single, self-contained guide for coding agents. It
-  **consolidates all of the above** (README + every topic doc) plus the agent-only
-  operational material (driving devtooie headlessly, reading logs, onboarding). **Any user-
-  or agent-facing change to the README or a topic doc must be mirrored here in the same
-  change** — it is the file the installed skill loads, and it must never fall behind.
+  **consolidates all of the above** (README + every topic doc) plus material of its own.
+  **Any user- or agent-facing change to the README or a topic doc must be mirrored here in the
+  same change** — it is the file the installed skill loads, and it must never fall behind.
+  The mirroring goes one way only: `agents.md` is a **superset** of the human docs, free to
+  document what they deliberately leave out (see [`agents.md` scope](#docsagentsmd-scope)). A
+  topic that is only in `agents.md` is not drift — don't delete it to match the human docs.
 - `packages/devtooie/assets/skill.md` — the installed skill. It is intentionally just
   frontmatter + an instruction to Read `node_modules/devtooie/docs/agents.md`, so put actual
   content in `agents.md`, not here. The path is deliberately **not** an `@` reference: `@`
@@ -85,8 +87,10 @@ reconcile every copy, `agents.md` included.
 
 This file is read by an AI agent to **use and interact with** devtooie. It is the single
 source the skill loads, so it must be self-contained: the full configuration/CLI/control-API
-reference **and** how to run devtooie headlessly, drive a running session, onboard a package,
-and read logs for debugging. **No internals** — no source layout, implementation details, or
+reference **and** how to run devtooie headlessly, drive a running session, onboard a service,
+and read logs for debugging. It may cover more than the human docs do — configuring libraries
+(`deps.build`, project references), say, which the README and `docs/` leave out. **No
+internals** — no source layout, implementation details, or
 how features are built — and don't describe past/removed architecture, only the current surface.
 That last point holds for the README and the topic docs too; it is spelled out in
 [`.claude/rules/docs-no-history.md`](.claude/rules/docs-no-history.md), which loads whenever
@@ -107,7 +111,7 @@ uses this same command.
 
 ## Type-level tests — assert types, not "some error"
 
-`defineConfig`'s inference (per-package `tokens`, the package-name union, the callback `port`)
+`defineConfig`'s inference (per-service `tokens`, the service-name union, the callback `port`)
 is asserted in `packages/devtooie/src/config.test-d.ts` with vitest's `expectTypeOf`
 (`expect-type`, already a vitest dependency — nothing to install):
 

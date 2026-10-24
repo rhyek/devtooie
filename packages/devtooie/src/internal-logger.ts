@@ -53,11 +53,11 @@ export interface RenderedInternalRecord {
  * the line isn't JSON — callers guard.
  */
 export function formatInternalRecord(jsonLine: string): RenderedInternalRecord {
-  const rec = JSON.parse(jsonLine) as { level?: number; component?: string; package?: string };
+  const rec = JSON.parse(jsonLine) as { level?: number; component?: string; service?: string };
   return {
     text: internalFormatter(jsonLine),
     component: rec.component === 'control' ? 'control' : 'system',
-    packageName: typeof rec.package === 'string' ? rec.package : undefined,
+    packageName: typeof rec.service === 'string' ? rec.service : undefined,
     isError: typeof rec.level === 'number' && rec.level >= ERROR_LEVEL,
   };
 }

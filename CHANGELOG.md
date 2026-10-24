@@ -1,44 +1,57 @@
 # Changelog
 
-## 0.8.0 (2026-09-06)
+## 1.0.0 (2026-09-06)
 
 ### Features
 
-- **Reach each package at its own hostname**, like `http://api.localhost:4000` instead of a bare port per app, through a reverse proxy devtooie now runs itself — with a status page while the package is stopped or still starting. See [docs/dev-reverse-proxy.md](docs/dev-reverse-proxy.md).
-- **New top-level `infra` brings your `docker-compose.yaml` services up before the packages start** — waiting on their healthchecks and running your migrations — with `devtooie infra up|down|destroy` to drive them on their own. See [docs/infra.md](docs/infra.md).
+- **Reach each service at its own hostname**, like `http://api.localhost:4000` instead of a bare port per app, through a reverse proxy devtooie now runs itself — with a status page while the service is stopped or still starting. See [docs/dev-reverse-proxy.md](docs/dev-reverse-proxy.md).
+- **New top-level `infra` brings your `docker-compose.yaml` services up before the application services start** — waiting on their healthchecks and running your migrations — with `devtooie infra up|down|destroy` to drive them on their own. See [docs/infra.md](docs/infra.md).
 - **The session footer shows each infra service's live state, and starts, stops, restarts or resets the one you select with the arrow keys** — the control API does the same. See [docs/infra.md](docs/infra.md#in-a-dev-session).
-- **Infra callbacks get `control`, a client for the running session's control API**, so an `afterReady` can restart a package after its database is reset. See [docs/infra.md](docs/infra.md#driving-the-session-control).
+- **Ctrl+C asks you to press it again before it exits a running session**, so a stray press doesn't take every service down. See [docs/control-api.md](docs/control-api.md#graceful-shutdown).
+- **Infra callbacks get `control`, a client for the running session's control API, a new `beforeDestroy`, and a `data` object shared for the run**, so a reset can stop a running service before its database is wiped and start it again after. See [docs/infra.md](docs/infra.md#driving-the-session-control).
+- **`devtooie --headless -s <service> --detach --wait` starts a session in the background and returns once it's healthy**, or reuses the one running in that mode, and prints one JSON line to stop it by. See [docs/cli.md](docs/cli.md).
+- **`startStack()` gives a test suite its stack in one call**: the `--detach --wait` session, with each service's origin, a control client and a `stop()`. See [docs/cli.md](docs/cli.md#from-a-test-suites-setup-startstack).
+- **The control API starts and stops a service**, with `POST /command/service/start/<name>` and `/stop/<name>`; starting one the session wasn't started with adds it, dependencies included. See [docs/control-api.md](docs/control-api.md).
 - **Installing devtooie sets the project up**: its `postinstall` runs `devtooie init` for a project with no config and (re)writes the agent skill for one that has it, so a fresh clone carries the guide for the installed version. pnpm 10+ needs `pnpm approve-builds` first. See [Install](README.md#install).
 - **A workspace runs one session per mode**, so a `--mode test` session starts alongside the `development` one instead of taking it over. See [docs/cli.md](docs/cli.md#taking-over-a-running-session).
-- **New top-level `packageRootDir` infers each package's directory from its key**, so `relativeDir` is only ever an override. See [docs/configuration.md](docs/configuration.md).
-- **New `env.vars` sets environment variables from the config itself** — a record, or a callback computed from the environment — for every package, one-off command and infra service. See [docs/configuration.md](docs/configuration.md#envvars).
+- **New top-level `serviceRootDir` infers each service's directory from its key**, so `relativeDir` is only ever an override. See [docs/configuration.md](docs/configuration.md).
+- **New `env.vars` sets environment variables from the config itself** — a record, or a callback computed from the environment — for every service, one-off command and infra service. See [docs/configuration.md](docs/configuration.md#envvars).
 - **Everything devtooie starts gets `DEVTOOIE_CWD` and `DEVTOOIE_WORKSPACE_DIR`**: where devtooie was invoked, and the workspace root. See [Variables devtooie sets](README.md#variables-devtooie-sets).
-- **New `devtooie show-config` prints the fully resolved config as JSON**, no session needed — including each package's public origin under the dev reverse proxy. See [docs/cli.md](docs/cli.md#devtooie-show-config).
-- **A `urls` entry or `healthcheck` can be a path** like `'/todos'` (or `''` for the origin itself): a link is based on the package's public origin under the dev reverse proxy, else on `http://localhost:<port>`; a healthcheck always on `http://localhost:<port>`. See [docs/configuration.md](docs/configuration.md).
-- **Packages can declare a subdomain under `proxy: { subdomain }`**, exposed on the resolved config and handed to the package's callbacks. See [docs/configuration.md](docs/configuration.md#callbacks-instead-of-interpolation).
+- **New `devtooie show-config` prints the fully resolved config as JSON**, no session needed — including each service's public origin under the dev reverse proxy. See [docs/cli.md](docs/cli.md#devtooie-show-config).
+- **A `urls` entry or `healthcheck` can be a path** like `'/todos'` (or `''` for the origin itself): a link is based on the service's public origin under the dev reverse proxy, else on `http://localhost:<port>`; a healthcheck always on `http://localhost:<port>`. See [docs/configuration.md](docs/configuration.md).
+- **Services can declare a subdomain under `proxy: { subdomain }`**, exposed on the resolved config and handed to the service's callbacks. See [docs/configuration.md](docs/configuration.md#callbacks-instead-of-interpolation).
 - **The dev reverse proxy routes infra services too** — an object store, a mail catcher's web UI — given a `port` and a `proxy`. See [docs/infra.md](docs/infra.md#reaching-a-service-through-the-dev-reverse-proxy).
+- **Infra services take `urls`, shown in the footer under `infra`** like an application service's links. See [docs/infra.md](docs/infra.md#a-services-footer-links).
 - **`devReverseProxy.rootDomain` can be an array**: the first entry is the canonical root, and the others are aliases that route the same way. See [docs/dev-reverse-proxy.md](docs/dev-reverse-proxy.md#config).
 - **Log lines carry a timestamp by default — just the time while everything on screen is from the same day**, the full date once two days are visible together. Set `logs.timestamps: false` to hide them. See [docs/logging.md](docs/logging.md#timestamps).
-- **Each running package uses roughly 75 MB less memory and starts faster**, with no package-manager process kept alongside it. See [How a script is run](README.md#how-a-script-is-run).
+- **Each running service uses roughly 75 MB less memory and starts faster**, with no package-manager process kept alongside it. See [How a script is run](README.md#how-a-script-is-run).
 - **`devtooie exec`, `run`, `logs` and the other subcommands start in half the time or less, and a session uses about 70 MB less memory.**
-- **Package log prefixes wear a new default color palette** — a package's own `color` still wins. See [docs/configuration.md](docs/configuration.md).
+- **Service log prefixes wear a new default color palette** — a service's own `color` still wins. See [docs/configuration.md](docs/configuration.md).
 
 ### Fixes
 
-- **A saved selection naming a package that no longer exists no longer crashes the picker.**
+- **A devtooie started from a process another devtooie started loads its own `.env` files** rather than inheriting the outer one's values.
+- **Editing a `.env` file through a symlink restarts the services that use it**, as editing a plain one does.
+- **A `.env` file restarts its services only when its content changes**, so a sync client like Dropbox touching it restarts nothing.
+- **A saved selection naming a service that no longer exists no longer crashes the picker.**
 - **Resizing the terminal redraws the TUI right away, even with a long log.**
-- **A package's `.env` files override the workspace's for the same variable**, with no `env.override` entry needed. See [Environment loading](README.md#environment-env-loading).
+- **A service's `.env` files override the workspace's for the same variable**, with no `env.override` entry needed. See [Environment loading](README.md#environment-env-loading).
 - **`devtooie run` and the session log show only a script's own output**, without pnpm's command echo around it.
 - **`env.override` holds wherever the variable is used**: a `${VAR}` reference to it in a `.env` file expands to the value that won instead of the shell's, and build scripts get it too.
-- **Interrupting a `--plain` session just as it starts no longer leaves its packages running.**
+- **Interrupting a `--plain` session just as it starts no longer leaves its services running.**
+- **Ctrl+C during a shutdown kills every service at once**, including one still ignoring the request to stop.
+- **A restart, rebuild or start under way when the session shuts down no longer leaves a service running after devtooie exits.**
 
 ### Breaking changes
 
-- **A package's `subdomain` goes under `proxy`** — change `subdomain: 'api'` to `proxy: { subdomain: 'api' }`; a top-level `subdomain` is an error.
+- **`--plain` is `--headless`** — rename the flag in scripts that start a session without the TUI.
+- **The config's `packages` is `services`, and `-p/--package` is `-s/--service`** — rename the key in `devtooie.config.ts` and the flag in scripts; `/query/status` reports `services`, the exports `PackageType` and `findPackage` are `ServiceType` and `findService`, the `Package*` types are `Service*` (`ServiceName`, `ServiceConfig`, …), and `Register.packageConfigs` is `serviceConfigs`. See [docs/configuration.md](docs/configuration.md).
+- **A service's `subdomain` goes under `proxy`** — change `subdomain: 'api'` to `proxy: { subdomain: 'api' }`; a top-level `subdomain` is an error.
 - **The session record is per mode, `node_modules/.devtooie/running.<mode>.json`, and logs go under `logs/<mode>/`** — point a script that reads `running.json` at `running.development.json` (or its mode's file).
-- **A `PORT` or `PUBLIC_ORIGIN` in a workspace-level `.env` file no longer overrides a package's own** — set it in that package's `.env` file instead.
-- **`relativeDir` is required unless the config sets `packageRootDir`** — the implicit `packages/<key>` default is gone; add `packageRootDir: 'packages'` to keep it.
-- **The resolved package's `path` is now `absoluteDir`**, next to `relativeDir`.
+- **The control API's service commands move under `/command/service/`** — call `POST /command/service/restart/<name>` instead of `/command/restart/<name>`, and the same for `rebuild`.
+- **A `PORT` or `PUBLIC_ORIGIN` in a workspace-level `.env` file no longer overrides a service's own** — set it in that service's `.env` file instead.
+- **`relativeDir` is required unless the config sets `serviceRootDir`** — the implicit `packages/<key>` default is gone; add `serviceRootDir: 'packages'` to keep it.
+- **The resolved service's `path` is now `absoluteDir`**, next to `relativeDir`.
 - **`devtooie cmd` is now `devtooie exec`, and `devtooie cmd -c <script>` is `devtooie run <script>`** — update any script or alias that calls it. See [docs/cli.md](docs/cli.md#devtooie-exec-and-devtooie-run).
 - **↑/↓ move the footer selection instead of scrolling the log a line** — scroll with PageUp/PageDown or the mouse wheel.
 - **`pre<name>` and `post<name>` scripts no longer run for the scripts devtooie starts** — chain the step into the script itself, like `"dev": "node codegen.ts && vite dev"`.
@@ -71,7 +84,7 @@
 - **`.env` files now load in Vite's order**, so `.env.development` beats `.env.local`; move a personal override of a development value into `.env.development.local`.
 - **The ambient environment now wins over `.env` files**, so `FOO=bar devtooie` overrides a file for one run. Name the variables whose file value should still win with `env: { override: [...] }`, or `true` for all of them.
 - **Removed `env.files`** — use `--mode` for alternate file sets; custom filenames and subdirectory placement are no longer supported.
-- **Removed `DEVTOOIE_WATCH_PATHS`** — pass your own `--watch-path` flags in the dev script instead. See [docs/package-lifecycle.md](docs/package-lifecycle.md#scoping-a-node---watch-dev-script).
+- **Removed `DEVTOOIE_WATCH_PATHS`** — pass your own `--watch-path` flags in the dev script instead. See [docs/service-lifecycle.md](docs/service-lifecycle.md#scoping-a-node---watch-dev-script).
 - **Starting a second session no longer quits the first automatically** — pass `--kill-others`.
 - **The resolved `config.packages.<name>.healthcheck` is now `{ url, timeout }`** rather than a URL string.
 
@@ -80,7 +93,7 @@
 ### Features
 
 - **Select and copy log text with the mouse** — double-click a word, triple-click a line, or drag to take a structured log's value on its own.
-- **New `DEVTOOIE_WATCH_PATHS` scopes a `node --watch` dev script** to what it actually loads. See [docs/package-lifecycle.md](docs/package-lifecycle.md#scoping-a-node---watch-dev-script).
+- **New `DEVTOOIE_WATCH_PATHS` scopes a `node --watch` dev script** to what it actually loads. See [docs/service-lifecycle.md](docs/service-lifecycle.md#scoping-a-node---watch-dev-script).
 - **A package's `port` accepts a callback**, so it can come from an env file devtooie itself loads. See [docs/configuration.md](docs/configuration.md).
 - **`logging.formatter` accepts a callback**, so the config can depend on the entry being rendered. See [docs/logging.md](docs/logging.md#the-logging-helpers).
 - **devtooie's own lines are labelled and structured** — `[devtooie]`, and `[dt:control]` for control-API commands.

@@ -27,8 +27,8 @@ export default defineConfig({
     }),
   },
   resolve: { tsconfigPaths: true },
-  // Don't pre-bundle the linked workspace lib: keep @example/isomorphic in the module graph so
-  // Vite watches its emitted `dist` and hot-reloads when its `tsc --watch` re-emits on edit.
+  // Don't pre-bundle the linked workspace lib: keep @example/isomorphic's source in the module
+  // graph so Vite watches it and hot-reloads on edit.
   optimizeDeps: { exclude: ['@example/isomorphic'] },
   plugins: [devtools(), tailwindcss(), tanstackStart(), viteReact()],
 });

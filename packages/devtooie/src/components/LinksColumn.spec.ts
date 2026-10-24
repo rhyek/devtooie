@@ -1,3 +1,4 @@
+import chalk from 'chalk';
 import { render } from 'ink';
 import { Writable } from 'node:stream';
 import React from 'react';
@@ -40,28 +41,46 @@ function rows(props: React.ComponentProps<typeof LinksColumn>, columns = 80): st
 }
 
 describe('LinksColumn', () => {
-  test('lists the routed infra services under an `infra` heading, after the packages', () => {
+  test('lists the infra services that declare urls under an `infra` caption, after the packages', () => {
     const out = rows({
       topLevelUrls: [],
       packageUrlGroups: [{ name: 'web', selected: true, urls: [[{ label: 'home', url: 'https://web.example.test' }]] }], // prettier-ignore
-      infraUrls: [[{ url: 'https://s3.example.test' }], [{ url: 'https://mail.example.test' }]],
+      infraUrlGroups: [
+        { name: 'mail', selected: false, urls: [[{ url: 'https://mail.example.test' }]] },
+        { name: 'store', selected: false, urls: [[{ label: 'console', url: 'https://store.example.test/console' }]] }, // prettier-ignore
+      ],
     });
-    expect(out).toEqual([
-      'web',
-      'home',
-      'infra',
-      'https://s3.example.test',
-      'https://mail.example.test',
-    ]);
+    // `mail`'s one unlabelled link is its name; `store`'s labelled one goes under its name.
+    expect(out).toEqual(['web', 'home', 'infra', 'mail', 'store', 'console']);
   });
 
-  test('shows the infra links on their own when no package has any', () => {
-    const out = rows({
+  test("links an infra service's name to its one unlabelled url", () => {
+    const out = frame({
       topLevelUrls: [],
       packageUrlGroups: [],
-      infraUrls: [[{ url: 'https://mail.example.test' }]],
+      infraUrlGroups: [{ name: 'mail', selected: false, urls: [[{ url: 'https://mail.example.test' }]] }], // prettier-ignore
     });
-    expect(out).toEqual(['infra', 'https://mail.example.test']);
+    expect(out).toContain('\x1b]8;;https://mail.example.test\x07mail\x1b]8;;\x07');
+    expect(rows({ topLevelUrls: [], packageUrlGroups: [], infraUrlGroups: [{ name: 'mail', selected: false, urls: [[{ url: 'https://mail.example.test' }]] }] })).toEqual(['infra', 'mail']); // prettier-ignore
+  });
+
+  test('draws the `infra` caption in the default text color, apart from the links under it', () => {
+    const original = chalk.level;
+    let out: string;
+    try {
+      chalk.level = 3; // force truecolor so the frame carries its colors
+      out = frame({
+        topLevelUrls: [],
+        packageUrlGroups: [],
+        infraUrlGroups: [{ name: 'mail', selected: false, urls: [[{ url: 'https://mail.example.test' }]] }], // prettier-ignore
+      });
+    } finally {
+      chalk.level = original;
+    }
+    const [caption, link] = out.split('\n').filter((row) => stripAnsi(row).trim() !== '');
+    expect(stripAnsi(caption ?? '').trim()).toBe('infra');
+    expect(caption).not.toContain('\x1b[3'); // no foreground color
+    expect(link).toContain('\x1b[38;2;'); // the link color, for contrast
   });
 
   test("makes a package's heading the link when its urls are one unlabelled link", () => {
@@ -74,7 +93,6 @@ describe('LinksColumn', () => {
           { name: 'docs', selected: false, urls: [[{ url: 'https://docs.example.test' }], [{ url: 'https://docs.example.test/api' }]] }, // prettier-ignore
           { name: 'admin', selected: false, urls: [[{ url: 'https://admin.example.test' }, { url: 'https://admin.example.test/logs' }]] }, // prettier-ignore
         ],
-        infraUrls: [[{ url: 'https://mail.example.test' }]],
       },
       120,
     );
@@ -87,8 +105,6 @@ describe('LinksColumn', () => {
       'https://docs.example.test/api',
       'admin',
       'https://admin.example.test https://admin.example.test/logs',
-      'infra',
-      'https://mail.example.test',
     ]);
   });
 
@@ -103,6 +119,6 @@ describe('LinksColumn', () => {
   });
 
   test('renders nothing when there are no links at all', () => {
-    expect(rows({ topLevelUrls: [], packageUrlGroups: [], infraUrls: [] })).toEqual([]);
+    expect(rows({ topLevelUrls: [], packageUrlGroups: [], infraUrlGroups: [] })).toEqual([]);
   });
 });

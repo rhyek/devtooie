@@ -13,7 +13,7 @@ import type { ConfigContext, EnvVars, EnvVarsResolver, PortResolver, UrlResolver
 // fields are documented in `config.ts` and need no `.describe()` here.
 
 // A URL anywhere in the config: a literal string, or a callback devtooie invokes once at load
-// time with the package's context (`{ envs, tokens, port, subdomain }`). Overridden in config.ts,
+// time with the service's context (`{ envs, tokens, port, subdomain }`). Overridden in config.ts,
 // since `z.custom` erases the callback to `any`; `defineConfig` resolves every callback to a string
 // before anything downstream sees it.
 export const UrlValueSchema = z.union([
@@ -29,7 +29,7 @@ export const UrlLinkSchema = z.union([
 ]);
 export const UrlEntrySchema = z.union([UrlLinkSchema, z.array(UrlLinkSchema)]);
 
-/** How long a healthcheck probe may take before it's aborted, when the package doesn't say. */
+/** How long a healthcheck probe may take before it's aborted, when the service doesn't say. */
 export const DEFAULT_HEALTHCHECK_TIMEOUT_MS = 1500;
 
 // A `healthcheck`: the URL on its own (string or callback), or an object adding `timeout`.
@@ -59,7 +59,7 @@ export const CommandOptionsSchema = z
   });
 
 export const CommandSchema = z
-  // `null` = the package has no dev process; devtooie never starts it (build/dep-only).
+  // `null` = the service has no dev process; devtooie never starts it (build/dep-only).
   .union([z.string(), z.tuple([z.string(), CommandOptionsSchema]), z.null()])
   .default('dev')
   .transform((c) =>
@@ -87,10 +87,10 @@ export const SubdomainLabelSchema = z
     'a subdomain is a DNS label: lowercase letters, digits, and hyphens, not starting or ending with a hyphen',
   );
 
-// The `proxy` block packages and infra services share: how a reverse proxy routes to the thing
+// The `proxy` block services and infra services share: how a reverse proxy routes to the thing
 // declaring it. Strict, so a misspelled option fails at load. `subdomain` is required — it is the
 // block's only option, and `proxy: {}` would route nothing. `true` is shorthand for the declaring
-// package's or service's own key; `defineConfig` replaces it with that string (checking it is a
+// service's or service's own key; `defineConfig` replaces it with that string (checking it is a
 // label) before anything else reads the field.
 export const ProxySchema = z.strictObject({
   subdomain: z.union([z.literal(true), SubdomainLabelSchema, z.array(SubdomainLabelSchema).min(1)]),
@@ -105,15 +105,15 @@ const PortSchema = z.union([
   }),
 ]);
 
-// All per-package config is flat (no `run` nesting). The package's *name* is the key it's
-// declared under in `packages` (injected by `defineConfig` after parsing), so it isn't a field
+// All per-service config is flat (no `run` nesting). The service's *name* is the key it's
+// declared under in `services` (injected by `defineConfig` after parsing), so it isn't a field
 // here; the rest describe how to run/select/link it (omit them all for a build-only lib).
-export const PackageConfigSchema = z.object({
+export const ServiceConfigSchema = z.object({
   relativeDir: z
     .string()
     .optional()
     .describe(
-      'Directory holding the package, relative to `workspaceDir`. Inferred as `<packageRootDir>/<key>` when the config sets `packageRootDir`; required otherwise. Set it to override the inferred one.',
+      'Directory holding the service, relative to `workspaceDir`. Inferred as `<serviceRootDir>/<key>` when the config sets `serviceRootDir`; required otherwise. Set it to override the inferred one.',
     ),
   selectable: z.boolean().optional().describe('Show in the interactive picker (default `true`).'),
   shortName: z.string().optional().describe('Shorter label used in the TUI in place of `name`.'),
@@ -121,17 +121,17 @@ export const PackageConfigSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Color for this package's log-prefix label, overriding the auto-assigned palette color. Any Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`), `'rgb(175,135,255)'`, or `'ansi256(140)'`.",
+      "Color for this service's log-prefix label, overriding the auto-assigned palette color. Any Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`), `'rgb(175,135,255)'`, or `'ansi256(140)'`.",
     ),
   // Overridden in config.ts (the shared `ProxyInput`); documented there.
   proxy: ProxySchema.optional(),
-  // A package's subdomain lives under `proxy`. Named here only so a config that sets it at the
-  // top level fails with directions, rather than having it stripped and the package silently
+  // A service's subdomain lives under `proxy`. Named here only so a config that sets it at the
+  // top level fails with directions, rather than having it stripped and the service silently
   // unrouted. Omitted from the public input type in config.ts.
   subdomain: z
-    .undefined({ error: "a package's subdomain goes under `proxy` — `proxy: { subdomain: … }`" })
+    .undefined({ error: "a service's subdomain goes under `proxy` — `proxy: { subdomain: … }`" })
     .optional(),
-  // Overridden in config.ts (pinned to the keys the package declares); documented there.
+  // Overridden in config.ts (pinned to the keys the service declares); documented there.
   // Must be parsed, not stripped — it's what a callback's `tokens` is built from.
   tokens: z.record(z.string(), z.string().optional()).optional(),
   // Overridden in config.ts (a callback Zod can't usefully type — `z.custom` erases to `any`);
@@ -144,19 +144,19 @@ export const PackageConfigSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      'Automatically start this package during the run phase (default `true`). When `false`, devtooie leaves it stopped — start it yourself with the `s` hotkey (or a control-API `restart`). Ignored when `command` is `null` (that package never starts).',
+      'Automatically start this service during the run phase (default `true`). When `false`, devtooie leaves it stopped — start it yourself with the `s` hotkey (or a control-API `start`). Ignored when `command` is `null` (that service never starts).',
     ),
   // Overridden in config.ts (urls/healthcheck admit callbacks `z.custom` erases to `any`);
   // documented there. Both are resolved to plain strings by `defineConfig`.
   urls: z.array(UrlEntrySchema).optional(),
   healthcheck: HealthcheckSchema.optional(),
-  // Overridden in config.ts (pinned to package names); documented there.
+  // Overridden in config.ts (pinned to service names); documented there.
   waitFor: z.array(z.string()).optional(),
   tsconfig: z
     .string()
     .optional()
     .describe(
-      'tsconfig file (relative to the package dir) devtooie reads for project references to infer build-time deps. Defaults to `tsconfig.build.json`, then `tsconfig.json`.',
+      'tsconfig file (relative to the service dir) devtooie reads for project references to infer build-time deps. Defaults to `tsconfig.build.json`, then `tsconfig.json`.',
     ),
   deps: z
     .object({
@@ -203,11 +203,11 @@ export const DevReverseProxySchema = z.strictObject({
       }),
     ])
     .optional(),
-  defaultPackage: z
+  defaultService: z
     .string()
     .optional()
     .describe(
-      'The package the bare `rootDomain` routes to. Must declare a `port`; needs no `proxy`, and without one its `PUBLIC_ORIGIN` is the bare root. Omit for a 404 there.',
+      'The service the bare `rootDomain` routes to. Must declare a `port`; needs no `proxy`, and without one its `PUBLIC_ORIGIN` is the bare root. Omit for a 404 there.',
     ),
   urlScheme: z
     .enum(['http', 'https'])
@@ -242,6 +242,9 @@ export const InfraServiceSchema = z.strictObject({
   // documented in infra/types.ts. Here, not on a provider's options, so every provider has them.
   port: PortSchema.optional(),
   proxy: ProxySchema.optional(),
+  // The service's footer links, as for a service; overridden in config.ts like a service's.
+  urls: z.array(UrlEntrySchema).optional(),
+  beforeDestroy: infraCallback('beforeDestroy'),
   afterDestroy: infraCallback('afterDestroy'),
   beforeUp: infraCallback('beforeUp'),
   afterReady: infraCallback('afterReady'),
@@ -275,12 +278,12 @@ export const DefineConfigSchema = z.object({
     .describe(
       'Fixed control-API port; omit to let devtooie pick one (recorded in `running.<mode>.json`). A fixed port serves the session of one mode at a time.',
     ),
-  // Keyed by package name; the key becomes the package's `name`. Overridden in config.ts (a
-  // mapped type carrying each package's own token types); documented there.
-  packages: z.record(z.string().min(1), PackageConfigSchema),
-  // Overridden in config.ts (its presence is what makes each package's `relativeDir` optional
+  // Keyed by service name; the key becomes the service's `name`. Overridden in config.ts (a
+  // mapped type carrying each service's own token types); documented there.
+  services: z.record(z.string().min(1), ServiceConfigSchema),
+  // Overridden in config.ts (its presence is what makes each service's `relativeDir` optional
   // at the type level); documented there.
-  packageRootDir: z.string().optional(),
+  serviceRootDir: z.string().optional(),
   // Overridden in config.ts (callbacks `z.custom` erases to `any`); documented there.
   urls: z.array(UrlEntrySchema).optional(),
   // Overridden in config.ts (callbacks erase to `any`); documented there.
@@ -290,7 +293,7 @@ export const DefineConfigSchema = z.object({
   workspaceDir: z
     .string()
     .optional()
-    .describe("Root each package's `relativeDir` resolves against. Defaults to `process.cwd()`."),
+    .describe("Root each service's `relativeDir` resolves against. Defaults to `process.cwd()`."),
   tokens: z
     .record(z.string(), z.string().optional())
     .optional()

@@ -1,6 +1,6 @@
 // devtooie's structured-log formatting. `logging.formatter(config)` builds the formatter used for
-// a package's output; **a default `logging.formatter()` is applied to every package automatically**
-// (override per package with `logs.formatter`). Each output line is parsed as JSON; non-JSON lines
+// a service's output; **a default `logging.formatter()` is applied to every service automatically**
+// (override per service with `logs.formatter`). Each output line is parsed as JSON; non-JSON lines
 // (and JSON that isn't an object with a recognizable level/message) are returned untouched. A
 // recognized log renders as a `[LEVEL] message` header — the `[LEVEL]` colored by severity — with
 // the remaining properties listed, indented, on the lines below. devtooie splits that multi-line
@@ -306,9 +306,9 @@ export function createFormatter(config: FormatterConfigInput = {}): (line: strin
 }
 
 /**
- * The formatter devtooie applies to every package's output by default (equivalent to
+ * The formatter devtooie applies to every service's output by default (equivalent to
  * `logging.formatter()`): non-JSON lines pass through untouched, JSON logs are best-effort
- * formatted. A package's own `logs.formatter` overrides it.
+ * formatted. A service's own `logs.formatter` overrides it.
  */
 export const defaultFormatter = createFormatter();
 
@@ -336,7 +336,7 @@ const withDefaults = (
 export const logging = {
   /**
    * **For structured (JSON) logs only.** The base factory, and the exact formatter devtooie already
-   * applies to every package — so you only need it to *change* something (hide a field, rename one,
+   * applies to every service — so you only need it to *change* something (hide a field, rename one,
    * map non-standard levels). Suits any JSON logger whose level/message keys are `level`/`msg`
    * (Go `log/slog`, pino); see {@link logging.nodejs} for ecosystem presets.
    *

@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { execa, execaSync, type ResultPromise } from 'execa';
-import type { AnyPackageConfig, ResolvedHealthcheck } from './config.js';
+import type { AnyServiceConfig, ResolvedHealthcheck } from './config.js';
 import {
   getRegisteredPackages,
   getLoadedConfig,
@@ -78,9 +78,9 @@ const RUNNER_MANAGED = new Set(['dev', 'build', 'build:clean', 'build-clean', 'c
  */
 export function findAncestorPackage(
   startDir: string,
-  packages: AnyPackageConfig[],
+  packages: AnyServiceConfig[],
   root: string,
-): AnyPackageConfig | null {
+): AnyServiceConfig | null {
   const byPath = new Map(packages.map((p) => [path.resolve(p.absoluteDir), p]));
   const stop = path.resolve(root);
   let dir = path.resolve(startDir);
@@ -101,7 +101,7 @@ export function findAncestorPackage(
 }
 
 function readPackageJson(
-  pkg: AnyPackageConfig,
+  pkg: AnyServiceConfig,
 ): { name?: string; version?: string; scripts?: Record<string, string> } | null {
   try {
     return JSON.parse(fs.readFileSync(path.join(pkg.absoluteDir, 'package.json'), 'utf8'));
@@ -114,11 +114,11 @@ function readPackageJson(
  * The raw text of a package.json script, or null when the package has no package.json / no such
  * script (a Makefile package always returns null — its recipe isn't readable this way).
  */
-export function getScriptText(pkg: AnyPackageConfig, script: string): string | null {
+export function getScriptText(pkg: AnyServiceConfig, script: string): string | null {
   return readPackageJson(pkg)?.scripts?.[script] ?? null;
 }
 
-export function getCommandRunner(pkg: AnyPackageConfig): 'sh' | 'make' {
+export function getCommandRunner(pkg: AnyServiceConfig): 'sh' | 'make' {
   if (fs.existsSync(path.join(pkg.absoluteDir, 'package.json'))) {
     return 'sh';
   }
@@ -163,7 +163,7 @@ function binDirs(dir: string): string[] {
  * package manager that started devtooie, which describe the workspace root instead.
  */
 export function getExecArgs(
-  pkg: AnyPackageConfig,
+  pkg: AnyServiceConfig,
   script: string,
   extraArgs: string[] = [],
   env: NodeJS.ProcessEnv = process.env,
@@ -206,7 +206,7 @@ export function getExecArgs(
  * signal alike.
  */
 export function runScript(
-  pkg: AnyPackageConfig,
+  pkg: AnyServiceConfig,
   script: string,
   stdio: 'inherit' | 'pipe',
 ): ResultPromise {
@@ -226,7 +226,7 @@ export function exitCodeOf(result: { exitCode?: number; signal?: string }): numb
   return signal === undefined ? 1 : 128 + signal;
 }
 
-export function hasScript(pkg: AnyPackageConfig, script: string): boolean {
+export function hasScript(pkg: AnyServiceConfig, script: string): boolean {
   if (getCommandRunner(pkg) === 'make') {
     return getMakeTargets(pkg).includes(script);
   }
@@ -240,7 +240,7 @@ export function hasScript(pkg: AnyPackageConfig, script: string): boolean {
  * separate `clean` and `build` (run in sequence). Makefile packages rely on the latter, since a
  * `make` target name can't contain the `:` in `build:clean`.
  */
-export function canRebuild(pkg: AnyPackageConfig): boolean {
+export function canRebuild(pkg: AnyServiceConfig): boolean {
   if (pkg.command?.cleans === true) {
     return true;
   }
@@ -254,7 +254,7 @@ export function canRebuild(pkg: AnyPackageConfig): boolean {
  * rebuild is just a restart (no pre-commands). See {@link canRebuild}.
  */
 export function getRebuildCommands(
-  pkg: AnyPackageConfig,
+  pkg: AnyServiceConfig,
   env: NodeJS.ProcessEnv = process.env,
 ): ExecSpec[] {
   if (hasScript(pkg, 'build:clean')) {
@@ -271,11 +271,11 @@ export function getRebuildCommands(
  * (used for the picker and `ProcessManager`'s `canDev`). `command: null` opts out explicitly;
  * otherwise the package must expose its dev script/target.
  */
-export function hasDevScript(pkg: AnyPackageConfig): boolean {
+export function hasDevScript(pkg: AnyServiceConfig): boolean {
   return pkg.command !== null && hasScript(pkg, getDevScript(pkg));
 }
 
-export function getMakeTargets(pkg: AnyPackageConfig): string[] {
+export function getMakeTargets(pkg: AnyServiceConfig): string[] {
   try {
     const mk = fs.readFileSync(path.join(pkg.absoluteDir, 'Makefile'), 'utf8');
     // Exclude make's special targets (`.PHONY`, `.DEFAULT`, …) — they start with `.` and aren't
@@ -288,7 +288,7 @@ export function getMakeTargets(pkg: AnyPackageConfig): string[] {
   }
 }
 
-export function getExtraCommands(pkg: AnyPackageConfig): string[] {
+export function getExtraCommands(pkg: AnyServiceConfig): string[] {
   const names =
     getCommandRunner(pkg) === 'make'
       ? getMakeTargets(pkg)
@@ -305,7 +305,7 @@ export enum DepType {
 }
 export const ALL_DEP_TYPES = [DepType.BUILD, DepType.DEV, DepType.RUNTIME];
 
-function lookup(name: string): AnyPackageConfig | undefined {
+function lookup(name: string): AnyServiceConfig | undefined {
   return getRegisteredPackages().find((a) => a.name === name);
 }
 
@@ -314,7 +314,7 @@ function lookup(name: string): AnyPackageConfig | undefined {
  * the registered package's `tsconfig` (explicit, no fallback) → `tsconfig.build.json` →
  * `tsconfig.json`. Returns `null` when none applies.
  */
-function resolveRefTsconfig(dir: string, byPath: Map<string, AnyPackageConfig>): string | null {
+function resolveRefTsconfig(dir: string, byPath: Map<string, AnyServiceConfig>): string | null {
   const custom = byPath.get(dir)?.tsconfig;
   const candidates = custom
     ? [path.join(dir, custom)]
@@ -339,7 +339,7 @@ function readTsconfigReferences(
   return Array.isArray(config?.references) ? (config.references as { path: string }[]) : [];
 }
 
-export function getTsconfigBuildPackages(pkg: AnyPackageConfig): AnyPackageConfig[] {
+export function getTsconfigBuildPackages(pkg: AnyServiceConfig): AnyServiceConfig[] {
   // Resolve TS project references transitively, reading each package's tsconfig per
   // `resolveRefTsconfig`'s precedence (tsconfig → tsconfig.build.json → tsconfig.json). They
   // count only in a project that has the TS peer dep — which is looked up, never loaded: the
@@ -353,7 +353,7 @@ export function getTsconfigBuildPackages(pkg: AnyPackageConfig): AnyPackageConfi
   const registered = getRegisteredPackages();
   const byPath = new Map(registered.map((a) => [path.resolve(a.absoluteDir), a]));
   const seen = new Set<string>();
-  const result: AnyPackageConfig[] = [];
+  const result: AnyServiceConfig[] = [];
   const visit = (dir: string) => {
     const resolvedDir = path.resolve(dir);
     if (seen.has(resolvedDir)) {
@@ -379,14 +379,14 @@ export function getTsconfigBuildPackages(pkg: AnyPackageConfig): AnyPackageConfi
 }
 
 export interface ResolveResult {
-  allPackages: AnyPackageConfig[];
+  allPackages: AnyServiceConfig[];
   buildSet: Set<string>;
   runSet: Set<string>;
   reasons: Record<string, string>;
 }
 
 export function resolveDeps(
-  selectedPackages: AnyPackageConfig[],
+  selectedPackages: AnyServiceConfig[],
   depTypes: DepType[] = ALL_DEP_TYPES,
 ): ResolveResult {
   const runSet = new Set<string>();
@@ -435,7 +435,7 @@ export function resolveDeps(
   }
 
   const allNames = new Set([...runSet, ...buildSet]);
-  const allPackages = [...allNames].map(lookup).filter((a): a is AnyPackageConfig => Boolean(a));
+  const allPackages = [...allNames].map(lookup).filter((a): a is AnyServiceConfig => Boolean(a));
   return { allPackages, buildSet, runSet, reasons };
 }
 
@@ -443,7 +443,7 @@ const selectionFile = () => path.join(getStateDir(), 'selection.json');
 
 /**
  * Keeps only the names that are packages of the loaded config. A saved selection outlives
- * package renames, and a stale name must never reach the picker or `findPackage` (which throws
+ * package renames, and a stale name must never reach the picker or `findService` (which throws
  * — inside a React render, that took the whole TUI down), nor be written back to recur on every
  * run. With no config loaded there is nothing to check against, so the names pass through.
  */
@@ -497,7 +497,7 @@ export type InitialPhase =
   | { type: 'building'; selectedNames: string[] };
 
 /**
- * Picks where the TUI's phase machine starts: an explicit `--package` list goes straight to the
+ * Picks where the TUI's phase machine starts: an explicit `--service` list goes straight to the
  * build; so does `--last-answers` with a saved selection whose every name is still a package.
  * A saved selection naming a package that no longer exists shows the picker instead, with the
  * names that survived preselected — renamed package keys must never stop devtooie from running.
@@ -515,16 +515,16 @@ export function initialPhaseFor(opts: { packages: string[]; lastAnswers: boolean
 
 /**
  * The package names for a non-interactive phase (build/plain), which — unlike the UI — has no
- * selector to fall back on: an explicit `--package` wins, then a saved `--last-answers`
- * selection, otherwise an error naming `usage`. Unknown `--package` names are the caller's to
+ * selector to fall back on: an explicit `--service` wins, then a saved `--last-answers`
+ * selection, otherwise an error naming `usage`. Unknown `--service` names are the caller's to
  * validate.
  */
 export function resolveSelectedNames(
-  opts: { package: string[]; lastAnswers: boolean },
+  opts: { service: string[]; lastAnswers: boolean },
   usage: string,
 ): { names: string[] } | { error: string } {
-  if (opts.package.length > 0) {
-    return { names: opts.package };
+  if (opts.service.length > 0) {
+    return { names: opts.service };
   }
   if (opts.lastAnswers) {
     const saved = readSelection();
@@ -533,7 +533,7 @@ export function resolveSelectedNames(
     if (saved?.stale.length) {
       return {
         error:
-          `The saved selection names packages that no longer exist (${saved.stale.join(', ')}) — ` +
+          `The saved selection names services that no longer exist (${saved.stale.join(', ')}) — ` +
           'run once without --last-answers to pick again.',
       };
     }
@@ -541,7 +541,7 @@ export function resolveSelectedNames(
       ? { error: 'No saved selection found — run once without --last-answers first.' }
       : { names: saved.names };
   }
-  return { error: `${usage} requires --package or --last-answers.` };
+  return { error: `${usage} requires --service or --last-answers.` };
 }
 
 export function resetSelection(): void {
@@ -572,7 +572,7 @@ export function getGitBranch(): string | null {
   }
 }
 
-const byName = (a: AnyPackageConfig, b: AnyPackageConfig) => a.name.localeCompare(b.name);
+const byName = (a: AnyServiceConfig, b: AnyServiceConfig) => a.name.localeCompare(b.name);
 
 type DepKind = 'build' | 'dev' | 'runtime';
 
@@ -581,7 +581,7 @@ type DepKind = 'build' | 'dev' | 'runtime';
  * Always returns a fresh array — callers ({@link closureSize}) drain it in place, so it must
  * never hand back the package's own `run.deps` array.
  */
-function directDeps(pkg: AnyPackageConfig, kind: DepKind): string[] {
+function directDeps(pkg: AnyServiceConfig, kind: DepKind): string[] {
   if (kind === 'build') {
     return [...getTsconfigBuildPackages(pkg).map((a) => a.name), ...(pkg.deps?.build ?? [])];
   }
@@ -589,7 +589,7 @@ function directDeps(pkg: AnyPackageConfig, kind: DepKind): string[] {
 }
 
 /** Size of the transitive closure reachable from `pkg` following only `kind` edges. */
-function closureSize(pkg: AnyPackageConfig, kind: DepKind): number {
+function closureSize(pkg: AnyServiceConfig, kind: DepKind): number {
   const seen = new Set<string>();
   const queue = directDeps(pkg, kind);
   while (queue.length) {
@@ -611,7 +611,7 @@ function closureSize(pkg: AnyPackageConfig, kind: DepKind): number {
  * counted per edge type so a package reached via two kinds (e.g. build *and* runtime) counts
  * once per kind. Intrinsic to the dependency graph — independent of the current selection.
  */
-export function depScore(pkg: AnyPackageConfig): number {
+export function depScore(pkg: AnyServiceConfig): number {
   return (['build', 'dev', 'runtime'] as const).reduce(
     (sum, kind) => sum + closureSize(pkg, kind),
     0,
@@ -623,7 +623,7 @@ export function depScore(pkg: AnyPackageConfig): number {
  * explicitly selected in the picker. The selection point lifts a directly-chosen package
  * above equally-weighted deps that were only pulled in transitively.
  */
-export function packagePoints(pkg: AnyPackageConfig, selectedSet?: Set<string>): number {
+export function packagePoints(pkg: AnyServiceConfig, selectedSet?: Set<string>): number {
   return depScore(pkg) + (selectedSet?.has(pkg.name) ? 1 : 0);
 }
 
@@ -633,15 +633,15 @@ export function packagePoints(pkg: AnyPackageConfig, selectedSet?: Set<string>):
  * per-package URL column in the footer, and the interactive selector's list.
  */
 export function sortPackages(
-  packages: AnyPackageConfig[],
+  packages: AnyServiceConfig[],
   selectedSet?: Set<string>,
-): AnyPackageConfig[] {
+): AnyServiceConfig[] {
   const score = new Map(packages.map((a) => [a.name, packagePoints(a, selectedSet)] as const));
   return [...packages].sort((a, b) => score.get(b.name)! - score.get(a.name)! || byName(a, b));
 }
 
 /** Selectable, dev-scripted packages for the interactive selector, in display order. */
-export function getSelectablePackages(): AnyPackageConfig[] {
+export function getSelectablePackages(): AnyServiceConfig[] {
   return sortPackages(
     getRegisteredPackages().filter((a) => a.selectable !== false && hasDevScript(a)),
   );
@@ -656,7 +656,7 @@ export function getRuntimeDepsMap(): Record<string, string[]> {
 }
 
 export function buildRunnerArgs(
-  selectedPackages: AnyPackageConfig[],
+  selectedPackages: AnyServiceConfig[],
   deps: ResolveResult,
 ): RunnerArgs {
   const selectedSet = new Set(selectedPackages.map((a) => a.name));

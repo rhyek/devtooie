@@ -75,6 +75,8 @@ export class InfraControl {
   private readonly procs = new Set<ResultPromise>();
   private readonly listeners = new Set<() => void>();
   private watch: InfraWatch | null = null;
+  /** Set by {@link stop}: a stopped control starts nothing, so nothing it runs outlives the session. */
+  private stopped = false;
 
   constructor(private readonly opts: InfraControlOptions) {
     for (const service of opts.services) {
@@ -106,8 +108,12 @@ export class InfraControl {
     });
   }
 
-  /** Stops watching. The actions under way are the caller's to kill (see {@link takeLiving}). */
+  /**
+   * Stops watching, and refuses every action from here on — a new one, and the next step of one
+   * under way. The actions under way are the caller's to kill (see {@link takeLiving}).
+   */
   stop(): void {
+    this.stopped = true;
     this.watch?.stop();
     this.watch = null;
   }
@@ -138,13 +144,13 @@ export class InfraControl {
 
   /**
    * Starts an action on a service, returning at once: `unknown` for a name the session doesn't
-   * have, `busy` while another action on it is under way.
+   * have, `busy` while another action on it is under way or once the control is stopped.
    */
   run(service: string, action: InfraAction): InfraRunOutcome {
     if (!this.states.has(service)) {
       return 'unknown';
     }
-    if (this.busy.has(service)) {
+    if (this.stopped || this.busy.has(service)) {
       return 'busy';
     }
     this.busy.set(service, action);
@@ -193,6 +199,9 @@ export class InfraControl {
 
   /** Runs one `devtooie infra …` command to its exit; resolves with whether it succeeded. */
   private async runStep(service: string, args: string[]): Promise<boolean> {
+    if (this.stopped) {
+      return false;
+    }
     const { cli, cwd, log, mode, track } = this.opts;
     const label = `devtooie ${args.join(' ')}`;
     log(service, chalk.cyan(`▶ running: ${label}`), false);

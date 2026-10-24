@@ -88,7 +88,7 @@ crashed prior run may have leaked). Re-run once clean.
 
 **Keys seem ignored.** You're on the wrong phase. A TUI is a phase machine and a
 key sent to a screen that doesn't handle it is silently dropped. For devtooie:
-`wait_for("Select packages to run")` → `press("enter")` → `wait_for("rebuild")`
+`wait_for("Select services to run")` → `press("enter")` → `wait_for("rebuild")`
 **before** sending run-phase hotkeys like `m`.
 
 **Footer text is wrapped/truncated in the capture.** The window is too small.
