@@ -33,9 +33,8 @@
   ],
   "scripts": {
     "postinstall": "node ./postinstall.js",
-    "gen": "node scripts/gen-config-types.ts",
     "palette": "node scripts/palette-preview.ts",
-    "build": "rm -rf dist && pnpm gen && tsc -p ./tsconfig.build.json && chmod +x dist/cli.js"
+    "build": "rm -rf dist && tsc -p ./tsconfig.build.json && chmod +x dist/cli.js"
   },
   "exports": {
     ".": {
@@ -62,8 +61,5 @@
   },
   "peerDependencies": {
     "typescript": ">=5.4.0"
-  },
-  "devDependencies": {
-    "zod-to-ts": "^2.1.0"
   }
 }

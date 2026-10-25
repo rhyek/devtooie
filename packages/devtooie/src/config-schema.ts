@@ -1,6 +1,4 @@
 import { z } from 'zod';
-// Type-only — erased at compile time, so `config-schema.ts` still imports nothing but `zod`
-// at runtime and `scripts/gen-config-types.ts` can keep executing it without a build.
 import type {
   ConfigContext,
   EnvVars,
@@ -9,19 +7,16 @@ import type {
   UrlResolver,
 } from './config.js';
 
-// The Zod schemas — the single source of the config's shape, defaults, validation, AND field
-// docs (via `.describe()`). `scripts/gen-config-types.ts` reads this file (it imports only
-// `zod`, so it runs without a build) and emits `config.generated.ts` with the descriptions as
-// JSDoc. `config.ts` then composes the public types from the generated ones, overriding the
-// fields Zod can't represent well (`command`, and the name-referencing `name`/`waitFor`/`deps`).
-//
-// So: `.describe()` on a *kept* field flows to consumer hover automatically; *overridden*
-// fields are documented in `config.ts` and need no `.describe()` here.
+// The Zod schemas: the config's shape, defaults and validation. They hold no docs. The types a
+// config is written against — `ServiceConfigInput` and `DefineConfigOptions` in config.ts — are
+// declared by hand, because they carry what a schema can't: the service names a `waitFor` may
+// list, and each callback's context typed from the config's own `tokens`. Every field's JSDoc
+// lives there. `config.test-d.ts` checks that those types and these schemas accept the same
+// fields, so one can't change without the other.
 
 // A URL anywhere in the config: a literal string, or a callback devtooie invokes once at load
-// time with the service's context (`{ envs, tokens, port, subdomain }`). Overridden in config.ts,
-// since `z.custom` erases the callback to `any`; `defineConfig` resolves every callback to a string
-// before anything downstream sees it.
+// time with the service's context (`{ envs, tokens, port, subdomain }`). `defineConfig` resolves
+// every callback to a string before anything downstream sees it.
 export const UrlValueSchema = z.union([
   z.string(),
   z.custom<UrlResolver>((v) => typeof v === 'function', {
@@ -40,8 +35,8 @@ export const DEFAULT_HEALTHCHECK_TIMEOUT_MS = 1500;
 
 // A `healthcheck`: the URL on its own (string or callback), or an object adding `timeout`.
 // Strict so a misspelled `timout` fails at load rather than silently leaving the default in
-// place. Overridden in config.ts (the callback erases to `any`); `defineConfig` normalizes
-// every form to `{ url: string; timeout: number }` before anything downstream sees it.
+// place. `defineConfig` normalizes every form to `{ url: string; timeout: number }` before
+// anything downstream sees it.
 export const HealthcheckSchema = z.union([
   UrlValueSchema,
   z.strictObject({
@@ -103,7 +98,7 @@ export const ProxySchema = z.strictObject({
 });
 
 // A `port`: a literal, or a callback `defineConfig` resolves to a number before anything
-// downstream sees it. Overridden in config.ts (`z.custom` erases the callback to `any`).
+// downstream sees it.
 const PortSchema = z.union([
   z.number(),
   z.custom<PortResolver>((v) => typeof v === 'function', {
@@ -115,55 +110,29 @@ const PortSchema = z.union([
 // declared under in `services` (injected by `defineConfig` after parsing), so it isn't a field
 // here; the rest describe how to run/select/link it (omit them all for a build-only lib).
 export const ServiceConfigSchema = z.object({
-  relativeDir: z
-    .string()
-    .optional()
-    .describe(
-      'Directory holding the service, relative to `workspaceDir`. Inferred as `<serviceRootDir>/<key>` when the config sets `serviceRootDir`; required otherwise. Set it to override the inferred one.',
-    ),
-  selectable: z.boolean().optional().describe('Show in the interactive picker (default `true`).'),
-  shortName: z.string().optional().describe('Shorter label used in the TUI in place of `name`.'),
-  color: z
-    .string()
-    .optional()
-    .describe(
-      "Color for this service's log-prefix label, overriding the auto-assigned palette color. Any Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`), `'rgb(175,135,255)'`, or `'ansi256(140)'`.",
-    ),
-  // Overridden in config.ts (the shared `ProxyInput`); documented there.
+  relativeDir: z.string().optional(),
+  selectable: z.boolean().optional(),
+  shortName: z.string().optional(),
+  color: z.string().optional(),
   proxy: ProxySchema.optional(),
   // A service's subdomain lives under `proxy`. Named here only so a config that sets it at the
   // top level fails with directions, rather than having it stripped and the service silently
-  // unrouted. Omitted from the public input type in config.ts.
+  // unrouted. The input type in config.ts types it `never`.
   subdomain: z
     .undefined({ error: "a service's subdomain goes under `proxy` — `proxy: { subdomain: … }`" })
     .optional(),
-  // Overridden in config.ts (pinned to the keys the service declares); documented there.
   // Must be parsed, not stripped — it's what a callback's `tokens` is built from.
   tokens: z.record(z.string(), z.string().optional()).optional(),
-  // Overridden in config.ts (a callback Zod can't usefully type — `z.custom` erases to `any`);
-  // documented there. `defineConfig` resolves a callback to a number before anything downstream
-  // sees it, so the *resolved* type is still `number | undefined`.
+  // `defineConfig` resolves a callback to a number before anything downstream sees it, so the
+  // *resolved* type is still `number | undefined`.
   port: PortSchema.optional(),
-  // Overridden in config.ts (transform → `any`); documented there.
   command: CommandSchema,
-  autostart: z
-    .boolean()
-    .optional()
-    .describe(
-      'Automatically start this service during the run phase (default `true`). When `false`, devtooie leaves it stopped — start it yourself with the `s` hotkey (or a control-API `start`). Ignored when `command` is `null` (that service never starts).',
-    ),
-  // Overridden in config.ts (urls/healthcheck admit callbacks `z.custom` erases to `any`);
-  // documented there. Both are resolved to plain strings by `defineConfig`.
+  autostart: z.boolean().optional(),
+  // Both resolved to plain strings by `defineConfig`.
   urls: z.array(UrlEntrySchema).optional(),
   healthcheck: HealthcheckSchema.optional(),
-  // Overridden in config.ts (pinned to service names); documented there.
   waitFor: z.array(z.string()).optional(),
-  tsconfig: z
-    .string()
-    .optional()
-    .describe(
-      'tsconfig file (relative to the service dir) devtooie reads for project references to infer build-time deps. Defaults to `tsconfig.build.json`, then `tsconfig.json`.',
-    ),
+  tsconfig: z.string().optional(),
   deps: z
     .object({
       build: z.array(z.string()).optional(),
@@ -171,10 +140,8 @@ export const ServiceConfigSchema = z.object({
       runtime: z.array(z.string()).optional(),
     })
     .optional(),
-  // Overridden in config.ts — `logs.formatter` is a function Zod can't usefully type (`z.custom`
-  // erases to `any`), so the whole object is re-typed there. `z.custom` validates it's a function
-  // and passes it through untouched, so the exact user callback (not a validating wrapper) reaches
-  // the runtime.
+  // `z.custom` validates `formatter` is a function and passes it through untouched, so the exact
+  // user callback (not a validating wrapper) reaches the runtime.
   logs: z
     .object({
       timestamps: z.boolean().optional(),
@@ -188,9 +155,8 @@ export const ServiceConfigSchema = z.object({
 });
 
 // The built-in dev reverse proxy. Strict, so a misspelled field (or an `enabled` flag — the
-// block's presence is what enables it) fails at load. `port`/`rootDomain` callbacks erase to
-// `any` here and are re-typed in config.ts; `defineConfig` resolves both before anything
-// downstream sees them.
+// block's presence is what enables it) fails at load. `defineConfig` resolves the `port` and
+// `rootDomain` callbacks before anything downstream sees them.
 export const DevReverseProxySchema = z.strictObject({
   port: z.union([
     z.number(),
@@ -209,22 +175,12 @@ export const DevReverseProxySchema = z.strictObject({
       }),
     ])
     .optional(),
-  defaultService: z
-    .string()
-    .optional()
-    .describe(
-      'The service the bare `rootDomain` routes to. Must declare a `port`; needs no `proxy`, and without one its `PUBLIC_ORIGIN` is the bare root. Omit for a 404 there.',
-    ),
-  urlScheme: z
-    .enum(['http', 'https'])
-    .optional()
-    .describe(
-      'Scheme of the public URLs devtooie derives (footer links, `PUBLIC_ORIGIN`). Defaults from the canonical `rootDomain`: `http` on `localhost` (the browser hits the proxy directly, so the URLs carry its `port`), `https` on any other root (a TLS terminator in front, so no port).',
-    ),
+  defaultService: z.string().optional(),
+  urlScheme: z.enum(['http', 'https']).optional(),
 });
 
 // One callback an infra service can attach. Zod only checks it's a function and passes it
-// through untouched; the real signature lives in infra/types.ts and is overlaid in config.ts.
+// through untouched; its real signature is in infra/types.ts.
 const infraCallback = (name: string) =>
   z
     .custom<(...args: never[]) => unknown>((v) => typeof v === 'function', {
@@ -243,12 +199,11 @@ export const InfraServiceSchema = z.strictObject({
       }),
     ])
     .optional(),
-  // The service's port on the host, and how a reverse proxy routes to it. Both overridden in
-  // config.ts (the port callback erases to `any`; `proxy` is the shared `ProxyInput`) and
-  // documented in infra/types.ts. Here, not on a provider's options, so every provider has them.
+  // The service's port on the host, and how a reverse proxy routes to it. Here, not on a
+  // provider's options, so every provider has them.
   port: PortSchema.optional(),
   proxy: ProxySchema.optional(),
-  // The service's footer links, as for a service; overridden in config.ts like a service's.
+  // The service's footer links, as for a service.
   urls: z.array(UrlEntrySchema).optional(),
   beforeDestroy: infraCallback('beforeDestroy'),
   afterDestroy: infraCallback('afterDestroy'),
@@ -262,82 +217,57 @@ export const DockerComposeInfraSchema = z.strictObject({
   services: z.record(z.string().min(1), InfraServiceSchema).optional(),
 });
 
-// Keyed by provider. Overridden in config.ts (callbacks erase to `any`); documented in
-// infra/types.ts.
+// Keyed by provider.
 export const InfraSchema = z
   // `true` is shorthand for a provider with nothing to configure: `{}`. Rewritten before the
   // object schema sees it rather than offered as a union alternative, because a union reports a
   // mistake inside the block as a bare "Invalid input" — losing the field's path and message.
+  // The parameter's type is what the schema's input type says it accepts.
   .strictObject({
     'docker-compose': z
-      .preprocess((value) => (value === true ? {} : value), DockerComposeInfraSchema)
+      .preprocess(
+        (value: true | z.input<typeof DockerComposeInfraSchema>) => (value === true ? {} : value),
+        DockerComposeInfraSchema,
+      )
       .optional(),
   })
   .refine((infra) => Object.values(infra).some((provider) => provider !== undefined), {
     message: "infra must name a provider — `infra: { 'docker-compose': true }`",
   });
 
-export const DefineConfigSchema = z.object({
-  apiPort: z
-    .number()
-    .optional()
-    .describe(
-      'Fixed control-API port; omit to let devtooie pick one (recorded in `running.<mode>.json`). A fixed port serves the session of one mode at a time.',
-    ),
-  // Keyed by service name; the key becomes the service's `name`. Overridden in config.ts (a
-  // mapped type carrying each service's own token types); documented there.
-  services: z.record(z.string().min(1), ServiceConfigSchema),
-  // Overridden in config.ts (its presence is what makes each service's `relativeDir` optional
-  // at the type level); documented there.
-  serviceRootDir: z.string().optional(),
-  // Overridden in config.ts (callbacks `z.custom` erases to `any`); documented there.
-  urls: z.array(UrlEntrySchema).optional(),
-  // Overridden in config.ts (callbacks erase to `any`); documented there.
-  devReverseProxy: DevReverseProxySchema.optional(),
-  // Overridden in config.ts (callbacks erase to `any`); documented in infra/types.ts.
-  infra: InfraSchema.optional(),
-  workspaceDir: z
-    .string()
-    .optional()
-    .describe("Root each service's `relativeDir` resolves against. Defaults to `process.cwd()`."),
-  tokens: z
-    .record(z.string(), z.string().optional())
-    .optional()
-    .describe('Arbitrary values handed to every `port`/`healthcheck`/`urls` callback as `tokens`.'),
-  // Overridden in config.ts (the `vars` callback erases to `any`); documented there.
-  env: z
-    .preprocess(
-      // The callback on its own is shorthand for `{ vars: callback }`.
-      (value) => (typeof value === 'function' ? { vars: value } : value),
-      // Strict so a config still passing the removed `files` option fails loudly. Stripping it
-      // would leave the config looking fine while loading a different set of files than it asks for.
-      z.strictObject({
-        // The values are checked where a callback's result is, in `defineConfig`, so a bad one
-        // is reported the same way — by variable name — whichever form declared it.
-        vars: z
-          .custom<EnvVars | EnvVarsResolver>(
-            (v) => typeof v === 'function' || (typeof v === 'object' && v !== null && !Array.isArray(v)), // oxfmt-ignore
-            { message: 'env.vars must be an object of variables or a function' },
-          )
-          .optional(),
-        override: z
-          .union([z.boolean(), z.array(z.string())])
-          .optional()
-          .describe(
-            'Variables whose `.env` or `env.vars` value may beat the ambient environment (`true` for all). By default the ambient environment wins, as in Next.js/Vite/`node --env-file`.',
-          ),
-      }),
+// The `env` options. Strict so a config still passing the removed `files` option fails loudly.
+// Stripping it would leave the config looking fine while loading a different set of files than it
+// asks for.
+const EnvOptionsSchema = z.strictObject({
+  // The values are checked where a callback's result is, in `defineConfig`, so a bad one
+  // is reported the same way — by variable name — whichever form declared it.
+  vars: z
+    .custom<EnvVars | EnvVarsResolver>(
+      (v) => typeof v === 'function' || (typeof v === 'object' && v !== null && !Array.isArray(v)), // oxfmt-ignore
+      { message: 'env.vars must be an object of variables or a function' },
     )
     .optional(),
-  logs: z
-    .object({
-      timestamps: z
-        .boolean()
-        .optional()
-        .describe(
-          'Prefix each on-screen log line with a local-time (24-hour) timestamp — `HH:MM:SS` while everything on screen is from one day, `YYYY-MM-DD HH:MM:SS` once two days are visible. Defaults to `true`. The on-disk log file always includes timestamps regardless of this setting.',
-        ),
-    })
-    .optional()
-    .describe('Log display options.'),
+  override: z.union([z.boolean(), z.array(z.string())]).optional(),
+});
+
+export const DefineConfigSchema = z.object({
+  apiPort: z.number().optional(),
+  // Keyed by service name; the key becomes the service's `name`.
+  services: z.record(z.string().min(1), ServiceConfigSchema),
+  serviceRootDir: z.string().optional(),
+  urls: z.array(UrlEntrySchema).optional(),
+  devReverseProxy: DevReverseProxySchema.optional(),
+  infra: InfraSchema.optional(),
+  workspaceDir: z.string().optional(),
+  tokens: z.record(z.string(), z.string().optional()).optional(),
+  env: z
+    .preprocess(
+      // The callback on its own is shorthand for `{ vars: callback }`. The parameter's type is
+      // what the schema's input type says it accepts.
+      (value: EnvVarsResolver | z.input<typeof EnvOptionsSchema>) =>
+        typeof value === 'function' ? { vars: value } : value,
+      EnvOptionsSchema,
+    )
+    .optional(),
+  logs: z.object({ timestamps: z.boolean().optional() }).optional(),
 });

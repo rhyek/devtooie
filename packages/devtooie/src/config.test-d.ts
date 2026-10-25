@@ -11,10 +11,14 @@
  * value form would *read* `port` and throw at load time by design.
  */
 import { describe, test, expectTypeOf } from 'vitest';
+import type { z } from 'zod';
+import type { DefineConfigSchema, ServiceConfigSchema } from './config-schema.js';
 import {
   defineConfig,
   type ConfigContext,
+  type DefineConfigOptions,
   type ServiceConfigInput,
+  type TokenRecord,
   type ProxyInput,
   type ResolvedDevReverseProxy,
   type ResolvedProxy,
@@ -641,5 +645,43 @@ describe('env', () => {
       services: { api: {} },
     });
     expectTypeOf(config.envVars).toEqualTypeOf<Record<string, string> | undefined>();
+  });
+});
+
+// What a type accepts, with every function reduced to `'function'`. The input types give a
+// callback a context typed from the config's own `tokens`; the schemas can only say "a function
+// goes here", so that is all the comparison below can check of a callback.
+type Shape<T> = T extends (...args: never[]) => unknown
+  ? 'function'
+  : T extends object
+    ? { [K in keyof T]: Shape<T[K]> }
+    : T;
+
+// The input types at their widest — any service names, any tokens, with `serviceRootDir` set so
+// `relativeDir` is optional, as the schema has it.
+type WidestService = ServiceConfigInput<TokenRecord, TokenRecord, string, string>;
+type WidestConfig = DefineConfigOptions<TokenRecord, Record<string, TokenRecord>, string, string>;
+type SchemaService = z.input<typeof ServiceConfigSchema>;
+type SchemaConfig = z.input<typeof DefineConfigSchema>;
+
+describe('the input types and the schemas', () => {
+  test('accept the same service fields', () => {
+    expectTypeOf<Shape<Omit<WidestService, 'command'>>>().toEqualTypeOf<
+      Shape<Omit<SchemaService, 'command'>>
+    >();
+  });
+
+  test('accept the same top-level fields', () => {
+    expectTypeOf<Shape<Omit<WidestConfig, 'services'>>>().toEqualTypeOf<
+      Shape<Omit<SchemaConfig, 'services'>>
+    >();
+    expectTypeOf<keyof WidestConfig['services']>().toEqualTypeOf<keyof SchemaConfig['services']>();
+  });
+
+  // The input type rules out `builds: false` on a command that watches or cleans, which the schema
+  // checks with a refinement its type can't show. So every command the type accepts must pass the
+  // schema's shape, and not the other way round.
+  test('accept a command only in a form the schema takes', () => {
+    expectTypeOf<WidestService['command']>().toExtend<SchemaService['command']>();
   });
 });

@@ -10,7 +10,6 @@ import {
   SubdomainLabelSchema,
   DEFAULT_HEALTHCHECK_TIMEOUT_MS,
 } from './config-schema.js';
-import type { GeneratedServiceConfig, GeneratedDefineConfig } from './config.generated.js';
 import {
   ENV_NAME_RE,
   baseEnvs,
@@ -226,10 +225,14 @@ export type UrlLinkInput<C = ServiceContext> = UrlValue<C> | { label: string; ur
 export type UrlEntryInput<C = ServiceContext> = UrlLinkInput<C> | UrlLinkInput<C>[];
 
 // ---------------------------------------------------------------------------
-// Documented input types = generated types (JSDoc from the schema `.describe()`) with the
-// fields Zod can't represent well overridden here: `command` (a transform → `any`) and the
-// name-referencing `name`/`waitFor`/`deps` (pinned to the service names `N`, `NoInfer` so a
-// typo is a compile error). Docs on kept fields flow from `config.generated.ts`.
+// The types a config is written against, and every field's docs. Declared here rather than
+// inferred from the schemas in config-schema.ts, because they carry what a schema can't: the
+// service names `N` that `waitFor`/`deps` may list (`NoInfer`, so a typo is a compile error),
+// and each callback's context typed from the config's own `tokens`. config.test-d.ts checks
+// that they and the schemas accept the same fields.
+//
+// Each field is declared on a plain object type, never reached through `Omit`/`Pick` or another
+// mapped type: TypeScript 7.0's editor shows no docs on hover for a field reached that way.
 // ---------------------------------------------------------------------------
 
 /**
@@ -274,23 +277,35 @@ export type ServiceConfigInput<
   Top = object,
   N extends string = string,
   RootDir extends string | undefined = undefined,
-> = Omit<
-  GeneratedServiceConfig,
-  | 'name'
-  | 'command'
-  | 'waitFor'
-  | 'deps'
-  | 'logs'
-  | 'port'
-  | 'urls'
-  | 'healthcheck'
-  | 'tokens'
-  | 'relativeDir'
-  | 'proxy'
-  | 'subdomain'
-> &
-  ServiceNameRefs<N> &
+> = ServiceNameRefs<N> &
   RelativeDirField<RootDir> & {
+    /**
+     * Directory holding the service, relative to `workspaceDir`. Inferred as
+     * `<serviceRootDir>/<key>` when the config sets `serviceRootDir`; required otherwise. Set it
+     * to override the inferred one.
+     */
+    relativeDir?: string;
+    /** Show in the interactive picker (default `true`). */
+    selectable?: boolean | undefined;
+    /** Shorter label used in the TUI in place of `name`. */
+    shortName?: string | undefined;
+    /**
+     * Color for this service's log-prefix label, overriding the auto-assigned palette color. Any
+     * Ink/chalk color: a name (`'magenta'`, `'blueBright'`), hex (`'#af87ff'`),
+     * `'rgb(175,135,255)'`, or `'ansi256(140)'`.
+     */
+    color?: string | undefined;
+    /**
+     * Automatically start this service during the run phase (default `true`). When `false`,
+     * devtooie leaves it stopped — start it yourself with the `s` hotkey (or a control-API
+     * `start`). Ignored when `command` is `null` (that service never starts).
+     */
+    autostart?: boolean | undefined;
+    /**
+     * tsconfig file (relative to the service dir) devtooie reads for project references to infer
+     * build-time deps. Defaults to `tsconfig.build.json`, then `tsconfig.json`.
+     */
+    tsconfig?: string | undefined;
     /**
      * Route `<subdomain>.<rootDomain>` to this service's `port` through the dev reverse proxy.
      * See {@link ProxyInput}.
@@ -516,19 +531,15 @@ export interface ResolvedDevReverseProxy {
 }
 
 /**
- * A service's `relativeDir`: optional when the config sets `serviceRootDir` (then inferred as
- * `<serviceRootDir>/<key>`, and this only overrides it), required otherwise. `RootDir` is the
- * type of the config's `serviceRootDir` — `undefined` when it isn't set.
+ * Makes a service's `relativeDir` required when the config sets no `serviceRootDir`, and adds
+ * nothing when it does (the directory is then inferred as `<serviceRootDir>/<key>`). `RootDir` is
+ * the type of the config's `serviceRootDir` — `undefined` when it isn't set. The field and its
+ * docs are declared in {@link ServiceConfigInput}: a field declared only inside a conditional
+ * type shows no docs on hover.
  */
-export type RelativeDirField<RootDir extends string | undefined> = undefined extends RootDir
-  ? {
-      /** Directory holding the service, relative to `workspaceDir`. (Set `serviceRootDir` to infer it.) */
-      relativeDir: string;
-    }
-  : {
-      /** Directory holding the service, relative to `workspaceDir`. Overrides `<serviceRootDir>/<key>`. */
-      relativeDir?: string;
-    };
+type RelativeDirField<RootDir extends string | undefined> = undefined extends RootDir
+  ? { relativeDir: string }
+  : unknown;
 
 /**
  * `defineConfig`'s options. `Top` is the config's own `tokens` and `P` the per-service ones,
@@ -540,10 +551,26 @@ export type DefineConfigOptions<
   P extends Record<string, unknown>,
   K extends string = Extract<keyof P, string>,
   RootDir extends string | undefined = undefined,
-> = Omit<
-  GeneratedDefineConfig,
-  'services' | 'urls' | 'tokens' | 'devReverseProxy' | 'serviceRootDir' | 'infra' | 'env'
-> & {
+> = {
+  /**
+   * Fixed control-API port; omit to let devtooie pick one (recorded in `running.<mode>.json`). A
+   * fixed port serves the session of one mode at a time.
+   */
+  apiPort?: number | undefined;
+  /** Root each service's `relativeDir` resolves against. Defaults to `process.cwd()`. */
+  workspaceDir?: string | undefined;
+  /** Log display options. */
+  logs?:
+    | {
+        /**
+         * Prefix each on-screen log line with a local-time (24-hour) timestamp — `HH:MM:SS`
+         * while everything on screen is from one day, `YYYY-MM-DD HH:MM:SS` once two days are
+         * visible. Defaults to `true`. The on-disk log file always includes timestamps
+         * regardless of this setting.
+         */
+        timestamps?: boolean | undefined;
+      }
+    | undefined;
   /**
    * Environment options: `vars`, variables of the config's own, and `override`, which `.env`
    * values may beat the ambient environment. Which files load is chosen with `--mode`. A
