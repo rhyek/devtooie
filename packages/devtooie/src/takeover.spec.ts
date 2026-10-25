@@ -1,5 +1,4 @@
-import { describe, it, test, expect, beforeEach, afterEach, vi } from 'vitest';
-
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { SessionStatus } from './control-client.js';
 import { preflightTakeover, resolveTakeover, type PreflightDeps } from './takeover.js';
 
@@ -26,7 +25,7 @@ function status(over: Partial<SessionStatus> = {}): SessionStatus {
 }
 
 describe('resolveTakeover', () => {
-  it('kills whenever --kill-others is passed, whoever is involved', () => {
+  test('kills whenever --kill-others is passed, whoever is involved', () => {
     for (const runningStartedByAgent of [true, false]) {
       for (const selfStartedByAgent of [true, false]) {
         for (const isInteractive of [true, false]) {
@@ -43,7 +42,7 @@ describe('resolveTakeover', () => {
     }
   });
 
-  it('kills silently when an agent replaces a session an agent started', () => {
+  test('kills silently when an agent replaces a session an agent started', () => {
     expect(
       resolveTakeover({
         killOthers: false,
@@ -54,7 +53,7 @@ describe('resolveTakeover', () => {
     ).toBe('kill');
   });
 
-  it('will not let an agent take over a session a person started', () => {
+  test('will not let an agent take over a session a person started', () => {
     expect(
       resolveTakeover({
         killOthers: false,
@@ -65,7 +64,7 @@ describe('resolveTakeover', () => {
     ).toBe('error');
   });
 
-  it('will not let a person silently take over an agent session without a terminal', () => {
+  test('will not let a person silently take over an agent session without a terminal', () => {
     expect(
       resolveTakeover({
         killOthers: false,
@@ -76,7 +75,7 @@ describe('resolveTakeover', () => {
     ).toBe('error');
   });
 
-  it('asks when there is a terminal to ask in', () => {
+  test('asks when there is a terminal to ask in', () => {
     for (const runningStartedByAgent of [true, false]) {
       expect(
         resolveTakeover({
@@ -101,7 +100,7 @@ describe('preflightTakeover', () => {
     };
   }
 
-  it('proceeds when no instance answers', async () => {
+  test('proceeds when no instance answers', async () => {
     const result = await preflightTakeover({
       configPath: CONFIG,
       killOthers: false,
@@ -116,7 +115,7 @@ describe('preflightTakeover', () => {
     expect(result).toEqual({ ok: true });
   });
 
-  it('proceeds without asking when the running instance is a different project', async () => {
+  test('proceeds without asking when the running instance is a different project', async () => {
     const result = await preflightTakeover({
       configPath: CONFIG,
       killOthers: false,
@@ -131,7 +130,7 @@ describe('preflightTakeover', () => {
     expect(result).toEqual({ ok: true });
   });
 
-  it('proceeds when the prompt is accepted', async () => {
+  test('proceeds when the prompt is accepted', async () => {
     expect(
       await preflightTakeover({
         configPath: CONFIG,
@@ -141,7 +140,7 @@ describe('preflightTakeover', () => {
     ).toEqual({ ok: true });
   });
 
-  it('stops when the prompt is declined', async () => {
+  test('stops when the prompt is declined', async () => {
     const result = await preflightTakeover({
       configPath: CONFIG,
       killOthers: false,
@@ -151,7 +150,7 @@ describe('preflightTakeover', () => {
     expect(result.ok === false && result.message).toMatch(/left the running/i);
   });
 
-  it('names --kill-others and warns agents off it when there is no terminal', async () => {
+  test('names --kill-others and warns agents off it when there is no terminal', async () => {
     const result = await preflightTakeover({
       configPath: CONFIG,
       killOthers: false,
@@ -165,7 +164,7 @@ describe('preflightTakeover', () => {
     expect(message).toMatch(/not started by a coding agent/i);
   });
 
-  it('lets an agent take over another agent session with no terminal and no flag', async () => {
+  test('lets an agent take over another agent session with no terminal and no flag', async () => {
     expect(
       await preflightTakeover({
         configPath: CONFIG,
@@ -182,7 +181,7 @@ describe('preflightTakeover', () => {
     ).toEqual({ ok: true });
   });
 
-  it('treats a pre-0.7.0 instance (no startedByAgent) as human-started', async () => {
+  test('treats a pre-0.7.0 instance (no startedByAgent) as human-started', async () => {
     const result = await preflightTakeover({
       configPath: CONFIG,
       killOthers: false,
@@ -223,10 +222,10 @@ describe('preflightTakeover', () => {
         isInteractive: () => false,
       }),
     });
-    expect(result.ok === false && result.message).toMatch(/Another test devtooie session is already running/); // prettier-ignore
+    expect(result.ok === false && result.message).toMatch(/Another test devtooie session is already running/); // oxfmt-ignore
   });
 
-  it('skips the question entirely with --kill-others', async () => {
+  test('skips the question entirely with --kill-others', async () => {
     expect(
       await preflightTakeover({
         configPath: CONFIG,
@@ -241,7 +240,7 @@ describe('preflightTakeover', () => {
     ).toEqual({ ok: true });
   });
 
-  it('probes the configured apiPort when one is pinned', async () => {
+  test('probes the configured apiPort when one is pinned', async () => {
     const seen: Array<number | undefined> = [];
     await preflightTakeover({
       configPath: CONFIG,

@@ -1,8 +1,7 @@
 import http from 'node:http';
-
 import { startedByAgent } from './agent-detection.js';
-import { currentMode } from './env.js';
 import type { DevReverseProxyServer } from './dev-reverse-proxy.js';
+import { currentMode } from './env.js';
 import {
   INFRA_ACTIONS,
   type InfraAction,

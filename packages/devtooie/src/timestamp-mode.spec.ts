@@ -32,7 +32,7 @@ describe('spansOneDay', () => {
   });
 
   test('looks only at the visible range', () => {
-    const lines = [line('2026-09-05 23:59:59'), line('2026-09-06 00:00:00'), line('2026-09-06 08:00:00')]; // prettier-ignore
+    const lines = [line('2026-09-05 23:59:59'), line('2026-09-06 00:00:00'), line('2026-09-06 08:00:00')]; // oxfmt-ignore
     expect(spansOneDay(lines, 1, 3)).toBe(true);
     expect(spansOneDay(lines, 0, 2)).toBe(false);
   });

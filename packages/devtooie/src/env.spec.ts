@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach, test, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import primitives from '@dotenvx/primitives';
+import { describe, expect, beforeEach, afterEach, test, vi } from 'vitest';
+import type { AnyServiceConfig } from './config.js';
 import {
   ambientEnv,
   assignedNames,
@@ -15,7 +16,6 @@ import {
   resolveMode,
   workspaceEnvLayer,
 } from './env.js';
-import type { AnyServiceConfig } from './config.js';
 
 /** A layer without its `DEVTOOIE_INJECTED_ENV` list, for the assertions about what it resolves. */
 function withoutList(layer: Record<string, string>): Record<string, string> {
@@ -54,7 +54,7 @@ function withAmbient(vars: Record<string, string>, fn: () => void): void {
 }
 
 describe('envFileNames', () => {
-  it('is base → local → mode → mode.local, ascending precedence within a scope', () => {
+  test('is base → local → mode → mode.local, ascending precedence within a scope', () => {
     expect(envFileNames('development')).toEqual([
       '.env',
       '.env.local',
@@ -63,12 +63,12 @@ describe('envFileNames', () => {
     ]);
   });
 
-  it('substitutes any mode name', () => {
+  test('substitutes any mode name', () => {
     expect(envFileNames('test')).toEqual(['.env', '.env.local', '.env.test', '.env.test.local']);
     expect(envFileNames('apple')).toEqual(['.env', '.env.local', '.env.apple', '.env.apple.local']);
   });
 
-  it('defaults to the development mode when DEVTOOIE_MODE is unset', () => {
+  test('defaults to the development mode when DEVTOOIE_MODE is unset', () => {
     withAmbient({}, () => {
       delete process.env.DEVTOOIE_MODE;
       expect(envFileNames()).toEqual(envFileNames('development'));
@@ -77,18 +77,18 @@ describe('envFileNames', () => {
 });
 
 describe('resolveMode', () => {
-  it('reads --mode, --mode=, and -m', () => {
+  test('reads --mode, --mode=, and -m', () => {
     expect(resolveMode(['node', 'cli', '--mode', 'test'])).toBe('test');
     expect(resolveMode(['node', 'cli', '--mode=test'])).toBe('test');
     expect(resolveMode(['node', 'cli', '-m', 'test'])).toBe('test');
   });
 
-  it('accepts the flag before or after a subcommand', () => {
+  test('accepts the flag before or after a subcommand', () => {
     expect(resolveMode(['node', 'cli', '--mode', 'test', 'exec'])).toBe('test');
     expect(resolveMode(['node', 'cli', 'exec', '--mode', 'test'])).toBe('test');
   });
 
-  it('stops at the first `--` so the wrapped command keeps its own flags', () => {
+  test('stops at the first `--` so the wrapped command keeps its own flags', () => {
     // `--mode watch` here belongs to vitest, not devtooie.
     withAmbient({}, () => {
       delete process.env.DEVTOOIE_MODE;
@@ -124,7 +124,7 @@ describe('resolveMode', () => {
     });
   });
 
-  it('falls back to DEVTOOIE_MODE, then development', () => {
+  test('falls back to DEVTOOIE_MODE, then development', () => {
     withAmbient({ DEVTOOIE_MODE: 'staging' }, () => {
       expect(resolveMode(['node', 'cli'])).toBe('staging');
     });
@@ -134,19 +134,19 @@ describe('resolveMode', () => {
     });
   });
 
-  it('rejects a mode name that is not safe as a filename segment', () => {
+  test('rejects a mode name that is not safe as a filename segment', () => {
     expect(() => resolveMode(['node', 'cli', '--mode', '../../etc'])).toThrow(/path separator/);
     expect(() => resolveMode(['node', 'cli', '--mode', '..'])).toThrow(/mode name/);
     expect(() => resolveMode(['node', 'cli', '--mode', ''])).toThrow(/mode name/);
   });
 
-  it('allows dots inside a mode name', () => {
+  test('allows dots inside a mode name', () => {
     expect(resolveMode(['node', 'cli', '--mode', 'e2e.ci'])).toBe('e2e.ci');
   });
 });
 
 describe('envCandidatePaths', () => {
-  it('lists all workspace-scope files first, then package-scope files (ascending precedence)', () => {
+  test('lists all workspace-scope files first, then package-scope files (ascending precedence)', () => {
     const paths = envCandidatePaths({
       cwd,
       relativeDir: 'packages/api',
@@ -160,12 +160,12 @@ describe('envCandidatePaths', () => {
     ]);
   });
 
-  it("collapses to a single scope when relativeDir is '.'", () => {
+  test("collapses to a single scope when relativeDir is '.'", () => {
     const paths = envCandidatePaths({ cwd, relativeDir: '.', files: ['.env', '.env.local'] });
     expect(paths).toEqual([path.join(cwd, '.env'), path.join(cwd, '.env.local')]);
   });
 
-  it('produces the full eight-path order for a mode', () => {
+  test('produces the full eight-path order for a mode', () => {
     const paths = envCandidatePaths({
       cwd,
       relativeDir: 'packages/api',
@@ -185,28 +185,28 @@ describe('envCandidatePaths', () => {
 });
 
 describe('resolveEnv', () => {
-  it('loads only files that exist', () => {
+  test('loads only files that exist', () => {
     write('.env', 'A=1\n');
     const { env, files } = resolveEnv({ cwd, relativeDir: 'packages/api' });
     expect(env).toEqual({ A: '1' });
     expect(files).toEqual([path.join(cwd, '.env')]);
   });
 
-  it('package scope overrides workspace scope regardless of file rank', () => {
+  test('package scope overrides workspace scope regardless of file rank', () => {
     write('.env.development', 'KEY=root\n');
     write('packages/api/.env', 'KEY=pkg\n');
     const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
     expect(env.KEY).toBe('pkg');
   });
 
-  it('a mode file outranks .env.local within a scope (Vite order)', () => {
+  test('a mode file outranks .env.local within a scope (Vite order)', () => {
     write('.env.local', 'KEY=local\n');
     write('.env.development', 'KEY=mode\n');
     const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
     expect(env.KEY).toBe('mode');
   });
 
-  it('.env.<mode>.local is the highest-ranked file in a scope', () => {
+  test('.env.<mode>.local is the highest-ranked file in a scope', () => {
     write('.env', 'KEY=base\n');
     write('.env.local', 'KEY=local\n');
     write('.env.development', 'KEY=mode\n');
@@ -215,14 +215,14 @@ describe('resolveEnv', () => {
     expect(env.KEY).toBe('modelocal');
   });
 
-  it('package-scope .env.local outranks a workspace-scope mode file (scope beats mode)', () => {
+  test('package-scope .env.local outranks a workspace-scope mode file (scope beats mode)', () => {
     write('.env.development', 'KEY=wsmode\n');
     write('packages/api/.env.local', 'KEY=pkglocal\n');
     const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
     expect(env.KEY).toBe('pkglocal');
   });
 
-  it('modes are exclusive: another mode does not load .env.development', () => {
+  test('modes are exclusive: another mode does not load .env.development', () => {
     write('.env', 'KEY=base\n');
     write('.env.development', 'KEY=dev\nDEV_ONLY=yes\n');
     write('.env.test', 'KEY=test\n');
@@ -235,7 +235,7 @@ describe('resolveEnv', () => {
     expect(env.DEV_ONLY).toBeUndefined();
   });
 
-  it('loads a custom mode', () => {
+  test('loads a custom mode', () => {
     write('.env.apple', 'KEY=apple\n');
     const { env } = resolveEnv({
       cwd,
@@ -245,7 +245,7 @@ describe('resolveEnv', () => {
     expect(env.KEY).toBe('apple');
   });
 
-  it('expands ${VAR} against earlier files and process.env', () => {
+  test('expands ${VAR} against earlier files and process.env', () => {
     withAmbient({ DEVTOOIE_ENV_SPEC: 'fromproc' }, () => {
       write('.env', 'BASE=hello\n');
       write('packages/api/.env.local', 'GREETING=${BASE} world\nECHO=${DEVTOOIE_ENV_SPEC}\n');
@@ -255,7 +255,7 @@ describe('resolveEnv', () => {
     });
   });
 
-  it('supports ${VAR:-default} and ${VAR:+alt} operators', () => {
+  test('supports ${VAR:-default} and ${VAR:+alt} operators', () => {
     write(
       '.env',
       'SET=yes\nA=${SET:-fallback}\nB=${MISSING:-fallback}\nC=${SET:+present}\nD=${MISSING:+present}\n',
@@ -267,7 +267,7 @@ describe('resolveEnv', () => {
     expect(env.D).toBe('');
   });
 
-  it('returns only file-defined keys and does not mutate process.env', () => {
+  test('returns only file-defined keys and does not mutate process.env', () => {
     write('.env', 'DEVTOOIE_ENV_SPEC_ONLY=x\n');
     const before = { ...process.env };
     const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
@@ -278,7 +278,7 @@ describe('resolveEnv', () => {
 });
 
 describe('resolveEnv precedence against the ambient environment', () => {
-  it('the ambient environment wins over a file var of the same name', () => {
+  test('the ambient environment wins over a file var of the same name', () => {
     withAmbient({ DEVTOOIE_ENV_OVERRIDE: 'ambient' }, () => {
       write('.env', 'DEVTOOIE_ENV_OVERRIDE=fromfile\n');
       const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
@@ -286,7 +286,7 @@ describe('resolveEnv precedence against the ambient environment', () => {
     });
   });
 
-  it('a cross-reference resolves against the ambient value the file lost to', () => {
+  test('a cross-reference resolves against the ambient value the file lost to', () => {
     withAmbient({ DEVTOOIE_ENV_CROSS: 'ambient' }, () => {
       write('.env', 'DEVTOOIE_ENV_CROSS=fromfile\nDERIVED=${DEVTOOIE_ENV_CROSS}-x\n');
       const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
@@ -295,13 +295,13 @@ describe('resolveEnv precedence against the ambient environment', () => {
     });
   });
 
-  it('a file var still wins where the ambient has none', () => {
+  test('a file var still wins where the ambient has none', () => {
     write('.env', 'DEVTOOIE_ENV_FILE_ONLY=fromfile\n');
     const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
     expect(env.DEVTOOIE_ENV_FILE_ONLY).toBe('fromfile');
   });
 
-  it('override: [name] lets just that var beat the ambient', () => {
+  test('override: [name] lets just that var beat the ambient', () => {
     withAmbient({ DEVTOOIE_ENV_A: 'ambientA', DEVTOOIE_ENV_B: 'ambientB' }, () => {
       write('.env', 'DEVTOOIE_ENV_A=fileA\nDEVTOOIE_ENV_B=fileB\n');
       const { env } = resolveEnv({
@@ -314,7 +314,7 @@ describe('resolveEnv precedence against the ambient environment', () => {
     });
   });
 
-  it('override: true restores blanket file-wins', () => {
+  test('override: true restores blanket file-wins', () => {
     withAmbient({ DEVTOOIE_ENV_A: 'ambientA', DEVTOOIE_ENV_B: 'ambientB' }, () => {
       write('.env', 'DEVTOOIE_ENV_A=fileA\nDEVTOOIE_ENV_B=fileB\n');
       const { env } = resolveEnv({ cwd, relativeDir: 'packages/api', override: true });
@@ -323,7 +323,7 @@ describe('resolveEnv precedence against the ambient environment', () => {
     });
   });
 
-  it('an overridden self-reference extends the ambient value (append pattern)', () => {
+  test('an overridden self-reference extends the ambient value (append pattern)', () => {
     withAmbient({ DEVTOOIE_ENV_APPEND: '--require /tmp/boot.js' }, () => {
       write('.env', 'DEVTOOIE_ENV_APPEND=$DEVTOOIE_ENV_APPEND --disable-warning=Experimental\n');
       const { env } = resolveEnv({
@@ -578,7 +578,7 @@ describe('resolveEnv expansion safety', () => {
   // Behavioral companions to the invariant test above: with the fix these return immediately and
   // assert the *values* are right. Without it they would hang, which is why they are not the
   // primary guard.
-  it(
+  test(
     'does not hang when an ambient value contains a literal self-reference',
     { timeout: 5000 },
     () => {
@@ -595,7 +595,7 @@ describe('resolveEnv expansion safety', () => {
     },
   );
 
-  it('does not hang when the poisoned var is not overridden', { timeout: 5000 }, () => {
+  test('does not hang when the poisoned var is not overridden', { timeout: 5000 }, () => {
     withAmbient({ DEVTOOIE_ENV_POISON2: 'x ${DEVTOOIE_ENV_POISON2}' }, () => {
       write('.env', 'DEVTOOIE_ENV_POISON2=$DEVTOOIE_ENV_POISON2 --flag\n');
       const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
@@ -604,7 +604,7 @@ describe('resolveEnv expansion safety', () => {
     });
   });
 
-  it('preserves a `$` inside an ambient value instead of expanding it away', () => {
+  test('preserves a `$` inside an ambient value instead of expanding it away', () => {
     withAmbient({ DEVTOOIE_ENV_DOLLAR: 'hello$world' }, () => {
       write('.env', 'MSG=${DEVTOOIE_ENV_DOLLAR}!\n');
       const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
@@ -612,7 +612,7 @@ describe('resolveEnv expansion safety', () => {
     });
   });
 
-  it('returns an ambient-won value without a stray escape backslash', () => {
+  test('returns an ambient-won value without a stray escape backslash', () => {
     withAmbient({ DEVTOOIE_ENV_ESC: 'a$b' }, () => {
       write('.env', 'DEVTOOIE_ENV_ESC=fromfile\n');
       const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
@@ -620,7 +620,7 @@ describe('resolveEnv expansion safety', () => {
     });
   });
 
-  it('round-trips an ambient value that already contains an escaped dollar', () => {
+  test('round-trips an ambient value that already contains an escaped dollar', () => {
     withAmbient({ DEVTOOIE_ENV_PREESC: 'lit\\$eral' }, () => {
       write('.env', 'OUT=${DEVTOOIE_ENV_PREESC}\n');
       const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
@@ -628,7 +628,7 @@ describe('resolveEnv expansion safety', () => {
     });
   });
 
-  it('still expands file-to-file references (escaping is not over-applied)', () => {
+  test('still expands file-to-file references (escaping is not over-applied)', () => {
     write('.env', 'A=one\nB=${A}/two\n');
     const { env } = resolveEnv({ cwd, relativeDir: 'packages/api' });
     expect(env.B).toBe('one/two');
@@ -639,13 +639,13 @@ describe('packageEnvLayer', () => {
   const mkPkg = (over: Partial<AnyServiceConfig>): AnyServiceConfig =>
     ({ name: 'api', relativeDir: 'packages/api', path: '/x', ...over }) as AnyServiceConfig;
 
-  it('injects the package port as PORT, below its resolved .env vars', () => {
+  test('injects the package port as PORT, below its resolved .env vars', () => {
     write('.env', 'A=1\n');
     const layer = packageEnvLayer(mkPkg({ port: 3001 }), { cwd });
     expect(withoutList(layer)).toEqual({ PORT: '3001', A: '1' });
   });
 
-  it('omits PORT when the package has no port, and an explicit .env PORT wins', () => {
+  test('omits PORT when the package has no port, and an explicit .env PORT wins', () => {
     write('packages/api/.env', 'PORT=9999\n');
     expect(packageEnvLayer(mkPkg({}), { cwd }).PORT).toBe('9999');
     expect(packageEnvLayer(mkPkg({ port: 3001 }), { cwd }).PORT).toBe('9999');
@@ -735,7 +735,7 @@ describe('DEVTOOIE_INJECTED_ENV', () => {
   });
 
   test("a service's layer lists its PORT", () => {
-    const pkg = { name: 'api', relativeDir: 'packages/api', path: '/x', port: 3001 } as unknown as AnyServiceConfig; // prettier-ignore
+    const pkg = { name: 'api', relativeDir: 'packages/api', path: '/x', port: 3001 } as unknown as AnyServiceConfig; // oxfmt-ignore
     expect(packageEnvLayer(pkg, { cwd }).DEVTOOIE_INJECTED_ENV!.split(',')).toContain('PORT');
   });
 
@@ -917,7 +917,7 @@ describe('encrypted values', () => {
 });
 
 describe('ambientEnv', () => {
-  it('snapshots process.env and drops undefined values', () => {
+  test('snapshots process.env and drops undefined values', () => {
     process.env.DEVTOOIE_TEST_AMBIENT = 'yes';
     delete process.env.DEVTOOIE_TEST_MISSING;
     try {
@@ -932,7 +932,7 @@ describe('ambientEnv', () => {
     }
   });
 
-  it('returns real values, not the escaped copies used for expansion', () => {
+  test('returns real values, not the escaped copies used for expansion', () => {
     withAmbient({ DEVTOOIE_TEST_RAW: 'a$b' }, () => {
       expect(ambientEnv().DEVTOOIE_TEST_RAW).toBe('a$b');
     });

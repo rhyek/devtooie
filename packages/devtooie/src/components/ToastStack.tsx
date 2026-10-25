@@ -1,5 +1,5 @@
-import { Box, Text, type DOMElement } from 'ink';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Box, Text, type DOMElement } from 'ink';
 import { DANGER_COLOR, LINK_COLOR, NOTICE_COLOR, OK_COLOR, WARN_COLOR } from '../colors.js';
 import {
   addToast,

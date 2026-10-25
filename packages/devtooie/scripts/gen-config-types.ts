@@ -1,12 +1,12 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 // Generates `src/config.generated.ts` from the Zod schemas in `src/config-schema.ts`,
 // turning each `.describe()` into a JSDoc comment. Runs directly via Node's TypeScript
 // support (no build needed) because `config-schema.ts` imports only `zod`. `config.ts`
 // composes the public types from the generated ones, overriding the fields Zod can't
 // represent.
 import { zodToTs, createTypeAlias, printNode, createAuxiliaryTypeStore } from 'zod-to-ts';
-import { fileURLToPath } from 'node:url';
-import fs from 'node:fs';
-import path from 'node:path';
 import { ServiceConfigSchema, DefineConfigSchema } from '../src/config-schema.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -38,7 +38,6 @@ const header = `// AUTO-GENERATED from config-schema.ts by scripts/gen-config-ty
 // Field docs come from the schemas' \`.describe()\`; \`command\`/\`waitFor\`/\`deps\`/\`name\`/
 // \`packages\` and the package-level \`logs\` are overridden in config.ts, so their generated form
 // here is intentionally ignored.
-/* eslint-disable */
 `;
 
 const body = [

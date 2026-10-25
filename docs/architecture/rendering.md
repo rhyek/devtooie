@@ -237,6 +237,11 @@ count at once. So `countRows` must not wrap a line to count its rows: wrapping
 what counting does, and at `MAX_BUFFER_LINES` it turned one resize step into
 seconds. Instead (`wrap-rows.ts`):
 
+- A line's tabs are already spaces: `addLine` runs `expandTabs` on it as it
+  comes in, to stops of 8 columns from the start of its text — Ink's own
+  expansion, done before anything measures the line. Left in, a tab measures as
+  no columns, Ink widens it after the row is cut to fit, and the row loses its
+  end. The log file keeps the tabs.
 - `measureText(text)` runs once per line and is kept on it: the display width,
   and `cells` — the text with its colors stripped, when every character left is
   one column wide and its own grapheme, so that a column offset is a string index.
@@ -245,8 +250,8 @@ seconds. Instead (`wrap-rows.ts`):
   `indexOf(' ')` and applies the same decisions `wrapRows` makes — `wrap-ansi`'s
   word wrap (`hard`, `trim: false`) and the over-long-token rule — to offsets
   instead of strings.
-- Anything `cells` can't express (a wide glyph, a combining mark, a tab, an
-  escape sequence that isn't a color) is `null` and is counted the old way, by
+- Anything `cells` can't express (a wide glyph, a combining mark, an escape
+  sequence that isn't a color) is `null` and is counted the old way, by
   wrapping. Such a line costs what every line used to, so a buffer with many
   **wrapping** CJK or emoji lines still re-flows slowly; a short one never wraps
   and costs nothing.
@@ -257,10 +262,14 @@ hanging indent.
 
 ## Scrolling & input
 
-Handled in `NativeRunner`'s `useInput`. **SGR mouse reporting** is enabled on
-mount by writing `MOUSE_ENABLE` (`ESC[?1002h` button-event tracking + `ESC[?1006h`
-SGR coordinates, from `mouse.ts`) and disabled on unmount. Ink delivers each
-report to `useInput` as `input`; `isMouseSequence`/`parseMouseEvents` decode them.
+Keys are handled in `NativeRunner`'s `useInput`, the mouse in a listener on stdin's
+`data` events. **SGR mouse reporting** is enabled on mount by writing `MOUSE_ENABLE`
+(`ESC[?1002h` button-event tracking + `ESC[?1006h` SGR coordinates, from `mouse.ts`)
+and disabled on unmount. Ink never hands a mouse report to `useInput` — it drops
+terminal sequences that map to no key — so `NativeRunner` reads them from the raw
+chunks Ink emits as `data` while it reads stdin, before it parses them into input
+events. A chunk can mix reports with keys and a report can be split across two
+reads, so `createMouseDecoder` keeps a report's unfinished start for the next chunk.
 
 `MOUSE_ENABLE` is **re-asserted on every resize**, because a terminal can hand our
 session to a _fresh_ emulator that restores the modes from an incomplete snapshot.
@@ -270,12 +279,13 @@ xterm.js restored by its `SerializeAddon`, which re-emits the _tracking_ mode
 legacy X10 encoding (`ESC[M` + three coordinate bytes), which our SGR decoder
 doesn't match — so the wheel and drag-select go silently dead while the keyboard
 keeps working. A reattach always re-measures the terminal, so the resize heals it
-before the next mouse event. As a backstop, `isLegacyMouseSequence` recognizes an
-X10 report and re-asserts on the spot; its coordinate bytes arrive as their own
-input event and are swallowed (`LEGACY_MOUSE_PAYLOAD_LENGTH`) so they can't type
-themselves into the filter or a custom command. X10 itself is never decoded — it
-caps at column 223 and its raw bytes are mangled by the input layer's UTF-8
-decoding, and re-asserting brings SGR straight back.
+before the next mouse event. As a backstop, the decoder recognizes an X10 header
+in a chunk and `NativeRunner` re-asserts on the spot. Ink drops the header, but its
+coordinate bytes reach `useInput` as one input event of their own; the `data`
+listener has already set the flag that swallows it, so they can't type themselves
+into the filter or a custom command. X10 itself is never decoded — it caps at
+column 223 and its raw bytes are mangled by UTF-8 decoding, and re-asserting
+brings SGR straight back.
 
 - **Mouse wheel**: reports arrive as buttons 64 (up) / 65 (down) and scroll the
   viewport by `WHEEL_STEP` rows (dropping any active selection).
@@ -540,7 +550,7 @@ machinery is gated on `!plain`. Don't regress this path.
 | Virtualization math (`computeWindow`/`windowRows`)   | `log-window.ts`               |
 | Wrapping a line into rows; counting a line's rows    | `wrap-rows.ts`                |
 | Scroll position + transitions                        | `scroll.ts`                   |
-| SGR mouse escapes + `parseMouseEvents` decoder       | `mouse.ts`                    |
+| SGR mouse escapes + stdin-chunk mouse decoder        | `mouse.ts`                    |
 | Selection geometry/text math (highlight, copy text)  | `selection.ts`                |
 | Toast policy (shape, cap, eviction)                  | `toasts.ts`                   |
 | Toast hook, timers, click targets, overlay renderer  | `components/ToastStack.tsx`   |

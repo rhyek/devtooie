@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
 import sliceAnsi from 'slice-ansi';
+import { describe, test, expect } from 'vitest';
 import { stripAnsi } from './lib.js';
 import {
   DOUBLE_CLICK_MS,
@@ -23,30 +23,30 @@ function wordAt(text: string, col: number): string | null {
 }
 
 describe('wordSpanAt', () => {
-  it('selects a plain word bounded by spaces', () => {
+  test('selects a plain word bounded by spaces', () => {
     expect(wordAt('worker gateway', 2)).toBe('worker');
   });
 
-  it('joins across an interior dot', () => {
+  test('joins across an interior dot', () => {
     expect(wordAt('index.html', 3)).toBe('index.html');
   });
 
-  it('joins across a hyphen, so kebab-case and flags select whole', () => {
+  test('joins across a hyphen, so kebab-case and flags select whole', () => {
     expect(wordAt('is-a', 0)).toBe('is-a');
     expect(wordAt('log-level', 1)).toBe('log-level');
     expect(wordAt('--verbose', 4)).toBe('--verbose');
   });
 
-  it('selects a whole path, keeping its leading ./ and dropping a trailing dot', () => {
+  test('selects a whole path, keeping its leading ./ and dropping a trailing dot', () => {
     expect(wordAt('./scripts/demo/record.sh.', 12)).toBe('./scripts/demo/record.sh');
   });
 
-  it('stops at = so a key and its value are separate words', () => {
+  test('stops at = so a key and its value are separate words', () => {
     expect(wordAt('env=value', 1)).toBe('env');
     expect(wordAt('env=value', 5)).toBe('value');
   });
 
-  it('selects a whole URI from any part of it, query string included', () => {
+  test('selects a whole URI from any part of it, query string included', () => {
     const url = 'http://localhost:3001/todos?a=1&b=2';
     // scheme, host, port, path, query key, query value, last character
     for (const col of [1, 9, 22, 25, 28, 30, url.length - 1]) {
@@ -54,31 +54,31 @@ describe('wordSpanAt', () => {
     }
   });
 
-  it('leaves sentence punctuation off the end of a URI', () => {
+  test('leaves sentence punctuation off the end of a URI', () => {
     expect(wordAt('see http://x.io/a?b=1. next', 10)).toBe('http://x.io/a?b=1');
   });
 
-  it('keeps a URI trailing slash', () => {
+  test('keeps a URI trailing slash', () => {
     expect(wordAt('http://x.io/ up', 3)).toBe('http://x.io/');
   });
 
-  it('drops trailing sentence punctuation', () => {
+  test('drops trailing sentence punctuation', () => {
     expect(wordAt('ready. next', 2)).toBe('ready');
     expect(wordAt('retry?', 2)).toBe('retry');
   });
 
-  it('measures columns past ANSI styling rather than raw string indexes', () => {
+  test('measures columns past ANSI styling rather than raw string indexes', () => {
     expect(wordAt(`${red('ERROR')} boom`, 1)).toBe('ERROR');
     expect(wordAt(`${red('ERROR')} boom`, 7)).toBe('boom');
   });
 
-  it('measures a wide glyph as the two columns it occupies', () => {
+  test('measures a wide glyph as the two columns it occupies', () => {
     // `日本` is four display columns, so `foo` starts at column 5.
     expect(wordAt('日本 foo', 5)).toBe('foo');
     expect(wordAt('日本 foo', 2)).toBe('日本');
   });
 
-  it('selects nothing when the column is not on a word', () => {
+  test('selects nothing when the column is not on a word', () => {
     expect(wordSpanAt('worker gateway', 6)).toBeNull();
     expect(wordSpanAt('[backend] up', 0)).toBeNull();
     expect(wordSpanAt('worker', 99)).toBeNull();
@@ -86,12 +86,12 @@ describe('wordSpanAt', () => {
 });
 
 describe('wordSpanAt on non-ASCII text', () => {
-  it('keeps an accented word whole, composed or decomposed', () => {
+  test('keeps an accented word whole, composed or decomposed', () => {
     expect(wordAt('cafés ok', 2)).toBe('cafés');
     expect(wordAt('cafés ok'.normalize('NFD'), 2)).toBe('cafés'.normalize('NFD'));
   });
 
-  it('treats an unspaced ideograph run as one word', () => {
+  test('treats an unspaced ideograph run as one word', () => {
     expect(wordAt('日本語 ok', 2)).toBe('日本語');
   });
 });
@@ -126,7 +126,7 @@ describe('wordSpanAt on the shapes that show up in logs', () => {
     ['a run of only joiners', 'wait ... done', 6, '...'],
   ];
   for (const [label, text, col, expected] of cases) {
-    it(`selects ${label}`, () => {
+    test(`selects ${label}`, () => {
       expect(wordAt(text, col)).toBe(expected);
     });
   }
@@ -136,7 +136,7 @@ describe('wordSpanAt across one line covering every rule', () => {
   const line = 'worker cafés log-level index.html ready. ./scripts/demo/record.sh. retry now?';
   const at = (needle: string) => line.indexOf(needle) + 1;
 
-  it.each([
+  test.each([
     ['worker', 'worker'],
     ['cafés', 'cafés'],
     ['log-level', 'log-level'],
@@ -169,7 +169,7 @@ describe('trackClick', () => {
     return out;
   }
 
-  it('counts a second press on the same cell as a double-click', () => {
+  test('counts a second press on the same cell as a double-click', () => {
     expect(
       counts([
         [cell, 1000],
@@ -178,7 +178,7 @@ describe('trackClick', () => {
     ).toEqual([1, 2]);
   });
 
-  it('counts a third press on the same cell as a triple-click', () => {
+  test('counts a third press on the same cell as a triple-click', () => {
     expect(
       counts([
         [cell, 1000],
@@ -188,7 +188,7 @@ describe('trackClick', () => {
     ).toEqual([1, 2, 3]);
   });
 
-  it('starts over when the presses are too far apart', () => {
+  test('starts over when the presses are too far apart', () => {
     expect(
       counts([
         [cell, 1000],
@@ -197,7 +197,7 @@ describe('trackClick', () => {
     ).toEqual([1, 1]);
   });
 
-  it('starts over on a different cell', () => {
+  test('starts over on a different cell', () => {
     expect(
       counts([
         [cell, 1000],
@@ -212,7 +212,7 @@ describe('trackClick', () => {
     ).toEqual([1, 1]);
   });
 
-  it('starts over when a drag or wheel event interrupts the streak', () => {
+  test('starts over when a drag or wheel event interrupts the streak', () => {
     expect(
       counts([
         [cell, 1000],
@@ -222,7 +222,7 @@ describe('trackClick', () => {
     ).toEqual([1, 1]);
   });
 
-  it('measures each gap from the previous press, not from the first', () => {
+  test('measures each gap from the previous press, not from the first', () => {
     const gap = DOUBLE_CLICK_MS - 50;
     expect(
       counts([
@@ -242,21 +242,21 @@ describe('wordSelectionAt across wrapped rows', () => {
     { flatRow: 5, contentStart: 6, text: '[api] mple.com/a?b=1 ok' },
   ];
 
-  it('selects a URI split across the wrap, from the first row', () => {
+  test('selects a URI split across the wrap, from the first row', () => {
     expect(wordSelectionAt(segments, { flatRow: 4, col: 8 })).toEqual({
       anchor: { flatRow: 4, col: 6 },
       focus: { flatRow: 5, col: 20 },
     });
   });
 
-  it('selects the same URI when clicked on the second row', () => {
+  test('selects the same URI when clicked on the second row', () => {
     expect(wordSelectionAt(segments, { flatRow: 5, col: 8 })).toEqual({
       anchor: { flatRow: 4, col: 6 },
       focus: { flatRow: 5, col: 20 },
     });
   });
 
-  it('selects a plain word that straddles the wrap', () => {
+  test('selects a plain word that straddles the wrap', () => {
     const split = [
       { flatRow: 1, contentStart: 4, text: '[w] connec' },
       { flatRow: 2, contentStart: 4, text: '[w] ted now' },
@@ -267,18 +267,18 @@ describe('wordSelectionAt across wrapped rows', () => {
     });
   });
 
-  it('keeps a word that does not straddle the wrap on its own row', () => {
+  test('keeps a word that does not straddle the wrap on its own row', () => {
     expect(wordSelectionAt(segments, { flatRow: 5, col: 21 })).toEqual({
       anchor: { flatRow: 5, col: 21 },
       focus: { flatRow: 5, col: 23 },
     });
   });
 
-  it('declines a press in the gutter, leaving it to the single-row rules', () => {
+  test('declines a press in the gutter, leaving it to the single-row rules', () => {
     expect(wordSelectionAt(segments, { flatRow: 4, col: 2 })).toBeNull();
   });
 
-  it('declines a press on whitespace between words', () => {
+  test('declines a press on whitespace between words', () => {
     expect(wordSelectionAt(segments, { flatRow: 5, col: 20 })).toBeNull();
   });
 });

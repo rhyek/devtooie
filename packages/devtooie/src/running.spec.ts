@@ -1,7 +1,7 @@
-import { describe, it, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   CONTROL_PORT_MIN,
   CONTROL_PORT_COUNT,
@@ -47,12 +47,12 @@ function fakeEnv(opts: {
 }
 
 describe('pickRandomPort', () => {
-  it('returns a port within the configured range', () => {
+  test('returns a port within the configured range', () => {
     for (let i = 0; i < 50; i++) {
       expect(inRange(pickRandomPort())).toBe(true);
     }
   });
-  it('never returns an excluded port', () => {
+  test('never returns an excluded port', () => {
     const exclude = [];
     for (let p = CONTROL_PORT_MIN; p < CONTROL_PORT_MIN + CONTROL_PORT_COUNT - 1; p++) {
       exclude.push(p);
@@ -63,12 +63,12 @@ describe('pickRandomPort', () => {
 });
 
 describe('readRunning / writeRunning', () => {
-  it('round-trips state and returns null when the file is missing', () => {
+  test('round-trips state and returns null when the file is missing', () => {
     expect(readRunning(cwd)).toBeNull();
     writeRunning(cwd, { port: 14042, pid: 1234 });
     expect(readRunning(cwd)).toEqual({ port: 14042, pid: 1234 });
   });
-  it('returns null for a malformed file', () => {
+  test('returns null for a malformed file', () => {
     const file = path.join(cwd, 'node_modules', '.devtooie', 'running.json');
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, 'not json');
@@ -77,7 +77,7 @@ describe('readRunning / writeRunning', () => {
 });
 
 describe('updateRunning', () => {
-  it('merges a patch into running.json when this process owns it', () => {
+  test('merges a patch into running.json when this process owns it', () => {
     writeRunning(cwd, { port: 14050, pid: process.pid, logDir: '/logs' });
     updateRunning(cwd, { logFile: '/logs/2.log' });
     expect(readRunning(cwd)).toEqual({
@@ -88,13 +88,13 @@ describe('updateRunning', () => {
     });
   });
 
-  it('is a no-op when this process does not own running.json (different pid)', () => {
+  test('is a no-op when this process does not own running.json (different pid)', () => {
     writeRunning(cwd, { port: 14050, pid: process.pid + 1, logFile: '/logs/1.log' });
     updateRunning(cwd, { logFile: '/logs/2.log' });
     expect(readRunning(cwd)?.logFile).toBe('/logs/1.log');
   });
 
-  it('is a no-op when there is no running.json', () => {
+  test('is a no-op when there is no running.json', () => {
     updateRunning(cwd, { logFile: '/logs/2.log' });
     expect(readRunning(cwd)).toBeNull();
   });
@@ -103,20 +103,20 @@ describe('updateRunning', () => {
 describe('decideControlPort — random mode', () => {
   const configPath = '/repo/devtooie.config.ts';
 
-  it('picks a fresh in-range port and records it when no running.json exists', async () => {
+  test('picks a fresh in-range port and records it when no running.json exists', async () => {
     const port = await decideControlPort({ cwd, configPath, pid: 4242, env: fakeEnv({}) });
     expect(inRange(port)).toBe(true);
     expect(readRunning(cwd)).toEqual({ port, pid: 4242 });
   });
 
-  it('reuses the recorded port (updating pid) when it is not being listened to', async () => {
+  test('reuses the recorded port (updating pid) when it is not being listened to', async () => {
     writeRunning(cwd, { port: 14050, pid: 111 });
     const port = await decideControlPort({ cwd, configPath, pid: 4242, env: fakeEnv({}) });
     expect(port).toBe(14050);
     expect(readRunning(cwd)).toEqual({ port: 14050, pid: 4242 });
   });
 
-  it('records the logFile (and logDir) in running.json when given', async () => {
+  test('records the logFile (and logDir) in running.json when given', async () => {
     const port = await decideControlPort({
       cwd,
       configPath,
@@ -133,7 +133,7 @@ describe('decideControlPort — random mode', () => {
     });
   });
 
-  it('hands off (shuts down) and reuses the port when the same workspace is listening', async () => {
+  test('hands off (shuts down) and reuses the port when the same workspace is listening', async () => {
     writeRunning(cwd, { port: 14050, pid: 111 });
     const shutdowns: [number, number][] = [];
     const env = fakeEnv({
@@ -147,7 +147,7 @@ describe('decideControlPort — random mode', () => {
     expect(readRunning(cwd)).toEqual({ port: 14050, pid: 4242 });
   });
 
-  it('relocates without shutting down when a DIFFERENT workspace holds the port', async () => {
+  test('relocates without shutting down when a DIFFERENT workspace holds the port', async () => {
     writeRunning(cwd, { port: 14050, pid: 111 });
     let shutdownCalled = false;
     const env = fakeEnv({
@@ -162,7 +162,7 @@ describe('decideControlPort — random mode', () => {
     expect(readRunning(cwd)).toEqual({ port, pid: 4242 });
   });
 
-  it('relocates when the port is held by a non-devtooie listener', async () => {
+  test('relocates when the port is held by a non-devtooie listener', async () => {
     writeRunning(cwd, { port: 14050, pid: 111 });
     const env = fakeEnv({ listening: [14050] /* no info → probe returns null */ });
     const port = await decideControlPort({ cwd, configPath, pid: 4242, env });
@@ -174,7 +174,7 @@ describe('decideControlPort — random mode', () => {
 describe('decideControlPort — explicit apiPort override', () => {
   const configPath = '/repo/devtooie.config.ts';
 
-  it('uses the fixed port and hands off the same workspace', async () => {
+  test('uses the fixed port and hands off the same workspace', async () => {
     const shutdowns: [number, number][] = [];
     const env = fakeEnv({
       listening: [5000],
@@ -193,7 +193,7 @@ describe('decideControlPort — explicit apiPort override', () => {
     expect(readRunning(cwd)).toEqual({ port: 5000, pid: 4242 });
   });
 
-  it('keeps the fixed port but does NOT shut down a foreign occupant', async () => {
+  test('keeps the fixed port but does NOT shut down a foreign occupant', async () => {
     let shutdownCalled = false;
     const env = fakeEnv({
       listening: [5000],
@@ -234,7 +234,7 @@ describe('per-mode session records', () => {
     writeRunning(cwd, { port: 14002, pid: process.pid }, 'test');
     vi.stubEnv('DEVTOOIE_MODE', 'test');
     updateRunning(cwd, { logFile: '/logs/test/2.log' });
-    expect(readRunning(cwd, 'test')).toEqual({ port: 14002, pid: process.pid, logFile: '/logs/test/2.log' }); // prettier-ignore
+    expect(readRunning(cwd, 'test')).toEqual({ port: 14002, pid: process.pid, logFile: '/logs/test/2.log' }); // oxfmt-ignore
     expect(readRunning(cwd, 'development')).toEqual({ port: 14001, pid: 1 });
   });
 
@@ -243,7 +243,7 @@ describe('per-mode session records', () => {
     fs.writeFileSync(statePath('running.json'), JSON.stringify({ port: 14009, pid: 9 }));
     expect(readRunning(cwd, 'development')).toEqual({ port: 14009, pid: 9 });
     expect(readRunning(cwd, 'test')).toBeNull();
-    expect(readOtherModesRunning(cwd, 'test')).toEqual(new Map([['development', { port: 14009, pid: 9 }]])); // prettier-ignore
+    expect(readOtherModesRunning(cwd, 'test')).toEqual(new Map([['development', { port: 14009, pid: 9 }]])); // oxfmt-ignore
     writeRunning(cwd, { port: 14001, pid: 1 }, 'development');
     expect(readRunning(cwd, 'development')).toEqual({ port: 14001, pid: 1 });
   });

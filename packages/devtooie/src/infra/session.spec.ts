@@ -66,7 +66,7 @@ describe('runSessionInfra', () => {
       workspaceDir: ws,
       serviceRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'example.test' },
-      infra: { 'docker-compose': { services: { db: { port: 5432, proxy: { subdomain: 'db' }, urls: [''] } } } }, // prettier-ignore
+      infra: { 'docker-compose': { services: { db: { port: 5432, proxy: { subdomain: 'db' }, urls: [''] } } } }, // oxfmt-ignore
       services: { web: {} },
     });
     const infra = await runSessionInfra(undefined, { exec: docker({ State: 'running' }) });

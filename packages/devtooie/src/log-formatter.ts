@@ -86,7 +86,8 @@ export interface FormatterConfig {
  * check) and then passes through unformatted like any other unrecognized line.
  */
 export type FormatterConfigInput =
-  FormatterConfig | ((log: Record<string, unknown>) => FormatterConfig);
+  | FormatterConfig
+  | ((log: Record<string, unknown>) => FormatterConfig);
 
 // devtooie's canonical log levels (a complete, ordered ladder), and the aliases — matched
 // case-insensitively — that fold onto them, so `WARN`/`WARNING` both become `WARN`, `ERR` becomes
@@ -199,7 +200,11 @@ function levelToken(
   if (rawLevel === undefined) {
     return undefined;
   }
-  const value = (levels ? levels[String(rawLevel)] : undefined) ?? rawLevel;
+  const key =
+    typeof rawLevel === 'string' || typeof rawLevel === 'number'
+      ? String(rawLevel)
+      : JSON.stringify(rawLevel);
+  const value = (levels ? levels[key] : undefined) ?? rawLevel;
   if (typeof value === 'string') {
     const canonical = LEVEL_ALIASES[value.toUpperCase()];
     if (canonical) {
@@ -208,7 +213,7 @@ function levelToken(
     }
     return `[UNKNOWN LOGLVL: ${value.toUpperCase()}]`;
   }
-  return `[UNKNOWN LOGLVL: ${String(value)}]`;
+  return `[UNKNOWN LOGLVL: ${key}]`;
 }
 
 /**
@@ -270,7 +275,7 @@ export function createFormatter(config: FormatterConfigInput = {}): (line: strin
     // A callback config decides *which* keys hold the level and message, so it has to run before
     // the check below can be applied — it therefore sees every JSON-object line, including ones
     // that then pass through as unrecognized.
-    const { levelKey, messageKey, levels, bySource } = staticResolved ?? resolveConfig(configFn!(obj)); // prettier-ignore
+    const { levelKey, messageKey, levels, bySource } = staticResolved ?? resolveConfig(configFn!(obj)); // oxfmt-ignore
 
     const rawLevel = obj[levelKey];
     const message = obj[messageKey];

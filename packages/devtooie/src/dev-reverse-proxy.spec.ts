@@ -1,6 +1,7 @@
-import { describe, test, expect, afterEach, vi } from 'vitest';
 import http from 'node:http';
 import net from 'node:net';
+import { describe, test, expect, afterEach, vi } from 'vitest';
+import { defineConfig } from './config.js';
 import {
   startDevReverseProxy,
   routesFromConfig,
@@ -8,7 +9,6 @@ import {
   type DevReverseProxyRoute,
   type DevReverseProxyServer,
 } from './dev-reverse-proxy.js';
-import { defineConfig } from './config.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures: real upstream servers on ephemeral ports, a stub manager, and a tiny HTTP client
@@ -322,7 +322,7 @@ describe('root domain aliases', () => {
       expect(JSON.parse(reply.body)).toMatchObject({ upstream: expected, host });
     }
     expect(proxy.rootDomains).toEqual([ROOT, ALIAS]);
-    expect(proxy.routes.map((r) => r.host)).toEqual([`web.${ROOT}`, `www.${ROOT}`, ROOT, `api.${ROOT}`]); // prettier-ignore
+    expect(proxy.routes.map((r) => r.host)).toEqual([`web.${ROOT}`, `www.${ROOT}`, ROOT, `api.${ROOT}`]); // oxfmt-ignore
   });
 
   test('answers the status pages under the alias, naming the host asked for', async () => {
@@ -332,7 +332,7 @@ describe('root domain aliases', () => {
     proxy.attach(stubManager({ web: 'stopped' }));
     const reply = await request(proxy.port, `web.${ALIAS}`);
     expect(reply.status).toBe(503);
-    expect(JSON.parse(reply.body)).toMatchObject({ service: 'web', status: 'stopped', host: `web.${ALIAS}` }); // prettier-ignore
+    expect(JSON.parse(reply.body)).toMatchObject({ service: 'web', status: 'stopped', host: `web.${ALIAS}` }); // oxfmt-ignore
   });
 
   test('routes an infra service under the alias once the infra is up', async () => {
@@ -355,7 +355,7 @@ describe('root domain aliases', () => {
     proxy.attach(stubManager({ web: 'running' }));
     const { socket, res } = await upgrade(proxy.port, `web.${ALIAS}`);
     expect(res.headers['x-upstream']).toBe('web');
-    const echoed = new Promise<string>((resolve) => socket.once('data', (d: Buffer) => resolve(d.toString()))); // prettier-ignore
+    const echoed = new Promise<string>((resolve) => socket.once('data', (d: Buffer) => resolve(d.toString()))); // oxfmt-ignore
     socket.write('ping');
     expect(await echoed).toBe('ping');
   });
@@ -657,7 +657,7 @@ describe('infra services', () => {
   test('replies 503 "starting" until the infra step has finished, manager or not', async () => {
     const store = await upstream('store');
     const proxy = await proxyFor([serviceRoute(`s3.${ROOT}`, 'store', store.port)]);
-    const before = await request(proxy.port, `s3.${ROOT}`, { headers: { accept: 'application/json' } }); // prettier-ignore
+    const before = await request(proxy.port, `s3.${ROOT}`, { headers: { accept: 'application/json' } }); // oxfmt-ignore
     expect(before.status).toBe(503);
     expect(JSON.parse(before.body)).toMatchObject({ infraService: 'store', status: 'starting' });
     // The process manager attaching is not the signal: packages may be up while infra isn't.
@@ -715,7 +715,7 @@ describe('infra services', () => {
           let text = '';
           res.setEncoding('utf8');
           res.on('data', (chunk: string) => (text += chunk));
-          res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: text })); // prettier-ignore
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: text })); // oxfmt-ignore
         },
       );
       req.on('error', reject);
@@ -751,7 +751,7 @@ describe('infra services', () => {
     expect(html.headers['retry-after']).toBe('1');
     expect(html.body).toContain('infra service store');
     expect(html.body).toContain(String(port));
-    const json = await request(proxy.port, `s3.${ROOT}`, { headers: { accept: 'application/json' } }); // prettier-ignore
+    const json = await request(proxy.port, `s3.${ROOT}`, { headers: { accept: 'application/json' } }); // oxfmt-ignore
     expect(JSON.parse(json.body)).toMatchObject({
       infraService: 'store',
       port,
@@ -766,7 +766,7 @@ describe('infra services', () => {
     const port = (server.address() as net.AddressInfo).port;
     const proxy = await proxyFor([serviceRoute(`s3.${ROOT}`, 'store', port)]);
     proxy.markInfraReady();
-    const json = await request(proxy.port, `s3.${ROOT}`, { headers: { accept: 'application/json' } }); // prettier-ignore
+    const json = await request(proxy.port, `s3.${ROOT}`, { headers: { accept: 'application/json' } }); // oxfmt-ignore
     expect(json.status).toBe(502);
     expect(JSON.parse(json.body)).toMatchObject({ infraService: 'store', port });
     // A reset that lands while the request is still being written surfaces as EPIPE instead.

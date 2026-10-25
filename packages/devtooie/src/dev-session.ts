@@ -447,7 +447,7 @@ export async function acquireDevSession(opts: {
     for (const pid of ours) {
       const mode = otherModes.get(groupOf.get(pid) ?? -1);
       if (mode !== undefined) {
-        onStatus(`dev port held by this project's ${mode} session (pid ${String(pid)}) — leaving it alone`); // prettier-ignore
+        onStatus(`dev port held by this project's ${mode} session (pid ${String(pid)}) — leaving it alone`); // oxfmt-ignore
       }
     }
     for (const pid of foreign) {

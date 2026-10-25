@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import chalk from 'chalk';
+import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { createInternalLogger, formatInternalRecord } from './internal-logger.js';
 
 // Deterministic, ANSI-free assertions on the rendered text.
@@ -13,7 +13,7 @@ afterAll(() => {
 });
 
 describe('formatInternalRecord', () => {
-  it('renders a control command with its attrs as an [INFO] header + indented props', () => {
+  test('renders a control command with its attrs as an [INFO] header + indented props', () => {
     const line = JSON.stringify({
       level: 30,
       component: 'control',
@@ -33,7 +33,7 @@ describe('formatInternalRecord', () => {
     expect(r.text).not.toContain('component');
   });
 
-  it('renders a system warning without a package', () => {
+  test('renders a system warning without a package', () => {
     const line = JSON.stringify({ level: 40, component: 'system', msg: 'shutting down...' });
     const r = formatInternalRecord(line);
     expect(r.component).toBe('system');
@@ -43,19 +43,19 @@ describe('formatInternalRecord', () => {
     expect(r.text).toContain('shutting down...');
   });
 
-  it('flags error-level (>=50) records as errors', () => {
+  test('flags error-level (>=50) records as errors', () => {
     const line = JSON.stringify({ level: 50, component: 'system', msg: 'boom' });
     expect(formatInternalRecord(line).isError).toBe(true);
   });
 
-  it('defaults an absent/unknown component to system', () => {
+  test('defaults an absent/unknown component to system', () => {
     const line = JSON.stringify({ level: 30, msg: 'hi' });
     expect(formatInternalRecord(line).component).toBe('system');
   });
 });
 
 describe('createInternalLogger', () => {
-  it('emits child-bound component + attrs as JSON, with no pid/hostname/time noise', () => {
+  test('emits child-bound component + attrs as JSON, with no pid/hostname/time noise', () => {
     const lines: string[] = [];
     const { control, system } = createInternalLogger((l) => lines.push(l));
     control.info({ service: 'web' }, 'restart');

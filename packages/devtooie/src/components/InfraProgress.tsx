@@ -1,5 +1,5 @@
-import { Box, Text } from 'ink';
 import React, { useEffect, useState } from 'react';
+import { Box, Text } from 'ink';
 import { DANGER_COLOR, MUTED_COLOR, OK_COLOR, WARN_COLOR } from '../colors.js';
 import type { InfraEvent, InfraServiceStatus } from '../infra/types.js';
 

@@ -1,8 +1,26 @@
 import path from 'node:path';
+import { inspect } from 'node:util';
 import type { z } from 'zod';
-import { ENV_NAME_RE, baseEnvs, resolveEnv, envFileNames, currentMode, type Envs, type EnvOverride, type Mode } from './env.js'; // prettier-ignore
-import { type CommandSchema, type InfraServiceSchema, type ServiceConfigSchema, type ProxySchema, DefineConfigSchema, SubdomainLabelSchema, DEFAULT_HEALTHCHECK_TIMEOUT_MS } from './config-schema.js'; // prettier-ignore
+import {
+  type CommandSchema,
+  type InfraServiceSchema,
+  type ServiceConfigSchema,
+  type ProxySchema,
+  DefineConfigSchema,
+  SubdomainLabelSchema,
+  DEFAULT_HEALTHCHECK_TIMEOUT_MS,
+} from './config-schema.js';
 import type { GeneratedServiceConfig, GeneratedDefineConfig } from './config.generated.js';
+import {
+  ENV_NAME_RE,
+  baseEnvs,
+  resolveEnv,
+  envFileNames,
+  currentMode,
+  type Envs,
+  type EnvOverride,
+  type Mode,
+} from './env.js';
 import { composeProjectName } from './infra/project-name.js';
 import {
   DEFAULT_READY_TIMEOUT_MS,
@@ -875,7 +893,7 @@ function resolveEnvVars(
     );
   }
   const resolved: Record<string, string> = {};
-  for (const [key, value] of Object.entries(result as object)) {
+  for (const [key, value] of Object.entries(result as Record<string, unknown>)) {
     if (!ENV_NAME_RE.test(key)) {
       throw new Error(
         `env.vars: ${JSON.stringify(key)} is not a valid environment variable name ` +
@@ -886,8 +904,8 @@ function resolveEnvVars(
       continue;
     }
     if (typeof value !== 'string') {
-      fail(
-        `${key} is ${String(value)} (a ${typeof value}) — an environment variable must be a string`,
+      return fail(
+        `${key} is ${inspect(value)} (a ${typeof value}) — an environment variable must be a string`,
       );
     }
     resolved[key] = value;
@@ -1452,7 +1470,7 @@ export function defineConfig<
   // `waitFor`/`deps` names are type-checked against the service keys, so a bad name is normally
   // a compile error. Re-checked here for configs that reach `defineConfig` unchecked (plain JS,
   // a `satisfies`-free dynamic build) and to enforce the healthcheck rule types can't express.
-  const healthcheckPackages = new Set(parsedPackages.filter((c) => c.healthcheck).map((c) => c.name)); // prettier-ignore
+  const healthcheckPackages = new Set(parsedPackages.filter((c) => c.healthcheck).map((c) => c.name)); // oxfmt-ignore
   const allNames = new Set(parsedPackages.map((c) => c.name));
   for (const config of parsedPackages) {
     for (const waitName of config.waitFor ?? []) {
@@ -1555,7 +1573,7 @@ export function defineConfig<
     resolveDevReverseProxy(parsed.devReverseProxy, workspaceBase, workspaceEnv.files);
 
   const packages = parsedPackages.map((config) => {
-    const relativeDir = config.relativeDir ?? inferredRelativeDir(parsed.serviceRootDir, config.name); // prettier-ignore
+    const relativeDir = config.relativeDir ?? inferredRelativeDir(parsed.serviceRootDir, config.name); // oxfmt-ignore
     const env = envsFor(relativeDir);
     // The service's own tokens win over the config's, so a service can override a shared value.
     const pkgTokens = config.tokens ? { ...tokens, ...config.tokens } : tokens;
@@ -1653,18 +1671,16 @@ export function defineConfig<
   // proxy against them all. (devtooie adds no footer link of its own: `urls` holds exactly what
   // the config lists — `'/'` or `''` there is how a service shows its public origin.)
   const services = infraServicesOf({ infra });
-  validateInfraServices(services, packages as unknown as AnyServiceConfig[]);
+  validateInfraServices(services, packages);
   if (devReverseProxy) {
-    validateDevReverseProxy(devReverseProxy, packages as unknown as AnyServiceConfig[], services);
+    validateDevReverseProxy(devReverseProxy, packages, services);
   }
 
   const resolved: Config<string> = {
     apiPort: parsed.apiPort,
     serviceRootDir: parsed.serviceRootDir,
     // Back to a record, keyed by name, preserving the declaration order of the keys.
-    services: Object.fromEntries(
-      packages.map((pkg) => [pkg.name, pkg]),
-    ) as unknown as Config<string>['services'],
+    services: Object.fromEntries(packages.map((pkg) => [pkg.name, pkg])),
     urls,
     devReverseProxy,
     infra,
@@ -1674,7 +1690,7 @@ export function defineConfig<
     envVars,
     logTimestamps: parsed.logs?.timestamps ?? true,
   };
-  registeredPackages = packages as unknown as AnyServiceConfig[];
+  registeredPackages = packages;
   loadedConfig = resolved;
   loadedTokens = tokens;
   // The runtime shape is identical; only the key/token types are sharper for the caller.

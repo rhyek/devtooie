@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, test, expect, vi } from 'vitest';
 
 // Replace the heavy Ink/React `App` module with a stub whose `renderApp` records the
 // ambient NODE_ENV at the moment it's invoked — i.e. the value React would read to pick
@@ -44,7 +44,7 @@ describe('renderAppInProduction', () => {
 
   for (const value of ['development', 'test', 'production', undefined] as const) {
     const label = value ?? '(unset)';
-    it(`loads the app under NODE_ENV=production, then restores NODE_ENV=${label}`, async () => {
+    test(`loads the app under NODE_ENV=production, then restores NODE_ENV=${label}`, async () => {
       if (value === undefined) {
         delete process.env.NODE_ENV;
       } else {
@@ -61,7 +61,7 @@ describe('renderAppInProduction', () => {
     });
   }
 
-  it('restores NODE_ENV even when loading/rendering throws', async () => {
+  test('restores NODE_ENV even when loading/rendering throws', async () => {
     process.env.NODE_ENV = 'test';
     mock.renderApp.mockImplementationOnce(() => {
       throw new Error('boom');
@@ -71,7 +71,7 @@ describe('renderAppInProduction', () => {
     expect(process.env.NODE_ENV).toBe('test');
   });
 
-  it('deletes NODE_ENV (does not leave it as the string "undefined") when it started unset', async () => {
+  test('deletes NODE_ENV (does not leave it as the string "undefined") when it started unset', async () => {
     delete process.env.NODE_ENV;
 
     await renderAppInProduction({});

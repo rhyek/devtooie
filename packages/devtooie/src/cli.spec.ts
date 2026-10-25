@@ -1,10 +1,10 @@
-import { describe, test, expect, beforeAll, afterAll, afterEach, beforeEach } from 'vitest';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execa } from 'execa';
+import { describe, test, expect, beforeAll, afterAll, afterEach, beforeEach } from 'vitest';
 
 /**
  * End-to-end: the real CLI, as a child process, against a workspace on disk — the paths that have
@@ -13,7 +13,7 @@ import { execa } from 'execa';
  * The CLI is compiled from the current source in `beforeAll` rather than taken from `dist/`, so
  * the spec never runs against a stale build. It is emitted under the package's own
  * `node_modules`: its imports then resolve the package's dependencies, and the output stays out
- * of git and eslint. The workspace reaches that same build as `devtooie` through a stand-in
+ * of git and the linter. The workspace reaches that same build as `devtooie` through a stand-in
  * package directory, so its config registers with the module instance the CLI runs.
  */
 const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -137,7 +137,9 @@ function devtooie(args: string[], opts: { cwd?: string; env?: Record<string, str
 const lastLine = (text: string) => text.trim().split('\n').at(-1)!;
 
 beforeAll(async () => {
-  const tsc = createRequire(import.meta.url).resolve('typescript/bin/tsc');
+  // TypeScript 7 exports no `bin/tsc`, so it's found next to the package.json it does export.
+  const tsPackage = createRequire(import.meta.url).resolve('typescript/package.json');
+  const tsc = path.join(path.dirname(tsPackage), 'bin', 'tsc');
   fs.rmSync(buildDir, { recursive: true, force: true });
   await execa(
     'node',
@@ -147,7 +149,7 @@ beforeAll(async () => {
 
   ws = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-cli-')));
   order = path.join(ws, 'order.log');
-  fs.writeFileSync(path.join(ws, 'package.json'), JSON.stringify({ name: 'wsroot', type: 'module' })); // prettier-ignore
+  fs.writeFileSync(path.join(ws, 'package.json'), JSON.stringify({ name: 'wsroot', type: 'module' })); // oxfmt-ignore
   fs.writeFileSync(path.join(ws, 'pnpm-workspace.yaml'), "packages:\n  - 'packages/*'\n");
   fs.writeFileSync(
     path.join(ws, 'devtooie.config.ts'),
@@ -554,7 +556,7 @@ describe('devtooie --headless --detach', () => {
     expect(() => process.kill(first.report.pid, 0)).not.toThrow();
 
     const again = await detach(['-s', 'wide', '--wait']);
-    expect(again.report).toMatchObject({ ok: true, session: 'reused', pid: first.report.pid, services: [] }); // prettier-ignore
+    expect(again.report).toMatchObject({ ok: true, session: 'reused', pid: first.report.pid, services: [] }); // oxfmt-ignore
 
     const more = await detach(['-s', 'idle', '--wait']);
     expect(more.report).toMatchObject({ ok: true, session: 'reused', services: ['idle'] });
@@ -567,7 +569,7 @@ describe('devtooie --headless --detach', () => {
   describe('startStack()', () => {
     type StackModule = typeof import('./stack.js');
     /** The compiled module, so the CLI it runs is the one compiled beside it. */
-    const load = () => import(pathToFileURL(path.join(buildDir, 'stack.js')).href) as Promise<StackModule>; // prettier-ignore
+    const load = () => import(pathToFileURL(path.join(buildDir, 'stack.js')).href) as Promise<StackModule>; // oxfmt-ignore
     const startStack = async (services: string[]) => {
       const { startStack, stackEnvironment } = await load();
       try {
@@ -592,13 +594,13 @@ describe('devtooie --headless --detach', () => {
 
     test('starts a stack, reuses it, and stops only the one it started', async () => {
       const first = await startStack(['wide']);
-      expect(first).toMatchObject({ session: 'started', mode: 'development', rootDomain: null, services: ['wide'] }); // prettier-ignore
+      expect(first).toMatchObject({ session: 'started', mode: 'development', rootDomain: null, services: ['wide'] }); // oxfmt-ignore
       // Every configured service's origin, selected or not.
       expect(first.origins).toEqual({ portonly: 'http://localhost:21051' });
       expect((await first.control.query.status())?.ready).toMatchObject({ wide: true });
 
       const again = await startStack(['idle']);
-      expect(again).toMatchObject({ session: 'reused', pid: first.pid, port: first.port, services: ['idle'] }); // prettier-ignore
+      expect(again).toMatchObject({ session: 'reused', pid: first.pid, port: first.port, services: ['idle'] }); // oxfmt-ignore
       expect((await again.control.query.status())?.ready).toMatchObject({ wide: true, idle: true });
       await again.stop();
       expect(await first.control.query.status()).not.toBeNull();

@@ -327,12 +327,12 @@ export async function startDevReverseProxy(opts: {
     route: DevReverseProxyRoute,
     err: NodeJS.ErrnoException,
   ) => {
-    // prettier-ignore
+    // oxfmt-ignore
     if (res.headersSent) {
       res.destroy();
       return;
     }
-    const target = route.kind === 'package' ? { service: route.package } : { infraService: route.service }; // prettier-ignore
+    const target = route.kind === 'package' ? { service: route.package } : { infraService: route.service }; // oxfmt-ignore
     sendProblem(req, res, {
       status: 502,
       title: `${describeTarget(route)} is not answering on port ${String(route.port)}`,
@@ -381,7 +381,7 @@ export async function startDevReverseProxy(opts: {
     route: DevReverseProxyRoute & { kind: 'package' },
     req: http.IncomingMessage,
   ) =>
-    // prettier-ignore
+    // oxfmt-ignore
     new Promise<boolean>((resolve) => {
       const check = (): boolean => {
         if (!manager) {
@@ -422,7 +422,7 @@ export async function startDevReverseProxy(opts: {
     res: http.ServerResponse,
     route: DevReverseProxyRoute,
   ) => {
-    // prettier-ignore
+    // oxfmt-ignore
     const upstream = http.request({
       ...upstreamAddress(route),
       method: req.method,
@@ -472,7 +472,7 @@ export async function startDevReverseProxy(opts: {
       }
       if (!ready) {
         const now = manager.getStatus(route.package);
-        return unavailable(req, res, route, now === 'running' ? 'starting' : (now ?? 'not running'), now !== null); // prettier-ignore
+        return unavailable(req, res, route, now === 'running' ? 'starting' : (now ?? 'not running'), now !== null); // oxfmt-ignore
       }
     }
     forward(req, res, route);
@@ -515,7 +515,7 @@ export async function startDevReverseProxy(opts: {
       track(upSocket);
       upSocket.on('error', () => upSocket.destroy());
       // Replay the upstream's 101 verbatim: status line, then its headers as it sent them.
-      const lines = [`HTTP/1.1 ${String(upRes.statusCode ?? 101)} ${upRes.statusMessage ?? 'Switching Protocols'}`]; // prettier-ignore
+      const lines = [`HTTP/1.1 ${String(upRes.statusCode ?? 101)} ${upRes.statusMessage ?? 'Switching Protocols'}`]; // oxfmt-ignore
       for (let i = 0; i < upRes.rawHeaders.length; i += 2) {
         lines.push(`${upRes.rawHeaders[i]!}: ${upRes.rawHeaders[i + 1]!}`);
       }
@@ -533,7 +533,7 @@ export async function startDevReverseProxy(opts: {
     // The package answered with a plain response instead of upgrading (a 4xx, say): pass the
     // status through and close, since there's no upgraded connection to keep.
     upstream.on('response', (upRes) => {
-      const lines = [`HTTP/1.1 ${String(upRes.statusCode ?? 502)} ${upRes.statusMessage ?? ''}`, 'connection: close']; // prettier-ignore
+      const lines = [`HTTP/1.1 ${String(upRes.statusCode ?? 502)} ${upRes.statusMessage ?? ''}`, 'connection: close']; // oxfmt-ignore
       for (let i = 0; i < upRes.rawHeaders.length; i += 2) {
         if (!HOP_BY_HOP.has(upRes.rawHeaders[i]!.toLowerCase())) {
           lines.push(`${upRes.rawHeaders[i]!}: ${upRes.rawHeaders[i + 1]!}`);
@@ -577,7 +577,7 @@ export async function startDevReverseProxy(opts: {
       m.systemLog.info(
         table,
         `dev reverse proxy listening on 127.0.0.1:${String(port)}` +
-          (routes.length ? '' : ' — nothing to route (no service or infra service declares both `proxy` and `port`)'), // prettier-ignore
+          (routes.length ? '' : ' — nothing to route (no service or infra service declares both `proxy` and `port`)'), // oxfmt-ignore
       );
     },
     markInfraReady() {

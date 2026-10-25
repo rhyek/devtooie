@@ -46,7 +46,7 @@ export async function insertTodo(title: string): Promise<Todo> {
   const { rows } = await pool.query<TodoRow>('INSERT INTO todos (title) VALUES ($1) RETURNING *', [
     title,
   ]);
-  return toTodo(rows[0]!);
+  return toTodo(rows[0]);
 }
 
 /** Patch a todo's title and/or completed flag; returns the updated todo, or `undefined` if not found. */

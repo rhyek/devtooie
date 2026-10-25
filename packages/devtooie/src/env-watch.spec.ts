@@ -1,9 +1,9 @@
-import { describe, it, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { watchEnvFiles } from './env-watch.js';
 
 let dir: string;
@@ -29,7 +29,7 @@ afterEach(() => {
 });
 
 describe('watchEnvFiles', () => {
-  it('fires (debounced) when a watched file is created or changed', async () => {
+  test('fires (debounced) when a watched file is created or changed', async () => {
     let calls = 0;
     dispose = watchEnvFiles({
       targets: [{ dir, filenames: ['.env.local'], onChange: () => calls++ }],
@@ -47,7 +47,7 @@ describe('watchEnvFiles', () => {
     expect(calls).toBe(2);
   });
 
-  it('ignores changes to files not in the watch list', async () => {
+  test('ignores changes to files not in the watch list', async () => {
     let calls = 0;
     dispose = watchEnvFiles({
       targets: [{ dir, filenames: ['.env.local'], onChange: () => calls++ }],
@@ -59,7 +59,7 @@ describe('watchEnvFiles', () => {
     expect(calls).toBe(0);
   });
 
-  it('stops firing after dispose', async () => {
+  test('stops firing after dispose', async () => {
     let calls = 0;
     const stop = watchEnvFiles({
       targets: [{ dir, filenames: ['.env.local'], onChange: () => calls++ }],
@@ -112,7 +112,7 @@ describe('watchEnvFiles', () => {
     );
   });
 
-  it('does not throw when a target directory does not exist', () => {
+  test('does not throw when a target directory does not exist', () => {
     expect(() => {
       dispose = watchEnvFiles({
         targets: [{ dir: path.join(dir, 'missing'), filenames: ['.env'], onChange: () => {} }],
@@ -121,7 +121,7 @@ describe('watchEnvFiles', () => {
     }).not.toThrow();
   });
 
-  it('reports a watcher that fails after creation instead of crashing the process', () => {
+  test('reports a watcher that fails after creation instead of crashing the process', () => {
     // The OS can fail a watcher asynchronously, long after `fs.watch()` returned — EMFILE on
     // macOS being the common one, since the FSEvents budget is machine-wide and an unrelated
     // watch-heavy dev stack can exhaust it. An FSWatcher with no 'error' listener turns that into

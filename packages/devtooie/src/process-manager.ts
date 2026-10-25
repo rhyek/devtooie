@@ -3,11 +3,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import chalk from 'chalk';
 import { execa, type ResultPromise } from 'execa';
+import type { Logger } from 'pino';
+import { DEVTOOIE_LABEL_COLOR, PACKAGE_PALETTE } from './colors.js';
+import type { ControlManager, ServiceAction, ServiceRunOutcome } from './command-server.js';
 import type { AnyServiceConfig, ResolvedHealthcheck } from './config.js';
 import { getDevScript, getLoadedConfig, getRegisteredPackages } from './config.js';
-import { defaultFormatter } from './log-formatter.js';
-import type { ControlManager, ServiceAction, ServiceRunOutcome } from './command-server.js';
 import { debugLog } from './debug-log.js';
+import { watchEnvFiles, type WatchTarget } from './env-watch.js';
 import { currentMode, envFileNames, packageEnvLayer, type EnvOverride } from './env.js';
 import {
   InfraControl,
@@ -15,7 +17,7 @@ import {
   type InfraRunOutcome,
   type InfraStatus,
 } from './infra/control.js';
-import { watchEnvFiles, type WatchTarget } from './env-watch.js';
+import { createInternalLogger, formatInternalRecord } from './internal-logger.js';
 import {
   canRebuild,
   exitCodeOf,
@@ -29,15 +31,19 @@ import {
   resolveDeps,
   stripAnsi,
 } from './lib.js';
-import { updateRunning } from './running.js';
+import { defaultFormatter } from './log-formatter.js';
 import type { RunnerArgs } from './runners/types.js';
+import { updateRunning } from './running.js';
 import { SHUTDOWN_GRACE_MS } from './shutdown-timing.js';
 import { stripTitleSequences } from './terminal-title.js';
 import { displayTimestamp, timestampGutterWidth, type TsMode } from './timestamp-mode.js';
-import { countWrappedRows, measureText, wrapRows, type TextMeasure } from './wrap-rows.js';
-import { DEVTOOIE_LABEL_COLOR, PACKAGE_PALETTE } from './colors.js';
-import { createInternalLogger, formatInternalRecord } from './internal-logger.js';
-import type { Logger } from 'pino';
+import {
+  countWrappedRows,
+  expandTabs,
+  measureText,
+  wrapRows,
+  type TextMeasure,
+} from './wrap-rows.js';
 
 /**
  * Applied through a function rather than a hoisted `chalk.hex(...)` because chalk bakes the
@@ -101,7 +107,7 @@ export interface BufferedLine {
  * stripped from its start, it begins with whitespace.
  */
 function isContinuationLine(text: string): boolean {
-  // eslint-disable-next-line no-control-regex -- strips leading ANSI SGR sequences before inspecting the first character
+  // oxlint-disable-next-line no-control-regex -- strips leading ANSI SGR sequences before inspecting the first character
   const stripped = text.replace(/^(\x1b\[[0-9;]*m)*/, '');
   return stripped.length > 0 && (stripped.startsWith(' ') || stripped.startsWith('\t'));
 }
@@ -126,7 +132,7 @@ const NAMED_COLORS = new Set([
   'black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white', 'gray', 'grey',
   'blackBright', 'redBright', 'greenBright', 'yellowBright', 'blueBright', 'magentaBright',
   'cyanBright', 'whiteBright',
-]); // prettier-ignore
+]); // oxfmt-ignore
 
 /**
  * Resolve a `run.color` spec — hex (`#af87ff`), `rgb(r,g,b)`, `ansi256(n)`, or a chalk/Ink color
@@ -1883,6 +1889,9 @@ export class ProcessManager implements ControlManager {
     /** The line is already on the terminal: buffer and log it, but don't print it (plain mode). */
     alreadyShown = false,
   ): void {
+    // The log file keeps the line as written; the buffer, which the screen measures, gets spaces.
+    const raw = text;
+    text = expandTabs(text);
     // Consecutive lines from the same package are grouped: a continuation
     // line shares the group of the entry it belongs to, so filtering and
     // replay keep multi-line log entries intact.
@@ -1914,7 +1923,7 @@ export class ProcessManager implements ControlManager {
       this.buffer.splice(0, this.buffer.length - MAX_BUFFER_LINES);
     }
 
-    const plainLine = `${ts} ${stripAnsi(prefix)}${stripAnsi(text)}\n`;
+    const plainLine = `${ts} ${stripAnsi(prefix)}${stripAnsi(raw)}\n`;
     fs.writeSync(this.logFd, plainLine);
 
     debugLog(`addLine: visibleLineCount=${this.visibleLineCount} searchName="${searchName}"`);

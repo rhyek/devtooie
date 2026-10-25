@@ -1,5 +1,5 @@
-import { Box, Text } from 'ink';
 import React from 'react';
+import { Box, Text } from 'ink';
 import { HOTKEY_KEY_COLOR, HOTKEY_LABEL_COLOR } from '../colors.js';
 
 /**
@@ -7,7 +7,9 @@ import { HOTKEY_KEY_COLOR, HOTKEY_LABEL_COLOR } from '../colors.js';
  * prefixed to the keys that follow it, or a visual separator between groups of keys.
  */
 export type HotkeyHintItem =
-  { key: string; label: string; dim?: boolean } | { separator: true } | { header: string };
+  | { key: string; label: string; dim?: boolean }
+  | { separator: true }
+  | { header: string };
 
 export type HotkeyHintsProps = {
   hints: HotkeyHintItem[];

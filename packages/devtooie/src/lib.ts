@@ -1,7 +1,7 @@
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import { createRequire } from 'node:module';
 import { execa, execaSync, type ResultPromise } from 'execa';
 import type { AnyServiceConfig, ResolvedHealthcheck } from './config.js';
 import {
@@ -52,7 +52,7 @@ function plural(count: number, unit: string): string {
 
 /** Strips ANSI SGR (color) escape sequences, so logfiles hold plain text. */
 export function stripAnsi(text: string): string {
-  // eslint-disable-next-line no-control-regex -- matches ANSI SGR escape sequences
+  // oxlint-disable-next-line no-control-regex -- matches ANSI SGR escape sequences
   return text.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
@@ -100,11 +100,13 @@ export function findAncestorPackage(
   }
 }
 
-function readPackageJson(
-  pkg: AnyServiceConfig,
-): { name?: string; version?: string; scripts?: Record<string, string> } | null {
+type PackageJson = { name?: string; version?: string; scripts?: Record<string, string> };
+
+function readPackageJson(pkg: AnyServiceConfig): PackageJson | null {
   try {
-    return JSON.parse(fs.readFileSync(path.join(pkg.absoluteDir, 'package.json'), 'utf8'));
+    return JSON.parse(
+      fs.readFileSync(path.join(pkg.absoluteDir, 'package.json'), 'utf8'),
+    ) as PackageJson;
   } catch {
     return null;
   }
@@ -335,7 +337,8 @@ function readTsconfigReferences(
   }
   // Tolerant, as TypeScript's own reader is: comments, trailing commas, a leading BOM.
   const config = jsonc.parse(text.replace(/^\uFEFF/, ''), [], { allowTrailingComma: true }) as
-    { references?: unknown } | undefined;
+    | { references?: unknown }
+    | undefined;
   return Array.isArray(config?.references) ? (config.references as { path: string }[]) : [];
 }
 

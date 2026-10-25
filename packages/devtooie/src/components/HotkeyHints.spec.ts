@@ -1,6 +1,6 @@
-import { Box, Text, render } from 'ink';
 import { Writable } from 'node:stream';
 import React from 'react';
+import { Box, Text, render } from 'ink';
 import { describe, expect, test } from 'vitest';
 import { HotkeyHints } from './HotkeyHints.js';
 
@@ -23,7 +23,7 @@ function renderFrame(element: React.ReactElement, columns: number): string[] {
     debug: true,
   });
   instance.unmount();
-  // eslint-disable-next-line no-control-regex
+  // oxlint-disable-next-line no-control-regex
   const lines = out.replace(/\x1b\[[0-9;]*m/g, '').split('\n');
   // `debug` writes the frame again on unmount; keep the first copy.
   return lines.slice(0, Math.ceil(lines.length / 2));

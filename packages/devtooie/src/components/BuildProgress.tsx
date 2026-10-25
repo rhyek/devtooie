@@ -1,18 +1,18 @@
-import React, { useEffect, useRef, useState } from 'react';
 import path from 'node:path';
+import React, { useEffect, useRef, useState } from 'react';
 import { Box, Text, useApp, useWindowSize } from 'ink';
 import Spinner from 'ink-spinner';
-import { findService, getRegisteredPackages, getLoadedConfig } from '../config.js';
-import { startCommandServer } from '../command-server.js';
-import { debugLog } from '../debug-log.js';
 import { ACCENT_COLOR, DANGER_COLOR, OK_COLOR, ON_ACCENT_COLOR } from '../colors.js';
-import { acquireDevSession, startSessionDevReverseProxy } from '../dev-session.js';
+import { startCommandServer } from '../command-server.js';
+import { findService, getRegisteredPackages, getLoadedConfig } from '../config.js';
+import { debugLog } from '../debug-log.js';
 import type { DevReverseProxyServer } from '../dev-reverse-proxy.js';
+import { acquireDevSession, startSessionDevReverseProxy } from '../dev-session.js';
 import { runSessionInfra } from '../infra/session.js';
-import { findConfigPath } from '../load-config.js';
-import { pickRandomPort } from '../running.js';
 import { buildRunnerArgs, hasScript, resolveDeps, runScript } from '../lib.js';
+import { findConfigPath } from '../load-config.js';
 import type { RunnerArgs, SessionInfra } from '../runners/types.js';
+import { pickRandomPort } from '../running.js';
 import { applyInfraEvent, InfraProgress, type InfraRow } from './InfraProgress.js';
 
 /** The control server handed to `onControlReady`, owned by this component until the run phase takes over. */
@@ -243,7 +243,7 @@ export function BuildProgress({
     };
     // Intentionally runs once per mount: selectedNames/logFile are fixed for
     // this component's lifetime (a new selection remounts BuildProgress).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

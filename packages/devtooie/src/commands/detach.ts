@@ -70,7 +70,7 @@ export async function runDetached(opts: RootOptions): Promise<never> {
 
   const found = await findSession({ workspaceDir, configPath, mode, apiPort });
   if (found.kind === 'unresponsive') {
-    finish(undefined, `a ${mode} session is recorded as running (pid ${String(found.pid)}) but doesn't answer on its control API; stop it, then try again`); // prettier-ignore
+    finish(undefined, `a ${mode} session is recorded as running (pid ${String(found.pid)}) but doesn't answer on its control API; stop it, then try again`); // oxfmt-ignore
   }
 
   let report: DetachReport;
@@ -173,7 +173,7 @@ async function reuse(
     }
     note(`starting ${name} in the running ${mode} session`);
     if (!(await client.command.service.start(name))) {
-      finish(report, `the running ${mode} session didn't start ${name}; see ${status.logFile ?? 'its log'}`); // prettier-ignore
+      finish(report, `the running ${mode} session didn't start ${name}; see ${status.logFile ?? 'its log'}`); // oxfmt-ignore
     }
     report.services.push(name);
   }

@@ -1,8 +1,8 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, test, expect, vi } from 'vitest';
 import { watchGitBranch } from './git-watch.js';
 
 describe('watchGitBranch', () => {
-  it('fires once on the first branch change and stops', () => {
+  test('fires once on the first branch change and stops', () => {
     vi.useFakeTimers();
     const branches = ['main', 'main', 'feature', 'other'];
     let i = 0;

@@ -1,10 +1,8 @@
 import { type FormEvent, useState } from 'react';
-import { createFileRoute } from '@tanstack/react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { createFileRoute } from '@tanstack/react-router';
 import { Trash2 } from 'lucide-react';
-
 import { TITLE_MAX_LENGTH } from '@example/isomorphic';
-
 import { cn } from '~/lib/utils';
 import { addTodo, deleteTodo, toggleTodo, todosQueryOptions } from '~/server/todos';
 

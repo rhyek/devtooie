@@ -1,4 +1,3 @@
-import { Box, Text } from 'ink';
 import React, {
   useCallback,
   useEffect,
@@ -8,10 +7,20 @@ import React, {
   useState,
   useSyncExternalStore,
 } from 'react';
+import { Box, Text } from 'ink';
 import { copyToClipboard } from '../clipboard.js';
 import { computeWindow, convertOffset, windowRows } from '../log-window.js';
 import type { MouseReport } from '../mouse.js';
 import type { ProcessManager } from '../process-manager.js';
+import {
+  FOLLOWING,
+  isFollowing,
+  onContentResized,
+  scroll as scrollByRows,
+  scrollToBottom,
+  scrollToTop,
+  type Scroll,
+} from '../scroll.js';
 import {
   classifyLine,
   highlightParts,
@@ -25,15 +34,6 @@ import {
   type Selection,
   type Span,
 } from '../selection.js';
-import {
-  FOLLOWING,
-  isFollowing,
-  onContentResized,
-  scroll as scrollByRows,
-  scrollToBottom,
-  scrollToTop,
-  type Scroll,
-} from '../scroll.js';
 import { spansOneDay, type TsMode } from '../timestamp-mode.js';
 import { DEFAULT_TOAST_MS } from '../toasts.js';
 import { trackClick, wordSelectionAt, wordSpanAt, type ClickState } from '../word-select.js';
@@ -148,7 +148,7 @@ export function useLogViewport(
       };
       // `version` is the buffer-change signal: getVisibleLines/countRows read
       // mutable manager state that only changes when the version bumps.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
+      // oxlint-disable-next-line react-hooks/exhaustive-deps
     }, [manager, version, width, height, scroll.offset]);
 
   // Keep a scrolled-up view pinned to the same content as the buffer grows or

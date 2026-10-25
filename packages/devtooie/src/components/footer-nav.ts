@@ -29,7 +29,7 @@ export function verticalTarget(rects: ItemRect[], current: number, dir: 'up' | '
     firstCol.set(r.row, Math.min(firstCol.get(r.row) ?? Infinity, r.col));
   }
   const left = (r: ItemRect) => (r.col === firstCol.get(r.row) ? rowsStart : r.col);
-  const from = rects[current]!;
+  const from = rects[current];
   const at = rows.indexOf(from.row);
   const row = rows[(at + (dir === 'down' ? 1 : -1) + rows.length) % rows.length]!;
   let best = current;

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
-import { DEFAULT_MODE } from './env.js';
 import type { ServiceAction } from './command-server.js';
+import { DEFAULT_MODE } from './env.js';
 import type { InfraAction, InfraStatus } from './infra/control.js';
 import type { ServiceName } from './register.js';
 import { type InstanceInfo, isPortListening, readRunning } from './running.js';
@@ -48,7 +48,7 @@ export interface SessionStatus<P extends string = ServiceName> {
    */
   infra: Record<string, InfraStatus> | null;
   /** The resolved config, or null before the manager attaches. */
-  config: unknown | null;
+  config: unknown;
   /**
    * The session's dev reverse proxy — its port, root domains, and every public hostname it
    * routes, to an application service or to an infra service — or null when the config declares none.

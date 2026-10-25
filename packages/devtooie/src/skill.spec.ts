@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import {
   renderSkill,
   contentHash,
@@ -11,7 +11,7 @@ import {
 } from './skill.js';
 
 describe('skill rendering', () => {
-  it('embeds the managed banner with the version', () => {
+  test('embeds the managed banner with the version', () => {
     const out = renderSkill('1.2.3');
     expect(out).toContain('devtooie skill v1.2.3');
     expect(out).toContain('do not edit');
@@ -23,7 +23,7 @@ describe('skill rendering', () => {
   // the block was never parsed as frontmatter — and the agent saw the banner where `description`
   // should be. That field is the entire basis on which a skill is invoked, so the effect was a
   // skill that could not trigger, in a way nothing surfaces as an error.
-  it('opens with frontmatter on line 1, with the banner INSIDE it', () => {
+  test('opens with frontmatter on line 1, with the banner INSIDE it', () => {
     const lines = renderSkill('1.2.3').split('\n');
 
     expect(lines[0]).toBe('---');
@@ -37,7 +37,7 @@ describe('skill rendering', () => {
     expect(frontmatter.some((l) => l.startsWith('description:'))).toBe(true);
   });
 
-  it('re-rendering an already-managed file does not stack banners', () => {
+  test('re-rendering an already-managed file does not stack banners', () => {
     // `refreshSkillIfStale` re-renders in place on every version bump.
     const once = renderSkill('1.2.3');
     const twice = renderSkill('1.2.4');
@@ -46,7 +46,7 @@ describe('skill rendering', () => {
     expect(twice).not.toContain('v1.2.3');
   });
 
-  it('contentHash is stable and differs by input', () => {
+  test('contentHash is stable and differs by input', () => {
     expect(contentHash('a')).toBe(contentHash('a'));
     expect(contentHash('a')).not.toBe(contentHash('b'));
   });
@@ -61,7 +61,7 @@ describe('skill install + refresh', () => {
   });
   afterEach(() => fs.rmSync(cwd, { recursive: true, force: true }));
 
-  it('installs then refreshes on version bump but preserves hand-edits', () => {
+  test('installs then refreshes on version bump but preserves hand-edits', () => {
     installSkill({ cwd, version: '1.0.0' });
     const file = path.join(cwd, '.claude/skills/devtooie/SKILL.md');
     expect(fs.existsSync(file)).toBe(true);
@@ -78,14 +78,14 @@ describe('skill install + refresh', () => {
     expect(fs.readFileSync(file, 'utf8')).not.toContain('v1.2.0');
   });
 
-  it('does not refresh when the recorded version is not older', () => {
+  test('does not refresh when the recorded version is not older', () => {
     installSkill({ cwd, version: '1.0.0' });
     const file = path.join(cwd, '.claude/skills/devtooie/SKILL.md');
     refreshSkillIfStale({ cwd, version: '1.0.0' });
     expect(fs.readFileSync(file, 'utf8')).toContain('v1.0.0');
   });
 
-  it('installs to .agents and .cursor when those dirs already exist', () => {
+  test('installs to .agents and .cursor when those dirs already exist', () => {
     fs.mkdirSync(path.join(cwd, '.agents'), { recursive: true });
     fs.mkdirSync(path.join(cwd, '.cursor'), { recursive: true });
     installSkill({ cwd, version: '1.0.0' });
@@ -97,7 +97,7 @@ describe('skill install + refresh', () => {
     expect(state.paths).toHaveLength(3);
   });
 
-  it('is a no-op when the skill was never installed', () => {
+  test('is a no-op when the skill was never installed', () => {
     expect(() => refreshSkillIfStale({ cwd, version: '9.9.9' })).not.toThrow();
   });
 });
@@ -111,7 +111,7 @@ describe('isSkillInstalled', () => {
   });
   afterEach(() => fs.rmSync(cwd, { recursive: true, force: true }));
 
-  it('isSkillInstalled reflects whether the canonical skill file exists', () => {
+  test('isSkillInstalled reflects whether the canonical skill file exists', () => {
     expect(isSkillInstalled(cwd)).toBe(false);
     installSkill({ cwd, version: '1.0.0' });
     expect(isSkillInstalled(cwd)).toBe(true);

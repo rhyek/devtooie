@@ -1,7 +1,7 @@
-import { describe, it, test, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import {
   type AnyServiceConfig,
   defineConfig,
@@ -19,7 +19,7 @@ type RootedOpts = Parameters<
 >[0];
 
 describe('command / autostart', () => {
-  it('resolves an omitted command to the `dev` default', () => {
+  test('resolves an omitted command to the `dev` default', () => {
     const packages = Object.values(
       defineConfig({ serviceRootDir: 'packages', services: { svc: {} } }).services,
     );
@@ -31,14 +31,14 @@ describe('command / autostart', () => {
     });
   });
 
-  it('passes `command: null` through (no dev process)', () => {
+  test('passes `command: null` through (no dev process)', () => {
     const packages = Object.values(
       defineConfig({ serviceRootDir: 'packages', services: { lib: { command: null } } }).services,
     );
     expect(packages[0]!.command).toBeNull();
   });
 
-  it('honors autostart and leaves it undefined (⇒ true) by default', () => {
+  test('honors autostart and leaves it undefined (⇒ true) by default', () => {
     const packages = Object.values(
       defineConfig({ serviceRootDir: 'packages', services: { a: { autostart: false }, b: {} } })
         .services,
@@ -77,7 +77,7 @@ describe('defineConfig path resolution', () => {
     ).toThrow(/svc has no `relativeDir`, and the config sets no `serviceRootDir` to infer it from/);
   });
 
-  it('honors explicit relativeDir and workspaceDir', () => {
+  test('honors explicit relativeDir and workspaceDir', () => {
     const packages = Object.values(
       defineConfig({
         serviceRootDir: 'packages',
@@ -90,18 +90,18 @@ describe('defineConfig path resolution', () => {
 });
 
 describe('meta defaults', () => {
-  it('leaves apiPort undefined when unset (random port chosen at startup)', () => {
+  test('leaves apiPort undefined when unset (random port chosen at startup)', () => {
     const cfg = defineConfig({ serviceRootDir: 'packages', services: { svc: {} } });
     expect(cfg.apiPort).toBeUndefined();
   });
 
-  it('passes through a pinned apiPort and exposes it via getLoadedConfig', () => {
+  test('passes through a pinned apiPort and exposes it via getLoadedConfig', () => {
     const cfg = defineConfig({ serviceRootDir: 'packages', apiPort: 5000, services: { svc: {} } });
     expect(cfg.apiPort).toBe(5000);
     expect(getLoadedConfig()?.apiPort).toBe(5000);
   });
 
-  it("defaults envFiles to the development mode's set", () => {
+  test("defaults envFiles to the development mode's set", () => {
     const cfg = defineConfig({ serviceRootDir: 'packages', services: { svc: {} } });
     expect(cfg.envFiles).toEqual([
       '.env',
@@ -112,7 +112,7 @@ describe('meta defaults', () => {
     expect(cfg.envMode).toBe('development');
   });
 
-  it('follows DEVTOOIE_MODE for both envFiles and envMode', () => {
+  test('follows DEVTOOIE_MODE for both envFiles and envMode', () => {
     process.env.DEVTOOIE_MODE = 'test';
     try {
       const cfg = defineConfig({ serviceRootDir: 'packages', services: { svc: {} } });
@@ -123,7 +123,7 @@ describe('meta defaults', () => {
     }
   });
 
-  it('rejects the removed env.files option instead of silently ignoring it', () => {
+  test('rejects the removed env.files option instead of silently ignoring it', () => {
     expect(() =>
       defineConfig({
         serviceRootDir: 'packages',
@@ -134,7 +134,7 @@ describe('meta defaults', () => {
     ).toThrow(/Unrecognized key: "files"/);
   });
 
-  it('carries env.override through to the resolved config', () => {
+  test('carries env.override through to the resolved config', () => {
     const cfg = defineConfig({
       serviceRootDir: 'packages',
       env: { override: ['NODE_OPTIONS'] },
@@ -143,12 +143,12 @@ describe('meta defaults', () => {
     expect(cfg.envOverride).toEqual(['NODE_OPTIONS']);
   });
 
-  it('defaults logTimestamps to true', () => {
+  test('defaults logTimestamps to true', () => {
     const cfg = defineConfig({ serviceRootDir: 'packages', services: { svc: {} } });
     expect(cfg.logTimestamps).toBe(true);
   });
 
-  it('honors a logs.timestamps override', () => {
+  test('honors a logs.timestamps override', () => {
     const cfg = defineConfig({
       serviceRootDir: 'packages',
       logs: { timestamps: false },
@@ -159,7 +159,7 @@ describe('meta defaults', () => {
 });
 
 describe('logs (per-package)', () => {
-  it('passes a logs.formatter through unchanged (not a validating wrapper)', () => {
+  test('passes a logs.formatter through unchanged (not a validating wrapper)', () => {
     const fmt = (line: string): string => `[fmt] ${line}`;
     const packages = Object.values(
       defineConfig({ serviceRootDir: 'packages', services: { svc: { logs: { formatter: fmt } } } })
@@ -169,7 +169,7 @@ describe('logs (per-package)', () => {
     expect(packages[0]!.logs?.formatter!('hi')).toBe('[fmt] hi');
   });
 
-  it('stores a package-level logs.timestamps override', () => {
+  test('stores a package-level logs.timestamps override', () => {
     const packages = Object.values(
       defineConfig({
         serviceRootDir: 'packages',
@@ -180,14 +180,14 @@ describe('logs (per-package)', () => {
     expect(packages[1]!.logs).toBeUndefined();
   });
 
-  it('leaves logs undefined when not set', () => {
+  test('leaves logs undefined when not set', () => {
     const packages = Object.values(
       defineConfig({ serviceRootDir: 'packages', services: { svc: {} } }).services,
     );
     expect(packages[0]!.logs).toBeUndefined();
   });
 
-  it('rejects a non-function logs.formatter', () => {
+  test('rejects a non-function logs.formatter', () => {
     expect(() =>
       defineConfig({
         serviceRootDir: 'packages',
@@ -199,7 +199,7 @@ describe('logs (per-package)', () => {
 });
 
 describe('tokens', () => {
-  it('merges the package tokens over the config tokens, package winning', () => {
+  test('merges the package tokens over the config tokens, package winning', () => {
     const packages = Object.values(
       defineConfig({
         serviceRootDir: 'packages',
@@ -215,7 +215,7 @@ describe('tokens', () => {
     expect(packages[0]!.healthcheck?.url).toBe('http://us-east.example.com');
   });
 
-  it('keeps one package tokens out of another package', () => {
+  test('keeps one package tokens out of another package', () => {
     const seen: (string | undefined)[] = [];
     defineConfig({
       serviceRootDir: 'packages',
@@ -232,7 +232,7 @@ describe('tokens', () => {
     expect(seen).toEqual([undefined]);
   });
 
-  it('gives a package with no tokens of its own just the config tokens', () => {
+  test('gives a package with no tokens of its own just the config tokens', () => {
     const packages = Object.values(
       defineConfig({
         serviceRootDir: 'packages',
@@ -243,7 +243,7 @@ describe('tokens', () => {
     expect(packages[0]!.healthcheck?.url).toBe('https://example.com');
   });
 
-  it('hands workspace-wide urls only the config tokens', () => {
+  test('hands workspace-wide urls only the config tokens', () => {
     const cfg = defineConfig({
       serviceRootDir: 'packages',
       tokens: { domain: 'example.com' },
@@ -256,7 +256,7 @@ describe('tokens', () => {
   // The type-level half of the feature. vitest does not typecheck, so these are enforced by
   // `tsc -p packages/devtooie/tsconfig.json` — the `@ts-expect-error`s fail the typecheck if
   // the inference regresses. See docs/configuration.md#callbacks-instead-of-interpolation.
-  it('types each package tokens from what it declares', () => {
+  test('types each package tokens from what it declares', () => {
     defineConfig({
       serviceRootDir: 'packages',
       tokens: { domain: 'example.com' },
@@ -282,7 +282,7 @@ describe('tokens', () => {
   // not make its siblings' tokens fall back to a permissive record. `P` is constrained to
   // `Record<K, unknown>` (not `Record<K, TokenRecord>`) precisely so the inference survives —
   // TypeScript replaces an inference that fails its constraint with the constraint itself.
-  it('keeps sibling tokens exact when a package omits tokens entirely', () => {
+  test('keeps sibling tokens exact when a package omits tokens entirely', () => {
     defineConfig({
       serviceRootDir: 'packages',
       tokens: { domain: 'example.com' },
@@ -306,7 +306,7 @@ describe('tokens', () => {
 
   // Rejected at both layers: a compile error at the declaration (the `@ts-expect-error`) and
   // a load-time error from the schema, for configs that reach `defineConfig` unchecked.
-  it('rejects a non-string token value', () => {
+  test('rejects a non-string token value', () => {
     expect(() =>
       defineConfig({
         serviceRootDir: 'packages',
@@ -318,7 +318,7 @@ describe('tokens', () => {
     ).toThrow(/tokens\.port/);
   });
 
-  it('type-checks waitFor and deps against the package keys', () => {
+  test('type-checks waitFor and deps against the package keys', () => {
     // The valid direction compiles and loads.
     defineConfig({
       serviceRootDir: 'packages',
@@ -356,13 +356,13 @@ describe('tokens', () => {
 });
 
 describe('package keys', () => {
-  it('rejects an integer-like package name (JS would reorder the keys)', () => {
+  test('rejects an integer-like package name (JS would reorder the keys)', () => {
     expect(() => defineConfig({ serviceRootDir: 'packages', services: { 2: {} } })).toThrow(
       /is a number/,
     );
   });
 
-  it('preserves declaration order of the keys', () => {
+  test('preserves declaration order of the keys', () => {
     const cfg = defineConfig({
       serviceRootDir: 'packages',
       services: { zebra: {}, alpha: {}, middle: {} },
@@ -370,7 +370,7 @@ describe('package keys', () => {
     expect(Object.keys(cfg.services)).toEqual(['zebra', 'alpha', 'middle']);
   });
 
-  it('exposes each package resolved tokens on the config', () => {
+  test('exposes each package resolved tokens on the config', () => {
     const cfg = defineConfig({
       serviceRootDir: 'packages',
       tokens: { domain: 'example.com' },
@@ -382,7 +382,7 @@ describe('package keys', () => {
 });
 
 describe('url/healthcheck callbacks', () => {
-  it('resolves a healthcheck callback with the package port', () => {
+  test('resolves a healthcheck callback with the package port', () => {
     const packages = Object.values(
       defineConfig({
         serviceRootDir: 'packages',
@@ -394,7 +394,7 @@ describe('url/healthcheck callbacks', () => {
     expect(packages[0]!.healthcheck?.url).toBe('http://localhost:3001/health');
   });
 
-  it('hands the config tokens to a callback (string and object urls)', () => {
+  test('hands the config tokens to a callback (string and object urls)', () => {
     const packages = Object.values(
       defineConfig({
         serviceRootDir: 'packages',
@@ -414,7 +414,7 @@ describe('url/healthcheck callbacks', () => {
     expect(packages[0]!.urls![0]).toEqual({ label: 'home', url: 'https://app.example.com:8443' });
   });
 
-  it('resolves callbacks inside a per-package array (same-line) url entry, keeping its shape', () => {
+  test('resolves callbacks inside a per-package array (same-line) url entry, keeping its shape', () => {
     const packages = Object.values(
       defineConfig({
         serviceRootDir: 'packages',
@@ -438,7 +438,7 @@ describe('url/healthcheck callbacks', () => {
     ]);
   });
 
-  it('passes a literal string through untouched, `$` and all', () => {
+  test('passes a literal string through untouched, `$` and all', () => {
     // Interpolation is gone: a `$port` in a literal is just a character sequence now.
     const packages = Object.values(
       defineConfig({
@@ -456,7 +456,7 @@ describe('url/healthcheck callbacks', () => {
     expect(packages[0]!.urls![0]).toBe('https://example.test/$name');
   });
 
-  it('reports the package and field when a callback returns a non-string', () => {
+  test('reports the package and field when a callback returns a non-string', () => {
     expect(() =>
       defineConfig({
         serviceRootDir: 'packages',
@@ -469,7 +469,7 @@ describe('url/healthcheck callbacks', () => {
   // `port` is typed `number` for callbacks, which the type system can't verify (the one
   // inference channel goes to `tokens`). Reading it on a package that declares none therefore
   // fails at load time, naming the package — rather than interpolating `undefined` into a URL.
-  it('throws, naming the package, when a callback reads a port the package has not declared', () => {
+  test('throws, naming the package, when a callback reads a port the package has not declared', () => {
     expect(() =>
       defineConfig({
         serviceRootDir: 'packages',
@@ -482,7 +482,7 @@ describe('url/healthcheck callbacks', () => {
     ).toThrow(/core: a callback read `port`, but this service declares no `port`/);
   });
 
-  it('leaves a portless package alone when its callbacks never read the port', () => {
+  test('leaves a portless package alone when its callbacks never read the port', () => {
     const cfg = defineConfig({
       serviceRootDir: 'packages',
       tokens: { host: 'example.test' },
@@ -498,25 +498,27 @@ describe('url/healthcheck callbacks', () => {
 describe('healthcheck', () => {
   const health = (api: RootedOpts['services'][string]) =>
     Object.values(
+      // tsc rejects `{ api }` without the cast; the type-aware linter finds no need for it.
+      // oxlint-disable-next-line typescript/no-unnecessary-type-assertion
       defineConfig({ serviceRootDir: 'packages', services: { api } as RootedOpts['services'] })
         .services,
     )[0]!.healthcheck;
 
-  it('normalizes a bare URL to `{ url, timeout }` with the default timeout', () => {
+  test('normalizes a bare URL to `{ url, timeout }` with the default timeout', () => {
     expect(health({ healthcheck: 'http://localhost/health' })).toEqual({
       url: 'http://localhost/health',
       timeout: 1500,
     });
   });
 
-  it('takes the URL and timeout from the object form', () => {
+  test('takes the URL and timeout from the object form', () => {
     expect(health({ healthcheck: { url: 'http://localhost/health', timeout: 10_000 } })).toEqual({
       url: 'http://localhost/health',
       timeout: 10_000,
     });
   });
 
-  it('resolves a callback inside the object form, with the package context', () => {
+  test('resolves a callback inside the object form, with the package context', () => {
     const cfg = defineConfig({
       serviceRootDir: 'packages',
       tokens: { host: 'api.internal' },
@@ -536,14 +538,14 @@ describe('healthcheck', () => {
     });
   });
 
-  it('defaults the timeout when the object form omits it', () => {
+  test('defaults the timeout when the object form omits it', () => {
     expect(health({ healthcheck: { url: 'http://localhost/health' } })).toEqual({
       url: 'http://localhost/health',
       timeout: 1500,
     });
   });
 
-  it('names the package and field when a callback in the object form returns a non-string', () => {
+  test('names the package and field when a callback in the object form returns a non-string', () => {
     expect(() =>
       defineConfig({
         serviceRootDir: 'packages',
@@ -553,7 +555,7 @@ describe('healthcheck', () => {
     ).toThrow(/api healthcheck: callback returned 3001/);
   });
 
-  it('rejects a misspelled key rather than silently keeping the default', () => {
+  test('rejects a misspelled key rather than silently keeping the default', () => {
     expect(() =>
       defineConfig({
         serviceRootDir: 'packages',
@@ -563,7 +565,7 @@ describe('healthcheck', () => {
     ).toThrow(/invalid devtooie config/);
   });
 
-  it('rejects a non-positive or fractional timeout', () => {
+  test('rejects a non-positive or fractional timeout', () => {
     for (const timeout of [0, -1, 1.5]) {
       expect(() =>
         defineConfig({
@@ -574,7 +576,7 @@ describe('healthcheck', () => {
     }
   });
 
-  it('satisfies a waitFor dependency declared in the object form', () => {
+  test('satisfies a waitFor dependency declared in the object form', () => {
     expect(() =>
       defineConfig({
         serviceRootDir: 'packages',
@@ -588,7 +590,7 @@ describe('healthcheck', () => {
 });
 
 describe('top-level urls', () => {
-  it('resolves a callback in a bare-string top-level url', () => {
+  test('resolves a callback in a bare-string top-level url', () => {
     const cfg = defineConfig({
       serviceRootDir: 'packages',
       tokens: { domain: 'example.com' },
@@ -598,7 +600,7 @@ describe('top-level urls', () => {
     expect(cfg.urls![0]).toBe('https://grafana.example.com');
   });
 
-  it('resolves a callback in an object top-level url and keeps the label', () => {
+  test('resolves a callback in an object top-level url and keeps the label', () => {
     const cfg = defineConfig({
       serviceRootDir: 'packages',
       tokens: { domain: 'example.com', proxyport: '8443' },
@@ -613,7 +615,7 @@ describe('top-level urls', () => {
     expect(cfg.urls![0]).toEqual({ label: 'Grafana', url: 'https://grafana.example.com:8443' });
   });
 
-  it('resolves callbacks inside a top-level array (same-line) url entry, keeping its shape', () => {
+  test('resolves callbacks inside a top-level array (same-line) url entry, keeping its shape', () => {
     const cfg = defineConfig({
       serviceRootDir: 'packages',
       tokens: { domain: 'example.com' },
@@ -631,7 +633,7 @@ describe('top-level urls', () => {
     ]);
   });
 
-  it('leaves a literal top-level url verbatim', () => {
+  test('leaves a literal top-level url verbatim', () => {
     const cfg = defineConfig({
       serviceRootDir: 'packages',
       urls: ['https://dashboard.internal'],
@@ -640,12 +642,12 @@ describe('top-level urls', () => {
     expect(cfg.urls![0]).toBe('https://dashboard.internal');
   });
 
-  it('leaves urls undefined when none are given', () => {
+  test('leaves urls undefined when none are given', () => {
     const cfg = defineConfig({ serviceRootDir: 'packages', services: { svc: {} } });
     expect(cfg.urls).toBeUndefined();
   });
 
-  it('throws when a top-level url callback reads a port (those links have no package)', () => {
+  test('throws when a top-level url callback reads a port (those links have no package)', () => {
     expect(() =>
       defineConfig({
         serviceRootDir: 'packages',
@@ -660,15 +662,14 @@ describe('top-level urls', () => {
 describe('command', () => {
   const cmd = (fields: object) =>
     Object.values(
-      defineConfig({ serviceRootDir: 'packages', services: { a: { ...fields } as never } })
-        .services,
+      defineConfig({ serviceRootDir: 'packages', services: { a: { ...fields } } }).services,
     )[0]!.command;
 
-  it('defaults to dev / watches:true / builds:true / cleans:false when omitted', () => {
+  test('defaults to dev / watches:true / builds:true / cleans:false when omitted', () => {
     expect(cmd({})).toEqual({ name: 'dev', watches: true, builds: true, cleans: false });
   });
 
-  it('accepts a bare string (defaults watches:true, builds:true, cleans:false)', () => {
+  test('accepts a bare string (defaults watches:true, builds:true, cleans:false)', () => {
     expect(cmd({ command: 'start' })).toEqual({
       name: 'start',
       watches: true,
@@ -677,7 +678,7 @@ describe('command', () => {
     });
   });
 
-  it('a tuple with watches:false defaults builds to true, cleans to false', () => {
+  test('a tuple with watches:false defaults builds to true, cleans to false', () => {
     expect(cmd({ command: ['start', { watches: false }] })).toEqual({
       name: 'start',
       watches: false,
@@ -686,7 +687,7 @@ describe('command', () => {
     });
   });
 
-  it('a tuple with watches:false, builds:false is kept', () => {
+  test('a tuple with watches:false, builds:false is kept', () => {
     expect(cmd({ command: ['start', { watches: false, builds: false }] })).toEqual({
       name: 'start',
       watches: false,
@@ -695,7 +696,7 @@ describe('command', () => {
     });
   });
 
-  it('keeps cleans:true (a dev command that clean-rebuilds on start)', () => {
+  test('keeps cleans:true (a dev command that clean-rebuilds on start)', () => {
     expect(cmd({ command: ['start', { watches: false, builds: true, cleans: true }] })).toEqual({
       name: 'start',
       watches: false,
@@ -704,7 +705,7 @@ describe('command', () => {
     });
   });
 
-  it('an empty options object defaults to watches:true, builds:true, cleans:false', () => {
+  test('an empty options object defaults to watches:true, builds:true, cleans:false', () => {
     expect(cmd({ command: ['start', {}] })).toEqual({
       name: 'start',
       watches: true,
@@ -713,21 +714,21 @@ describe('command', () => {
     });
   });
 
-  it('throws at runtime for watches:true + builds:false', () => {
+  test('throws at runtime for watches:true + builds:false', () => {
     expect(() => cmd({ command: ['start', { watches: true, builds: false }] })).toThrow();
   });
 
-  it('throws at runtime for builds:false without watches:false', () => {
+  test('throws at runtime for builds:false without watches:false', () => {
     expect(() => cmd({ command: ['start', { builds: false }] })).toThrow();
   });
 
-  it('throws at runtime for cleans:true + builds:false (cleaning implies building)', () => {
+  test('throws at runtime for cleans:true + builds:false (cleaning implies building)', () => {
     expect(() =>
       cmd({ command: ['start', { watches: false, builds: false, cleans: true }] }),
     ).toThrow();
   });
 
-  it('getDevScript returns the configured command name, else dev', () => {
+  test('getDevScript returns the configured command name, else dev', () => {
     const packages = Object.values(
       defineConfig({
         serviceRootDir: 'packages',
@@ -739,13 +740,13 @@ describe('command', () => {
     expect(getDevScript(packages[2]!)).toBe('dev');
   });
 
-  it('rejects the illegal combos at the type level', () => {
+  test('rejects the illegal combos at the type level', () => {
     // @ts-expect-error watches:true requires builds:true
-    const a = (): unknown => defineConfig({ serviceRootDir: 'packages', services: { a: {   command: ['x', { watches: true, builds: false }]  } } }); // prettier-ignore
+    const a = (): unknown => defineConfig({ serviceRootDir: 'packages', services: { a: {   command: ['x', { watches: true, builds: false }]  } } }); // oxfmt-ignore
     // @ts-expect-error builds:false requires watches:false
-    const b = (): unknown => defineConfig({ serviceRootDir: 'packages', services: { a: {   command: ['x', { builds: false }]  } } }); // prettier-ignore
+    const b = (): unknown => defineConfig({ serviceRootDir: 'packages', services: { a: {   command: ['x', { builds: false }]  } } }); // oxfmt-ignore
     // @ts-expect-error cleans:true requires builds:true
-    const c = (): unknown => defineConfig({ serviceRootDir: 'packages', services: { a: {   command: ['x', { watches: false, builds: false, cleans: true }]  } } }); // prettier-ignore
+    const c = (): unknown => defineConfig({ serviceRootDir: 'packages', services: { a: {   command: ['x', { watches: false, builds: false, cleans: true }]  } } }); // oxfmt-ignore
     void a;
     void b;
     void c;
@@ -766,22 +767,22 @@ describe('validation', () => {
         devReverseProxy: { defaultPackage: 'web' },
         services: { web: { port: 3000 } },
       }),
-    ).toThrow('`devReverseProxy.defaultPackage` is spelled `devReverseProxy.defaultService`: rename it.'); // prettier-ignore
+    ).toThrow('`devReverseProxy.defaultPackage` is spelled `devReverseProxy.defaultService`: rename it.'); // oxfmt-ignore
   });
 
-  it('throws when waitFor targets a package without a healthcheck', () => {
+  test('throws when waitFor targets a package without a healthcheck', () => {
     expect(() =>
       defineConfig({ serviceRootDir: 'packages', services: { a: { waitFor: ['b'] }, b: {} } }),
     ).toThrow(/waitFor "b".*no healthcheck/);
   });
 
-  it('throws when waitFor targets a missing package', () => {
+  test('throws when waitFor targets a missing package', () => {
     expect(() =>
       defineConfig({ serviceRootDir: 'packages', services: { a: { waitFor: ['ghost' as any] } } }),
     ).toThrow(/waitFor "ghost"/);
   });
 
-  it('throws when a dep names a missing package, saying which category', () => {
+  test('throws when a dep names a missing package, saying which category', () => {
     expect(() =>
       defineConfig({
         serviceRootDir: 'packages',
@@ -791,7 +792,7 @@ describe('validation', () => {
     ).toThrow(/a has deps\.runtime "ghost" but no such service exists/);
   });
 
-  it('accepts deps that name real packages', () => {
+  test('accepts deps that name real packages', () => {
     const packages = Object.values(
       defineConfig({
         serviceRootDir: 'packages',
@@ -803,7 +804,7 @@ describe('validation', () => {
 });
 
 describe('registry + findService', () => {
-  it('populates the registry on define and looks packages up by name', () => {
+  test('populates the registry on define and looks packages up by name', () => {
     defineConfig({ serviceRootDir: 'packages', services: { alpha: {}, beta: {} } });
     expect(getRegisteredPackages().map((p) => p.name)).toEqual(
       expect.arrayContaining(['alpha', 'beta']),
@@ -811,7 +812,7 @@ describe('registry + findService', () => {
     expect(findService('alpha').name).toBe('alpha');
   });
 
-  it('throws for an unknown package', () => {
+  test('throws for an unknown package', () => {
     defineConfig({ serviceRootDir: 'packages', services: { alpha: {} } });
     expect(() => findService('nope')).toThrow(/nope/);
   });
@@ -830,7 +831,7 @@ describe('port callback', () => {
     delete process.env.DEVTOOIE_TEST_PORT;
   });
 
-  it('resolves the port from a workspace-scope env file', () => {
+  test('resolves the port from a workspace-scope env file', () => {
     fs.writeFileSync(path.join(ws, '.env.development'), 'BACKEND_PORT=4321\n');
     const packages = Object.values(
       defineConfig({
@@ -842,7 +843,7 @@ describe('port callback', () => {
     expect(packages[0]!.port).toBe(4321);
   });
 
-  it('resolves the port from process.env when no file defines it', () => {
+  test('resolves the port from process.env when no file defines it', () => {
     process.env.DEVTOOIE_TEST_PORT = '5555';
     const packages = Object.values(
       defineConfig({
@@ -854,7 +855,7 @@ describe('port callback', () => {
     expect(packages[0]!.port).toBe(5555);
   });
 
-  it('lets an ambient var win over an env file of the same name', () => {
+  test('lets an ambient var win over an env file of the same name', () => {
     process.env.DEVTOOIE_TEST_PORT = '5555';
     fs.writeFileSync(path.join(ws, '.env.development'), 'DEVTOOIE_TEST_PORT=6666\n');
     const packages = Object.values(
@@ -867,7 +868,7 @@ describe('port callback', () => {
     expect(packages[0]!.port).toBe(5555);
   });
 
-  it('lets env.override hand the file the win back', () => {
+  test('lets env.override hand the file the win back', () => {
     process.env.DEVTOOIE_TEST_PORT = '5555';
     fs.writeFileSync(path.join(ws, '.env.development'), 'DEVTOOIE_TEST_PORT=6666\n');
     const packages = Object.values(
@@ -881,7 +882,7 @@ describe('port callback', () => {
     expect(packages[0]!.port).toBe(6666);
   });
 
-  it('lets a package-scope env file override the workspace-scope one', () => {
+  test('lets a package-scope env file override the workspace-scope one', () => {
     fs.writeFileSync(path.join(ws, '.env.development'), 'BACKEND_PORT=4321\n');
     fs.writeFileSync(path.join(ws, 'packages/api/.env.development'), 'BACKEND_PORT=7777\n');
     const packages = Object.values(
@@ -894,7 +895,7 @@ describe('port callback', () => {
     expect(packages[0]!.port).toBe(7777);
   });
 
-  it('reads the mode-specific file for the active mode', () => {
+  test('reads the mode-specific file for the active mode', () => {
     process.env.DEVTOOIE_MODE = 'test';
     try {
       fs.writeFileSync(path.join(ws, '.env.test'), 'BACKEND_PORT=8888\n');
@@ -912,7 +913,7 @@ describe('port callback', () => {
     }
   });
 
-  it('feeds the resolved port into the healthcheck/urls callbacks', () => {
+  test('feeds the resolved port into the healthcheck/urls callbacks', () => {
     fs.writeFileSync(path.join(ws, '.env.development'), 'BACKEND_PORT=4321\n');
     const packages = Object.values(
       defineConfig({
@@ -931,7 +932,7 @@ describe('port callback', () => {
     expect(packages[0]!.urls).toEqual(['http://localhost:4321/todos']);
   });
 
-  it('hands the same resolved env to a healthcheck callback', () => {
+  test('hands the same resolved env to a healthcheck callback', () => {
     fs.writeFileSync(path.join(ws, '.env.development'), 'PUBLIC_HOST=api.internal\n');
     const packages = Object.values(
       defineConfig({
@@ -945,7 +946,7 @@ describe('port callback', () => {
     expect(packages[0]!.healthcheck?.url).toBe('http://api.internal/health');
   });
 
-  it('treats an undefined return as no port', () => {
+  test('treats an undefined return as no port', () => {
     const packages = Object.values(
       defineConfig({
         serviceRootDir: 'packages',
@@ -956,7 +957,7 @@ describe('port callback', () => {
     expect(packages[0]!.port).toBeUndefined();
   });
 
-  it('throws when a callback returns NaN, naming the package and the env files', () => {
+  test('throws when a callback returns NaN, naming the package and the env files', () => {
     fs.writeFileSync(path.join(ws, '.env.development'), 'OTHER=1\n');
     expect(() =>
       defineConfig({
@@ -967,7 +968,7 @@ describe('port callback', () => {
     ).toThrow(/api: port callback returned NaN[\s\S]*\.env\.development/);
   });
 
-  it('says so when no env file was found at all', () => {
+  test('says so when no env file was found at all', () => {
     expect(() =>
       defineConfig({
         serviceRootDir: 'packages',
@@ -977,7 +978,7 @@ describe('port callback', () => {
     ).toThrow(/no env files were found/);
   });
 
-  it('still accepts a literal numeric port', () => {
+  test('still accepts a literal numeric port', () => {
     const packages = Object.values(
       defineConfig({
         serviceRootDir: 'packages',
@@ -991,7 +992,7 @@ describe('port callback', () => {
 });
 
 describe('getWorkspaceDir', () => {
-  it('reports the root package paths resolved against, not the config file directory', () => {
+  test('reports the root package paths resolved against, not the config file directory', () => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-ws-')));
     defineConfig({ serviceRootDir: 'packages', workspaceDir: dir, services: { svc: {} } });
     try {
@@ -1004,7 +1005,7 @@ describe('getWorkspaceDir', () => {
     }
   });
 
-  it('defaults to the process cwd', () => {
+  test('defaults to the process cwd', () => {
     defineConfig({ serviceRootDir: 'packages', services: { svc: {} } });
     expect(getWorkspaceDir()).toBe(path.resolve(process.cwd()));
   });
@@ -1459,7 +1460,7 @@ describe('devReverseProxy', () => {
       serviceRootDir: 'packages',
       devReverseProxy: { port: 4000, rootDomain: 'example.test', defaultService: 'web' },
       services: {
-        web: { port: 3000, proxy: { subdomain: ['web', 'www'] }, urls: [({ port }) => `http://localhost:${port}`] }, // prettier-ignore
+        web: { port: 3000, proxy: { subdomain: ['web', 'www'] }, urls: [({ port }) => `http://localhost:${port}`] }, // oxfmt-ignore
         api: { port: 3001, proxy: { subdomain: 'api' } },
         worker: { port: 3002 },
         lib: {},
@@ -1732,7 +1733,7 @@ describe('path healthchecks', () => {
         web: { port: 3000, healthcheck: { url: '/', timeout: 5000 } },
       },
     });
-    expect(cfg.services.api.healthcheck).toEqual({ url: 'http://localhost:3001/health', timeout: 1500 }); // prettier-ignore
+    expect(cfg.services.api.healthcheck).toEqual({ url: 'http://localhost:3001/health', timeout: 1500 }); // oxfmt-ignore
     expect(cfg.services.web.healthcheck).toEqual({ url: 'http://localhost:3000', timeout: 5000 });
   });
 
@@ -1811,7 +1812,7 @@ describe('paths without a leading slash', () => {
     const cfg = defineConfig({
       serviceRootDir: 'packages',
       services: {
-        api: { port: 3001, healthcheck: 'HTTP://127.0.0.1:3001/health', urls: ['ws://localhost:3001/socket'] }, // prettier-ignore
+        api: { port: 3001, healthcheck: 'HTTP://127.0.0.1:3001/health', urls: ['ws://localhost:3001/socket'] }, // oxfmt-ignore
       },
     });
     expect(cfg.services.api.healthcheck?.url).toBe('HTTP://127.0.0.1:3001/health');
@@ -1890,7 +1891,7 @@ describe('paths with a trailing slash', () => {
     const cfg = defineConfig({
       serviceRootDir: 'packages',
       services: {
-        api: { port: 3001, healthcheck: 'http://127.0.0.1:3001/health/', urls: ['https://status.example.test/'] }, // prettier-ignore
+        api: { port: 3001, healthcheck: 'http://127.0.0.1:3001/health/', urls: ['https://status.example.test/'] }, // oxfmt-ignore
       },
     });
     expect(cfg.services.api.healthcheck?.url).toBe('http://127.0.0.1:3001/health/');
@@ -2099,7 +2100,7 @@ describe('infra service port and proxy', () => {
     const mail = withServices({ mail: { port: 8025, proxy: { subdomain: 'mail' } } }).infra![
       'docker-compose'
     ]!.services.mail!;
-    expect(mail).toMatchObject({ port: 8025, proxy: { subdomain: 'mail' }, publicOrigin: undefined }); // prettier-ignore
+    expect(mail).toMatchObject({ port: 8025, proxy: { subdomain: 'mail' }, publicOrigin: undefined }); // oxfmt-ignore
   });
 
   test('uses the proxy port in the public origin under http', () => {
@@ -2115,7 +2116,7 @@ describe('infra service port and proxy', () => {
   test('resolves `urls` like a package: paths on the public origin, labels and absolute urls kept', () => {
     const services = withServices(
       {
-        mail: { port: 8025, proxy: { subdomain: 'mail' }, urls: ['', { label: 'inbox', url: '/inbox' }] }, // prettier-ignore
+        mail: { port: 8025, proxy: { subdomain: 'mail' }, urls: ['', { label: 'inbox', url: '/inbox' }] }, // oxfmt-ignore
         store: { port: 9000, urls: [['https://console.example.test', '/minio']] },
         db: { port: 5432 },
       },

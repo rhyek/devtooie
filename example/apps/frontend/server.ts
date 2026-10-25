@@ -3,11 +3,14 @@
 // range/compression). Server-fn CSRF/origin is handled in src/start.ts. Node (>=22.18) strips the
 // TS at load. Run via:  NODE_ENV=production node server.ts
 import { serve, type ServerMiddleware } from 'srvx';
-import { serveStatic } from 'srvx/static';
+import { staticMiddleware } from 'srvx/static';
 // @ts-expect-error — a `vite build` artifact under dist/; it has no type declarations.
-import handler from './dist/server/server.js';
+import built from './dist/server/server.js';
 
-// srvx/static has no cache option; Vite's /assets are content-hashed, so mark them immutable.
+const handler = built as { fetch: (req: Request) => Response | Promise<Response> };
+
+// srvx/static sets one cache policy for the whole directory; only Vite's /assets are
+// content-hashed, so they alone are marked immutable.
 const immutableAssets: ServerMiddleware = async (req, next) => {
   const res = await next();
   if (new URL(req.url).pathname.startsWith('/assets/')) {
@@ -20,6 +23,6 @@ const immutableAssets: ServerMiddleware = async (req, next) => {
 serve({
   port: Number(process.env.PORT) || 3000,
   hostname: process.env.HOST || '0.0.0.0',
-  middleware: [immutableAssets, serveStatic({ dir: 'dist/client' })],
+  middleware: [immutableAssets, staticMiddleware({ dir: 'dist/client' })],
   fetch: handler.fetch,
 });

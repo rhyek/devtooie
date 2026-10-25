@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { runInit } from './init.js';
 
 let cwd: string;
@@ -12,14 +12,14 @@ beforeEach(() => {
 afterEach(() => fs.rmSync(cwd, { recursive: true, force: true }));
 
 describe('runInit --yes (non-interactive)', () => {
-  it('scaffolds the config, reconciles tsconfig, and installs the skill without prompting', async () => {
+  test('scaffolds the config, reconciles tsconfig, and installs the skill without prompting', async () => {
     await runInit({ cwd, yes: true });
     expect(fs.existsSync(path.join(cwd, 'devtooie.config.ts'))).toBe(true);
     expect(fs.existsSync(path.join(cwd, 'tsconfig.json'))).toBe(true);
     expect(fs.existsSync(path.join(cwd, '.claude/skills/devtooie/SKILL.md'))).toBe(true);
   });
 
-  it('is idempotent: keeps the existing config and does not duplicate the tsconfig include', async () => {
+  test('is idempotent: keeps the existing config and does not duplicate the tsconfig include', async () => {
     await runInit({ cwd, yes: true });
     const config = fs.readFileSync(path.join(cwd, 'devtooie.config.ts'), 'utf8');
 
@@ -33,7 +33,7 @@ describe('runInit --yes (non-interactive)', () => {
 });
 
 describe('runInit skill auto-update', () => {
-  it('refreshes an already-installed skill without prompting (no --yes)', async () => {
+  test('refreshes an already-installed skill without prompting (no --yes)', async () => {
     // First-time install (via --yes) so the managed skill file exists.
     await runInit({ cwd, yes: true });
     const file = path.join(cwd, '.claude/skills/devtooie/SKILL.md');

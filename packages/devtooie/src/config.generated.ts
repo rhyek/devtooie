@@ -3,7 +3,6 @@
 // Field docs come from the schemas' `.describe()`; `command`/`waitFor`/`deps`/`name`/
 // `packages` and the package-level `logs` are overridden in config.ts, so their generated form
 // here is intentionally ignored.
-/* eslint-disable */
 
 export type GeneratedServiceConfig = {
     /** Directory holding the service, relative to `workspaceDir`. Inferred as `<serviceRootDir>/<key>` when the config sets `serviceRootDir`; required otherwise. Set it to override the inferred one. */

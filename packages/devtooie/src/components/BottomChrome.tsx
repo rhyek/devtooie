@@ -1,5 +1,5 @@
-import { Box, Text, type DOMElement } from 'ink';
 import React from 'react';
+import { Box, Text, type DOMElement } from 'ink';
 import { LINK_COLOR } from '../colors.js';
 import { ToastStack, type Toasts } from './ToastStack.js';
 

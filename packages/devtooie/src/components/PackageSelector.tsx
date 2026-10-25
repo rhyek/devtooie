@@ -1,7 +1,7 @@
-import { Box, Text, useApp, useInput, useWindowSize } from 'ink';
 import React, { useMemo, useState } from 'react';
-import type { AnyServiceConfig } from '../config.js';
+import { Box, Text, useApp, useInput, useWindowSize } from 'ink';
 import { ACCENT_COLOR, MUTED_COLOR, OK_COLOR, ON_ACCENT_COLOR, WARN_COLOR } from '../colors.js';
+import type { AnyServiceConfig } from '../config.js';
 import { HotkeyHints } from './HotkeyHints.js';
 
 export type PackageSelectorProps = {

@@ -1,6 +1,6 @@
 import express from 'express';
-import { validateNewTodo } from '@example/isomorphic';
 import { listTodos, insertTodo, updateTodo, deleteTodo } from '@example/db';
+import { validateNewTodo } from '@example/isomorphic';
 
 // Injected by devtooie from this package's configured `port`.
 const PORT = Number(process.env.PORT);
@@ -28,9 +28,10 @@ app.post('/todos', async (req, res) => {
 });
 
 app.patch('/todos/:id', async (req, res) => {
+  const body = req.body as { title?: string; completed?: boolean } | undefined;
   const updated = await updateTodo(Number(req.params.id), {
-    title: req.body?.title,
-    completed: req.body?.completed,
+    title: body?.title,
+    completed: body?.completed,
   });
   if (!updated) {
     res.status(404).json({ error: 'not found' });

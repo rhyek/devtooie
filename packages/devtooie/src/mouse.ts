@@ -20,43 +20,14 @@ export const MOUSE_ENABLE = `${ESC}[?1002h${ESC}[?1006h`;
 /** Disable SGR mouse reporting. Write on unmount / before exit. */
 export const MOUSE_DISABLE = `${ESC}[?1006l${ESC}[?1002l`;
 
-/**
- * True if `data` is the header of a **legacy X10** mouse report — `ESC[M`, followed by three
- * coordinate bytes (button, column, row, each offset by 32) that arrive as their own input
- * event, since the header is a complete CSI sequence on its own.
- *
- * We never ask for this encoding — `MOUSE_ENABLE` requests SGR (`?1006h`) — so one
- * showing up means the terminal dropped our encoding mode behind our back and fell
- * back to the default. The VS Code integrated terminal does exactly that on "Reload
- * Window": a reattached terminal is restored from a serialized snapshot that
- * re-emits the mouse *tracking* mode (`?1002h`) but not the *encoding* mode, so
- * reports resume in X10 and stop decoding — the wheel and drag-select go dead while
- * the keyboard keeps working.
- *
- * Treat a match as a signal to re-assert `MOUSE_ENABLE`, not as an event to handle:
- * X10 caps coordinates at column 223 and encodes them as raw bytes that the input
- * layer's UTF-8 decoding mangles past column 95, so the report itself isn't worth
- * decoding when re-asserting brings SGR straight back.
- */
-export function isLegacyMouseSequence(data: string): boolean {
-  return data === `${ESC}[M` || data === '[M';
-}
-
 /** A decoded SGR mouse report. Coordinates are 1-based terminal cells. */
 export type MouseReport =
   | { type: 'down' | 'up' | 'move'; button: number; col: number; row: number }
   | { type: 'wheel'; dir: 'up' | 'down'; col: number; row: number };
 
-// SGR mouse report: (ESC)[<Cb;Cx;Cy(M|m). The leading ESC is optional so this
-// still matches when the input layer has already stripped it.
-// eslint-disable-next-line no-control-regex -- matches SGR mouse-report escape sequences
-const SGR_MOUSE = /\x1b?\[<(\d+);(\d+);(\d+)([Mm])/g;
-
-/** True if `data` contains at least one SGR mouse report. */
-export function isMouseSequence(data: string): boolean {
-  SGR_MOUSE.lastIndex = 0;
-  return SGR_MOUSE.test(data);
-}
+// SGR mouse report: ESC[<Cb;Cx;Cy(M|m).
+// oxlint-disable-next-line no-control-regex -- matches SGR mouse-report escape sequences
+const SGR_MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
 
 /**
  * Decode every SGR mouse report in `data`, in order (a fast drag can pack several
@@ -86,4 +57,51 @@ export function parseMouseEvents(data: string): MouseReport[] {
     }
   }
   return events;
+}
+
+/**
+ * The header of a **legacy X10** mouse report, `ESC[M`, which is followed by three coordinate
+ * bytes (button, column, row, each offset by 32).
+ *
+ * We never ask for this encoding — `MOUSE_ENABLE` requests SGR (`?1006h`) — so one
+ * showing up means the terminal dropped our encoding mode behind our back and fell
+ * back to the default. The VS Code integrated terminal does exactly that on "Reload
+ * Window": a reattached terminal is restored from a serialized snapshot that
+ * re-emits the mouse *tracking* mode (`?1002h`) but not the *encoding* mode, so
+ * reports resume in X10 and stop decoding — the wheel and drag-select go dead while
+ * the keyboard keeps working.
+ *
+ * Treat one as a signal to re-assert `MOUSE_ENABLE`, not as an event to handle:
+ * X10 caps coordinates at column 223 and encodes them as raw bytes that UTF-8
+ * decoding mangles past column 95, so the report itself isn't worth decoding when
+ * re-asserting brings SGR straight back.
+ */
+const LEGACY_HEADER = `${ESC}[M`;
+
+// The start of a mouse report a read ended in the middle of: ESC, ESC[, or ESC[ and an
+// unterminated SGR report.
+// oxlint-disable-next-line no-control-regex -- matches the start of a mouse-report escape sequence
+const PARTIAL_REPORT = /\x1b(?:\[(?:<[\d;]*)?)?$/;
+
+/** What one stdin chunk carried: its SGR reports, and whether a legacy X10 report started in it. */
+export type MouseChunk = { reports: MouseReport[]; legacy: boolean };
+
+/**
+ * A decoder for raw stdin chunks, which is where mouse reports are read: Ink never hands one
+ * to `useInput`, as it drops terminal sequences that map to no key. A chunk is whatever one read
+ * returned, so it can mix reports with keys, and a report can be split across two reads — the
+ * decoder keeps a report's unfinished start and decodes it with the next chunk.
+ */
+export function createMouseDecoder(): (chunk: string) => MouseChunk {
+  let carry = '';
+  return (chunk) => {
+    const data = carry + chunk;
+    SGR_MOUSE.lastIndex = 0;
+    let rest = 0;
+    while (SGR_MOUSE.exec(data) !== null) {
+      rest = SGR_MOUSE.lastIndex;
+    }
+    carry = PARTIAL_REPORT.exec(data.slice(rest))?.[0] ?? '';
+    return { reports: parseMouseEvents(data), legacy: data.includes(LEGACY_HEADER) };
+  };
 }

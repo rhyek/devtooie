@@ -3,12 +3,6 @@ import { execa } from 'execa';
 import { type AnyServiceConfig, getLoadedConfig } from '../config.js';
 import { envFileNames, packageEnvLayer, workspaceEnvLayer } from '../env.js';
 import {
-  NoProjectConfigError,
-  findConfigPath,
-  findWorkspaceRoot,
-  loadConfig,
-} from '../load-config.js';
-import {
   exitCodeOf,
   findAncestorPackage,
   getDefaultLogFile,
@@ -17,6 +11,12 @@ import {
   logTimestamp,
   stripAnsi,
 } from '../lib.js';
+import {
+  NoProjectConfigError,
+  findConfigPath,
+  findWorkspaceRoot,
+  loadConfig,
+} from '../load-config.js';
 import { applyWorkspaceEnv, exitOnConfigLoadFailure } from './workspace.js';
 
 // `devtooie exec` and `devtooie run`: one command, with a package's directory and environment.

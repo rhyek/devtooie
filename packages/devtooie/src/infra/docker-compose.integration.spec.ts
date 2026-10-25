@@ -86,11 +86,11 @@ async function docker(...args: string[]): Promise<string[]> {
   return stdout.split('\n').filter(Boolean).sort();
 }
 const containers = (project: string) =>
-  docker('ps', '--all', '--filter', `label=com.docker.compose.project=${project}`, '--format', '{{.Label "com.docker.compose.service"}}={{.State}}'); // prettier-ignore
+  docker('ps', '--all', '--filter', `label=com.docker.compose.project=${project}`, '--format', '{{.Label "com.docker.compose.service"}}={{.State}}'); // oxfmt-ignore
 const volumes = (project: string) =>
-  docker('volume', 'ls', '--filter', `label=com.docker.compose.project=${project}`, '--format', '{{.Name}}'); // prettier-ignore
+  docker('volume', 'ls', '--filter', `label=com.docker.compose.project=${project}`, '--format', '{{.Name}}'); // oxfmt-ignore
 const networks = (project: string) =>
-  docker('network', 'ls', '--filter', `label=com.docker.compose.project=${project}`, '--format', '{{.Name}}'); // prettier-ignore
+  docker('network', 'ls', '--filter', `label=com.docker.compose.project=${project}`, '--format', '{{.Name}}'); // oxfmt-ignore
 
 describe.skipIf(!dockerAvailable())(
   'DockerComposeProvider against real Docker',
@@ -159,7 +159,7 @@ describe.skipIf(!dockerAvailable())(
       const { provider: infra, project } = provider();
       await infra.up({});
       // The case `down <service> --volumes` gets wrong: a sibling whose container is gone.
-      await execLines('docker', ['compose', '-p', project, '--project-directory', ws, 'rm', '--stop', '--force', 'plain'], { cwd: ws, env: ambientEnv() }); // prettier-ignore
+      await execLines('docker', ['compose', '-p', project, '--project-directory', ws, 'rm', '--stop', '--force', 'plain'], { cwd: ws, env: ambientEnv() }); // oxfmt-ignore
       expect(await volumes(project)).toEqual([`${project}_checked-data`, `${project}_plain-data`]);
 
       expect((await infra.destroy({ services: ['checked'] })).ok).toBe(true);
@@ -182,7 +182,7 @@ describe.skipIf(!dockerAvailable())(
       const { provider: infra, project } = provider();
       await infra.up({});
       const dc = (...args: string[]) =>
-      execLines('docker', ['compose', '-p', project, '--project-directory', ws, ...args], { cwd: ws, env: ambientEnv() }); // prettier-ignore
+      execLines('docker', ['compose', '-p', project, '--project-directory', ws, ...args], { cwd: ws, env: ambientEnv() }); // oxfmt-ignore
       await dc('exec', '-T', 'checked', 'touch', '/data/marker');
       await dc('exec', '-T', 'plain', 'touch', '/data/marker');
 

@@ -249,7 +249,12 @@ export interface ResolvedInfra {
 
 /** Where a service is in an `up` or `destroy` run. `ready`, `destroyed` and `failed` are final. */
 export type InfraServiceStatus =
-  'pending' | 'destroying' | 'starting' | 'ready' | 'destroyed' | 'failed';
+  | 'pending'
+  | 'destroying'
+  | 'starting'
+  | 'ready'
+  | 'destroyed'
+  | 'failed';
 
 /** Everything a run reports, through one callback, for whichever surface is showing it. */
 export type InfraEvent =

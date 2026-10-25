@@ -1,8 +1,8 @@
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
-import type { Exec, ExecOptions, ExecResult } from './exec.js';
-import type { Envs } from '../env.js';
 import { createControlClient } from '../control-client.js';
+import type { Envs } from '../env.js';
+import type { Exec, ExecOptions, ExecResult } from './exec.js';
 import { InfraProvider, type ProviderRuntime } from './provider.js';
 import {
   InfraError,

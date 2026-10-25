@@ -19,7 +19,8 @@ export type ValidateResult = { ok: true; title: string } | { ok: false; error: s
 
 /** Validate + normalize a new-todo request body. Shared so client and server agree on the rules. */
 export function validateNewTodo(input: unknown): ValidateResult {
-  const title = String((input as { title?: unknown } | null)?.title ?? '').trim();
+  const raw = (input as { title?: unknown } | null)?.title;
+  const title = (typeof raw === 'string' || typeof raw === 'number' ? String(raw) : '').trim();
   if (!title) {
     return { ok: false, error: 'title is required' };
   }

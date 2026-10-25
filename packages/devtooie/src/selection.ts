@@ -217,7 +217,7 @@ export function selectionCopyText(
     // value, the line's own text begins at the gutter but its leading indent is still display
     // padding. `valueStart` covers both that and a wrapped row (where the two coincide).
     const from = Math.max(r === start.flatRow ? start.col : 0, meta.valueStart);
-    const sliced = r === end.flatRow ? sliceAnsi(meta.text, from, end.col) : sliceAnsi(meta.text, from); // prettier-ignore
+    const sliced = r === end.flatRow ? sliceAnsi(meta.text, from, end.col) : sliceAnsi(meta.text, from); // oxfmt-ignore
     if (prevLineIndex !== null) {
       out += meta.lineIndex === prevLineIndex ? '' : '\n';
     }

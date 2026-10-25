@@ -1,7 +1,13 @@
 import { z } from 'zod';
 // Type-only — erased at compile time, so `config-schema.ts` still imports nothing but `zod`
 // at runtime and `scripts/gen-config-types.ts` can keep executing it without a build.
-import type { ConfigContext, EnvVars, EnvVarsResolver, PortResolver, UrlResolver } from './config.js'; // prettier-ignore
+import type {
+  ConfigContext,
+  EnvVars,
+  EnvVarsResolver,
+  PortResolver,
+  UrlResolver,
+} from './config.js';
 
 // The Zod schemas — the single source of the config's shape, defaults, validation, AND field
 // docs (via `.describe()`). `scripts/gen-config-types.ts` reads this file (it imports only
@@ -310,7 +316,7 @@ export const DefineConfigSchema = z.object({
         // is reported the same way — by variable name — whichever form declared it.
         vars: z
           .custom<EnvVars | EnvVarsResolver>(
-            (v) => typeof v === 'function' || (typeof v === 'object' && v !== null && !Array.isArray(v)), // prettier-ignore
+            (v) => typeof v === 'function' || (typeof v === 'object' && v !== null && !Array.isArray(v)), // oxfmt-ignore
             { message: 'env.vars must be an object of variables or a function' },
           )
           .optional(),

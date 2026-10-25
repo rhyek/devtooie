@@ -95,7 +95,7 @@ export async function startStack<P extends string = ServiceName>(
   });
 
   if (!line) {
-    throw new Error(`devtooie exited with code ${String(code)} and no answer${stderr ? `:\n${stderr}` : ''}`); // prettier-ignore
+    throw new Error(`devtooie exited with code ${String(code)} and no answer${stderr ? `:\n${stderr}` : ''}`); // oxfmt-ignore
   }
   const port = line.port ?? 0;
   const control = createControlClient<P>(port);

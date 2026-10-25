@@ -1,6 +1,6 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import { createRequire } from 'node:module';
+import path from 'node:path';
 import type { AnyServiceConfig } from './config.js';
 import { findPassthrough } from './infra/argv.js';
 

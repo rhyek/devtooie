@@ -6,3 +6,5 @@ allowBuilds:
   simple-git-hooks: false
 # Track the latest release of every dependency (disable pnpm's release-age gate).
 minimumReleaseAge: 0
+# Don't install a package's peer dependencies for it; the workspace declares the ones it uses.
+autoInstallPeers: false

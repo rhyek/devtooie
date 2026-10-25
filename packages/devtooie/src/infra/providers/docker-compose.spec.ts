@@ -642,7 +642,7 @@ describe('fresh', () => {
     const seen: Record<string, boolean> = {};
     const note = { enabled: true, afterReady: (ctx: { service: string; fresh: boolean }) => {
       seen[ctx.service] = ctx.fresh;
-    } }; // prettier-ignore
+    } }; // oxfmt-ignore
     let polls = 0;
     const { provider } = setup(
       servicesThen((args) => {

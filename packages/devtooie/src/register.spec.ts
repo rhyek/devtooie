@@ -1,14 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, test, expect } from 'vitest';
 import { defineConfig, findService } from './index.js';
 import type { AnyServiceConfig, ServiceName } from './index.js';
 
 describe('public exports', () => {
-  it('re-exports the runtime API', () => {
+  test('re-exports the runtime API', () => {
     expect(typeof defineConfig).toBe('function');
     expect(typeof findService).toBe('function');
   });
 
-  it('ServiceName falls back to string when Register is unaugmented', () => {
+  test('ServiceName falls back to string when Register is unaugmented', () => {
     // Compile-time assertion: a plain string is assignable to ServiceName.
     const n: ServiceName = 'anything';
     const pkg: AnyServiceConfig | undefined = Object.values(
@@ -17,7 +17,7 @@ describe('public exports', () => {
     expect(pkg?.name).toBe('anything');
   });
 
-  it('narrows ServiceConfig by name, tokens included', () => {
+  test('narrows ServiceConfig by name, tokens included', () => {
     const config = defineConfig({
       serviceRootDir: 'packages',
       tokens: { domain: 'example.com' },

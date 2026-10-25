@@ -1,7 +1,7 @@
 import type { AnyServiceConfig } from './config.js';
 
 // Augmentation target — intentionally empty. Consumers augment it from devtooie.config.ts.
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+// oxlint-disable-next-line typescript/no-empty-object-type
 export interface Register {}
 
 type Resolved = Register extends {

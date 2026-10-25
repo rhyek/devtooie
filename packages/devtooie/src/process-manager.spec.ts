@@ -1,4 +1,3 @@
-import { describe, it, test, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -6,8 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import chalk from 'chalk';
 import stringWidth from 'string-width';
-import { ProcessManager, resolveColorSpec, packagePrefixColor } from './process-manager.js';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import { defineConfig, type AnyServiceConfig } from './config.js';
+import { stripAnsi } from './lib.js';
 import { createFormatter } from './log-formatter.js';
+import { ProcessManager, resolveColorSpec, packagePrefixColor } from './process-manager.js';
+import type { RunnerArgs } from './runners/types.js';
 import {
   classifyLine,
   rowWidth,
@@ -16,9 +19,6 @@ import {
   type RowMeta,
   type Selection,
 } from './selection.js';
-import { stripAnsi } from './lib.js';
-import { defineConfig, type AnyServiceConfig } from './config.js';
-import type { RunnerArgs } from './runners/types.js';
 
 let dir: string;
 let logFile: string;
@@ -88,32 +88,32 @@ describe('package prefix colors', () => {
   const p = (color?: string): AnyServiceConfig =>
     ({ name: 'a', relativeDir: 'a', path: '/x', color }) as AnyServiceConfig;
 
-  it('resolveColorSpec: hex (with or without #)', () => {
+  test('resolveColorSpec: hex (with or without #)', () => {
     expect(resolveColorSpec('#af87ff')('x')).toBe(chalk.hex('#af87ff')('x'));
     expect(resolveColorSpec('af87ff')('x')).toBe(chalk.hex('#af87ff')('x'));
   });
 
-  it('resolveColorSpec: rgb() and ansi256()', () => {
+  test('resolveColorSpec: rgb() and ansi256()', () => {
     expect(resolveColorSpec('rgb(175, 135, 255)')('x')).toBe(chalk.rgb(175, 135, 255)('x'));
     expect(resolveColorSpec('ansi256(140)')('x')).toBe(chalk.ansi256(140)('x'));
   });
 
-  it('resolveColorSpec: a named color', () => {
+  test('resolveColorSpec: a named color', () => {
     expect(resolveColorSpec('magenta')('x')).toBe(chalk.magenta('x'));
     expect(resolveColorSpec('blueBright')('x')).toBe(chalk.blueBright('x'));
   });
 
-  it('resolveColorSpec: unknown/unsafe specs fall back to no color (no throw)', () => {
+  test('resolveColorSpec: unknown/unsafe specs fall back to no color (no throw)', () => {
     expect(resolveColorSpec('not-a-color')('x')).toBe('x');
     expect(resolveColorSpec('constructor')('x')).toBe('x');
     expect(resolveColorSpec('bold')('x')).toBe('x'); // a chalk modifier, not a color
   });
 
-  it('packagePrefixColor: run.color overrides the palette', () => {
+  test('packagePrefixColor: run.color overrides the palette', () => {
     expect(packagePrefixColor(p('#af87ff'), 0)('x')).toBe(chalk.hex('#af87ff')('x'));
   });
 
-  it('packagePrefixColor: falls back to a distinct palette slot per index', () => {
+  test('packagePrefixColor: falls back to a distinct palette slot per index', () => {
     expect(packagePrefixColor(p(), 0)('x')).not.toBe(packagePrefixColor(p(), 1)('x'));
   });
 });
@@ -144,7 +144,7 @@ describe('on-screen log timestamps', () => {
     return stripAnsi(mgr.wrapLine(line, 200)[0]!);
   }
 
-  it('prefixes rows with a `YYYY-MM-DD HH:MM:SS` timestamp when logs.timestamps is enabled', () => {
+  test('prefixes rows with a `YYYY-MM-DD HH:MM:SS` timestamp when logs.timestamps is enabled', () => {
     manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: true });
     manager.logSystem('hello world');
     const row = lastRow(manager);
@@ -152,7 +152,7 @@ describe('on-screen log timestamps', () => {
     expect(row).toContain('hello world');
   });
 
-  it('timestamps rows by default', () => {
+  test('timestamps rows by default', () => {
     manager = new ProcessManager(runnerArgs(pkg()));
     manager.logSystem('hello world');
     const row = lastRow(manager);
@@ -160,7 +160,7 @@ describe('on-screen log timestamps', () => {
     expect(row).toContain('hello world');
   });
 
-  it('leaves rows un-timestamped with logs.timestamps: false', () => {
+  test('leaves rows un-timestamped with logs.timestamps: false', () => {
     manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: false });
     manager.logSystem('hello world');
     const row = lastRow(manager);
@@ -168,7 +168,7 @@ describe('on-screen log timestamps', () => {
     expect(row).toContain('hello world');
   });
 
-  it('always timestamps the on-disk log file, even with the on-screen option off', () => {
+  test('always timestamps the on-disk log file, even with the on-screen option off', () => {
     manager = new ProcessManager(runnerArgs(pkg()));
     manager.logSystem('to disk');
     expect(fs.readFileSync(logFile, 'utf8')).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[/m);
@@ -176,21 +176,21 @@ describe('on-screen log timestamps', () => {
 
   // A control line tagged with a package's name shares that package's timestamp resolution,
   // so it's a spawn-free way to observe the per-package override.
-  it("a package's logs.timestamps: true overrides a top-level default of false", () => {
-    const p: AnyServiceConfig = { name: 'fixture', relativeDir: '.', absoluteDir: dir, logs: { timestamps: true } }; // prettier-ignore
+  test("a package's logs.timestamps: true overrides a top-level default of false", () => {
+    const p: AnyServiceConfig = { name: 'fixture', relativeDir: '.', absoluteDir: dir, logs: { timestamps: true } }; // oxfmt-ignore
     manager = new ProcessManager({ ...runnerArgs(p), logTimestamps: false });
     manager.logControl('hi', { service: 'fixture' });
     expect(lastRow(manager)).toMatch(TS);
   });
 
-  it("a package's logs.timestamps: false overrides a top-level default of true", () => {
-    const p: AnyServiceConfig = { name: 'fixture', relativeDir: '.', absoluteDir: dir, logs: { timestamps: false } }; // prettier-ignore
+  test("a package's logs.timestamps: false overrides a top-level default of true", () => {
+    const p: AnyServiceConfig = { name: 'fixture', relativeDir: '.', absoluteDir: dir, logs: { timestamps: false } }; // oxfmt-ignore
     manager = new ProcessManager({ ...runnerArgs(p), logTimestamps: true });
     manager.logControl('hi', { service: 'fixture' });
     expect(lastRow(manager)).not.toMatch(TS);
   });
 
-  it('a package without logs.timestamps inherits the top-level default', () => {
+  test('a package without logs.timestamps inherits the top-level default', () => {
     manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: true });
     manager.logControl('hi', { service: 'fixture' });
     expect(lastRow(manager)).toMatch(TS);
@@ -253,7 +253,7 @@ describe('wrapping a line too wide for the terminal', () => {
     return rows(manager);
   }
 
-  it('keeps the property key aligned with unwrapped keys (the indent survives wrapping)', () => {
+  test('keeps the property key aligned with unwrapped keys (the indent survives wrapping)', () => {
     const wrapped = longAttrRows();
     expect(wrapped.length).toBeGreaterThan(1);
     // The formatter indents every property by two spaces; wrapping must not eat them, or this
@@ -261,19 +261,19 @@ describe('wrapping a line too wide for the terminal', () => {
     expect(wrapped[0]).toContain('  content_url: ');
   });
 
-  it('repeats the prefix on every wrapped row', () => {
+  test('repeats the prefix on every wrapped row', () => {
     for (const row of longAttrRows()) {
       expect(row).toMatch(/^\[dt:control\] /);
     }
   });
 
-  it('repeats the timestamp on every wrapped row when timestamps are on', () => {
+  test('repeats the timestamp on every wrapped row when timestamps are on', () => {
     for (const row of longAttrRows({ timestamps: true })) {
       expect(row).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[dt:control\] /);
     }
   });
 
-  it('aligns continuation rows under the value, like a multi-line value', () => {
+  test('aligns continuation rows under the value, like a multi-line value', () => {
     const wrapped = longAttrRows();
     const gutter = wrapped[0]!.indexOf('  content_url: ');
     // `  content_url: ` is 15 columns; continuations start under the value, not under the key.
@@ -284,7 +284,20 @@ describe('wrapping a line too wide for the terminal', () => {
     }
   });
 
-  it('loses no text and never exceeds the terminal width', () => {
+  test('spaces out a tab, so a row holding one is as wide as it is drawn', () => {
+    manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: false, logFile });
+    const value = 'col\t'.repeat(30);
+    manager.logControl('table', { row: value });
+    const wrapped = rows(manager);
+    expect(wrapped.length).toBeGreaterThan(1);
+    for (const row of wrapped) {
+      expect(row).not.toContain('\t');
+      expect(row.length).toBeLessThanOrEqual(COLS);
+    }
+    expect(wrapped.join('').match(/col/g)).toHaveLength(30);
+  });
+
+  test('loses no text and never exceeds the terminal width', () => {
     const wrapped = longAttrRows();
     for (const row of wrapped) {
       expect(row.length).toBeLessThanOrEqual(COLS);
@@ -301,7 +314,7 @@ describe('wrapping a line too wide for the terminal', () => {
 
   // End-to-end over the real wrapping: build the row metadata exactly as `useLogViewport` does,
   // then simulate pressing at the value and dragging to the end of its last row.
-  it('value-scoped selection reassembles the original value, gutters and indent stripped', () => {
+  test('value-scoped selection reassembles the original value, gutters and indent stripped', () => {
     manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: true });
     manager.logControl('asset-fetch', { content_url: LONG });
     const lines = manager.getVisibleLines();
@@ -332,7 +345,7 @@ describe('wrapping a line too wide for the terminal', () => {
 
   // Whether word-wrap pushes the value to its own row depends on arithmetic between the width,
   // the key length and the token length, so one fixture proves nothing — sweep the widths.
-  it('never strands the key on a blank row, at any terminal width', () => {
+  test('never strands the key on a blank row, at any terminal width', () => {
     manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: true });
     manager.logControl('asset-fetch', { content_url: LONG });
     const lines = manager.getVisibleLines();
@@ -346,7 +359,7 @@ describe('wrapping a line too wide for the terminal', () => {
     }
   });
 
-  it('still breaks a prose value on word boundaries', () => {
+  test('still breaks a prose value on word boundaries', () => {
     manager = new ProcessManager(runnerArgs(pkg()));
     const words = 'lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor';
     manager.logControl('note', { text: `${words} ${words}` });
@@ -360,7 +373,7 @@ describe('wrapping a line too wide for the terminal', () => {
     }
   });
 
-  it('still wraps a plain line with no property key, aligned at the gutter', () => {
+  test('still wraps a plain line with no property key, aligned at the gutter', () => {
     manager = new ProcessManager({ ...runnerArgs(pkg()), logTimestamps: false });
     manager.logSystem('x'.repeat(300));
     const wrapped = rows(manager);
@@ -470,7 +483,7 @@ describe('ProcessManager', () => {
     }, 15_000);
   });
 
-  it('starts a package, tracks it as running, then stops it cleanly', async () => {
+  test('starts a package, tracks it as running, then stops it cleanly', async () => {
     manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
 
     manager.start('fixture');
@@ -484,7 +497,7 @@ describe('ProcessManager', () => {
     expect(manager.getStatus('fixture')).toBe('stopped');
   }, 10_000);
 
-  it('startAll skips an autostart:false package but a manual start still works', async () => {
+  test('startAll skips an autostart:false package but a manual start still works', async () => {
     manager = new ProcessManager(runnerArgs({ ...pkg(), autostart: false }), { plain: true });
     manager.startAll();
     await new Promise((resolve) => setTimeout(resolve, 800));
@@ -564,7 +577,7 @@ describe('ProcessManager', () => {
     expect(manager.getStatus('fixture')).toBe('stopped');
   });
 
-  it('logControl writes the command as a [dt:control] line with its variables beneath', () => {
+  test('logControl writes the command as a [dt:control] line with its variables beneath', () => {
     manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
     manager.logControl('restart', { service: 'fixture' });
     manager.logControl('quit');
@@ -577,7 +590,7 @@ describe('ProcessManager', () => {
     expect(contents).not.toContain('component');
   });
 
-  it('logControl pads the [dt:control] label to align with the widest service name', () => {
+  test('logControl pads the [dt:control] label to align with the widest service name', () => {
     const wide: AnyServiceConfig = {
       name: 'payments-worker',
       relativeDir: '.',
@@ -590,7 +603,7 @@ describe('ProcessManager', () => {
     expect(contents).toContain('[dt:control     ] [INFO] restart');
   });
 
-  it('renders system lines under a labelled [devtooie] prefix with a level tag', () => {
+  test('renders system lines under a labelled [devtooie] prefix with a level tag', () => {
     manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
     manager.systemLog.warn('shutting down...');
     manager.logSystem('just so');
@@ -599,7 +612,7 @@ describe('ProcessManager', () => {
     expect(contents).toContain('[devtooie] [INFO] just so');
   });
 
-  it('colors the system prefix gold instead of leaving the slot empty', () => {
+  test('colors the system prefix gold instead of leaving the slot empty', () => {
     const prev = chalk.level;
     chalk.level = 3; // force truecolor so the hex actually lands in the prefix
     try {
@@ -621,7 +634,7 @@ describe('ProcessManager filter replay batching', () => {
   // every call, so per-line emits turn the switch into a visible, one-by-one
   // re-stream instead of an instant swap.
 
-  it('replays the whole matching buffer in a single write on filter change', () => {
+  test('replays the whole matching buffer in a single write on filter change', () => {
     manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -649,7 +662,7 @@ describe('ProcessManager filter replay batching', () => {
     }
   });
 
-  it('emits nothing when the new filter matches no buffered line', () => {
+  test('emits nothing when the new filter matches no buffered line', () => {
     manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
@@ -666,7 +679,7 @@ describe('ProcessManager filter replay batching', () => {
     }
   });
 
-  it('replays the full buffer in a single write when the filter is cleared', () => {
+  test('replays the full buffer in a single write when the filter is cleared', () => {
     manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -708,16 +721,16 @@ describe('ProcessManager filter: case- and accent-insensitive', () => {
     }
   }
 
-  it('matches an accented log line from an unaccented term', () => {
+  test('matches an accented log line from an unaccented term', () => {
     expect(seedAndFilter('Café Málaga', ['cafe'])).toContain('Café Málaga');
     expect(seedAndFilter('Café Málaga', ['malaga'])).toContain('Málaga');
   });
 
-  it('matches an unaccented log line from an accented term', () => {
+  test('matches an unaccented log line from an accented term', () => {
     expect(seedAndFilter('Added Malaga', ['málaga'])).toContain('Added Malaga');
   });
 
-  it('is case-insensitive', () => {
+  test('is case-insensitive', () => {
     expect(seedAndFilter('Added TODO item', ['added', 'todo'])).toContain('Added TODO item');
   });
 });
@@ -747,7 +760,7 @@ describe('ProcessManager env injection', () => {
     fs.rmSync(envDir, { recursive: true, force: true });
   });
 
-  it('injects resolved .env vars into the spawned dev process', async () => {
+  test('injects resolved .env vars into the spawned dev process', async () => {
     const a: AnyServiceConfig = { name: 'envfixture', relativeDir: '.', absoluteDir: envDir };
     mgr = new ProcessManager(
       {
@@ -825,7 +838,7 @@ describe('ProcessManager PORT injection', () => {
     fs.rmSync(portDir, { recursive: true, force: true });
   });
 
-  it("injects a package's run.port as the PORT env var", async () => {
+  test("injects a package's run.port as the PORT env var", async () => {
     const a: AnyServiceConfig = {
       name: 'portfix',
       relativeDir: '.',
@@ -924,13 +937,13 @@ describe('ProcessManager child NODE_ENV inheritance', () => {
   }
 
   for (const value of ['development', 'test', 'production'] as const) {
-    it(`spawns the child with the parent's NODE_ENV=${value}`, async () => {
+    test(`spawns the child with the parent's NODE_ENV=${value}`, async () => {
       process.env.NODE_ENV = value;
       expect(await runAndReadLog()).toContain(`NODE_ENV=[${value}]`);
     }, 10_000);
   }
 
-  it('spawns the child with NODE_ENV unset when the parent has none', async () => {
+  test('spawns the child with NODE_ENV unset when the parent has none', async () => {
     delete process.env.NODE_ENV;
     expect(await runAndReadLog()).toContain('NODE_ENV=[]');
   }, 10_000);
@@ -974,7 +987,7 @@ describe('ProcessManager NODE_ENV from a .env file', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it("uses the package's .env.development NODE_ENV even when the shell leaves it unset", async () => {
+  test("uses the package's .env.development NODE_ENV even when the shell leaves it unset", async () => {
     delete process.env.NODE_ENV; // shell has no NODE_ENV
     const a: AnyServiceConfig = { name: 'nodeenvdotenv', relativeDir: '.', absoluteDir: dir };
     mgr = new ProcessManager(
@@ -1027,7 +1040,7 @@ describe('ProcessManager env-change restart', () => {
     fs.rmSync(d, { recursive: true, force: true });
   });
 
-  it('restarts a running package when its .env changes, picking up the new value', async () => {
+  test('restarts a running package when its .env changes, picking up the new value', async () => {
     const a: AnyServiceConfig = { name: 'wfixture', relativeDir: '.', absoluteDir: d };
     m = new ProcessManager(
       {
@@ -1103,7 +1116,7 @@ describe('ProcessManager logs.formatter', () => {
     };
   }
 
-  it('formats structured lines and passes non-structured output through', async () => {
+  test('formats structured lines and passes non-structured output through', async () => {
     const formatter = (line: string): string => {
       try {
         const o = JSON.parse(line) as { level?: unknown; msg?: unknown };
@@ -1128,7 +1141,7 @@ describe('ProcessManager logs.formatter', () => {
     mgr = undefined;
   }, 10_000);
 
-  it('applies the default formatter when a package has no logs.formatter', async () => {
+  test('applies the default formatter when a package has no logs.formatter', async () => {
     mgr = new ProcessManager(argsWith(), { plain: true }); // no per-package formatter
     mgr.start('fmtfix');
     await wait(1500);
@@ -1142,7 +1155,7 @@ describe('ProcessManager logs.formatter', () => {
     mgr = undefined;
   }, 10_000);
 
-  it('splits a multi-line formatter result (createFormatter) into separate, prefixed lines', async () => {
+  test('splits a multi-line formatter result (createFormatter) into separate, prefixed lines', async () => {
     mgr = new ProcessManager(argsWith(createFormatter()), { plain: true });
     mgr.start('fmtfix');
     await wait(1500);
@@ -1160,7 +1173,7 @@ describe('ProcessManager logs.formatter', () => {
   // Grouping for a formatted entry is known at the split, not inferred from how it looks: a
   // formatter is free to return multi-line output without indenting it, and those lines must
   // still filter and replay as one entry.
-  it('groups every line of one formatted entry, even when the formatter does not indent', async () => {
+  test('groups every line of one formatted entry, even when the formatter does not indent', async () => {
     const formatter = (line: string): string => {
       try {
         const o = JSON.parse(line) as { msg?: unknown };
@@ -1188,7 +1201,7 @@ describe('ProcessManager logs.formatter', () => {
     mgr = undefined;
   }, 10_000);
 
-  it('falls back to the raw line when the formatter throws', async () => {
+  test('falls back to the raw line when the formatter throws', async () => {
     mgr = new ProcessManager(
       argsWith(() => {
         throw new Error('boom');
@@ -1272,12 +1285,12 @@ describe('ProcessManager stderr color through a formatter', () => {
     return line;
   }
 
-  it('reddens a passed-through stderr line under the default formatter', async () => {
+  test('reddens a passed-through stderr line under the default formatter', async () => {
     const line = await bufferedStderrLine();
     expect(line?.text).toBe(chalk.red('plain stderr line'));
   }, 10_000);
 
-  it('reddens a passed-through stderr line under an explicitly configured formatter', async () => {
+  test('reddens a passed-through stderr line under an explicitly configured formatter', async () => {
     // `createFormatter()` is what `logging.formatter(...)` builds — it passes non-JSON
     // through unchanged, so this line is untouched and must be reddened exactly as above.
     const line = await bufferedStderrLine(createFormatter());
@@ -1372,7 +1385,7 @@ describe('ProcessManager healthcheck probing', () => {
     fs.rmSync(hcDir, { recursive: true, force: true });
   });
 
-  it('gives up on a probe once the configured timeout passes', async () => {
+  test('gives up on a probe once the configured timeout passes', async () => {
     server = await startHealthServer({ delay: 400 });
     mgr = makeManager(['api'], { healthchecks: { api: { url: server.url, timeout: 100 } } });
     mgr.startAll();
@@ -1381,7 +1394,7 @@ describe('ProcessManager healthcheck probing', () => {
     expect(mgr.isReady('api')).toBe(false); // ...and abandoned each probe at 100ms
   }, 10_000);
 
-  it('waits out a slow response when the timeout allows it', async () => {
+  test('waits out a slow response when the timeout allows it', async () => {
     server = await startHealthServer({ delay: 400 });
     mgr = makeManager(['api'], { healthchecks: { api: { url: server.url, timeout: 3000 } } });
     mgr.startAll();
@@ -1389,7 +1402,7 @@ describe('ProcessManager healthcheck probing', () => {
     expect(mgr.isReady('api')).toBe(true);
   }, 10_000);
 
-  it('probes a package once per cycle however many packages wait on it', async () => {
+  test('probes a package once per cycle however many packages wait on it', async () => {
     server = await startHealthServer();
     mgr = makeManager(['api', 'web', 'worker'], {
       healthchecks: { api: { url: server.url, timeout: 1500 } },
@@ -1408,7 +1421,7 @@ describe('ProcessManager healthcheck probing', () => {
 
   // Headless (plain) sessions display no readiness, so a package is probed there only while a
   // `waitFor` gate is blocked on it — the branch that replaced the gate's own fetch.
-  it('releases a waitFor gate in a plain (headless) session', async () => {
+  test('releases a waitFor gate in a plain (headless) session', async () => {
     server = await startHealthServer();
     mgr = makeManager(
       ['api', 'web'],
@@ -1426,7 +1439,7 @@ describe('ProcessManager healthcheck probing', () => {
     expect(mgr.getStatus('web')).toBe('running');
   }, 15_000);
 
-  it('re-probes immediately when a probe outruns the 2s floor', async () => {
+  test('re-probes immediately when a probe outruns the 2s floor', async () => {
     server = await startHealthServer({ delay: 2400 });
     mgr = makeManager(['api'], { healthchecks: { api: { url: server.url, timeout: 5000 } } });
     mgr.startAll();
@@ -1439,7 +1452,7 @@ describe('ProcessManager healthcheck probing', () => {
     expect(gap).toBeLessThan(3200);
   }, 15_000);
 
-  it('drops readiness when the package stops', async () => {
+  test('drops readiness when the package stops', async () => {
     server = await startHealthServer();
     mgr = makeManager(['api'], { healthchecks: { api: { url: server.url, timeout: 1500 } } });
     mgr.startAll();
@@ -1481,7 +1494,7 @@ describe('ProcessManager rebuild (clean + build)', () => {
     fs.rmSync(rbDir, { recursive: true, force: true });
   });
 
-  it('runs clean then build (in order) and restarts when there is no build:clean', async () => {
+  test('runs clean then build (in order) and restarts when there is no build:clean', async () => {
     const a: AnyServiceConfig = { name: 'rbfix', relativeDir: '.', absoluteDir: rbDir };
     mgr = new ProcessManager(
       {

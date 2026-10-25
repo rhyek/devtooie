@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, test, vi } from 'vitest';
+import { describe, expect, afterEach, test, vi } from 'vitest';
 import { startCommandServer, type ControlManager } from './command-server.js';
 
 let server: Awaited<ReturnType<typeof startCommandServer>> | null = null;
@@ -24,7 +24,7 @@ function fakeManager(overrides: Partial<ControlManager> = {}): ControlManager {
 }
 
 describe('command-server', () => {
-  it('GET /query/status serves identity with null services/config before attach', async () => {
+  test('GET /query/status serves identity with null services/config before attach', async () => {
     vi.stubEnv('DEVTOOIE_MODE', 'test');
     server = await startCommandServer({
       onQuit: () => {},
@@ -57,7 +57,7 @@ describe('command-server', () => {
         rootDomain: 'example.test',
         rootDomains: ['example.test', 'example.localhost'],
         routes: [
-          { kind: 'package', host: 'web.example.test', package: 'web', port: 3000, hasHealthcheck: true }, // prettier-ignore
+          { kind: 'package', host: 'web.example.test', package: 'web', port: 3000, hasHealthcheck: true }, // oxfmt-ignore
           {
             kind: 'package',
             host: 'example.test',
@@ -86,7 +86,7 @@ describe('command-server', () => {
     });
   });
 
-  it('GET /query/status reflects the manager after attach (rotation-aware logFile)', async () => {
+  test('GET /query/status reflects the manager after attach (rotation-aware logFile)', async () => {
     vi.stubEnv('DEVTOOIE_MODE', '');
     server = await startCommandServer({
       onQuit: () => {},
@@ -118,13 +118,13 @@ describe('command-server', () => {
     });
   });
 
-  it('trailing slash on /query/status still resolves', async () => {
+  test('trailing slash on /query/status still resolves', async () => {
     server = await startCommandServer({ onQuit: () => {}, port: 0, configPath: '/ws/c.ts' });
     const res = await fetch(`http://127.0.0.1:${server.port}/query/status/`);
     expect(res.status).toBe(200);
   });
 
-  it('removed query subpaths return 404', async () => {
+  test('removed query subpaths return 404', async () => {
     server = await startCommandServer({ onQuit: () => {}, port: 0, configPath: '/ws/c.ts' });
     server.attach(fakeManager());
     const base = `http://127.0.0.1:${server.port}`;
@@ -251,7 +251,7 @@ describe('command-server', () => {
     expect(logged[0]).toEqual({ command: 'infra reset', attrs: { infraService: 'db' } });
   });
 
-  it('mutating commands 503 before the manager attaches', async () => {
+  test('mutating commands 503 before the manager attaches', async () => {
     server = await startCommandServer({ onQuit: () => {}, port: 0 });
     const res = await fetch(`http://127.0.0.1:${server.port}/command/service/restart/web`, {
       method: 'POST',
@@ -259,7 +259,7 @@ describe('command-server', () => {
     expect(res.status).toBe(503);
   });
 
-  it('quit works before attach and acks once shutdown releases it', async () => {
+  test('quit works before attach and acks once shutdown releases it', async () => {
     let quit = false;
     // The real shutdown path acks after tearing packages down; a test stub acks inline.
     server = await startCommandServer({
@@ -274,7 +274,7 @@ describe('command-server', () => {
     expect(await res.json()).toEqual({ ok: true });
   });
 
-  it('holds the /command/quit response open until ackQuit (blocking shutdown)', async () => {
+  test('holds the /command/quit response open until ackQuit (blocking shutdown)', async () => {
     // onQuit does NOT ack, so the request must stay pending until we ack explicitly.
     server = await startCommandServer({ onQuit: () => {}, port: 0 });
     const s = server;
@@ -290,7 +290,7 @@ describe('command-server', () => {
     expect(await quitP).toEqual({ ok: true });
   });
 
-  it('logs each mutating command with its variables as attrs', async () => {
+  test('logs each mutating command with its variables as attrs', async () => {
     const logged: { command: string; attrs?: Record<string, unknown> }[] = [];
     server = await startCommandServer({ onQuit: () => server!.ackQuit(), port: 0 });
     server.attach(fakeManager({ logControl: (command, attrs) => logged.push({ command, attrs }) }));
@@ -305,7 +305,7 @@ describe('command-server', () => {
     ]);
   });
 
-  it('setOnQuit swaps which handler /command/quit invokes', async () => {
+  test('setOnQuit swaps which handler /command/quit invokes', async () => {
     let firstCalled = false;
     let secondCalled = false;
     server = await startCommandServer({ onQuit: () => (firstCalled = true), port: 0 });

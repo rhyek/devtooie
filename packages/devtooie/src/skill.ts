@@ -1,6 +1,6 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 
 /**
  * The managed banner, in both the shape we write now and the one we used to.

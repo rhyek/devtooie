@@ -10,14 +10,27 @@
  * type-only form `expectTypeOf<(typeof ctx)['port']>()` for a package with no `port` — the
  * value form would *read* `port` and throw at load time by design.
  */
-import { describe, it, test, expectTypeOf } from 'vitest';
-import { defineConfig, type ConfigContext, type ServiceConfigInput, type ProxyInput, type ResolvedDevReverseProxy, type ResolvedProxy, type UrlEntry } from './config.js'; // prettier-ignore
-import type { ServiceConfig } from './register.js';
-import type { InfraRunResult, InfraServiceInput, ResolvedInfra, ResolvedInfraService } from './infra/types.js'; // prettier-ignore
+import { describe, test, expectTypeOf } from 'vitest';
+import {
+  defineConfig,
+  type ConfigContext,
+  type ServiceConfigInput,
+  type ProxyInput,
+  type ResolvedDevReverseProxy,
+  type ResolvedProxy,
+  type UrlEntry,
+} from './config.js';
 import type { Envs, Mode } from './env.js';
+import type {
+  InfraRunResult,
+  InfraServiceInput,
+  ResolvedInfra,
+  ResolvedInfraService,
+} from './infra/types.js';
+import type { ServiceConfig } from './register.js';
 
 describe('per-package tokens', () => {
-  it('gives each package the config tokens plus its own, and nothing from a sibling', () => {
+  test('gives each package the config tokens plus its own, and nothing from a sibling', () => {
     defineConfig({
       serviceRootDir: 'packages',
       tokens: { domain: 'example.test', proto: 'https' },
@@ -48,7 +61,7 @@ describe('per-package tokens', () => {
     });
   });
 
-  it('exposes each package resolved tokens on the returned config', () => {
+  test('exposes each package resolved tokens on the returned config', () => {
     const config = defineConfig({
       serviceRootDir: 'packages',
       tokens: { domain: 'example.test' },
@@ -63,7 +76,7 @@ describe('per-package tokens', () => {
 });
 
 describe('package names', () => {
-  it('narrows every name reference to the keys of `packages`', () => {
+  test('narrows every name reference to the keys of `packages`', () => {
     type Opts = Parameters<
       typeof defineConfig<
         Record<never, never>,
@@ -83,7 +96,7 @@ describe('package names', () => {
     >().toEqualTypeOf<Names[]>();
   });
 
-  it('types the resolved package name as its own key', () => {
+  test('types the resolved package name as its own key', () => {
     const config = defineConfig({ serviceRootDir: 'packages', services: { api: {}, web: {} } });
     expectTypeOf(config.services.api.name).toEqualTypeOf<'api'>();
     expectTypeOf(config.services.web.name).toEqualTypeOf<'web'>();
@@ -91,7 +104,7 @@ describe('package names', () => {
 });
 
 describe('port', () => {
-  it('hands callbacks a plain `number`, never `number | undefined`', () => {
+  test('hands callbacks a plain `number`, never `number | undefined`', () => {
     defineConfig({
       serviceRootDir: 'packages',
       services: {
@@ -118,7 +131,6 @@ describe('port', () => {
         // no `port` declared: still typed `number` (unverifiable at the type level), and
         // reading it throws at load time — so assert the type without touching the value.
         portless: {
-          // eslint-disable-next-line @typescript-eslint/no-unused-vars -- type-only assertion
           healthcheck: (ctx) => {
             expectTypeOf<(typeof ctx)['port']>().toEqualTypeOf<number>();
             return 'http://localhost/health';
@@ -128,7 +140,7 @@ describe('port', () => {
     });
   });
 
-  it('offers no port to a `port` callback or to workspace-wide urls', () => {
+  test('offers no port to a `port` callback or to workspace-wide urls', () => {
     defineConfig({
       serviceRootDir: 'packages',
       tokens: { domain: 'example.test' },
@@ -152,7 +164,7 @@ describe('port', () => {
     });
   });
 
-  it('keeps the resolved port optional on the config, where it really can be absent', () => {
+  test('keeps the resolved port optional on the config, where it really can be absent', () => {
     const config = defineConfig({
       serviceRootDir: 'packages',
       services: { api: { port: 3001 }, lib: {} },
@@ -163,7 +175,7 @@ describe('port', () => {
 });
 
 describe('envs', () => {
-  it('is a plain string record in every callback', () => {
+  test('is a plain string record in every callback', () => {
     defineConfig({
       serviceRootDir: 'packages',
       services: {
@@ -186,7 +198,7 @@ describe('key narrowing survives a config of nothing but callbacks', () => {
   // `& Record<K, unknown>` channel in `DefineConfigOptions` is what fixes it; each assertion
   // below demands the exact key union, so a regression fails loudly instead of quietly widening.
 
-  it('a single package with only a port callback and a healthcheck callback', () => {
+  test('a single package with only a port callback and a healthcheck callback', () => {
     const c = defineConfig({
       serviceRootDir: 'packages',
       services: {
@@ -199,7 +211,7 @@ describe('key narrowing survives a config of nothing but callbacks', () => {
     expectTypeOf(c.services.api.name).toEqualTypeOf<'api'>();
   });
 
-  it('a urls-only package', () => {
+  test('a urls-only package', () => {
     const c = defineConfig({
       serviceRootDir: 'packages',
       services: { api: { urls: [({ port }) => `http://localhost:${port}`] } },
@@ -207,7 +219,7 @@ describe('key narrowing survives a config of nothing but callbacks', () => {
     expectTypeOf(c.services.api.name).toEqualTypeOf<'api'>();
   });
 
-  it('several packages, every one of them callbacks only', () => {
+  test('several packages, every one of them callbacks only', () => {
     const c = defineConfig({
       serviceRootDir: 'packages',
       services: {
@@ -227,7 +239,7 @@ describe('key narrowing survives a config of nothing but callbacks', () => {
     >().toEqualTypeOf<('api' | 'web')[]>();
   });
 
-  it('still narrows when only some packages are callbacks only', () => {
+  test('still narrows when only some packages are callbacks only', () => {
     const c = defineConfig({
       serviceRootDir: 'packages',
       services: {
@@ -589,7 +601,7 @@ describe('env', () => {
         expectTypeOf(ctx.tokens.tier).toEqualTypeOf<'dev'>();
         expectTypeOf(ctx).not.toHaveProperty('port');
         expectTypeOf(ctx).not.toHaveProperty('subdomain');
-        return { DATA_DIR: `/srv/${ctx.tokens.tier}`, MAYBE: ctx.envs.MAYBE as string | undefined };
+        return { DATA_DIR: `/srv/${ctx.tokens.tier}`, MAYBE: ctx.envs.MAYBE };
       },
       services: { api: { waitFor: ['web'] }, web: { healthcheck: 'http://localhost/health' } },
     });

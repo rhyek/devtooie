@@ -1,17 +1,17 @@
 {
   "js/ts.preferences.importModuleSpecifier": "project-relative",
-  "js/ts.tsdk.path": "node_modules/typescript/lib",
-  "eslint.enable": true,
-  "eslint.format.enable": true,
+  "js/ts.experimental.useTsgo": true,
   "editor.formatOnType": false,
   "editor.formatOnPaste": true,
   "editor.formatOnSave": true,
   "editor.formatOnSaveMode": "file",
-  "eslint.rules.customizations": [{ "rule": "prettier/*", "severity": "off" }],
+  "editor.codeActionsOnSave": {
+    "source.fixAll.oxc": "explicit"
+  },
   "[typescript]": {
-    "editor.defaultFormatter": "dbaeumer.vscode-eslint"
+    "editor.defaultFormatter": "oxc.oxc-vscode"
   },
   "[typescriptreact]": {
-    "editor.defaultFormatter": "dbaeumer.vscode-eslint"
+    "editor.defaultFormatter": "oxc.oxc-vscode"
   }
 }

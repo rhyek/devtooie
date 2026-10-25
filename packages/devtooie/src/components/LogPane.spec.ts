@@ -1,9 +1,9 @@
-import { render } from 'ink';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Writable } from 'node:stream';
 import React from 'react';
+import { render } from 'ink';
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
 import type { AnyServiceConfig } from '../config.js';
 import { stripAnsi } from '../lib.js';

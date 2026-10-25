@@ -1,3 +1,12 @@
+import path from 'node:path';
+import {
+  createElement as h,
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+  type ReactElement,
+} from 'react';
 // Internal tool for choosing `PACKAGE_PALETTE` (`src/colors.ts`): a mock of the run screen —
 // log rows with `[name]` prefixes above the footer — that you page through candidate palettes on.
 //
@@ -14,9 +23,7 @@
 // and `mouse.ts` import nothing, so everything on screen that is *not* the palette still uses the
 // real constants, and clicks are decoded by the real parser.
 import chalk from 'chalk';
-import { Box, Text, render, useApp, useInput, useWindowSize, type DOMElement } from 'ink';
-import path from 'node:path';
-import { createElement as h, useRef, useState, type ReactElement } from 'react';
+import { Box, Text, render, useApp, useInput, useStdin, useWindowSize, type DOMElement } from 'ink';
 import {
   ACCENT_COLOR,
   DANGER_COLOR,
@@ -32,7 +39,7 @@ import {
   WARN_COLOR,
   type Color,
 } from '../src/colors.ts';
-import { MOUSE_DISABLE, MOUSE_ENABLE, isMouseSequence, parseMouseEvents } from '../src/mouse.ts';
+import { MOUSE_DISABLE, MOUSE_ENABLE, createMouseDecoder, type MouseReport } from '../src/mouse.ts';
 
 // ---------------------------------------------------------------------------
 // Palette generation
@@ -429,7 +436,9 @@ function renderLogLine(line: LogLine, palette: Swatch[], nameWidth: number): str
 // ---------------------------------------------------------------------------
 
 type Hint =
-  { key: string; label: string; dim?: boolean } | { separator: true } | { header: string };
+  | { key: string; label: string; dim?: boolean }
+  | { separator: true }
+  | { header: string };
 
 /** Mirrors the `HotkeyHints` component. */
 function hotkeyHints(hints: Hint[]): ReactElement {
@@ -659,22 +668,33 @@ function PalettePreview(): ReactElement {
     }));
   };
 
-  useInput((input, key) => {
-    if (isMouseSequence(input)) {
-      for (const report of parseMouseEvents(input)) {
-        if (report.type !== 'down' || report.button !== 0) {
-          continue;
-        }
-        const slot = swatchNodes.current.findIndex((node) => isHit(node, report.col, report.row));
-        if (slot !== -1) {
-          changePalette((palette) =>
-            palette.map((swatch, i) =>
-              i === slot ? { ...swatch, locked: !swatch.locked } : swatch,
-            ),
-          );
-        }
+  // A click on a swatch toggles its lock. Ink never hands a mouse report to `useInput`, so they're
+  // read from stdin's raw chunks, as the run screen does (see mouse.ts).
+  const onMouseReports = useEffectEvent((reports: MouseReport[]) => {
+    for (const report of reports) {
+      if (report.type !== 'down' || report.button !== 0) {
+        continue;
       }
-    } else if (input === 'q' || (key.ctrl && input === 'c')) {
+      const slot = swatchNodes.current.findIndex((node) => isHit(node, report.col, report.row));
+      if (slot !== -1) {
+        changePalette((palette) =>
+          palette.map((swatch, i) => (i === slot ? { ...swatch, locked: !swatch.locked } : swatch)),
+        );
+      }
+    }
+  });
+  const { stdin } = useStdin();
+  useEffect(() => {
+    const decode = createMouseDecoder();
+    const onData = (chunk: string | Buffer) => onMouseReports(decode(chunk.toString()).reports);
+    stdin.on('data', onData);
+    return () => {
+      stdin.off('data', onData);
+    };
+  }, [stdin]);
+
+  useInput((input, key) => {
+    if (input === 'q' || (key.ctrl && input === 'c')) {
       exit();
     } else if (key.rightArrow) {
       setState((s) =>

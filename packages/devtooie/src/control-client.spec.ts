@@ -1,8 +1,8 @@
-import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import http from 'node:http';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   connectControlClient,
   connectSessionControl,
@@ -92,7 +92,7 @@ describe('createControlClient', () => {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(oldShape));
     });
-    expect(await createControlClient(port).query.status()).toEqual({ ...oldShape, mode: 'development' }); // prettier-ignore
+    expect(await createControlClient(port).query.status()).toEqual({ ...oldShape, mode: 'development' }); // oxfmt-ignore
   });
 
   test('query.status() returns null when nothing is listening', async () => {

@@ -7,10 +7,10 @@
   },
   "scripts": {
     "build": "pnpm --filter devtooie build",
-    "lint": "eslint .",
+    "lint": "oxlint --disable-nested-config && oxfmt --check --disable-nested-config",
     "palette": "pnpm --filter devtooie palette",
     "test:types": "vitest --typecheck.only --run",
-    "format": "prettier --write .",
+    "format": "oxfmt --disable-nested-config",
     "prepare": "simple-git-hooks",
     "test": "vitest run",
     "typecheck": "tsc -p packages/devtooie/tsconfig.json --noEmit"
@@ -19,21 +19,14 @@
     "pre-commit": "pnpm lint-staged"
   },
   "devDependencies": {
-    "@eslint/js": "^10.0.1",
-    "@types/node": "^26.1.0",
-    "@types/react": "^19.2.17",
-    "eslint": "^10.6.0",
-    "eslint-config-prettier": "^10.1.8",
-    "eslint-plugin-prettier": "^5.5.6",
-    "eslint-plugin-react": "^7.37.5",
-    "eslint-plugin-react-hooks": "^7.1.1",
-    "eslint-plugin-unused-imports": "^4.4.1",
-    "globals": "^17.7.0",
-    "lint-staged": "^17.0.8",
-    "prettier": "^3.9.4",
-    "simple-git-hooks": "^2.13.1",
-    "typescript": "^6.0.3",
-    "typescript-eslint": "^8.62.1",
-    "vitest": "^4.1.9"
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "lint-staged": "^17.6.0",
+    "oxfmt": "^0.74.0",
+    "oxlint": "^1.89.0",
+    "oxlint-tsgolint": "^7.0.2005",
+    "simple-git-hooks": "^2.14.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
   }
 }

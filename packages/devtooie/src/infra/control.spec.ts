@@ -27,7 +27,7 @@ function control(services = ['db', 'broken']) {
     cli: FAKE_CLI,
     mode: 'test',
     cwd: process.cwd(),
-    // eslint-disable-next-line no-control-regex -- strips the color the log lines carry
+    // oxlint-disable-next-line no-control-regex -- strips the color the log lines carry
     log: (service, text) => lines.push(`${service}: ${text.replace(/\x1b\[[0-9;]*m/g, '')}`),
   });
   return {

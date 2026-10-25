@@ -1,7 +1,8 @@
-import chalk from 'chalk';
-import { render, type Instance } from 'ink';
 import path from 'node:path';
 import React, { useCallback, useRef, useState } from 'react';
+import chalk from 'chalk';
+import { render, type Instance } from 'ink';
+import type { DevReverseProxyServer } from '../dev-reverse-proxy.js';
 import {
   displayLogFile,
   formatDuration,
@@ -11,11 +12,10 @@ import {
   saveSelection,
 } from '../lib.js';
 import type { RunnerArgs } from '../runners/types.js';
+import { setTitleSequence } from '../terminal-title.js';
 import { BuildProgress, type ControlServer } from './BuildProgress.js';
-import type { DevReverseProxyServer } from '../dev-reverse-proxy.js';
 import { NativeRunner } from './NativeRunner.js';
 import { PackageSelector } from './PackageSelector.js';
-import { setTitleSequence } from '../terminal-title.js';
 
 type Phase =
   | { type: 'package-select' }

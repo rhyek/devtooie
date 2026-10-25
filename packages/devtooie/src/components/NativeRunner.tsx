@@ -1,3 +1,4 @@
+import path from 'node:path';
 import React, {
   useCallback,
   useEffect,
@@ -6,9 +7,9 @@ import React, {
   useReducer,
   useRef,
   useState,
+  useEffectEvent,
   useSyncExternalStore,
 } from 'react';
-import path from 'node:path';
 import {
   Box,
   type DOMElement,
@@ -16,12 +17,10 @@ import {
   measureElement,
   useApp,
   useInput,
+  useStdin,
   useStdout,
   useWindowSize,
 } from 'ink';
-import type { startCommandServer } from '../command-server.js';
-import type { DevReverseProxyServer } from '../dev-reverse-proxy.js';
-import { normalizeUrlEntry, type UrlLine } from '../config.js';
 import {
   ACCENT_COLOR,
   DANGER_COLOR,
@@ -31,20 +30,17 @@ import {
   OK_COLOR,
   WARN_COLOR,
 } from '../colors.js';
+import type { startCommandServer } from '../command-server.js';
+import { normalizeUrlEntry, type UrlLine } from '../config.js';
+import type { DevReverseProxyServer } from '../dev-reverse-proxy.js';
 import { watchGitBranch } from '../git-watch.js';
+import type { InfraStatus } from '../infra/control.js';
 import { displayLogFile, getGitBranch } from '../lib.js';
-import {
-  MOUSE_DISABLE,
-  MOUSE_ENABLE,
-  isLegacyMouseSequence,
-  isMouseSequence,
-  parseMouseEvents,
-} from '../mouse.js';
+import { MOUSE_DISABLE, MOUSE_ENABLE, createMouseDecoder, type MouseChunk } from '../mouse.js';
 import { ProcessManager } from '../process-manager.js';
+import type { RunnerArgs } from '../runners/types.js';
 import { SHUTDOWN_TIMEOUT_MS } from '../shutdown-timing.js';
 import { installShutdownSignals } from '../signals.js';
-import type { RunnerArgs } from '../runners/types.js';
-import type { InfraStatus } from '../infra/control.js';
 import { BottomChrome } from './BottomChrome.js';
 import { verticalTarget, type ItemRect } from './footer-nav.js';
 import { HotkeyHints, type HotkeyHintItem } from './HotkeyHints.js';
@@ -310,7 +306,7 @@ function initialStatus(name: string, healthchecks: RunnerArgs['healthchecks']): 
 function usePackageStatuses(args: RunnerArgs, manager: ProcessManager, servicesVersion: number) {
   // A service added to the session goes into `args.sortedPackages` in place, so the version is
   // what says the list changed.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // oxlint-disable-next-line react-hooks/exhaustive-deps
   const packages = useMemo(() => [...args.sortedPackages], [args.sortedPackages, servicesVersion]);
   const healthchecks = args.healthchecks;
 
@@ -461,7 +457,7 @@ export function NativeRunner({
         displayName: pkg.shortName ?? pkg.name,
         selected: args.selectedSet.has(pkg.name),
       })),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
     [args.sortedPackages, args.selectedSet, servicesVersion],
   );
 
@@ -479,7 +475,7 @@ export function NativeRunner({
       });
     }
     return groups;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [args.sortedPackages, args.selectedSet, servicesVersion]);
 
   const topLevelUrls = useMemo<UrlLine[]>(() => args.topLevelUrls ?? [], [args.topLevelUrls]);
@@ -812,68 +808,13 @@ export function NativeRunner({
       return;
     }
 
-    // A legacy X10 report means the terminal reset our SGR encoding mode behind
-    // our back (see mouse.ts) — re-assert reporting so the *next* event decodes
-    // again. This is the backstop for a reattach that somehow didn't resize us;
-    // the resize effect above normally heals it before any mouse event lands.
-    // The report's coordinate bytes arrive as their own input event, so drop
-    // exactly one event rather than letting them type themselves into the filter
-    // or a custom command — counting characters instead would desync, since X10
-    // encodes each coordinate as `value + 32` and anything past column ~95 is a
-    // byte the UTF-8 decode turns into one or two U+FFFD.
+    // The coordinate bytes of a legacy X10 mouse report, which the stdin listener below saw
+    // arrive: they reach this handler as one input event of their own, and are dropped whole so
+    // they can't type themselves into the filter or a custom command. Counting characters
+    // instead would desync, since X10 encodes each coordinate as `value + 32` and anything past
+    // column ~95 is a byte the UTF-8 decode turns into one or two U+FFFD.
     if (swallowLegacyPayloadRef.current) {
       swallowLegacyPayloadRef.current = false;
-      return;
-    }
-    if (isLegacyMouseSequence(input)) {
-      swallowLegacyPayloadRef.current = true;
-      stdout.write(MOUSE_ENABLE);
-      return;
-    }
-
-    // Mouse: SGR reports arrive as `input`. The wheel scrolls the viewport;
-    // press/drag/release drive the app-managed selection (see mouse.ts /
-    // selection.ts). Handled before the mode branches so a report never leaks
-    // into filter/command text entry.
-    if (isMouseSequence(input)) {
-      for (const report of parseMouseEvents(input)) {
-        if (report.type === 'wheel') {
-          // A selection is content-anchored, so it survives wheel scrolling too.
-          viewport.scrollLines(report.dir === 'up' ? WHEEL_STEP : -WHEEL_STEP);
-        } else {
-          // A press on the footer's ⧉ glyph copies the absolute logfile path.
-          if (report.type === 'down' && logFilePath) {
-            const rect = elementScreenRect(copyIconRef.current);
-            if (rect && rectHit(rect, report.col, report.row)) {
-              flashCopy(path.resolve(logFilePath), 'copied logfile path');
-              continue;
-            }
-          }
-          // A press on the ↓ indicator's "Click here" jumps to the latest logs —
-          // the mouse equivalent of End, for scrolling back without the keyboard.
-          if (report.type === 'down') {
-            const rect = elementScreenRect(jumpToLatestRef.current);
-            if (rect && rectHit(rect, report.col, report.row)) {
-              viewport.scrollToBottom();
-              continue;
-            }
-          }
-          // A press on a toast's `[action]` runs it (and takes that toast down).
-          // Unlike the two above there can be several at once, so this walks the
-          // targets the rendered stack registered rather than a fixed ref.
-          if (report.type === 'down') {
-            const target = [...toasts.targets.current.values()].find((t) => {
-              const rect = elementScreenRect(t.node);
-              return rect && rectHit(rect, report.col, report.row);
-            });
-            if (target) {
-              target.press();
-              continue;
-            }
-          }
-          onMouseSelect(report);
-        }
-      }
       return;
     }
 
@@ -1115,6 +1056,77 @@ export function NativeRunner({
       return;
     }
   });
+
+  // Mouse reports never reach `useInput`: Ink drops terminal sequences that map to no key. They're
+  // read from stdin's `data` events instead, which Ink emits for each chunk as it reads it, before
+  // parsing it into input events — so when a legacy X10 report's coordinate bytes reach
+  // `useInput`, the flag that drops them is already set. The wheel scrolls the viewport;
+  // press/drag/release drive the app-managed selection (see mouse.ts / selection.ts).
+  const onMouseChunk = useEffectEvent(({ reports, legacy }: MouseChunk) => {
+    if (shuttingDown) {
+      return;
+    }
+    // A legacy X10 report means the terminal reset our SGR encoding mode behind our back (see
+    // mouse.ts) — re-assert reporting so the *next* event decodes again. This is the backstop
+    // for a reattach that somehow didn't resize us; the resize effect above normally heals it
+    // before any mouse event lands.
+    if (legacy) {
+      swallowLegacyPayloadRef.current = true;
+      stdout.write(MOUSE_ENABLE);
+    }
+    for (const report of reports) {
+      if (report.type === 'wheel') {
+        // A selection is content-anchored, so it survives wheel scrolling too.
+        viewport.scrollLines(report.dir === 'up' ? WHEEL_STEP : -WHEEL_STEP);
+      } else {
+        // A press on the footer's ⧉ glyph copies the absolute logfile path.
+        if (report.type === 'down' && logFilePath) {
+          const rect = elementScreenRect(copyIconRef.current);
+          if (rect && rectHit(rect, report.col, report.row)) {
+            flashCopy(path.resolve(logFilePath), 'copied logfile path');
+            continue;
+          }
+        }
+        // A press on the ↓ indicator's "Click here" jumps to the latest logs —
+        // the mouse equivalent of End, for scrolling back without the keyboard.
+        if (report.type === 'down') {
+          const rect = elementScreenRect(jumpToLatestRef.current);
+          if (rect && rectHit(rect, report.col, report.row)) {
+            viewport.scrollToBottom();
+            continue;
+          }
+        }
+        // A press on a toast's `[action]` runs it (and takes that toast down).
+        // Unlike the two above there can be several at once, so this walks the
+        // targets the rendered stack registered rather than a fixed ref.
+        if (report.type === 'down') {
+          const target = [...toasts.targets.current.values()].find((t) => {
+            const rect = elementScreenRect(t.node);
+            return rect && rectHit(rect, report.col, report.row);
+          });
+          if (target) {
+            target.press();
+            continue;
+          }
+        }
+        onMouseSelect(report);
+      }
+    }
+  });
+  const { stdin } = useStdin();
+  useEffect(() => {
+    const decode = createMouseDecoder();
+    const onData = (chunk: string | Buffer) => onMouseChunk(decode(chunk.toString()));
+    stdin.on('data', onData);
+    return () => {
+      stdin.off('data', onData);
+      // Ink taking its `readable` listener away while this one was attached set stdin flowing,
+      // with nothing left to read it; leave it paused, as Ink does.
+      if (stdin.listenerCount('readable') === 0) {
+        stdin.pause();
+      }
+    };
+  }, [stdin]);
 
   // While shutting down, collapse to a single non-fullscreen line. Ink clears the
   // terminal when it unmounts a *fullscreen* frame (its shouldClearOnUnmount

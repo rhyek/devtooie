@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { countWrappedRows, measureText, wrapRows } from './wrap-rows.js';
+import { countWrappedRows, expandTabs, measureText, wrapRows } from './wrap-rows.js';
 
 /** A small seeded generator, so a failure names a case that can be replayed. */
 function random(seed: number) {
@@ -129,5 +129,30 @@ describe('measureText', () => {
     expect(measureText('non breaking').cells).toBeNull();
     // An escape sequence that is not a color (an OSC 8 hyperlink).
     expect(measureText('\x1b]8;;http://example.test\x07link\x1b]8;;\x07').cells).toBeNull();
+  });
+});
+
+describe('expandTabs', () => {
+  test('expands each tab to the next stop of 8 columns', () => {
+    expect(expandTabs('a\tb')).toBe('a       b');
+    expect(expandTabs('\tindented')).toBe('        indented');
+    expect(expandTabs('12345678\tx')).toBe('12345678        x');
+    expect(expandTabs('id\tname\tstate')).toBe('id      name    state');
+  });
+
+  test('gives colors no columns', () => {
+    expect(expandTabs('\x1b[31mab\x1b[39m\tc')).toBe('\x1b[31mab\x1b[39m      c');
+  });
+
+  test('leaves a line with no tab as it is', () => {
+    const line = '  key: value  ';
+    expect(expandTabs(line)).toBe(line);
+  });
+
+  test('makes a line wrap at the width it is drawn at', () => {
+    const rows = wrapRows(expandTabs('a\tb\tc\td'), 10, 0);
+    expect(rows.length).toBeGreaterThan(1);
+    expect(rows.every((row) => row.length <= 10)).toBe(true);
+    expect(rows.join('').replaceAll(' ', '')).toBe('abcd');
   });
 });

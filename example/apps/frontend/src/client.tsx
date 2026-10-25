@@ -1,6 +1,6 @@
 import { startTransition } from 'react';
-import { StartClient } from '@tanstack/react-start/client';
 import { hydrateRoot } from 'react-dom/client';
+import { StartClient } from '@tanstack/react-start/client';
 
 // Custom client entry that REPLACES TanStack Start's default one. The default entry wraps the app in
 // <React.StrictMode>, whose dev-only double-invocation of effects/renders is noise here and breaks

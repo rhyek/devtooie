@@ -1,8 +1,8 @@
-import { defineConfig } from 'vite';
 import { devtools } from '@tanstack/devtools-vite';
 import { tanstackStart } from '@tanstack/react-start/plugin/vite';
-import viteReact from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+import viteReact from '@vitejs/plugin-react';
+import { defineConfig } from 'vite';
 
 // TanStack Start builds to a Web `fetch` handler: `vite build` emits `dist/client` (static assets)
 // + `dist/server/server.js` (the `{ fetch }` handler), which `server.ts` runs via srvx on Node,

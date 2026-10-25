@@ -22,6 +22,16 @@ const sliceAnsi: typeof import('slice-ansi').default = (...args) =>
   (loaded.sliceAnsi ??= (require('slice-ansi') as typeof import('slice-ansi')).default)(...args);
 
 /**
+ * Expand each tab in `text` to spaces, up to the next stop of 8 columns from the start of the text
+ * (colors take no columns). Done to a log line as it comes in: the screen measures a tab as no
+ * columns at all, while Ink expands it after measuring, so a row holding one comes out wider
+ * than measured and loses its end. This is the expansion Ink does, so the line looks the same.
+ */
+export function expandTabs(text: string): string {
+  return text.includes('\t') ? wrapAnsi(text, Infinity, { trim: false }) : text;
+}
+
+/**
  * Wrap `text` into rows: the first `width` columns wide, every row after it `indent` columns
  * narrower to leave room for the hanging indent (which the caller applies). Rows are returned
  * without that indent.
