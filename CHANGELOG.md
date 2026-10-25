@@ -26,6 +26,7 @@
 - **Log lines carry a timestamp by default — just the time while everything on screen is from the same day**, the full date once two days are visible together. Set `logs.timestamps: false` to hide them. See [docs/logging.md](docs/logging.md#timestamps).
 - **Each running service uses roughly 75 MB less memory and starts faster**, with no package-manager process kept alongside it. See [How a script is run](README.md#how-a-script-is-run).
 - **`devtooie exec`, `run`, `logs` and the other subcommands start in half the time or less, and a session uses about 70 MB less memory.**
+- **A session in the TUI holds under a third of the memory it did**, and a headless one about a fifth less.
 - **Service log prefixes wear a new default color palette** — a service's own `color` still wins. See [docs/configuration.md](docs/configuration.md).
 
 ### Fixes

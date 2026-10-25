@@ -1,4 +1,5 @@
 import type { RenderAppOptions } from './components/App.js';
+import { debugLog } from './debug-log.js';
 
 /**
  * Mount the Ink TUI (`renderApp`) with React in its **production** build, without
@@ -37,6 +38,11 @@ export async function renderAppInProduction(options: RenderAppOptions = {}): Pro
   process.env.NODE_ENV = 'production';
   try {
     const { renderApp } = await import('./components/App.js');
+    // Before the first frame. Should Ink's modules not be where the port expects them, Ink keeps
+    // its own compositor: the frames are the same, only heavier to draw.
+    const { installLeanInkOutput } = await import('./ink-output.js');
+    const installed = await installLeanInkOutput().catch(() => false);
+    debugLog(`renderAppInProduction: lean Ink compositor installed=${installed}`);
     renderApp(options);
   } finally {
     if (previous === undefined) {

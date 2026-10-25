@@ -505,6 +505,35 @@ expiry timers, click targets) and the renderer.
   stale; a toast the cap evicted keeps its timer until it fires (a harmless no-op
   dismissal), and unmount clears whatever is left.
 
+## Memory: what a frame costs
+
+A frame's cost is set by the screen's size, not by what changed: Ink lays every text node onto a
+grid of cells the size of the screen and turns each row of it back into a string, on every frame.
+How much memory a session holds follows from how much that allocates, because V8 sizes its young
+generation by the allocation rate and keeps what it grew to. Three things keep it small.
+
+- **A lean compositor** (`ink-output.ts`). Ink's own `Output` builds the grid from fresh cell
+  objects and diffs the styles of every pair of neighboring cells, several `Set`s and arrays per
+  cell even when both are blank: about 100 MB a second on a 166×61 screen at a few frames a
+  second. `renderAppInProduction` installs a port of Ink's `applyWriteOperation`,
+  `sliceLineToColumns` and `get` over `Output.prototype` before the first frame. It shares one
+  blank cell across the grid, skips the diff between neighbors whose styles are the same (always
+  empty; proposed upstream as AlCalzone/ansi-tokenize#84), and keeps tokenized lines across frames
+  in a bounded LRU. It installs only over the Ink it was ported from (`INK_VERSION`, which
+  `package.json` pins exactly) and leaves Ink's own in place otherwise.
+- **A capped young generation** (`relaunch.ts`). A session starts itself over with
+  `--max-semi-space-size=2` through `process.execve` (same pid and terminal), since V8 reads the
+  flag only at startup; without it the young generation grows to 128 MB even at the lower
+  allocation rate. The module records the environment and directory the process started with as it
+  loads, before `cli.ts`'s own code changes them, and the root action starts over from those. One-off commands don't: the extra startup (some 40 ms) is a good part of their run.
+- **No frame without a change.** A timer that redraws, like the 500 ms pulse of a starting
+  service's dot, runs only while something on screen animates.
+
+Measured on four services logging (one in 300-line bursts) on a 166×61 screen: two minutes in,
+321 MB before and 80–94 MB after (103 MB ten minutes in, the log buffer still filling); with the
+buffer full (50,000 lines), 432 MB before and 170–180 MB after. A headless session, which draws no
+frames: 67 MB before and 52 MB after, and 250 MB before and 98 MB after with the buffer full.
+
 ## Plain / non-TTY mode
 
 `--headless` (and any non-TTY context — `runners/plain.ts` builds
@@ -558,6 +587,8 @@ machinery is gated on `!plain`. Don't regress this path.
 | Best-effort clipboard (OSC 52 + native command)      | `clipboard.ts`                |
 | Tab/window title + stripping child title escapes     | `terminal-title.ts`           |
 | Buffer, subscription, queries, plain-mode streaming  | `process-manager.ts`          |
+| Ink's frame compositor, ported and installed         | `ink-output.ts`               |
+| Restarting with a capped young generation            | `relaunch.ts`                 |
 
 ## Invariants to preserve
 
@@ -573,6 +604,11 @@ machinery is gated on `!plain`. Don't regress this path.
   rules as of the pinned major; `wrap-rows.spec.ts` and the row-count cases in
   `process-manager.spec.ts` are what catch an upgrade that changes them.
 - The `plain` path stays a plain line printer with none of the Ink rendering.
+- The lean compositor draws every frame byte for byte as Ink's own does; `ink-output.spec.ts`
+  compares the two on thousands of random frames. Ink stays pinned to an exact version, and
+  upgrading it means porting the compositor again from the new `ink/build/output.js`.
+- Nothing redraws on a timer while the screen has nothing to animate: a frame costs the same
+  whether one cell changed or none did.
 - SGR mouse **reporting** (`?1002h`+`?1006h`) is enabled while the run phase is
   mounted and **must be disabled on every exit path** or the terminal is left
   capturing the mouse: the unmount effect cleanup, the explicit write in

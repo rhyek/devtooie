@@ -56,16 +56,30 @@ export function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
-/** `YYYY-MM-DD HH:MM:SS` local-time (24-hour) stamp prefixed to each logged line. */
+/** The last stamp made, and the second it was made in. */
+let lastStamp: { second: number; text: string } | undefined;
+
+/**
+ * `YYYY-MM-DD HH:MM:SS` local-time (24-hour) stamp prefixed to each logged line. Lines logged in
+ * the same second get the same string, so the lines a session keeps share their stamps.
+ */
 export function logTimestamp(): string {
-  const d = new Date();
+  const now = Date.now();
+  const second = Math.floor(now / 1000);
+  if (lastStamp?.second === second) {
+    return lastStamp.text;
+  }
+  const d = new Date(now);
   const yyyy = d.getFullYear();
   const mo = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
   const ss = String(d.getSeconds()).padStart(2, '0');
-  return `${yyyy}-${mo}-${dd} ${hh}:${mm}:${ss}`;
+  // Joined rather than concatenated: one flat string instead of a chain of pieces.
+  const text = [yyyy, '-', mo, '-', dd, ' ', hh, ':', mm, ':', ss].join('');
+  lastStamp = { second, text };
+  return text;
 }
 
 const RUNNER_MANAGED = new Set(['dev', 'build', 'build:clean', 'build-clean', 'clean']);

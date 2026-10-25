@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { execa } from 'execa';
-import { describe, test, expect, beforeAll, afterAll } from 'vitest';
+import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest';
 import type { AnyServiceConfig } from './config.js';
 import { defineConfig } from './config.js';
 import {
@@ -704,6 +704,19 @@ describe('display sort + runner args', () => {
 describe('logTimestamp', () => {
   test('formats as `YYYY-MM-DD HH:MM:SS` (24-hour, with date)', () => {
     expect(logTimestamp()).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  });
+
+  test('stamps the time it is called at, to the second', () => {
+    vi.useFakeTimers({ now: new Date(2026, 0, 2, 3, 4, 5, 900) });
+    try {
+      expect(logTimestamp()).toBe('2026-01-02 03:04:05');
+      vi.setSystemTime(new Date(2026, 0, 2, 3, 4, 6, 0));
+      expect(logTimestamp()).toBe('2026-01-02 03:04:06');
+      vi.setSystemTime(new Date(2026, 0, 2, 3, 4, 6, 999));
+      expect(logTimestamp()).toBe('2026-01-02 03:04:06');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

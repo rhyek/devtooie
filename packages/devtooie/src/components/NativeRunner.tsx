@@ -765,11 +765,25 @@ export function NativeRunner({
     return () => stopWatching();
   }, [manager, shutdown]);
 
-  // Pulse animation for starting/waiting dots (toggles dim every 500ms).
+  // Pulse animation for starting/waiting dots (toggles dim every 500ms). Each toggle redraws the
+  // whole screen, so it runs only while some dot pulses.
+  const pulsing =
+    displayPackages.some((pkg) => {
+      const status = statuses.get(pkg.name);
+      return status === 'starting' || status === 'waiting';
+    }) ||
+    (args.infra?.services ?? []).some(
+      (service) =>
+        INFRA_DOT_STATUS[manager.infra?.status(service.name) ?? 'running'] === 'starting',
+    );
   useEffect(() => {
+    if (!pulsing) {
+      setPulse(true);
+      return;
+    }
     const interval = setInterval(() => setPulse((v) => !v), 500);
     return () => clearInterval(interval);
-  }, []);
+  }, [pulsing]);
 
   // Every filter change goes through here, so the two entry points — `enter` in
   // filter mode, `esc` in normal mode — can't drift on what they announce. A

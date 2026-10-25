@@ -42,6 +42,9 @@ importers:
 
   packages/devtooie:
     dependencies:
+      '@alcalzone/ansi-tokenize':
+        specifier: 0.3.1
+        version: 0.3.1
       '@clack/prompts':
         specifier: ^1.8.1
         version: 1.8.1
@@ -58,7 +61,7 @@ importers:
         specifier: ^10.2.1
         version: 10.2.1
       ink:
-        specifier: ^8.0.0
+        specifier: 8.0.0
         version: 8.0.0(@types/react@19.3.0)(react@19.3.1)
       ink-spinner:
         specifier: ^5.0.0

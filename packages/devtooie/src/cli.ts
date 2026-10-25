@@ -6,6 +6,9 @@ import { captureShellEnv, dropInjectedEnv, resolveMode } from './env.js';
 import { handleShellError } from './errors.js';
 import { passthroughArgs } from './infra/argv.js';
 import { findWorkspaceRoot } from './load-config.js';
+// Records, as it loads, the environment and directory the process started with, which this file
+// changes before a session starts over from them (see relaunch.ts).
+import { relaunchWithCappedYoungGeneration } from './relaunch.js';
 
 // The entry point: Commander wiring only. What a command runs lives under `commands/` and is
 // imported by its action, so a command loads its own code and nothing else's — `--help` and
@@ -290,6 +293,7 @@ program.action(async () => {
     process.exit(1);
   }
 
+  relaunchWithCappedYoungGeneration();
   const { runDefaultAction } = await import('./commands/default.js');
   await runDefaultAction(opts);
 });

@@ -719,3 +719,46 @@ describe('what a command loads', () => {
     expectNotLoaded(packages, ['@dotenvx/dotenvx', '@dotenvx/tooling']);
   });
 });
+
+describe('the devtooie process', () => {
+  /**
+   * Each program a CLI run loaded, in order — one, or two once it starts over: the pid, the
+   * directory it started in and the Node.js flags it ran with, recorded by a preload as it starts.
+   */
+  async function programsOf(args: string[]) {
+    const out = path.join(ws, `process-${String(traces++)}.jsonl`);
+    const hook = path.join(ws, 'process-hook.mjs');
+    fs.writeFileSync(
+      hook,
+      "import fs from 'node:fs';\nfs.appendFileSync(process.env.PROCESS_OUT, JSON.stringify({ pid: process.pid, cwd: process.cwd(), execArgv: process.execArgv }) + '\\n');\n",
+    );
+    const child = execa('node', ['--import', hook, cli, ...args], {
+      cwd: app,
+      env: { PROCESS_OUT: out },
+      reject: false,
+    });
+    const result = await child;
+    const programs = fs
+      .readFileSync(out, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { pid: number; cwd: string; execArgv: string[] });
+    return { result, hook, pid: child.pid, programs };
+  }
+
+  test('a session starts over with a small young generation, as it was started', async () => {
+    // A service that doesn't exist: the session gets as far as checking it, then exits.
+    const { result, hook, pid, programs } = await programsOf(['-s', 'nope']);
+    expect(result.stderr).toContain('Unknown service: nope');
+    expect(programs).toEqual([
+      { pid, cwd: app, execArgv: ['--import', hook] },
+      { pid, cwd: app, execArgv: ['--max-semi-space-size=2', '--import', hook] },
+    ]);
+  });
+
+  test('a one-off command runs as it was started', async () => {
+    const { result, hook, pid, programs } = await programsOf(['exec', '-s', 'app', '--', 'true']);
+    expect(result.exitCode).toBe(0);
+    expect(programs).toEqual([{ pid, cwd: app, execArgv: ['--import', hook] }]);
+  });
+});

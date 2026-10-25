@@ -1918,6 +1918,13 @@ export class ProcessManager implements ControlManager {
       isError,
       groupId,
       rendered: alreadyShown,
+      // Declared now though filled in later, so V8 keeps every field in the line's own object
+      // rather than adding a second one to hold the late ones.
+      rowCountWidth: undefined,
+      rowCountDate: undefined,
+      rowCountTime: undefined,
+      measure: undefined,
+      hangingIndent: undefined,
     });
     if (this.buffer.length > MAX_BUFFER_LINES) {
       this.buffer.splice(0, this.buffer.length - MAX_BUFFER_LINES);
