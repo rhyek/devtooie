@@ -36,6 +36,7 @@
 - **A saved selection naming a service that no longer exists no longer crashes the picker.**
 - **Resizing the terminal redraws the TUI right away, even with a long log.**
 - **A log line with tabs in it shows in full**, rather than losing its last characters.
+- **Every `defineConfig` field, and every field of the config it returns, shows its docs on hover.**
 - **A service's `.env` files override the workspace's for the same variable**, with no `env.override` entry needed. See [Environment loading](README.md#environment-env-loading).
 - **`devtooie run` and the session log show only a script's own output**, without pnpm's command echo around it.
 - **`env.override` holds wherever the variable is used**: a `${VAR}` reference to it in a `.env` file expands to the value that won instead of the shell's, and build scripts get it too.

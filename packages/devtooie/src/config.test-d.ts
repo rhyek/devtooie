@@ -20,6 +20,7 @@ import {
   type ServiceConfigInput,
   type TokenRecord,
   type ProxyInput,
+  type ResolvedServiceConfig,
   type ResolvedDevReverseProxy,
   type ResolvedProxy,
   type UrlEntry,
@@ -683,5 +684,26 @@ describe('the input types and the schemas', () => {
   // schema's shape, and not the other way round.
   test('accept a command only in a form the schema takes', () => {
     expectTypeOf<WidestService['command']>().toExtend<SchemaService['command']>();
+  });
+
+  // The resolved type gives back some fields as the schema resolves them, and the rest settled by
+  // `defineConfig` (callbacks run, `relativeDir` inferred). The first kind must match the schema's
+  // output, and no schema field may be missing from it but `subdomain`, which is only there to be
+  // rejected.
+  test('give back the fields the schema resolves as it resolves them', () => {
+    type FromSchema =
+      | 'selectable'
+      | 'shortName'
+      | 'color'
+      | 'autostart'
+      | 'tsconfig'
+      | 'command'
+      | 'logs';
+    expectTypeOf<Pick<ResolvedServiceConfig<string>, FromSchema>>().toEqualTypeOf<
+      Pick<z.output<typeof ServiceConfigSchema>, FromSchema>
+    >();
+    expectTypeOf<
+      Exclude<keyof z.output<typeof ServiceConfigSchema>, keyof ResolvedServiceConfig<string>>
+    >().toEqualTypeOf<'subdomain'>();
   });
 });

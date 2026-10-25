@@ -2,7 +2,6 @@ import path from 'node:path';
 import { inspect } from 'node:util';
 import type { z } from 'zod';
 import {
-  type CommandSchema,
   type InfraServiceSchema,
   type ServiceConfigSchema,
   type ProxySchema,
@@ -51,8 +50,20 @@ export function normalizeUrlEntry(entry: UrlEntry): UrlLine {
   return links.map((link) => (typeof link === 'string' ? { url: link } : link));
 }
 
-/** A resolved `command`: which script to run and how it behaves on file changes. */
-export type Command = z.infer<typeof CommandSchema>;
+/**
+ * A resolved `command`: which script to run and how it behaves on file changes, or `null` for a
+ * service with no dev process (devtooie never starts it).
+ */
+export type Command = {
+  /** The script or target devtooie runs as the service's dev process. */
+  name: string;
+  /** The script watches files and reloads itself. */
+  watches: boolean;
+  /** The script (re)builds on start. */
+  builds: boolean;
+  /** The script does a *clean* rebuild on start. */
+  cleans: boolean;
+} | null;
 
 /**
  * What every config callback receives. devtooie does no string interpolation — a value that
@@ -625,48 +636,77 @@ export type DefineConfigOptions<
 };
 
 // ---------------------------------------------------------------------------
-// Resolved (runtime) types — normalized `command`, callbacks already invoked. Derived from the
-// schema via `z.infer`; name-referencing fields overlaid with `N`.
+// Resolved (runtime) types — normalized `command`, callbacks already invoked. Declared with their
+// docs like the input types, and for the same reason; config.test-d.ts checks the fields the
+// schema resolves against what it gives back.
 // ---------------------------------------------------------------------------
 
-export type ResolvedServiceConfig<N extends string, T = TokenRecord> = Omit<
-  z.infer<typeof ServiceConfigSchema>,
-  'waitFor' | 'deps' | 'port' | 'urls' | 'healthcheck' | 'tokens' | 'proxy' | 'subdomain'
-> &
-  ServiceNameRefs<N> & {
-    /** The service's name — the key it was declared under. */
-    name: N;
-    /**
-     * How the dev reverse proxy routes to the service: what the config wrote, with
-     * `subdomain: true` already replaced by the service's name.
-     */
-    proxy?: ResolvedProxy;
-    /**
-     * The config's top-level `tokens` with this service's own merged over them, typed from
-     * what was declared. Available on the exported config, so other scripts can read a
-     * service's tokens: `config.services.api.tokens.region`.
-     */
-    tokens: T;
-    /** The service directory relative to `workspaceDir`: as written, or `<serviceRootDir>/<key>`. */
-    relativeDir: string;
-    /** The service directory, absolute (`workspaceDir` + `relativeDir`). */
-    absoluteDir: string;
-    /** The service's dev port, with any `port` callback already resolved. */
-    port?: number;
-    /** Footer links, with every callback already resolved to a string. */
-    urls?: UrlEntry[];
-    /** The readiness probe, normalized from whichever form the config wrote. */
-    healthcheck?: ResolvedHealthcheck;
-    /**
-     * The service's public origin under the dev reverse proxy —
-     * `<urlScheme>://<canonical subdomain>.<rootDomain>[:<port>]`, or the bare
-     * `<urlScheme>://<rootDomain>[:<port>]` for a `defaultService` that declares no subdomain —
-     * or `undefined` when the config has no `devReverseProxy` or the proxy doesn't route this
-     * service (no `port`, or neither a `proxy` nor `defaultService`). Injected into the service's process as `PUBLIC_ORIGIN` (only one in the
-     * service's own `.env` file overrides it), and what the proxy's footer links are built from.
-     */
-    publicOrigin?: string;
-  };
+export type ResolvedServiceConfig<N extends string, T = TokenRecord> = ServiceNameRefs<N> & {
+  /** The service's name — the key it was declared under. */
+  name: N;
+  /** Show in the interactive picker. As the config wrote it: `undefined` means `true`. */
+  selectable?: boolean | undefined;
+  /** Shorter label used in the TUI in place of `name`, when the config sets one. */
+  shortName?: string | undefined;
+  /**
+   * Color for this service's log-prefix label, when the config sets one; without it the label
+   * takes the next palette color.
+   */
+  color?: string | undefined;
+  /**
+   * Start this service during the run phase. As the config wrote it: `undefined` means `true`.
+   */
+  autostart?: boolean | undefined;
+  /**
+   * tsconfig file (relative to the service dir) read for project references, when the config
+   * names one; otherwise `tsconfig.build.json`, then `tsconfig.json`.
+   */
+  tsconfig?: string | undefined;
+  /** The dev process, normalized from whichever form the config wrote. */
+  command: Command;
+  /** Per-service log options, as the config wrote them. */
+  logs?:
+    | {
+        /**
+         * Prefix this service's on-screen log lines with a timestamp; `undefined` inherits the
+         * top-level `logs.timestamps`.
+         */
+        timestamps?: boolean | undefined;
+        /** The config's line formatter; `undefined` means devtooie's default one. */
+        formatter?: ((line: string) => string) | undefined;
+      }
+    | undefined;
+  /**
+   * How the dev reverse proxy routes to the service: what the config wrote, with
+   * `subdomain: true` already replaced by the service's name.
+   */
+  proxy?: ResolvedProxy;
+  /**
+   * The config's top-level `tokens` with this service's own merged over them, typed from
+   * what was declared. Available on the exported config, so other scripts can read a
+   * service's tokens: `config.services.api.tokens.region`.
+   */
+  tokens: T;
+  /** The service directory relative to `workspaceDir`: as written, or `<serviceRootDir>/<key>`. */
+  relativeDir: string;
+  /** The service directory, absolute (`workspaceDir` + `relativeDir`). */
+  absoluteDir: string;
+  /** The service's dev port, with any `port` callback already resolved. */
+  port?: number;
+  /** Footer links, with every callback already resolved to a string. */
+  urls?: UrlEntry[];
+  /** The readiness probe, normalized from whichever form the config wrote. */
+  healthcheck?: ResolvedHealthcheck;
+  /**
+   * The service's public origin under the dev reverse proxy —
+   * `<urlScheme>://<canonical subdomain>.<rootDomain>[:<port>]`, or the bare
+   * `<urlScheme>://<rootDomain>[:<port>]` for a `defaultService` that declares no subdomain —
+   * or `undefined` when the config has no `devReverseProxy` or the proxy doesn't route this
+   * service (no `port`, or neither a `proxy` nor `defaultService`). Injected into the service's process as `PUBLIC_ORIGIN` (only one in the
+   * service's own `.env` file overrides it), and what the proxy's footer links are built from.
+   */
+  publicOrigin?: string;
+};
 
 export type AnyServiceConfig = ResolvedServiceConfig<string>;
 
