@@ -1,179 +1,21 @@
-// Lint config for the repo: eslint's recommended rules, typescript-eslint's recommended set, and
-// eslint-plugin-react's recommended + jsx-runtime sets with the classic hooks rules on `.tsx`,
-// plus the repo's own rules. typescript-eslint's type-checked rules run through oxlint-tsgolint.
+// Lint config for the repo: the shared rules of `@rhyek/oxc-config` (ESLint's and
+// typescript-eslint's recommended sets carried over to oxlint, the bug-catching additions, and the
+// React set for the Ink components), with this repo's own stricter choices below. Each shared rule,
+// and why some are off, is written beside it in `synced-utils/oxc-config/src/oxlint.ts`.
 // Formatting is oxfmt's (oxfmt.config.ts).
-import { type DummyRuleMap, defineConfig } from 'oxlint';
+import { base, ignorePatterns, react } from '@rhyek/oxc-config/oxlint';
+import { defineConfig } from 'oxlint';
 
-const errors = (names: string[]): DummyRuleMap =>
-  Object.fromEntries(names.map((name) => [name, 'error']));
-const off = (names: string[]): DummyRuleMap =>
-  Object.fromEntries(names.map((name) => [name, 'off']));
-
-const ESLINT_RECOMMENDED = errors([
-  'constructor-super',
-  'for-direction',
-  'getter-return',
-  'no-async-promise-executor',
-  'no-case-declarations',
-  'no-class-assign',
-  'no-compare-neg-zero',
-  'no-cond-assign',
-  'no-const-assign',
-  'no-constant-binary-expression',
-  'no-constant-condition',
-  'no-control-regex',
-  'no-debugger',
-  'no-delete-var',
-  'no-dupe-class-members',
-  'no-dupe-else-if',
-  'no-dupe-keys',
-  'no-duplicate-case',
-  'no-empty',
-  'no-empty-character-class',
-  'no-empty-pattern',
-  'no-empty-static-block',
-  'no-ex-assign',
-  'no-extra-boolean-cast',
-  'no-fallthrough',
-  'no-func-assign',
-  'no-global-assign',
-  'no-import-assign',
-  'no-invalid-regexp',
-  'no-irregular-whitespace',
-  'no-loss-of-precision',
-  'no-misleading-character-class',
-  'no-new-native-nonconstructor',
-  'no-nonoctal-decimal-escape',
-  'no-obj-calls',
-  'no-prototype-builtins',
-  'no-redeclare',
-  'no-regex-spaces',
-  'no-self-assign',
-  'no-setter-return',
-  'no-shadow-restricted-names',
-  'no-sparse-arrays',
-  'no-this-before-super',
-  'no-unreachable',
-  'no-unsafe-finally',
-  'no-unsafe-negation',
-  'no-unsafe-optional-chaining',
-  'no-undef',
-  'no-unassigned-vars',
-  'no-unexpected-multiline',
-  'no-unused-labels',
-  'no-unused-private-class-members',
-  'no-useless-backreference',
-  'no-useless-catch',
-  'no-useless-assignment',
-  'no-useless-escape',
-  'no-with',
-  'preserve-caught-error',
-  'require-yield',
-  'use-isnan',
-  'valid-typeof',
-]);
-
-// typescript-eslint's eslint-recommended: drops what the TypeScript compiler already checks.
-const TYPESCRIPT_ESLINT_RECOMMENDED = {
-  ...off([
-    'constructor-super',
-    'getter-return',
-    'no-class-assign',
-    'no-const-assign',
-    'no-dupe-class-members',
-    'no-dupe-keys',
-    'no-func-assign',
-    'no-import-assign',
-    'no-new-native-nonconstructor',
-    'no-obj-calls',
-    'no-redeclare',
-    'no-undef',
-    'no-setter-return',
-    'no-this-before-super',
-    'no-unreachable',
-    'no-unsafe-negation',
-    'no-with',
-  ]),
-  ...errors(['no-var', 'prefer-const', 'prefer-rest-params', 'prefer-spread']),
-};
-
-// typescript-eslint's recommended set, `no-unused-vars` aside (configured below).
-const TYPESCRIPT_RECOMMENDED = errors([
-  'no-array-constructor',
-  'no-unused-expressions',
-  'typescript/ban-ts-comment',
-  'typescript/no-duplicate-enum-values',
-  'typescript/no-empty-object-type',
-  'typescript/no-explicit-any',
-  'typescript/no-extra-non-null-assertion',
-  'typescript/no-misused-new',
-  'typescript/no-namespace',
-  'typescript/no-non-null-asserted-optional-chain',
-  'typescript/no-require-imports',
-  'typescript/no-this-alias',
-  'typescript/no-unnecessary-type-constraint',
-  'typescript/no-unsafe-declaration-merging',
-  'typescript/no-unsafe-function-type',
-  'typescript/no-wrapper-object-types',
-  'typescript/prefer-as-const',
-  'typescript/prefer-namespace-keyword',
-  'typescript/triple-slash-reference',
-]);
-
-// typescript-eslint's recommended-type-checked set, less what recommended already holds. They need
-// type information, which oxlint-tsgolint reads from each file's nearest tsconfig.json.
-const TYPESCRIPT_TYPE_CHECKED = errors([
-  'typescript/await-thenable',
-  'typescript/no-array-delete',
-  'typescript/no-base-to-string',
-  'typescript/no-duplicate-type-constituents',
-  'typescript/no-floating-promises',
-  'typescript/no-for-in-array',
-  'typescript/no-implied-eval',
-  'typescript/no-misused-promises',
-  'typescript/no-redundant-type-constituents',
-  'typescript/no-unnecessary-type-assertion',
+const NO_UNSAFE = [
   'typescript/no-unsafe-argument',
   'typescript/no-unsafe-assignment',
   'typescript/no-unsafe-call',
-  'typescript/no-unsafe-enum-comparison',
   'typescript/no-unsafe-member-access',
   'typescript/no-unsafe-return',
-  'typescript/no-unsafe-unary-minus',
-  'typescript/only-throw-error',
-  'typescript/prefer-promise-reject-errors',
-  'typescript/require-await',
-  'typescript/restrict-plus-operands',
-  'typescript/restrict-template-expressions',
-  'typescript/unbound-method',
-]);
-
-// eslint-plugin-react's recommended set, less what its jsx-runtime set turns off
-// (`react-in-jsx-scope`, `jsx-uses-react`) and `prop-types`, which TypeScript covers.
-const REACT_RECOMMENDED = errors([
-  'react/display-name',
-  'react/jsx-key',
-  'react/jsx-no-comment-textnodes',
-  'react/jsx-no-duplicate-props',
-  'react/jsx-no-target-blank',
-  'react/jsx-no-undef',
-  'react/no-children-prop',
-  'react/no-danger-with-children',
-  'react/no-direct-mutation-state',
-  'react/no-find-dom-node',
-  'react/no-is-mounted',
-  'react/no-render-return-value',
-  'react/no-string-refs',
-  'react/no-unescaped-entities',
-  'react/no-unknown-property',
-  'react/require-render-return',
-]);
+] as const;
 
 export default defineConfig({
-  plugins: ['eslint', 'typescript'],
-  categories: {
-    correctness: 'off',
-  },
+  extends: [base, react],
   // Unused disable directives warn, as in ESLint; with --max-warnings=0 that fails the run.
   options: {
     typeAware: true,
@@ -185,73 +27,51 @@ export default defineConfig({
     builtin: true,
     node: true,
   },
-  // `example/` is a self-contained nested workspace with its own toolchain — the repo's lint and
-  // format must not reach into it (mirrors the `example` exclude in tsconfig.json).
-  ignorePatterns: ['**/dist/**', '**/build/**', '**/node_modules/**', 'example/**'],
+  ignorePatterns: [
+    ...ignorePatterns,
+    // `example/`'s TanStack Start output and generated route tree.
+    '**/.output/**',
+    '**/.tanstack/**',
+    '**/routeTree.gen.ts',
+  ],
   rules: {
-    ...ESLINT_RECOMMENDED,
-    ...TYPESCRIPT_RECOMMENDED,
-    curly: ['error', 'all'],
-    // One rule for unused variables and imports. Its `fix` makes `--fix` delete unused imports;
-    // variables are only reported.
-    'no-unused-vars': [
-      'error',
-      {
-        args: 'all',
-        argsIgnorePattern: '^_',
-        caughtErrors: 'all',
-        caughtErrorsIgnorePattern: '^_',
-        destructuredArrayIgnorePattern: '^_',
-        varsIgnorePattern: '^_',
-        ignoreRestSiblings: true,
-        fix: {
-          imports: 'safe-fix',
-          variables: 'off',
-        },
-      },
-    ],
+    // A CLI: the console is its output.
+    'eslint/no-console': 'off',
+    // Stricter than the shared set: no `any` reaches a call, an assignment or a return.
+    ...Object.fromEntries(NO_UNSAFE.map((name) => [name, 'error'])),
+    'eslint/no-useless-assignment': 'error',
+    // No decorators here, so a type-only import says so.
     'typescript/consistent-type-imports': [
       'error',
       { prefer: 'type-imports', fixStyle: 'inline-type-imports', disallowTypeAnnotations: false },
     ],
-    'typescript/no-import-type-side-effects': 'error',
   },
   overrides: [
+    // `example/`'s frontend is browser React, not Ink.
     {
-      files: ['**/*.ts', '**/*.tsx', '**/*.mts', '**/*.cts'],
-      rules: { ...TYPESCRIPT_ESLINT_RECOMMENDED, ...TYPESCRIPT_TYPE_CHECKED },
+      files: ['example/**/*.tsx'],
+      env: { browser: true },
     },
-    // React (Ink) components live in .tsx files.
+    // `example/`'s backend is on Express 5, which passes an `async` handler's rejection to `next`
+    // itself, so a plain `async` handler is the documented way to write one.
     {
-      files: ['**/*.tsx'],
-      plugins: ['eslint', 'typescript', 'react'],
-      rules: {
-        ...REACT_RECOMMENDED,
-        'react/rules-of-hooks': 'error',
-        'react/exhaustive-deps': 'warn',
-      },
+      files: ['example/apps/backend/**'],
+      rules: { 'oxc/no-async-endpoint-handlers': 'off' },
     },
-    // Specs read parsed JSON and asymmetric matchers, which are `any`, and fake async interfaces
-    // with `async` functions that have nothing to await. A case is `test(...)`, never `it(...)`.
+    // Specs and type tests read parsed JSON and asymmetric matchers, which are `any`.
     {
       files: ['**/*.spec.ts', '**/*.test-d.ts'],
-      plugins: ['eslint', 'typescript', 'vitest'],
       rules: {
-        ...off([
-          'typescript/no-explicit-any',
-          'typescript/no-unsafe-argument',
-          'typescript/no-unsafe-assignment',
-          'typescript/no-unsafe-call',
-          'typescript/no-unsafe-member-access',
-          'typescript/no-unsafe-return',
-          'typescript/require-await',
-        ]),
+        ...Object.fromEntries(NO_UNSAFE.map((name) => [name, 'off'])),
+        'typescript/no-explicit-any': 'off',
+        'typescript/require-await': 'off',
         'vitest/consistent-test-it': ['error', { fn: 'test', withinDescribe: 'test' }],
       },
     },
     {
-      files: ['**/*.d.ts'],
-      rules: { 'no-unused-vars': 'off' },
+      // Type tests assert at compile time, under `vitest --typecheck`.
+      files: ['**/*.test-d.ts'],
+      rules: { 'vitest/expect-expect': 'off' },
     },
   ],
 });

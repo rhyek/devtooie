@@ -1,5 +1,6 @@
 packages:
   - 'packages/*'
+  - 'synced-utils/*'
 # The git hooks are set up by our own `prepare` script, so simple-git-hooks' own
 # postinstall build script is not needed (pnpm's approve-builds gate).
 allowBuilds:

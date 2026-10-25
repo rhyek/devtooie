@@ -488,7 +488,7 @@ describe('websockets', () => {
     const web = await upstream('web');
     const proxy = await proxyFor([route(`web.${ROOT}`, 'web', web.port)]);
     proxy.attach(stubManager({ web: 'stopped' }));
-    await expect(upgrade(proxy.port, `web.${ROOT}`)).rejects.toThrow();
+    await expect(upgrade(proxy.port, `web.${ROOT}`)).rejects.toThrow('socket hang up');
   });
 
   test('closing the proxy destroys an open websocket', async () => {
@@ -502,7 +502,7 @@ describe('websockets', () => {
     const { socket } = await upgrade(proxy.port, `web.${ROOT}`);
     const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
     await proxy.close();
-    await closed;
+    await expect(closed).resolves.toBeUndefined();
   });
 });
 
@@ -676,7 +676,7 @@ describe('infra services', () => {
     const store = await upstream('store');
     const proxy = await proxyFor([serviceRoute(`s3.${ROOT}`, 'store', store.port)]);
     proxy.attach(stubManager());
-    await expect(upgrade(proxy.port, `s3.${ROOT}`)).rejects.toThrow();
+    await expect(upgrade(proxy.port, `s3.${ROOT}`)).rejects.toThrow('socket hang up');
   });
 
   test('forwards once the infra step has finished, keeping the Host and custom headers', async () => {

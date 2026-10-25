@@ -234,6 +234,9 @@ function collapseHeading(group: PackageUrlGroup): PackageUrlGroup & { url?: stri
   return { ...group, urls: url === undefined ? group.urls : [], url };
 }
 
+// One empty default for every render, so the default is a stable reference.
+const NO_URL_GROUPS: PackageUrlGroup[] = [];
+
 /**
  * The right-hand footer column of links: workspace-wide (top-level) links first, then a
  * dim rule, then a bold-headed group per package, then the infra services' groups under an
@@ -244,7 +247,7 @@ function collapseHeading(group: PackageUrlGroup): PackageUrlGroup & { url?: stri
 export function LinksColumn({
   topLevelUrls,
   packageUrlGroups,
-  infraUrlGroups = [],
+  infraUrlGroups = NO_URL_GROUPS,
 }: {
   topLevelUrls: UrlLine[];
   packageUrlGroups: PackageUrlGroup[];

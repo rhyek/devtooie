@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from 'react';
+import { type SubmitEvent, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createFileRoute } from '@tanstack/react-router';
 import { Trash2 } from 'lucide-react';
@@ -9,7 +9,8 @@ import { addTodo, deleteTodo, toggleTodo, todosQueryOptions } from '~/server/tod
 export const Route = createFileRoute('/')({
   // Prime React Query on the server before render so the first client paint already has the list —
   // no fetch-on-mount waterfall. The fetch happens here (loader), not in the component render.
-  loader: ({ context }) => context.queryClient.ensureQueryData(todosQueryOptions()),
+  loader: ({ context }) =>
+    context.queryClient.query({ ...todosQueryOptions(), staleTime: 'static' }),
   component: TodosPage,
 });
 
@@ -39,7 +40,7 @@ function TodosPage() {
     onSuccess: () => invalidate(),
   });
 
-  const onSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const onSubmit = (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
     const value = title.trim();
     if (value) {

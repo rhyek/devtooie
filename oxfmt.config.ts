@@ -1,26 +1,64 @@
+import { ignorePatterns, oxfmtConfig } from '@rhyek/oxc-config/oxfmt';
 import { defineConfig } from 'oxfmt';
 
 export default defineConfig({
-  singleQuote: true,
-  trailingComma: 'all',
-  printWidth: 100,
-  sortPackageJson: false,
-  // Import order: builtin, then react, other packages, then parent, sibling and index imports.
-  // Alphabetical within a group, ignoring case, with no blank line between groups. Side-effect
-  // imports stay where they are.
+  ...oxfmtConfig,
+  // The shared order, with react first after the builtins.
   sortImports: {
-    newlinesBetween: false,
-    ignoreCase: true,
-    order: 'asc',
+    ...oxfmtConfig.sortImports,
     customGroups: [{ groupName: 'react', elementNamePattern: ['react'] }],
-    groups: ['builtin', 'react', 'external', 'internal', 'parent', 'sibling', 'index', 'unknown'],
+    groups: [
+      'builtin',
+      'react',
+      'external',
+      ['internal', 'subpath'],
+      ['parent', 'sibling', 'index', 'style'],
+      'unknown',
+    ],
   },
   ignorePatterns: [
-    // `example/` is a nested workspace with its own oxfmt config — don't format it from here.
-    'example/**',
+    ...ignorePatterns,
+    // `example/`'s TanStack Start output and generated route tree.
+    '**/.output/**',
+    '**/.tanstack/**',
+    '**/routeTree.gen.ts',
     // README, CHANGELOG and the docs are formatted by hand.
     '**/*.md',
-    // managed by pnpm
-    'pnpm-lock.yaml',
+  ],
+  overrides: [
+    {
+      // `example/`'s import order: builtin, react, @tanstack/**, other packages, the workspace's
+      // own @example/** packages, the app's ~/ alias, then parent, sibling and index imports.
+      files: ['example/**'],
+      options: {
+        sortImports: {
+          ...oxfmtConfig.sortImports,
+          internalPattern: [],
+          customGroups: [
+            { groupName: 'react', elementNamePattern: ['react', 'react-dom', 'react-dom/**'] },
+            { groupName: 'tanstack', elementNamePattern: ['@tanstack/**'] },
+            { groupName: 'workspace', elementNamePattern: ['@example/**'] },
+            { groupName: 'alias', elementNamePattern: ['~/**'] },
+          ],
+          groups: [
+            'builtin',
+            'react',
+            'tanstack',
+            'external',
+            'workspace',
+            'alias',
+            'parent',
+            'sibling',
+            'index',
+            'unknown',
+          ],
+        },
+      },
+    },
+    {
+      // shadcn/ui's CLI output, kept as generated so `shadcn diff` stays clean.
+      files: ['example/apps/frontend/src/components/ui/**'],
+      options: { sortImports: false },
+    },
   ],
 });

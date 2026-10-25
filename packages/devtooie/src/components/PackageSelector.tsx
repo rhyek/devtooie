@@ -13,6 +13,9 @@ export type PackageSelectorProps = {
   onSubmit: (selected: string[]) => void;
 };
 
+// One empty default for every render, so the default is a stable reference.
+const NO_SELECTION: string[] = [];
+
 /**
  * Single-column multi-select for choosing which packages to run: up/down move a
  * cursor over the list, space toggles the pkg under the cursor, and a selected
@@ -22,7 +25,7 @@ export type PackageSelectorProps = {
 export function PackageSelector({
   items,
   runtimeDeps,
-  initialSelected = [],
+  initialSelected = NO_SELECTION,
   onSubmit,
 }: PackageSelectorProps) {
   const { exit } = useApp();

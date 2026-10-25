@@ -256,6 +256,8 @@ describe('tokens', () => {
   // The type-level half of the feature. vitest does not typecheck, so these are enforced by
   // `tsc -p packages/devtooie/tsconfig.json` — the `@ts-expect-error`s fail the typecheck if
   // the inference regresses. See docs/configuration.md#callbacks-instead-of-interpolation.
+  // Asserted by tsc, not at run time.
+  // oxlint-disable-next-line vitest/expect-expect
   test('types each package tokens from what it declares', () => {
     defineConfig({
       serviceRootDir: 'packages',
@@ -282,6 +284,8 @@ describe('tokens', () => {
   // not make its siblings' tokens fall back to a permissive record. `P` is constrained to
   // `Record<K, unknown>` (not `Record<K, TokenRecord>`) precisely so the inference survives —
   // TypeScript replaces an inference that fails its constraint with the constraint itself.
+  // Asserted by tsc, not at run time.
+  // oxlint-disable-next-line vitest/expect-expect
   test('keeps sibling tokens exact when a package omits tokens entirely', () => {
     defineConfig({
       serviceRootDir: 'packages',
@@ -498,8 +502,7 @@ describe('url/healthcheck callbacks', () => {
 describe('healthcheck', () => {
   const health = (api: RootedOpts['services'][string]) =>
     Object.values(
-      // tsc rejects `{ api }` without the cast; the type-aware linter finds no need for it.
-      // oxlint-disable-next-line typescript/no-unnecessary-type-assertion
+      // tsc rejects `{ api }` without the cast.
       defineConfig({ serviceRootDir: 'packages', services: { api } as RootedOpts['services'] })
         .services,
     )[0]!.healthcheck;
@@ -715,17 +718,21 @@ describe('command', () => {
   });
 
   test('throws at runtime for watches:true + builds:false', () => {
-    expect(() => cmd({ command: ['start', { watches: true, builds: false }] })).toThrow();
+    expect(() => cmd({ command: ['start', { watches: true, builds: false }] })).toThrow(
+      'a command that watches or cleans must also build',
+    );
   });
 
   test('throws at runtime for builds:false without watches:false', () => {
-    expect(() => cmd({ command: ['start', { builds: false }] })).toThrow();
+    expect(() => cmd({ command: ['start', { builds: false }] })).toThrow(
+      'a command that watches or cleans must also build',
+    );
   });
 
   test('throws at runtime for cleans:true + builds:false (cleaning implies building)', () => {
     expect(() =>
       cmd({ command: ['start', { watches: false, builds: false, cleans: true }] }),
-    ).toThrow();
+    ).toThrow('a command that watches or cleans must also build');
   });
 
   test('getDevScript returns the configured command name, else dev', () => {
@@ -740,6 +747,8 @@ describe('command', () => {
     expect(getDevScript(packages[2]!)).toBe('dev');
   });
 
+  // Asserted by tsc, not at run time.
+  // oxlint-disable-next-line vitest/expect-expect
   test('rejects the illegal combos at the type level', () => {
     // @ts-expect-error watches:true requires builds:true
     const a = (): unknown => defineConfig({ serviceRootDir: 'packages', services: { a: {   command: ['x', { watches: true, builds: false }]  } } }); // oxfmt-ignore

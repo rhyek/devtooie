@@ -147,7 +147,7 @@ describe('preflightTakeover', () => {
       deps: deps({ askToQuit: async () => false }),
     });
     expect(result.ok).toBe(false);
-    expect(result.ok === false && result.message).toMatch(/left the running/i);
+    expect(!result.ok && result.message).toMatch(/left the running/i);
   });
 
   test('names --kill-others and warns agents off it when there is no terminal', async () => {
@@ -157,7 +157,7 @@ describe('preflightTakeover', () => {
       deps: deps({ isInteractive: () => false, selfStartedByAgent: () => true }),
     });
     expect(result.ok).toBe(false);
-    const message = result.ok === false ? result.message : '';
+    const message = !result.ok ? result.message : '';
     expect(message).toContain('--kill-others');
     expect(message).toContain('4242');
     expect(message).toMatch(/ask the user/i);
@@ -222,7 +222,7 @@ describe('preflightTakeover', () => {
         isInteractive: () => false,
       }),
     });
-    expect(result.ok === false && result.message).toMatch(/Another test devtooie session is already running/); // oxfmt-ignore
+    expect(!result.ok && result.message).toMatch(/Another test devtooie session is already running/); // oxfmt-ignore
   });
 
   test('skips the question entirely with --kill-others', async () => {

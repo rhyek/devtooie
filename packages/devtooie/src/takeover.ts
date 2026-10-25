@@ -95,7 +95,7 @@ const defaultDeps: PreflightDeps = {
       message: `Another ${status.mode} devtooie session is running for this project (pid ${status.pid}). Quit it and start this one?`,
       initialValue: true,
     });
-    return !isCancel(answer) && answer === true;
+    return !isCancel(answer) && answer;
   },
   isInteractive: () => Boolean(process.stdin.isTTY && process.stdout.isTTY),
   selfStartedByAgent: startedByAgent,

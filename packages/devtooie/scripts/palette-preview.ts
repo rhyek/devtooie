@@ -658,6 +658,8 @@ function PalettePreview(): ReactElement {
   const { exit } = useApp();
   const { rows } = useWindowSize();
   const [state, setState] = useState(lastState);
+  // Kept for the summary printed after the screen closes (`lastState`, above).
+  // oxlint-disable-next-line react/globals
   lastState = state;
   const swatchNodes = useRef<(DOMElement | null)[]>([]);
   /** Apply `change` to the palette on screen, leaving the rest of the history as it is. */

@@ -151,7 +151,7 @@ export async function startCommandServer(opts: {
       // caller falls back to polling this pid.
       res.setHeader('Connection', 'close');
       pendingQuits.push(res);
-      return void onQuit();
+      return onQuit();
     }
     if (pathname === '/') {
       return send(res, 200, { ok: true, pid: process.pid, attached: Boolean(manager) });

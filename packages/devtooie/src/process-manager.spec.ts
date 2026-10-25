@@ -1736,7 +1736,7 @@ describe('ProcessManager package script execution', () => {
     expect(() => process.kill(child, 0)).not.toThrow();
 
     await m.stop('scriptfix');
-    expect(() => process.kill(child, 0)).toThrow();
+    expect(() => process.kill(child, 0)).toThrow('ESRCH');
   }, 15_000);
 
   test('a one-off command reports success', async () => {

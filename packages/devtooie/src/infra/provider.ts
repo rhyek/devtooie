@@ -436,7 +436,7 @@ export abstract class InfraProvider {
         }
         break;
       }
-      for (const service of [...pending]) {
+      for (const service of pending) {
         const reading = readings.get(service) ?? { state: 'pending', detail: 'creating' };
         if (reading.state === 'ready') {
           pending.delete(service);

@@ -259,7 +259,9 @@ describe('runScript', () => {
   });
 
   test('rejects when a signal kills the script', async () => {
-    await expect(runScript(pkg({ absoluteDir: app }), 'kill', 'pipe')).rejects.toThrow();
+    await expect(runScript(pkg({ absoluteDir: app }), 'kill', 'pipe')).rejects.toThrow(
+      'Command was killed with SIGKILL',
+    );
   });
 });
 

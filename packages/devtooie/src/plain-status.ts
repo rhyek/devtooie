@@ -11,9 +11,7 @@ export function createPlainStatusReporter(): { update(msg: string): void; done()
     update(msg: string) {
       current = msg;
       if (isTty) {
-        if (!timer) {
-          timer = setInterval(render, 300);
-        }
+        timer ??= setInterval(render, 300);
       } else {
         process.stdout.write(`${msg}\n`);
       }

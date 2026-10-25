@@ -5,16 +5,11 @@
   "packageManager": "pnpm@12.15.0",
   "description": "Example monorepo showcasing devtooie: an Express + Postgres backend and a TanStack Start frontend, run together with one command.",
   "scripts": {
-    "dev": "devtooie",
-    "lint": "oxlint && oxfmt --check",
-    "format": "oxfmt"
+    "dev": "devtooie"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
     "devtooie": "link:../packages/devtooie",
-    "oxfmt": "^0.74.0",
-    "oxlint": "^1.89.0",
-    "oxlint-tsgolint": "^7.0.2005",
     "typescript": "^7.0.2"
   }
 }

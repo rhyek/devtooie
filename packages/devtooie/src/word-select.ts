@@ -24,13 +24,13 @@ const WORD = /[\p{L}\p{M}\p{N}_]/u;
  * hold it together — which is why a URI is matched whole up front, before these
  * rules ever run.
  */
-const JOINER = new Set([...'-./~:@#%+']);
+const JOINER = new Set('-./~:@#%+');
 
 /**
  * Joiners that are meaningless at the end of a selection and get trimmed. `/` is
  * deliberately absent: a trailing slash is part of what a directory *is* (`dist/`).
  */
-const TRIM = new Set([...'-.~:@#%+']);
+const TRIM = new Set('-.~:@#%+');
 
 /**
  * A URI with an explicit scheme, taken as one unit no matter which part is clicked.
@@ -44,7 +44,7 @@ const URI = /[a-zA-Z][a-zA-Z0-9+.-]*:\/\/\S+/gu;
  * pairs that a URI in prose collects but doesn't own. `/` stays — `http://host/`
  * is a real URI, and the slash is part of it.
  */
-const URI_TRIM = new Set([...'.,;:!?&=\'")]}']);
+const URI_TRIM = new Set('.,;:!?&=\'")]}');
 
 function isWordChar(ch: string): boolean {
   return WORD.test(ch) || JOINER.has(ch);

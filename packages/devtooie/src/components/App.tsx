@@ -40,6 +40,9 @@ export type AppProps = {
   logFileRef?: LogFileRef;
 };
 
+// One empty default for every render, so the default is a stable reference.
+const NO_PACKAGES: string[] = [];
+
 /**
  * Root component: a phase state machine (`package-select` -> `building` -> `running`)
  * that owns the one thing shared across those phases — the control server, received
@@ -48,7 +51,12 @@ export type AppProps = {
  * only when it actually came from the selector (a `--service`/`--last-answers` run
  * never touches it).
  */
-export function App({ packages = [], lastAnswers = false, logFile, logFileRef }: AppProps) {
+export function App({
+  packages = NO_PACKAGES,
+  lastAnswers = false,
+  logFile,
+  logFileRef,
+}: AppProps) {
   // Computed once: the registered-package catalog is fixed for the process's lifetime, and a
   // stable identity here means these props are never a reason for PackageSelector to redo
   // its own memoized derivations.

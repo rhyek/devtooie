@@ -66,7 +66,7 @@ export const deleteTodo = createServerFn({ method: 'POST' })
     }
   });
 
-// Shared query options so the loader (ensureQueryData) and the component (useQuery) agree on the key.
+// Shared query options so the loader (queryClient.query) and the component (useQuery) agree on the key.
 export const todosQueryOptions = () =>
   queryOptions({
     queryKey: ['todos'] as const,
