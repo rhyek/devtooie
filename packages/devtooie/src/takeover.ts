@@ -1,6 +1,7 @@
 import { startedByAgent } from './agent-detection.js';
-import { connectControlClient, createControlClient, type SessionStatus } from './control-client.js';
+import { createControlClient, type SessionStatus } from './control-client.js';
 import { currentMode } from './env.js';
+import { findSession, type FoundSession, unresponsiveMessage } from './find-session.js';
 
 /**
  * Deciding whether a starting session may quit the one already running for this project in the
@@ -71,9 +72,20 @@ export interface PreflightOptions {
   deps?: Partial<PreflightDeps>;
 }
 
+/** A session recorded as running that doesn't answer as itself; see `findSession`. */
+export type UnresponsiveSession = Extract<FoundSession, { kind: 'unresponsive' }>;
+
 export interface PreflightDeps {
-  /** Reads the running instance's `/query/status`, or null when no instance answers. */
-  queryRunning(cwd: string, apiPortOverride: number | undefined): Promise<SessionStatus | null>;
+  /**
+   * Reads the running instance's `/query/status`; null when no instance is running, and the
+   * unresponsive session when one is recorded alive but doesn't answer as itself.
+   */
+  queryRunning(
+    cwd: string,
+    apiPortOverride: number | undefined,
+  ): Promise<SessionStatus | UnresponsiveSession | null>;
+  /** Kills an unresponsive session's process tree, `--kill-others` having said to. */
+  stopUnresponsive(session: UnresponsiveSession): Promise<void>;
   /** Asks the person at the keyboard; `false` covers "no" and "cancelled". */
   askToQuit(status: SessionStatus): Promise<boolean>;
   isInteractive(): boolean;
@@ -82,11 +94,16 @@ export interface PreflightDeps {
 
 const defaultDeps: PreflightDeps = {
   async queryRunning(cwd, apiPortOverride) {
-    const client =
-      apiPortOverride === undefined
-        ? await connectControlClient(cwd)
-        : createControlClient(apiPortOverride);
-    return client ? client.query.status() : null;
+    if (apiPortOverride !== undefined) {
+      return createControlClient(apiPortOverride).query.status();
+    }
+    const found = await findSession({ workspaceDir: cwd });
+    return found.kind === 'running' ? found.status : found.kind === 'unresponsive' ? found : null;
+  },
+  async stopUnresponsive(session) {
+    // Loaded here: only a takeover of a hung session needs it.
+    const { killTrees } = await import('./dev-session.js');
+    await killTrees([session.pid]);
   },
   async askToQuit(status) {
     // Loaded here, not up top: most sessions start with no other one to ask about.
@@ -112,6 +129,17 @@ export async function preflightTakeover(opts: PreflightOptions): Promise<Preflig
   const mode = opts.mode ?? currentMode();
 
   const running = await deps.queryRunning(cwd, opts.apiPortOverride);
+  // Recorded alive in this workspace, but not answering as itself: nothing can ask it to quit.
+  if (running && 'kind' in running) {
+    if (!opts.killOthers) {
+      return {
+        ok: false,
+        message: `${unresponsiveMessage(running, mode)}. Stop it, or re-run with --kill-others to kill it and take over.`,
+      };
+    }
+    await deps.stopUnresponsive(running);
+    return { ok: true };
+  }
   // Nothing running, something running for a *different* config, or this project's session in
   // another mode — all of which the handoff protocol leaves alone anyway (it relocates rather
   // than quitting them). A pinned `apiPort` held by another mode's session fails there instead.

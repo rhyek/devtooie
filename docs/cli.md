@@ -25,9 +25,6 @@ Common options:
 | `-m, --mode <name>`        | Environment mode selecting the `.env.<mode>` files to load. Defaults to `development`. Also accepted after a subcommand (`devtooie exec --mode test`). See [Environment loading](../README.md#environment-env-loading).                    |
 | `--ui`                     | Interactive terminal UI (default). Mutually exclusive with `--headless`.                                                                                                                                                                   |
 | `--headless`               | No TUI — stream logs to stdout with colored name prefixes. Requires `-s` or `--last-answers`.                                                                                                                                              |
-| `--detach`                 | With `--headless`: start the session in the background and return, reusing the one already running for this config in this mode. See [Running in the background](#running-in-the-background---detach).                                     |
-| `--wait`                   | With `--detach`: return only once the infra and every service it asked for are healthy.                                                                                                                                                    |
-| `--wait-timeout <seconds>` | With `--wait`: how long to wait before failing. Defaults to `300`.                                                                                                                                                                         |
 | `--last-answers`           | Skip selection; reuse the last saved selection. If a saved name is no longer a service (a renamed key), the picker opens instead with the surviving names preselected; `--headless`/`--build` refuse with a message naming the stale ones. |
 | `--build`                  | Build the selected services with their `build` scripts, then exit (no run phase).                                                                                                                                                          |
 | `--rebuild`                | Like `--build`, but first clears `dist/` for every build target.                                                                                                                                                                           |
@@ -74,90 +71,18 @@ shell where it guesses wrong.
 A session's own answer is published as `startedByAgent` on
 [`GET /query/status`](./control-api.md).
 
-`--detach` never takes a session over: it [reuses](#running-in-the-background---detach) one
-that answers, and refuses one that doesn't.
+[`startStack()`](#a-test-suites-stack-startstack) never takes a session over unasked: with one of
+its mode running, it fails, unless its `killOthers` option says to quit that one.
 
-## Running in the background (`--detach`)
+A session recorded as running whose process is alive but whose control API doesn't answer as that
+session looks hung: starting another in its mode is refused, and `--kill-others` kills it instead
+of asking it to quit. See [Finding a session](./control-api.md#finding-a-session).
 
-`--headless --detach` starts a session in the background and returns. The session runs what any
-session start does — the selected services plus their `deps.runtime`, with the mode's infra —
-and runs on after the command exits, until something quits it. `--wait` holds the command until
-the stack is healthy:
+## A test suite's stack: `startStack()`
 
-```bash
-devtooie --headless -s web --detach
-devtooie --mode test --headless -s web --detach --wait
-devtooie --mode test --headless -s web --detach --wait --wait-timeout 60
-```
-
-**A running session is reused.** If a session of this config and mode is running and answering,
-no second one starts: devtooie starts into that session whatever of the selection (the services
-and their runtime deps) it lacks or has stopped. That works for a TUI session too — the service
-appears in its footer. A session recorded as running whose process is alive but whose control API
-doesn't answer is refused, never taken over. `--detach` can't be combined with `--build`,
-`--rebuild`, `--phase build` or `--kill-others`.
-
-**Output.** Progress lines go to stderr. stdout gets exactly one JSON line:
-
-```json
-{"ok":true,"session":"started","pid":1234,"port":14019,"mode":"development","logFile":"/abs/…/node_modules/.devtooie/logs/development/1792522023353.log","services":["web","api"]}
-```
-
-| Field         | Value                                                                                                                  |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `ok`          | `true` on success. On failure `false`, with an `error` saying why, and the command exits `1`.                          |
-| `session`     | `started` when this call started the session; `reused` when one was already running.                                   |
-| `pid`, `port` | The session's process and its [control API](./control-api.md) port.                                                    |
-| `mode`        | The session's mode.                                                                                                    |
-| `logFile`     | The session's log.                                                                                                     |
-| `services`    | What this call started: everything the session runs, for a `started` one; what it lacked or had stopped, for `reused`. |
-
-A failure before there is a session to report on prints just `{"ok":false,"error":"…"}`.
-
-**`--wait`** returns only once the infra and every service it asked for are healthy. A service is
-healthy when it's running and passing its [`healthcheck`](./configuration.md#readiness-probing);
-one with no healthcheck is healthy while it runs. The infra counts once every infra service is
-`running`. `--wait` fails — `"ok":false`, exit `1` — when the session exits while starting, when a
-wanted service stops (crashes) while starting, or when `--wait-timeout` passes (default `300`
-seconds). The error points at the log, or for a timeout lists what isn't healthy:
-`not healthy after 300s: worker`.
-
-**The session's own output** from before its log starts, and from any crash, goes to
-`<logDir>/detached.out`; `logDir` is `node_modules/.devtooie/logs/<mode>/` unless `--log-dir` is
-given. None of it reaches the command's stdout, so a caller that reads stdout to the end isn't
-kept waiting. A session that is still running but hasn't answered on its control API by
-the `--wait-timeout` (with or without `--wait`) is stopped, and the command fails.
-
-**Stopping it.** Quit a session you started with `POST /command/quit` on its `port` — only when
-`session` is `started`. Reuse leaves everything as it found it, so a caller that wants to clean
-up a `reused` session stops just the `services` it started, each with
-`POST /command/service/stop/<name>` (see [Control API](./control-api.md)).
-
-The typical caller is an e2e suite getting its stack:
-
-```bash
-out=$(devtooie --mode test --headless -s web --detach --wait)
-ok=$?
-if [ "$ok" = 0 ]; then pnpm test:e2e; ok=$?; else echo "$out" >&2; fi
-port=$(echo "$out" | jq .port)
-session=$(echo "$out" | jq -r .session)
-if [ "$session" = started ]; then
-  curl -s -X POST "http://127.0.0.1:$port/command/quit"
-elif [ "$session" = reused ]; then
-  for s in $(echo "$out" | jq -r '.services[]'); do
-    curl -s -X POST "http://127.0.0.1:$port/command/service/stop/$s"
-  done
-fi
-exit "$ok"
-```
-
-When `--wait` fails, the session it started keeps running, and the `"ok":false` line still
-carries its `session`, `port` and `services` — so tear down on failure too.
-
-### From a test suite's setup: `startStack()`
-
-`startStack()`, exported from `devtooie`, is `--headless --detach --wait` as a function, for a
-suite's global setup under any test runner:
+`startStack()`, exported from `devtooie`, brings up a `--headless` session for a suite's global
+setup under any test runner, and resolves once the infra and every service it asked for are
+healthy:
 
 ```ts
 import { startStack } from 'devtooie';
@@ -166,33 +91,51 @@ const stack = await startStack({ mode: 'test', services: ['web'] });
 try {
   // stack.origins.web, stack.rootDomain, stack.control.query.status(), …
 } finally {
-  await stack.stop(); // quits the session if this call started it; a reused one is left running
+  await stack.stop();
 }
 ```
 
-| Option        | Value                                                                                                  |
-| ------------- | ------------------------------------------------------------------------------------------------------ |
-| `services`    | The services to bring up, as `-s` names them. Their runtime deps and the mode's infra come too.        |
-| `mode`        | As `--mode` takes it. Unset, the mode resolves as it does for the CLI.                                 |
-| `cwd`         | Where the workspace is found from, as the CLI finds it. Defaults to `process.cwd()`.                   |
-| `waitTimeout` | As `--wait-timeout` takes it, in seconds. Defaults to `300`.                                           |
-| `logDir`      | As `--log-dir` takes it.                                                                               |
-| `env`         | The environment the session starts with. Defaults to `stackEnvironment()`; given, it is used as it is. |
+**The session is the calling process's child, and ends with it**, however that process ends: a
+`stop()`, a test runner that exits or is cut off, a `kill -9`. A session started from a shell has
+no such parent, and runs until it is told to stop.
+
+**A session of the mode already running fails the call**, naming its pid. Pass `killOthers: true`
+to quit it, as [`--kill-others`](#taking-over-a-running-session) does, and start this one in its
+place.
+
+| Option        | Value                                                                                                                         |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `services`    | The services to bring up, as `-s` names them. Their runtime deps and the mode's infra come too.                               |
+| `mode`        | As `--mode` takes it. Unset, the mode resolves as it does for the CLI.                                                        |
+| `cwd`         | Where the workspace is found from, as the CLI finds it. Defaults to `process.cwd()`.                                         |
+| `waitTimeout` | How long to wait for everything to be healthy, in seconds. Defaults to `300`.                                                 |
+| `logDir`      | As `--log-dir` takes it.                                                                                                      |
+| `killOthers`  | Quit a session of the mode already running (or kill one that looks hung), and start this one in its place. Defaults to `false`. |
+| `env`         | The environment the session starts with. Defaults to `stackEnvironment()`; given, it is used as it is.                        |
 
 It resolves with:
 
 | Field             | Value                                                                                                                                                                      |
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `session`         | `started` or `reused`, as on the JSON line.                                                                                                                                |
+| `session`         | `started`.                                                                                                                                                                 |
 | `pid`, `port`     | The session's process and its control-API port.                                                                                                                           |
 | `mode`, `logFile` | The session's mode and log.                                                                                                                                                |
-| `services`        | What this call started, as on the JSON line. `stop()` leaves those of a reused session running; stop them with `control.command.service.stop()` to undo them too.          |
+| `services`        | What the session runs: the services asked for, and their runtime deps.                                                                                                    |
 | `origins`         | Every configured service's origin, selected or not: its `publicOrigin` under the [dev reverse proxy](./dev-reverse-proxy.md), `http://localhost:<port>` otherwise. A service with no `port` has none. |
 | `rootDomain`      | The dev reverse proxy's canonical root domain, or `null` without one.                                                                                                      |
-| `control`         | A [control API](./control-api.md) client bound to the session: `query.status()`, `command.service.*`, `command.infra.*`, `command.quit()`.                                  |
-| `stop()`          | Quits the session if this call started it, and does nothing for a reused one.                                                                                             |
+| `control`         | A [control API](./control-api.md) client bound to the session: `query.status()`, `events()`, `command.service.*`, `command.infra.*`, `command.quit()`.                       |
+| `stop()`          | Quits the session, resolving once it has exited.                                                                                                                           |
 
-On failure it throws devtooie's error, with the log's path, after quitting a session it started.
+**Healthy** is running and passing its [`healthcheck`](./configuration.md#readiness-probing); a
+service with no healthcheck is healthy while it runs, and must stay up for a second before the
+stack counts as up. The infra counts once every infra service is `running`. The call follows the
+session's [`GET /events`](./control-api.md#get-events) to know.
+
+**On failure it throws** devtooie's error, with the log's path, after quitting the session: when
+the session exits while starting, when a selected service stops (crashes) while starting, when its
+events stop arriving, or when `waitTimeout` passes, listing what isn't healthy:
+`not healthy after 300s: worker`. Before its log starts, the session's own output is quoted in the
+error.
 
 `stackEnvironment(env = process.env)` is `env` without what a package manager script and a test
 runner add to it, which would otherwise reach every service: `npm_*`, `INIT_CWD`, `NODE`,
@@ -335,10 +278,12 @@ without disturbing it, in order of precedence:
    (`GET /query/status` → `logFile`), so it always follows the **current** file even across
    in-session log rotation (the `t` hotkey).
 2. Otherwise, the `logFile` recorded in `node_modules/.devtooie/running.<mode>.json` — the last logfile
-   the session was writing (kept current across rotation) — if it still exists. This is more
-   precise than scanning the directory, where a stray `devtooie exec` log could be newer.
+   the session was writing (kept current across rotation) — if it still exists. A record is there
+   while its session runs, and after one that was killed outright. This is more precise than
+   scanning the directory, where a stray `devtooie exec` log could be newer.
 3. Failing that, the **newest** `*.log` in the session's log directory (`logDir` from
-   `running.<mode>.json`, else `node_modules/.devtooie/logs/<mode>/`).
+   `running.<mode>.json`, else `node_modules/.devtooie/logs/<mode>/`). The logs of a session that
+   has ended and wrote them elsewhere, with `--log-dir`, are in that directory.
 
 `devtooie logs` is **strictly read-only**: it never starts, hands off, or shuts down a session.
 Printing uses `cat`; `-f/--follow` uses `tail -n +1 -f` (native, so it prints the whole file

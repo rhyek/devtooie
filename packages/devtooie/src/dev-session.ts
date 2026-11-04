@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execa } from 'execa';
@@ -9,14 +8,24 @@ import {
   startDevReverseProxy,
   type DevReverseProxyServer,
 } from './dev-reverse-proxy.js';
+import { isInsideWorkspace, isProcessAlive, processCwd, resolveRealPath } from './process-info.js';
 import {
   decideControlPort,
   isPortListening,
   readOtherModesRunning,
   readRunning,
   type RunningState,
+  sessionId,
 } from './running.js';
 import { HANDOFF_FORCE_KILL_MS } from './shutdown-timing.js';
+
+export {
+  isInsideWorkspace,
+  isProcessAlive,
+  parseLsofCwd,
+  processCwd,
+  resolveRealPath,
+} from './process-info.js';
 
 export function parseLsofPids(out: string): number[] {
   return out
@@ -89,60 +98,6 @@ export async function findListenerPids(ports: number[]): Promise<number[]> {
 }
 
 /** The path out of `lsof -d cwd -Fn` output (the `n`-prefixed field), or null. */
-export function parseLsofCwd(out: string): string | null {
-  const line = out.split('\n').find((l) => l.startsWith('n'));
-  return line ? line.slice(1) : null;
-}
-
-/** `true` when `target` is `root` itself or sits underneath it. */
-export function isInsideWorkspace(root: string, target: string): boolean {
-  const rel = path.relative(root, target);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
-}
-
-/**
- * `realpath`, falling back to the path as given when it can't be resolved (already gone, or not
- * ours to read). Every cwd comparison below goes through this: the kernel reports a process's cwd
- * fully resolved (`/proc/<pid>/cwd`, `lsof -d cwd`), while the paths devtooie derives from its own
- * config keep whatever symlinks the user typed — so `~/dev` and `/Volumes/Data/dev` are the same
- * directory that never compares equal.
- */
-export function resolveRealPath(p: string): string {
-  try {
-    return fs.realpathSync(p);
-  } catch {
-    return p;
-  }
-}
-
-/** `true` while `pid` still exists. `EPERM` means it's alive but not ours to signal. */
-export function isProcessAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
-/** Working directory of a live process, or null if it's gone / can't be inspected. */
-export async function processCwd(pid: number): Promise<string | null> {
-  if (os.platform() === 'linux') {
-    try {
-      return await fs.promises.readlink(`/proc/${String(pid)}/cwd`);
-    } catch {
-      return null;
-    }
-  }
-  const { stdout, exitCode } = await execa('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], {
-    reject: false,
-  });
-  return exitCode === 0 ? parseLsofCwd(stdout) : null;
-}
-
 /** Splits pids into those running inside `root` and those belonging to something else. */
 export async function partitionByWorkspace(
   pids: number[],
@@ -419,6 +374,7 @@ export async function acquireDevSession(opts: {
     cwd: process.cwd(),
     configPath: opts.configPath,
     apiPortOverride: opts.apiPortOverride,
+    sessionId: sessionId(),
     logDir: opts.logFile ? path.dirname(opts.logFile) : undefined,
     logFile: opts.logFile,
     env: { isListening: isPortListening, probe: probeInstance, shutdown: shutdownInstance },

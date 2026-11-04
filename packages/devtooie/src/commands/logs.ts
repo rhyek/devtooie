@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import { connectControlClient } from '../control-client.js';
 import { currentMode } from '../env.js';
+import { connectControlClient } from '../find-session.js';
 import { getLogDir, resolveLogFile } from '../log-files.js';
 import { readRunning } from '../running.js';
 

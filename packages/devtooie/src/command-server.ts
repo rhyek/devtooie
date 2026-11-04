@@ -1,5 +1,10 @@
 import http from 'node:http';
 import { startedByAgent } from './agent-detection.js';
+import {
+  EVENTS_HEARTBEAT_MS,
+  type SessionEvent,
+  type SessionServiceStatus,
+} from './control-client.js';
 import type { DevReverseProxyServer } from './dev-reverse-proxy.js';
 import { currentMode } from './env.js';
 import {
@@ -8,6 +13,7 @@ import {
   type InfraRunOutcome,
   type InfraStatus,
 } from './infra/control.js';
+import { sessionId } from './running.js';
 
 /** What `POST /command/service/<action>/<name>` can do to an application service. */
 export type ServiceAction = 'start' | 'stop' | 'restart' | 'rebuild';
@@ -34,6 +40,11 @@ export interface ControlManager {
   runPackage(pkg: string, action: ServiceAction): Promise<ServiceRunOutcome>;
   /** Every infra service's status, or `null` for a session without infra. */
   getInfraStatuses(): Record<string, InfraStatus> | null;
+  /**
+   * Calls `fn` whenever the statuses, readiness or infra states may have changed (`/events`
+   * compares, so a call with nothing changed costs nothing). Returns the unsubscribe.
+   */
+  subscribeState(fn: () => void): () => void;
   /** Starts an action on an infra service; returns at once (see `InfraControl.run`). */
   runInfra(service: string, action: InfraAction): InfraRunOutcome;
   quit(): void;
@@ -105,6 +116,91 @@ export async function startCommandServer(opts: {
     }
   };
 
+  // `GET /events` responses, each with what it last told its client.
+  const streams = new Set<{ res: http.ServerResponse; last: LiveState }>();
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  let unsubscribe: (() => void) | null = null;
+  let publishScheduled = false;
+
+  const liveState = (): LiveState => {
+    const services = manager ? (manager.getAllStatuses() as Record<string, string>) : null;
+    const ready = manager ? manager.getAllReadiness() : null;
+    const infra = manager ? manager.getInfraStatuses() : null;
+    return { services, ready, infra, sessionReady: isSessionReady(services, ready, infra) };
+  };
+  const statusBody = () => ({
+    pid: process.pid,
+    sessionId: sessionId(),
+    configPath: opts.configPath ?? null,
+    mode: currentMode(),
+    startedByAgent: startedByAgent(),
+    logFile: manager ? manager.getLogFile() : (opts.logFile ?? null),
+    ...liveState(),
+    config: manager ? manager.getConfig() : null,
+    devReverseProxy: opts.devReverseProxy
+      ? {
+          port: opts.devReverseProxy.port,
+          rootDomain: opts.devReverseProxy.rootDomain,
+          rootDomains: opts.devReverseProxy.rootDomains,
+          // An application service route names its `service`, an infra service route its `infraService`.
+          routes: opts.devReverseProxy.routes.map((route) =>
+            route.kind === 'package'
+              ? { host: route.host, service: route.package, port: route.port }
+              : { host: route.host, infraService: route.service, port: route.port },
+          ),
+        }
+      : null,
+  });
+  const writeEvent = (res: http.ServerResponse, event: SessionEvent) => {
+    res.write(`${JSON.stringify(event)}\n`);
+  };
+  // Changes come in bursts (every logged line is one): one comparison per turn of the loop.
+  const schedulePublish = () => {
+    if (publishScheduled || streams.size === 0) {
+      return;
+    }
+    publishScheduled = true;
+    setImmediate(() => {
+      publishScheduled = false;
+      const next = liveState();
+      for (const stream of streams) {
+        for (const event of stateChanges(stream.last, next)) {
+          writeEvent(stream.res, event);
+        }
+        stream.last = next;
+      }
+    });
+  };
+  const openStream = (req: http.IncomingMessage, res: http.ServerResponse) => {
+    res.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store' });
+    const body = statusBody();
+    const stream = { res, last: liveState() };
+    streams.add(stream);
+    writeEvent(res, { type: 'snapshot', ...body } as SessionEvent);
+    heartbeat ??= setInterval(() => {
+      for (const { res: open } of streams) {
+        writeEvent(open, { type: 'heartbeat', at: Date.now() });
+      }
+    }, EVENTS_HEARTBEAT_MS).unref();
+    req.on('close', () => {
+      streams.delete(stream);
+      if (streams.size === 0 && heartbeat) {
+        clearInterval(heartbeat);
+        heartbeat = null;
+      }
+    });
+  };
+  const endStreams = () => {
+    for (const { res } of streams) {
+      res.end();
+    }
+    streams.clear();
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+  };
+
   const server = http.createServer((req, res) => {
     // Localhost-only convenience API: HTTP methods are intentionally not enforced.
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -115,30 +211,11 @@ export async function startCommandServer(opts: {
     // from this process's own environment); `services`/`config` — and the rotation-aware
     // `logFile` — come from the manager once it does.
     if (pathname === '/query/status') {
-      return send(res, 200, {
-        pid: process.pid,
-        configPath: opts.configPath ?? null,
-        mode: currentMode(),
-        startedByAgent: startedByAgent(),
-        logFile: manager ? manager.getLogFile() : (opts.logFile ?? null),
-        services: manager ? manager.getAllStatuses() : null,
-        ready: manager ? manager.getAllReadiness() : null,
-        infra: manager ? manager.getInfraStatuses() : null,
-        config: manager ? manager.getConfig() : null,
-        devReverseProxy: opts.devReverseProxy
-          ? {
-              port: opts.devReverseProxy.port,
-              rootDomain: opts.devReverseProxy.rootDomain,
-              rootDomains: opts.devReverseProxy.rootDomains,
-              // An application service route names its `service`, an infra service route its `infraService`.
-              routes: opts.devReverseProxy.routes.map((route) =>
-                route.kind === 'package'
-                  ? { host: route.host, service: route.package, port: route.port }
-                  : { host: route.host, infraService: route.service, port: route.port },
-              ),
-            }
-          : null,
-      });
+      return send(res, 200, statusBody());
+    }
+    // A long-lived stream of JSON lines: the snapshot, then each change, and a heartbeat.
+    if (pathname === '/events') {
+      return openStream(req, res);
     }
     if (pathname === '/command/quit') {
       manager?.logControl('quit');
@@ -232,6 +309,8 @@ export async function startCommandServer(opts: {
   return {
     attach: (m) => {
       manager = m;
+      unsubscribe = m.subscribeState(schedulePublish);
+      schedulePublish();
     },
     setOnQuit: (fn) => {
       onQuit = fn;
@@ -241,8 +320,63 @@ export async function startCommandServer(opts: {
       // Answer any still-held quit request before closing, so server.close()
       // never blocks waiting on an un-responded socket.
       flushQuits();
-      return new Promise<void>((resolve) => server.close(() => resolve()));
+      // An open `/events` stream would hold `server.close()` for as long as its client listens.
+      endStreams();
+      unsubscribe?.();
+      unsubscribe = null;
+      return new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        server.closeAllConnections();
+      });
     },
     port: actualPort,
   };
+}
+
+/** What `/events` compares between one change and the next. */
+interface LiveState {
+  services: Record<string, string> | null;
+  ready: Record<string, boolean> | null;
+  infra: Record<string, InfraStatus> | null;
+  sessionReady: boolean;
+}
+
+/**
+ * Whether a session is ready as a whole: attached, every infra service running, and every service
+ * that isn't stopped ready.
+ */
+function isSessionReady(
+  services: Record<string, string> | null,
+  ready: Record<string, boolean> | null,
+  infra: Record<string, InfraStatus> | null,
+): boolean {
+  if (!services) {
+    return false;
+  }
+  if (infra && Object.values(infra).some((state) => state !== 'running')) {
+    return false;
+  }
+  return Object.entries(services).every(
+    ([name, status]) => status === 'stopped' || ready?.[name] === true,
+  );
+}
+
+/** The `/events` lines that take a client from `prev` to `next`. */
+function stateChanges(prev: LiveState, next: LiveState): SessionEvent[] {
+  const events: SessionEvent[] = [];
+  for (const [service, status] of Object.entries(next.services ?? {})) {
+    const ready = next.ready?.[service] === true;
+    if (prev.services?.[service] !== status || (prev.ready?.[service] === true) !== ready) {
+      events.push({ type: 'service', service, status: status as SessionServiceStatus, ready });
+    }
+  }
+  for (const [service, status] of Object.entries(next.infra ?? {})) {
+    if (prev.infra?.[service] !== status) {
+      events.push({ type: 'infra', service, status });
+    }
+  }
+  if (prev.sessionReady !== next.sessionReady) {
+    events.push({ type: 'session', ready: next.sessionReady });
+  }
+  return events;
 }

@@ -18,32 +18,10 @@ describe('rootOptionsRefusal', () => {
     );
   });
 
-  test('each of --detach, --wait and --wait-timeout names the flag it needs', () => {
-    expect(rootOptionsRefusal({ ...base, detach: true })).toBe('--detach needs --headless.');
-    expect(rootOptionsRefusal({ ...base, headless: true, wait: true })).toBe(
-      '--wait needs --detach.',
+  test('refuses --detach, saying what replaced it', () => {
+    expect(rootOptionsRefusal({ ...base, headless: true, detach: true })).toMatch(
+      /`--detach` is gone: run `devtooie --headless` as a background task.*startStack/,
     );
-    expect(rootOptionsRefusal({ ...base, headless: true, detach: true, waitTimeout: 60 })).toBe(
-      '--wait-timeout needs --wait.',
-    );
-  });
-
-  test('accepts the full detached form', () => {
-    expect(
-      rootOptionsRefusal({ ...base, headless: true, detach: true, wait: true, waitTimeout: 180 }),
-    ).toBeUndefined();
-  });
-
-  test('refuses a --wait-timeout that is not a positive number', () => {
-    const opts = { ...base, headless: true, detach: true, wait: true };
-    expect(rootOptionsRefusal({ ...opts, waitTimeout: Number('soon') })).toMatch(/greater than 0/);
-    expect(rootOptionsRefusal({ ...opts, waitTimeout: 0 })).toMatch(/greater than 0/);
-  });
-
-  test('refuses --detach with a build or with --kill-others', () => {
-    const detached = { ...base, headless: true, detach: true };
-    expect(rootOptionsRefusal({ ...detached, build: true })).toMatch(/--build/);
-    expect(rootOptionsRefusal({ ...detached, killOthers: true })).toMatch(/--kill-others/);
   });
 
   test('refuses --ui with --headless', () => {

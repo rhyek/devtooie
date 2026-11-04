@@ -21,6 +21,17 @@ import { relaunchWithCappedYoungGeneration } from './relaunch.js';
  */
 const INVOCATION_CWD = process.cwd();
 
+// A devtooie forked with an IPC channel (the session `startStack()` starts) ends with the process
+// that forked it: the channel closes however that process ends, `kill -9` included. Before
+// anything else, so it holds while the config loads and the infra comes up too: the disconnect is
+// taken for a SIGTERM, which each phase answers as it would from a shell.
+if (process.channel) {
+  process.on('disconnect', () => process.kill(process.pid, 'SIGTERM'));
+  // Output may go to a pipe the parent has closed with it, which is no reason to fail a shutdown.
+  process.stdout.on('error', () => {});
+  process.stderr.on('error', () => {});
+}
+
 // First of all: a devtooie started from a process another devtooie started inherits that one's
 // `.env` values and `PORT`. They are not this invocation's ambient environment (see
 // `INJECTED_ENV_VAR`), so drop them before the mode, or anything else, is read from it.
@@ -101,17 +112,10 @@ const program = new Command()
     '--headless',
     'run without the TUI, streaming logs to stdout (needs -s or --last-answers)',
   )
-  .option('--detach', 'with --headless: start the session in the background and return')
-  .option('--wait', 'with --detach: return once infra and every service is healthy')
-  .option(
-    '--wait-timeout <seconds>',
-    'with --wait: how long to wait before failing (default: 300)',
-    (value) => Number(value),
-  )
   // Not shown: only there to name its spelling, `--headless`.
   .addOption(new Option('--plain').hideHelp())
-  // Not shown: what `--detach` starts its background session with (see commands/detach.ts).
-  .addOption(new Option('--detached-session').hideHelp())
+  // Not shown: only there to say what replaced it.
+  .addOption(new Option('--detach').hideHelp())
   .option('--last-answers', 'skip the selector and reuse the last saved selection', false)
   .option('--phase <phase>', 'pipeline phase: "dev" (default) or "build"', 'dev')
   .option('--build', 'build the selected services + their build-time deps, then exit', false)

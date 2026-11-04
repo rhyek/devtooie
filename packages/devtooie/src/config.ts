@@ -12,7 +12,10 @@ import {
 import {
   ENV_NAME_RE,
   baseEnvs,
-  resolveEnv,
+  configEnvReader,
+  envCandidatePaths,
+  envKeysFile,
+  resolveEnvFrom,
   envFileNames,
   currentMode,
   type Envs,
@@ -1601,9 +1604,34 @@ export function defineConfig<
 
   const baseEnv = () => baseEnvs(workspaceRoot);
 
+  // Every `.env` file a callback may read, read as the first one does: see `configEnvReader`.
+  const envReader = once(() =>
+    configEnvReader([
+      ...new Set([
+        ...[
+          '.',
+          ...parsedPackages.flatMap((config) => {
+            try {
+              return [
+                config.relativeDir ?? inferredRelativeDir(parsed.serviceRootDir, config.name),
+              ];
+            } catch {
+              return []; // reported as the service resolves
+            }
+          }),
+        ].flatMap((relativeDir) =>
+          envCandidatePaths({ cwd: workspaceDir, relativeDir, files: envFiles }),
+        ),
+        envKeysFile(),
+      ]),
+    ]),
+  );
   const loadEnv = (relativeDir: string, vars?: Record<string, string>) =>
     once(() =>
-      resolveEnv({ cwd: workspaceDir, relativeDir, files: envFiles, override: envOverride, vars }),
+      resolveEnvFrom(
+        { cwd: workspaceDir, relativeDir, files: envFiles, override: envOverride, vars },
+        envReader(),
+      ),
     );
 
   // The config's own variables come first: every callback below finds them in its `envs`. Their

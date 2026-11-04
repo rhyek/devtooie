@@ -174,6 +174,26 @@ describe('watchEnvFiles', () => {
     /** Starts the watcher on `ws` in a child, behind a small HTTP server; resolves its port. */
     async function startWatcher(ws: string): Promise<number> {
       const script = path.join(dir, 'watcher.ts');
+      // Node runs the source as it is, but finds `./x.js` only as `x.js`: point it at `x.ts`.
+      const hook = path.join(dir, 'ts-imports.mjs');
+      fs.writeFileSync(
+        hook,
+        `
+import fs from 'node:fs';
+import { registerHooks } from 'node:module';
+registerHooks({
+  resolve(specifier, context, next) {
+    if (specifier.startsWith('.') && specifier.endsWith('.js') && context.parentURL) {
+      const ts = new URL(specifier.slice(0, -3) + '.ts', context.parentURL);
+      if (fs.existsSync(ts)) {
+        return next(ts.href, context);
+      }
+    }
+    return next(specifier, context);
+  },
+});
+`,
+      );
       fs.writeFileSync(
         script,
         `
@@ -192,6 +212,10 @@ http
       // An unrelated read through the thread pool, as a DNS lookup or a log write would.
       await fs.promises.readFile(new URL(process.argv[2]));
     }
+    if (req.url === '/exit') {
+      res.end();
+      process.exit(0);
+    }
     res.end(String(changes));
   })
   .listen(0, '127.0.0.1', function () {
@@ -201,12 +225,17 @@ http
       );
       const child = spawn(
         process.execPath,
-        [script, new URL('./env-watch.ts', import.meta.url).href, ws],
+        ['--import', hook, script, new URL('./env-watch.ts', import.meta.url).href, ws],
         { stdio: ['ignore', 'pipe', 'inherit'] },
       );
       children.push(child);
-      const [line] = (await once(child.stdout!, 'data')) as [Buffer];
-      return Number(line.toString().trim());
+      const line = await Promise.race([
+        once(child.stdout!, 'data').then(([data]) => (data as Buffer).toString()),
+        once(child, 'exit').then(([code]) => {
+          throw new Error(`the watcher exited (${String(code)}) before it listened`);
+        }),
+      ]);
+      return Number(line.trim());
     }
 
     /** What the watcher's server answers on `url`, or null when it doesn't within `ms`. */
@@ -259,7 +288,23 @@ http
         answer = await ask(port);
       }
       expect(answer).toBe('1');
-    });
+    }, 20_000);
+
+    test('lets the process exit while a watched file cannot be read', async () => {
+      // A read stuck on the thread pool would hold `process.exit` until it returned.
+      const ws = path.join(dir, 'ws');
+      fs.mkdirSync(ws);
+      fs.writeFileSync(path.join(ws, '.env'), 'A=1\n');
+      execFileSync('mkfifo', [path.join(ws, '.env.local')]);
+      const port = await startWatcher(ws);
+      fs.writeFileSync(path.join(ws, '.env'), 'A=2\n');
+      await wait(200);
+      const child = children.at(-1)!;
+      const exited = once(child, 'exit');
+      await ask(port, '/exit');
+      const ended = await Promise.race([exited.then(() => true), wait(3000).then(() => false)]);
+      expect(ended).toBe(true);
+    }, 20_000);
   });
 
   describe('a watched file that is a symlink', () => {

@@ -4,20 +4,21 @@
 
 While a session runs, devtooie exposes a localhost-only HTTP API — mostly useful
 for coding agents (via the [agent skill](../README.md#agent-skill)), but open to any tooling.
-Its port is picked at startup and written (with the pid, the session's `logDir`, and the
-current `logFile`) to the session record of its mode, `node_modules/.devtooie/running.<mode>.json`
-— `running.development.json` for a plain `devtooie`, `running.test.json` for `--mode test` — so
-read the `port` field of the mode you want. A project runs one session per mode, each with its
-own record and port. `logFile` is kept pointing at the latest file across in-session log
-rotation. Pin a fixed port with `apiPort` in `devtooie.config.ts` (it then serves one mode at a
-time). The file is not removed when a session ends, so it says where a session _would_ answer,
-not that one is running — query the port to find out.
+Its port is picked at startup and written (with the pid, a random `sessionId`, the session's
+`logDir`, and the current `logFile`) to the session record of its mode,
+`node_modules/.devtooie/running.<mode>.json` — `running.development.json` for a plain `devtooie`,
+`running.test.json` for `--mode test`. A project runs one session per mode, each with its own record
+and port. `logFile` is kept pointing at the latest file across in-session log rotation. Pin a fixed
+port with `apiPort` in `devtooie.config.ts` (it then serves one mode at a time). The session deletes
+its record as it exits; one killed outright leaves it behind, so check a record before trusting it
+— see [Finding a session](#finding-a-session).
 
 - `GET /query/status` — a single snapshot of the running session:
 
   ```jsonc
   {
     "pid": 12345,
+    "sessionId": "0f8e5a52-6a3b-4f1e-9a52-2d6c1b7e4f10", // random to the session, as its record has it
     "configPath": "/abs/devtooie.config.ts", // the devtooie.config.* it was started with
     "mode": "development", // the mode it runs in — one session per mode
     "startedByAgent": false, // was this session launched by a coding agent?
@@ -25,6 +26,7 @@ not that one is running — query the port to find out.
     "services": { "web": "running", "api": "waiting" }, // running | stopped | waiting | restarting | rebuilding; null until the build and infra steps finish
     "ready": { "web": true, "api": false }, // running and passing its healthcheck (or it has none); null while services is
     "infra": { "db": "running", "redis": "restarting" }, // running | starting | stopped | stopping | restarting | resetting; null without infra
+    "sessionReady": false, // every infra service running, and every service that isn't stopped ready
     "config": {/* … */}, // the resolved config; null until the build and infra steps finish
     "devReverseProxy": {
       // the session's dev reverse proxy, or null when the config declares none
@@ -39,8 +41,9 @@ not that one is running — query the port to find out.
   }
   ```
 
-  `pid`, `configPath`, `mode`, `startedByAgent`, and `logFile` are present immediately — even
-  while the session is still building — so the endpoint never blocks on the build.
+  `pid`, `sessionId`, `configPath`, `mode`, `startedByAgent`, and `logFile` are present
+  immediately — even while the session is still building — so the endpoint never blocks on the
+  build.
   `startedByAgent` reports whether the session was launched by a coding agent rather than by
   a person, detected from the environment variables agents set (`CLAUDECODE`, `CURSOR_AGENT`,
   `AGENT`, and friends); it decides whether a starting session may quit this one without
@@ -58,12 +61,16 @@ not that one is running — query the port to find out.
   `projectName` among it). `infra` is each of the session's [infra](./infra.md) services'
   live state — `running`, `starting` (up, not ready yet) or `stopped` — or the action under way
   on it: `stopping`, `restarting`, `resetting` (a start reads as `starting`). It is `null` for
-  a config without infra, and until the process manager attaches.
+  a config without infra, and until the process manager attaches. `sessionReady` is `true` once
+  the process manager has attached, every infra service is `running`, and every service that isn't
+  `stopped` is ready.
   `devReverseProxy` is present
   from the start (the proxy binds before anything else) and lists every hostname it routes
   under the canonical `rootDomain` (each answers under every entry of `rootDomains` alike): a
   application service route names its `service`, an infra service route its `infraService` — see
   [Dev reverse proxy](./dev-reverse-proxy.md).
+
+- `GET /events` — the session's state as it changes: see [`GET /events`](#get-events).
 
 - `POST /command/service/<action>/<name>` — `start`, `stop`, `restart` or `rebuild` one
   application service. `start` and `stop` answer `200` once done — `stop` once the service's
@@ -98,6 +105,67 @@ takeover is authorized, see [Taking over a running session](cli.md#taking-over-a
 external tool (or the agent skill) uses to drive a session headlessly. An infra callback gets
 it as methods named after these paths — `control.command.service.stop('api')` — see
 [Driving the session: `control`](./infra.md#driving-the-session-control).
+
+## `GET /events`
+
+A long-lived response of newline-delimited JSON (`application/x-ndjson`), one object per line,
+each with a `type`:
+
+| `type`      | Sent                                                                                 | Fields                                               |
+| ----------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------- |
+| `snapshot`  | First, once.                                                                         | Everything `GET /query/status` returns.              |
+| `service`   | When a service's status or readiness changes (it starts, becomes healthy, fails its healthcheck, stops). | `service`, `status`, `ready`: both as they are now. |
+| `infra`     | When an infra service's status changes.                                              | `service`, `status`.                                 |
+| `session`   | When `sessionReady` changes: the session became ready as a whole, or stopped being.  | `ready`.                                             |
+| `heartbeat` | Every 5 seconds, whatever else happens.                                              | `at`: the session's clock, in ms.                    |
+
+```bash
+curl -sN "http://127.0.0.1:$port/events"
+```
+
+```jsonc
+{"type":"snapshot","pid":12345,"sessionId":"…","services":{"web":"waiting"},"ready":{"web":false},"infra":{"db":"starting"},"sessionReady":false, /* … */}
+{"type":"infra","service":"db","status":"running"}
+{"type":"service","service":"web","status":"running","ready":false}
+{"type":"service","service":"web","status":"running","ready":true}
+{"type":"session","ready":true}
+{"type":"heartbeat","at":1792948269484}
+```
+
+The stream ends when the session shuts down. A session whose event loop has stopped keeps the
+connection open but sends nothing, so a client that sees no line for three heartbeats (15 s) should
+take the session for frozen. The control client's `events()` does that: an async iterator of these
+objects that ends with the stream, throws when the session can't be reached or goes silent, and
+stops when its `signal` aborts.
+
+## Finding a session
+
+A session's record, `node_modules/.devtooie/running.<mode>.json`, is checked before it's trusted,
+since a session killed outright leaves it behind and the system may give its pid to another process:
+
+1. **No record, or its `pid` is gone**: no session. The next one overwrites the record.
+2. **The `pid` is alive and `GET /query/status` on its `port` answers with the record's
+   `sessionId`**: that's the session.
+3. **The `pid` is alive but the API doesn't answer, or answers with another `sessionId`**: the
+   session looks hung, or the pid was reused. devtooie waits two seconds for an API that is still
+   coming up, and takes a pid that now belongs to a process outside the workspace for a gone
+   session. Otherwise it refuses to start another session in the mode: stop that process, or start
+   with [`--kill-others`](./cli.md#taking-over-a-running-session) to kill it.
+
+```bash
+mode=development
+record=node_modules/.devtooie/running.$mode.json
+pid=$(node -p "require('./$record').pid" 2>/dev/null)
+port=$(node -p "require('./$record').port" 2>/dev/null)
+id=$(node -p "require('./$record').sessionId" 2>/dev/null)
+if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+  echo "no session"
+elif curl -s --max-time 2 "http://127.0.0.1:$port/query/status" | grep -q "\"sessionId\":\"$id\""; then
+  echo "running on port $port"
+else
+  echo "pid $pid is alive but its control API doesn't answer as the session: it looks hung"
+fi
+```
 
 ## Graceful shutdown
 

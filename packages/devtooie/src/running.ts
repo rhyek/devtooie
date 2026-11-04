@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -36,6 +37,12 @@ export interface RunningState {
   port: number;
   pid: number;
   /**
+   * The session's id, random to each session and reported on its `/query/status` as well: a live
+   * pid whose control API answers with another id (or none) is not this record's session.
+   * Absent from records an earlier devtooie wrote.
+   */
+  sessionId?: string;
+  /**
    * Package processes this session currently has running, maintained as they start and exit.
    * Only ever consumed by a *later* session sweeping orphans — a live session tracks its own
    * children in memory.
@@ -63,6 +70,14 @@ export interface InstanceInfo {
   configPath: string;
   /** The mode that instance runs in. */
   mode: string;
+}
+
+let ownSessionId: string | undefined;
+
+/** This process's session id: made on first use, then the same for the life of the process. */
+export function sessionId(): string {
+  ownSessionId ??= randomUUID();
+  return ownSessionId;
 }
 
 /** The directory holding the per-mode session records. */
@@ -108,6 +123,33 @@ export function writeRunning(cwd: string, state: RunningState, mode: string = cu
   const file = runningFilePath(cwd, mode);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(state, null, 2));
+}
+
+/** Deletes this mode's session record when it is this process's own (its `pid` is ours). */
+export function removeOwnRunning(cwd: string, mode: string = currentMode()): void {
+  const file = runningFilePath(cwd, mode);
+  if (parseRunning(file)?.pid !== process.pid) {
+    return;
+  }
+  try {
+    fs.rmSync(file);
+  } catch {
+    /* gone already */
+  }
+}
+
+let removeOnExitInstalled = false;
+
+/**
+ * Deletes this process's session record as it exits, by any path that runs exit handlers: a
+ * record outliving its session would name a pid the system may give to something else.
+ */
+function removeRunningOnExit(cwd: string, mode: string): void {
+  if (removeOnExitInstalled) {
+    return;
+  }
+  removeOnExitInstalled = true;
+  process.once('exit', () => removeOwnRunning(cwd, mode));
 }
 
 /**
@@ -220,6 +262,8 @@ export async function decideControlPort(opts: {
   mode?: string;
   apiPortOverride?: number;
   pid?: number;
+  /** This session's id, recorded beside its pid; see {@link RunningState.sessionId}. */
+  sessionId?: string;
   /** Directory this session writes its logs into; recorded in the session record as `logDir`. */
   logDir?: string;
   /** This session's initial logfile; recorded in the session record as `logFile` (updated on rotation). */
@@ -233,7 +277,14 @@ export async function decideControlPort(opts: {
   const sameProject = (info: InstanceInfo | null) => info?.configPath === opts.configPath;
   const finalize = (port: number): number => {
     // `logDir`/`logFile: undefined` are dropped by JSON.stringify, so they're simply omitted when unset.
-    writeRunning(opts.cwd, { port, pid, logDir: opts.logDir, logFile: opts.logFile }, mode);
+    writeRunning(
+      opts.cwd,
+      { port, pid, sessionId: opts.sessionId, logDir: opts.logDir, logFile: opts.logFile },
+      mode,
+    );
+    if (pid === process.pid) {
+      removeRunningOnExit(opts.cwd, mode);
+    }
     return port;
   };
 

@@ -11,6 +11,7 @@ afterEach(() => vi.unstubAllEnvs());
 function status(over: Partial<SessionStatus> = {}): SessionStatus {
   return {
     pid: 4242,
+    sessionId: null,
     configPath: CONFIG,
     mode: 'development',
     startedByAgent: false,
@@ -18,6 +19,7 @@ function status(over: Partial<SessionStatus> = {}): SessionStatus {
     services: null,
     ready: null,
     infra: null,
+    sessionReady: false,
     config: null,
     devReverseProxy: null,
     ...over,
@@ -99,6 +101,43 @@ describe('preflightTakeover', () => {
       ...over,
     };
   }
+
+  describe('a session recorded alive that does not answer as itself', () => {
+    const hung = { kind: 'unresponsive', pid: 4242, port: 14082, reason: 'hung' } as const;
+
+    test('refuses, saying it looks hung and what --kill-others would do', async () => {
+      const result = await preflightTakeover({
+        configPath: CONFIG,
+        killOthers: false,
+        deps: deps({
+          queryRunning: async () => hung,
+          stopUnresponsive: async () => {
+            throw new Error('must not kill');
+          },
+        }),
+      });
+      expect(result).toEqual({
+        ok: false,
+        message: expect.stringMatching(/pid 4242.*looks hung.*--kill-others/s),
+      });
+    });
+
+    test('kills it, and proceeds, with --kill-others', async () => {
+      const killed: number[] = [];
+      const result = await preflightTakeover({
+        configPath: CONFIG,
+        killOthers: true,
+        deps: deps({
+          queryRunning: async () => hung,
+          stopUnresponsive: async (session) => {
+            killed.push(session.pid);
+          },
+        }),
+      });
+      expect(result).toEqual({ ok: true });
+      expect(killed).toEqual([4242]);
+    });
+  });
 
   test('proceeds when no instance answers', async () => {
     const result = await preflightTakeover({

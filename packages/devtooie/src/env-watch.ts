@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { type EnvFileRead, type EnvFilesReading, readEnvFiles } from './env-file-reader.js';
 
 export interface WatchTarget {
   /** Directory to watch (non-recursive). */
@@ -120,6 +121,36 @@ export function watchEnvFiles(opts: {
     };
   };
 
+  // Every read of a watched file, its link included, is made by a reader process: a read can block
+  // for as long as something else decides (macOS holds a read of a File Provider folder such as
+  // Dropbox until the user answers its access prompt). On the event loop's thread that would stop
+  // the session; on the thread pool it would keep the session from exiting until it returned.
+  // The reads asked for in one turn of the loop share one reader: as the watch starts, every
+  // target's.
+  const readings = new Set<EnvFilesReading>();
+  let batch: { files: Set<string>; done: Promise<Map<string, EnvFileRead>> } | null = null;
+  const read = (files: string[]): Promise<Map<string, EnvFileRead>> => {
+    if (!batch) {
+      const next = { files: new Set<string>(), done: Promise.resolve(new Map<string, EnvFileRead>()) }; // oxfmt-ignore
+      next.done = new Promise((resolve) => {
+        queueMicrotask(() => {
+          batch = null;
+          const reading = readEnvFiles([...next.files]);
+          readings.add(reading);
+          void reading.done.then((results) => {
+            readings.delete(reading);
+            resolve(results);
+          });
+        });
+      });
+      batch = next;
+    }
+    for (const file of files) {
+      batch.files.add(file);
+    }
+    return batch.done;
+  };
+
   const ready: Promise<void>[] = [];
   for (const target of opts.targets) {
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -128,11 +159,14 @@ export function watchEnvFiles(opts: {
     // edit landing mid-rebuild is lost.
     let linkWatches = new Map<string, () => void>();
 
-    const followLinks = async () => {
+    const paths = target.filenames.map((name) => path.join(target.dir, name));
+
+    // Watches the file each watched name that is a link resolves to, as `results` say.
+    const followLinks = async (results: Map<string, EnvFileRead>) => {
       const realDir = await realpathOrSelf(target.dir);
       const next = new Map<string, () => void>();
-      for (const name of target.filenames) {
-        const real = await resolveLink(path.join(target.dir, name));
+      for (const [i, name] of target.filenames.entries()) {
+        const real = results.get(paths[i]!)?.real;
         // Not a link, or a link back to this same file: the directory watch already covers it.
         if (disposed || !real || real === path.join(realDir, name) || next.has(real)) {
           continue;
@@ -155,23 +189,16 @@ export function watchEnvFiles(opts: {
     // What each watched name reads as (through any link), or null when it can't be read. An event
     // that leaves all of them as they were fires nothing: a sync client rewriting its extended
     // attributes, a bare `touch`, or FSEvents reporting writes from just before the watch began.
-    // One file at a time, so a read that doesn't return holds one thread of the pool, not one per
-    // file.
-    const readAll = async () => {
-      const contents: (Buffer | null)[] = [];
-      for (const name of target.filenames) {
-        contents.push(await readOrNull(path.join(target.dir, name)));
-      }
-      return contents;
-    };
+    const contentsOf = (results: Map<string, EnvFileRead>) =>
+      paths.map((file) => {
+        const result = results.get(file);
+        return result?.kind === 'text' ? result.text : null;
+      });
     // Null until the first check has read what the files start as.
-    let seen: (Buffer | null)[] | null = null;
+    let seen: (string | null)[] | null = null;
 
-    // Every read here is asynchronous, and only one check runs at a time: a read can block for as
-    // long as something else decides — macOS holds a read of a File Provider folder such as
-    // Dropbox until the user answers its access prompt — and on the event loop's thread that
-    // would stop the whole session, its control API included. An event during a check runs one
-    // more check after it, however many events there were.
+    // Only one check runs at a time, so a read that doesn't return holds one reader, not one per
+    // event. An event during a check runs one more check after it, however many events there were.
     let checking = false;
     let again = false;
     const check = async (): Promise<void> => {
@@ -183,16 +210,17 @@ export function watchEnvFiles(opts: {
       try {
         do {
           again = false;
-          await followLinks();
-          const now = await readAll();
+          const results = await read(paths);
           if (disposed) {
             return;
           }
+          await followLinks(results);
+          const now = contentsOf(results);
           if (seen === null) {
             seen = now;
             continue;
           }
-          if (now.every((content, i) => sameContent(content, seen?.[i]))) {
+          if (now.every((content, i) => content === seen?.[i])) {
             continue;
           }
           seen = now;
@@ -224,6 +252,10 @@ export function watchEnvFiles(opts: {
 
   const dispose = () => {
     disposed = true;
+    for (const reading of readings) {
+      reading.cancel();
+    }
+    readings.clear();
     for (const { watcher } of dirs.values()) {
       watcher.close();
     }
@@ -233,18 +265,6 @@ export function watchEnvFiles(opts: {
     }
   };
   return Object.assign(dispose, { ready: Promise.all(ready).then(() => {}) });
-}
-
-async function readOrNull(p: string): Promise<Buffer | null> {
-  try {
-    return await fs.promises.readFile(p);
-  } catch {
-    return null;
-  }
-}
-
-function sameContent(a: Buffer | null, b: Buffer | null | undefined): boolean {
-  return a && b ? a.equals(b) : !a && !b;
 }
 
 async function realpathOrSelf(p: string): Promise<string> {
@@ -264,20 +284,5 @@ function realpathOrSelfSync(p: string): string {
     return fs.realpathSync(p);
   } catch {
     return p;
-  }
-}
-
-/**
- * The real path of `p` when `p` is a symlink, else null. A dangling link is null too: there is no
- * file to watch until the link is fixed, and fixing it fires the link's own directory watch.
- */
-async function resolveLink(p: string): Promise<string | null> {
-  try {
-    if (!(await fs.promises.lstat(p)).isSymbolicLink()) {
-      return null;
-    }
-    return await fs.promises.realpath(p);
-  } catch {
-    return null;
   }
 }

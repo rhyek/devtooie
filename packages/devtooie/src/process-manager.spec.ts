@@ -1119,7 +1119,7 @@ describe('ProcessManager reading its .env files', () => {
       { plain: true },
     );
     m.startAll();
-    // Waiting for the files, not stopped: what a `--detach` counts as under way.
+    // Waiting for the files, not stopped: what `startStack()` counts as under way.
     expect(m.getStatus('rfixture')).toBe('waiting');
     await waitForLog(log, /VAL=r1/);
     expect(readFileSync.mock.calls.filter(([p]) => isEnvFile(p))).toEqual([]);

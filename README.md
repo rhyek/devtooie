@@ -26,9 +26,9 @@ then runs the services you picked.
   pino, winston, …) as a colored `[LEVEL] message` for local dev — no `NODE_ENV` branching in your
   app, and nothing to configure. See [Logging](docs/logging.md).
 - **Two run modes.** An interactive terminal UI to pick and watch services, or a
-  `--headless` log-streaming mode for coding agents — which can also start the stack in the
-  background and wait until it's healthy, for an e2e suite. See
-  [Running in the background](docs/cli.md#running-in-the-background---detach).
+  `--headless` log-streaming mode for coding agents, with a stream of the session's state as it
+  changes. An e2e suite gets its stack, healthy, in one call that ends with the suite. See
+  [A test suite's stack](docs/cli.md#a-test-suites-stack-startstack).
 - **One-off commands.** `devtooie exec` runs a single command, and `devtooie run` one of a
   service's scripts/targets, in a service's directory with that service's resolved
   environment — for migrations, seeds, scrapers, or an agent driving your project. See
@@ -441,8 +441,8 @@ If you opt in during `devtooie init`, devtooie installs an agent-facing skill
 file at `.claude/skills/devtooie/SKILL.md` (and, best-effort, under `.agents/` /
 `.cursor/` if those directories already exist). It teaches a coding agent how
 to check whether an app in the repo is already running, run devtooie headlessly
-(`--headless -s <service>`), start a stack in the background for tests
-(`--headless --detach --wait`), drive a running session through the control API, bring the project's
+(`--headless -s <service>`) as a background task and wait for it to be healthy, drive a running
+session through the control API, bring the project's
 [infra](docs/infra.md) up or reset it, read the logfile for debugging, and onboard a new service. The installed file is **managed** — treat it as generated, not something
 to hand-edit. `devtooie init` and every `devtooie` run refresh it to the
 installed version.

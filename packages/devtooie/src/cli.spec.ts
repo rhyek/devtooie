@@ -507,126 +507,210 @@ describe('devtooie --build', () => {
   });
 });
 
-describe('devtooie --headless --detach', () => {
-  /** Sessions a test started, quit after it whatever happened. */
-  const started: { pid: number; port: number }[] = [];
+describe('startStack()', () => {
+  type StackModule = typeof import('./stack.js');
+  /** The compiled module, so the CLI it runs is the one compiled beside it. */
+  const load = () => import(pathToFileURL(path.join(buildDir, 'stack.js')).href) as Promise<StackModule>; // oxfmt-ignore
+  // Its own log directory: the logfiles here would otherwise be the newest the `logs` tests find.
+  const logDir = () => path.join(ws, 'stack-logs');
+  const record = () => path.join(ws, 'node_modules', '.devtooie', 'running.development.json');
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const until = async (done: () => boolean, ms = 15_000) => {
+    const deadline = Date.now() + ms;
+    while (!done() && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return done();
+  };
+
+  /** Processes a test started, stopped after it whatever happened: stacks, and helper processes. */
+  const stacks: { stop: () => Promise<void> }[] = [];
+  const pids: number[] = [];
   afterEach(async () => {
-    for (const { pid, port } of started.splice(0)) {
-      await fetch(`http://127.0.0.1:${String(port)}/command/quit`, { method: 'POST' }).catch(
-        () => {},
-      );
+    for (const stack of stacks.splice(0)) {
+      await stack.stop().catch(() => {});
+    }
+    for (const pid of pids.splice(0)) {
+      // Never 0 or below: `kill(0)` signals this process's whole group, `kill(-n)` another's.
+      if (!(pid > 0)) {
+        continue;
+      }
       try {
         process.kill(pid, 'SIGKILL');
       } catch {
         /* already gone */
       }
     }
-    // The record outlives its session, and would point `logs` at this session's directory.
-    fs.rmSync(path.join(ws, 'node_modules', '.devtooie', 'running.development.json'), {
-      force: true,
-    });
   });
 
-  const detach = async (args: string[]) => {
-    // Its own log directory: the logfiles here would otherwise be the newest the `logs` tests find.
-    const logDir = path.join(ws, 'detach-logs');
-    const result = await devtooie(['--headless', '--detach', '--log-dir', logDir, ...args], {
-      env: { CI: '1' },
+  const startStack = async (services: string[], extra: { killOthers?: boolean } = {}) => {
+    const { startStack, stackEnvironment } = await load();
+    const stack = await startStack({
+      services,
+      cwd: app,
+      logDir: logDir(),
+      env: stackEnvironment({ ...process.env, CI: '1' }),
+      ...extra,
     });
-    const report = JSON.parse(lastLine(result.stdout)) as {
-      ok: boolean;
-      session: string;
-      pid: number;
-      port: number;
-      services: string[];
-      logFile: string | null;
-    };
-    if (report.session === 'started') {
-      started.push({ pid: report.pid, port: report.port });
-    }
-    return { result, report };
+    stacks.push(stack);
+    pids.push(stack.pid);
+    return stack;
   };
 
-  test('starts a session in the background, then reuses it, starting what it lacks', async () => {
-    const first = await detach(['-s', 'wide', '--wait']);
-    expect(first.result.exitCode, first.result.stderr).toBe(0);
-    expect(first.report).toMatchObject({ ok: true, session: 'started', services: ['wide'] });
-    expect(first.report.logFile).toMatch(/\.log$/);
-    // The command returned, and the session it started runs on.
-    expect(() => process.kill(first.report.pid, 0)).not.toThrow();
-
-    const again = await detach(['-s', 'wide', '--wait']);
-    expect(again.report).toMatchObject({ ok: true, session: 'reused', pid: first.report.pid, services: [] }); // oxfmt-ignore
-
-    const more = await detach(['-s', 'idle', '--wait']);
-    expect(more.report).toMatchObject({ ok: true, session: 'reused', services: ['idle'] });
-    const status = (await (
-      await fetch(`http://127.0.0.1:${String(first.report.port)}/query/status`)
-    ).json()) as { services: Record<string, string>; ready: Record<string, boolean> };
-    expect(status.ready).toMatchObject({ wide: true, idle: true });
-  }, 120_000);
-
-  describe('startStack()', () => {
-    type StackModule = typeof import('./stack.js');
-    /** The compiled module, so the CLI it runs is the one compiled beside it. */
-    const load = () => import(pathToFileURL(path.join(buildDir, 'stack.js')).href) as Promise<StackModule>; // oxfmt-ignore
-    const startStack = async (services: string[]) => {
-      const { startStack, stackEnvironment } = await load();
-      try {
-        const stack = await startStack({
-          services,
-          cwd: app,
-          logDir: path.join(ws, 'detach-logs'),
-          env: stackEnvironment({ ...process.env, CI: '1' }),
-        });
-        if (stack.session === 'started') {
-          started.push({ pid: stack.pid, port: stack.port });
-        }
-        return stack;
-      } catch (error) {
-        // A failed start quits its session; its record would still point `logs` here.
-        fs.rmSync(path.join(ws, 'node_modules', '.devtooie', 'running.development.json'), {
-          force: true,
-        });
-        throw error;
-      }
-    };
-
-    test('starts a stack, reuses it, and stops only the one it started', async () => {
-      const first = await startStack(['wide']);
-      expect(first).toMatchObject({ session: 'started', mode: 'development', rootDomain: null, services: ['wide'] }); // oxfmt-ignore
-      // Every configured service's origin, selected or not.
-      expect(first.origins).toEqual({ portonly: 'http://localhost:21051' });
-      expect((await first.control.query.status())?.ready).toMatchObject({ wide: true });
-
-      const again = await startStack(['idle']);
-      expect(again).toMatchObject({ session: 'reused', pid: first.pid, port: first.port, services: ['idle'] }); // oxfmt-ignore
-      expect((await again.control.query.status())?.ready).toMatchObject({ wide: true, idle: true });
-      await again.stop();
-      expect(await first.control.query.status()).not.toBeNull();
-
-      await first.stop();
-      expect(await first.control.query.status()).toBeNull();
-    }, 120_000);
-
-    test("throws devtooie's error, after quitting the session it started", async () => {
-      await expect(startStack(['broken'])).rejects.toThrow(
-        /stopped while starting.*\(log: .*\.log\)/,
-      );
-      // Nothing was left running: the next call starts a session of its own.
-      expect((await startStack(['idle'])).session).toBe('started');
-    }, 120_000);
-
-    test('throws what devtooie printed when it gave no answer', async () => {
-      await expect(startStack(['nope'])).rejects.toThrow(/no answer:\n.*nope/s);
+  test('starts a stack, and stop() ends its session and deletes its record', async () => {
+    const stack = await startStack(['wide']);
+    expect(stack).toMatchObject({ session: 'started', mode: 'development', rootDomain: null, services: ['wide'] }); // oxfmt-ignore
+    // Every configured service's origin, selected or not.
+    expect(stack.origins).toEqual({ portonly: 'http://localhost:21051' });
+    const status = await stack.control.query.status();
+    expect(status).toMatchObject({ ready: { wide: true }, sessionReady: true });
+    // Its record names it, by pid and session id.
+    expect(JSON.parse(fs.readFileSync(record(), 'utf8'))).toMatchObject({
+      pid: stack.pid,
+      port: stack.port,
+      sessionId: status!.sessionId,
     });
+
+    await stack.stop();
+    expect(alive(stack.pid)).toBe(false);
+    expect(fs.existsSync(record())).toBe(false);
+  }, 60_000);
+
+  test('refuses while a session of its mode runs, and quits it with killOthers', async () => {
+    const first = await startStack(['idle']);
+    await expect(startStack(['wide'])).rejects.toThrow(
+      new RegExp(`already running \\(pid ${String(first.pid)}\\).*killOthers`),
+    );
+    expect(await first.control.query.status()).not.toBeNull();
+
+    const second = await startStack(['wide'], { killOthers: true });
+    expect(await until(() => !alive(first.pid))).toBe(true);
+    expect((await second.control.query.status())?.ready).toMatchObject({ wide: true });
+  }, 90_000);
+
+  test("throws devtooie's error, after quitting its session", async () => {
+    await expect(startStack(['broken'])).rejects.toThrow(
+      /broken stopped while starting.*\(log: .*\.log\)/,
+    );
+    // Nothing was left running: the next call starts a session of its own.
+    expect((await startStack(['idle'])).session).toBe('started');
+  }, 90_000);
+
+  test('throws what devtooie printed when its session never came up', async () => {
+    await expect(startStack(['nope'])).rejects.toThrow(/before the session was up:\n.*nope/s);
   });
 
-  test('refuses --detach without --headless, naming it', async () => {
-    const result = await devtooie(['--detach', '-s', 'wide']);
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain('--detach needs --headless.');
+  describe('ends with the process that started it', () => {
+    /**
+     * A process that starts a stack of `idle` and prints a JSON line as it forks the session
+     * (`forked`) and once the stack is ready (`ready`).
+     */
+    const HELPER = `
+import cp from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+const fork = cp.fork;
+cp.fork = (...args) => {
+  const child = fork(...args);
+  console.log(JSON.stringify({ forked: child.pid }));
+  return child;
+};
+syncBuiltinESMExports();
+const { startStack, stackEnvironment } = await import(process.argv[2]);
+const stack = await startStack({
+  services: ['idle'],
+  cwd: process.argv[3],
+  logDir: process.argv[4],
+  env: stackEnvironment({ ...process.env, CI: '1' }),
+});
+console.log(JSON.stringify({ ready: stack.pid }));
+setInterval(() => {}, 1e9);
+`;
+
+    /** Runs the helper until it prints `key`, then SIGKILLs it; resolves with the session's pid. */
+    async function killParentAt(
+      key: 'forked' | 'ready',
+    ): Promise<{ session: number; children: number[] }> {
+      const helper = path.join(ws, 'stack-helper.mjs');
+      fs.writeFileSync(helper, HELPER);
+      const parent = execa(
+        'node',
+        [helper, pathToFileURL(path.join(buildDir, 'stack.js')).href, app, logDir()],
+        { cwd: ws, reject: false },
+      );
+      pids.push(parent.pid!);
+      let output = '';
+      let session = 0;
+      await new Promise<void>((resolve, reject) => {
+        const giveUp = setTimeout(
+          () => reject(new Error(`never printed ${key}:\n${output}`)),
+          60_000,
+        );
+        parent.stdout.on('data', (chunk: Buffer) => {
+          output += chunk.toString();
+          for (const line of output.split('\n')) {
+            try {
+              const message = JSON.parse(line) as { forked?: number; ready?: number };
+              session ||= message.forked ?? 0;
+              if (message[key] !== undefined) {
+                clearTimeout(giveUp);
+                resolve();
+              }
+            } catch {
+              /* not one of its lines */
+            }
+          }
+        });
+      });
+      if (!(session > 0)) {
+        throw new Error(`never reported the session's pid:\n${output}`);
+      }
+      pids.push(session);
+      // The services it runs, as its record keeps them.
+      const children =
+        key === 'ready'
+          ? ((JSON.parse(fs.readFileSync(record(), 'utf8')) as { children?: { pid: number }[] }).children ?? []).map((c) => c.pid) // oxfmt-ignore
+          : [];
+      process.kill(parent.pid!, 'SIGKILL');
+      await parent;
+      return { session, children };
+    }
+
+    test('killed once the stack is ready: the session and its services exit', async () => {
+      const { session, children } = await killParentAt('ready');
+      expect(children.length).toBeGreaterThan(0);
+      expect(await until(() => !alive(session))).toBe(true);
+      expect(children.filter(alive)).toEqual([]);
+      expect(fs.existsSync(record())).toBe(false);
+    }, 90_000);
+
+    test('killed while the session is still starting: it exits all the same', async () => {
+      const { session } = await killParentAt('forked');
+      expect(await until(() => !alive(session))).toBe(true);
+    }, 90_000);
   });
+
+  test('a session started from a shell has no parent to end with', async () => {
+    // No channel, so nothing to end with: it runs until it is told to stop.
+    const child = execa('node', [cli, '--headless', '-s', 'idle', '--log-dir', logDir()], {
+      cwd: ws,
+      env: { CI: '1' },
+      reject: false,
+    });
+    pids.push(child.pid!);
+    expect(await until(() => fs.existsSync(record()))).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    expect(alive(child.pid!)).toBe(true);
+    child.kill('SIGTERM');
+    await child;
+    expect(fs.existsSync(record())).toBe(false);
+  }, 60_000);
 });
 
 describe.skipIf(process.platform === 'win32')(
@@ -753,8 +837,7 @@ describe.skipIf(process.platform === 'win32')(
         }
       };
 
-      // Its control API answers, its service under way, as `--detach --wait` and a reusing
-      // `--detach` count it: not stopped.
+      // Its control API answers, its service under way, as `startStack()` counts it: not stopped.
       await until(
         async () => (await status())?.services !== undefined,
         'its control API never answered',

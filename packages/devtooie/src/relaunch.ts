@@ -66,6 +66,11 @@ export function relaunchWithCappedYoungGeneration(): void {
   if (typeof process.execve !== 'function' || !isCliEntry(process.argv[1])) {
     return;
   }
+  // A process forked with an IPC channel (`startStack()`'s session) would lose it: the channel's
+  // descriptor doesn't survive `execve`. Such a parent passes the flag itself.
+  if (process.channel) {
+    return;
+  }
   const argv = relaunchArgv(
     process.execPath,
     process.execArgv,

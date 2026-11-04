@@ -349,6 +349,7 @@ say — so reach it with `?.`.
 | Method                                    | Endpoint                                                                                           |
 | ----------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `control.query.status()`                  | `GET /query/status` — resolves with the snapshot, or `null` if the session didn't answer.          |
+| `control.events({ signal })`              | `GET /events` — an async iterator of its lines; see [`GET /events`](./control-api.md#get-events).   |
 | `control.command.service.<action>(name)`  | `POST /command/service/<action>/<name>`, `<action>` being `start`, `stop`, `restart` or `rebuild`. |
 | `control.command.infra.<action>(service)` | `POST /command/infra/<action>/<service>`, `<action>` being `start`, `stop`, `restart` or `reset`.  |
 | `control.command.quit()`                  | `POST /command/quit`                                                                               |

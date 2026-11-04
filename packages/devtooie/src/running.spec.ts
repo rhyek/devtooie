@@ -12,6 +12,8 @@ import {
   decideControlPort,
   readOtherModesRunning,
   runningFilePath,
+  removeOwnRunning,
+  sessionId,
   type PortEnv,
   type InstanceInfo,
 } from './running.js';
@@ -97,6 +99,44 @@ describe('updateRunning', () => {
   test('is a no-op when there is no running.json', () => {
     updateRunning(cwd, { logFile: '/logs/2.log' });
     expect(readRunning(cwd)).toBeNull();
+  });
+});
+
+describe('removeOwnRunning', () => {
+  test("deletes the mode's record when it is this process's own", () => {
+    writeRunning(cwd, { port: 14050, pid: process.pid, sessionId: sessionId() });
+    removeOwnRunning(cwd);
+    expect(fs.existsSync(runningFilePath(cwd))).toBe(false);
+  });
+
+  test("leaves another process's record alone: a newer session's, after a handoff", () => {
+    writeRunning(cwd, { port: 14050, pid: process.pid + 1 });
+    removeOwnRunning(cwd);
+    expect(readRunning(cwd)?.pid).toBe(process.pid + 1);
+  });
+
+  test('is a no-op with no record', () => {
+    expect(() => removeOwnRunning(cwd)).not.toThrow();
+  });
+});
+
+describe('sessionId', () => {
+  test('is random, and the same for the life of the process', () => {
+    expect(sessionId()).toMatch(/^[0-9a-f-]{36}$/);
+    expect(sessionId()).toBe(sessionId());
+  });
+});
+
+describe('decideControlPort — session id', () => {
+  test('records the session id beside the pid', async () => {
+    const port = await decideControlPort({
+      cwd,
+      configPath: '/repo/devtooie.config.ts',
+      pid: 4242,
+      sessionId: 'abc',
+      env: fakeEnv({}),
+    });
+    expect(readRunning(cwd)).toEqual({ port, pid: 4242, sessionId: 'abc' });
   });
 });
 

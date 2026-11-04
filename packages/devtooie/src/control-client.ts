@@ -1,9 +1,8 @@
-import fs from 'node:fs';
 import type { ServiceAction } from './command-server.js';
 import { DEFAULT_MODE } from './env.js';
 import type { InfraAction, InfraStatus } from './infra/control.js';
 import type { ServiceName } from './register.js';
-import { type InstanceInfo, isPortListening, readRunning } from './running.js';
+import type { InstanceInfo } from './running.js';
 import {
   QUIT_REQUEST_TIMEOUT_MS,
   SERVICE_START_REQUEST_TIMEOUT_MS,
@@ -20,6 +19,11 @@ export type SessionServiceStatus = 'running' | 'stopped' | 'waiting' | 'restarti
  */
 export interface SessionStatus<P extends string = ServiceName> {
   pid: number;
+  /**
+   * The session's id, random to each session: the same one its `running.<mode>.json` records.
+   * Null from an instance older than 1.0.0.
+   */
+  sessionId: string | null;
   /** Absolute path to the `devtooie.config.*` the session was started with. */
   configPath: string;
   /**
@@ -47,6 +51,11 @@ export interface SessionStatus<P extends string = ServiceName> {
    * infra, and before the manager attaches.
    */
   infra: Record<string, InfraStatus> | null;
+  /**
+   * Whether the session is ready as a whole: every infra service running, and every service that
+   * isn't stopped running and ready. False before the manager attaches.
+   */
+  sessionReady: boolean;
   /** The resolved config, or null before the manager attaches. */
   config: unknown;
   /**
@@ -62,12 +71,35 @@ export interface SessionStatus<P extends string = ServiceName> {
 }
 
 /**
+ * A line of `GET /events`, each one JSON object with a `type`:
+ *
+ * - `snapshot`: the first line, the same as `GET /query/status`.
+ * - `service`: a service's status or readiness changed, with both as they are now.
+ * - `infra`: an infra service's status changed.
+ * - `session`: the session became ready as a whole, or stopped being (see
+ *   {@link SessionStatus.sessionReady}).
+ * - `heartbeat`: sent every {@link EVENTS_HEARTBEAT_MS} whatever else happens, with the session's
+ *   clock in ms.
+ */
+export type SessionEvent<P extends string = ServiceName> =
+  | ({ type: 'snapshot' } & SessionStatus<P>)
+  | { type: 'service'; service: P; status: SessionServiceStatus; ready: boolean }
+  | { type: 'infra'; service: string; status: InfraStatus }
+  | { type: 'session'; ready: boolean }
+  | { type: 'heartbeat'; at: number };
+
+/** How often `GET /events` sends a heartbeat. */
+export const EVENTS_HEARTBEAT_MS = 5000;
+
+/** How long {@link ControlClient.events} waits for a line before it calls the session frozen. */
+const EVENTS_IDLE_TIMEOUT_MS = 3 * EVENTS_HEARTBEAT_MS;
+
+/**
  * A thin HTTP client for a running instance's localhost control API, its methods named after
  * the endpoint paths: `query.status()` is `GET /query/status`, `command.service.restart(name)`
- * is `POST /command/service/restart/<name>`. Bind one with {@link connectControlClient} (which only returns
- * a client when an instance is actually up), {@link connectSessionControl} (which also checks
- * the instance is the given config's session in the given mode) or {@link createControlClient}
- * (bound to an explicit port). Reusable by any feature that needs to query or drive a session.
+ * is `POST /command/service/restart/<name>`. Bind one with {@link createControlClient} (bound to
+ * an explicit port), or `find-session.ts`'s helpers (which first check the session is the one its
+ * record names). Reusable by any feature that needs to query or drive a session.
  */
 export interface ControlClient<P extends string = ServiceName> {
   readonly port: number;
@@ -75,6 +107,13 @@ export interface ControlClient<P extends string = ServiceName> {
     /** `GET /query/status` — full session snapshot, or null if the instance didn't answer with a valid one. */
     status(): Promise<SessionStatus<P> | null>;
   };
+  /**
+   * `GET /events`: the session's snapshot, then every change, as they happen. Ends when the
+   * session ends the stream (it is shutting down) or `signal` aborts; throws when the session
+   * can't be reached, or sends nothing, not even a heartbeat, for `idleTimeoutMs` (default 15 s):
+   * a session whose loop has stopped keeps its connection open, and says nothing.
+   */
+  events(opts?: { signal?: AbortSignal; idleTimeoutMs?: number }): AsyncGenerator<SessionEvent<P>>;
   readonly command: {
     /**
      * `POST /command/service/<action>/<name>`, one method per action — true if the instance
@@ -141,6 +180,7 @@ export function createControlClient<P extends string = string>(
   return {
     port,
     query: { status: queryStatus },
+    events,
     command: {
       service: {
         // Adding a service to the session builds what it lacks first: that can take minutes.
@@ -176,16 +216,74 @@ export function createControlClient<P extends string = string>(
         pid: body.pid,
         configPath: body.configPath,
         mode: typeof body.mode === 'string' ? body.mode : DEFAULT_MODE,
+        sessionId: typeof body.sessionId === 'string' ? body.sessionId : null,
         startedByAgent: body.startedByAgent === true,
         logFile: typeof body.logFile === 'string' ? body.logFile : null,
         services: (body.services ?? null) as SessionStatus<P>['services'],
         ready: (body.ready ?? null) as SessionStatus<P>['ready'],
         infra: (body.infra ?? null) as SessionStatus<P>['infra'],
+        sessionReady: body.sessionReady === true,
         config: body.config ?? null,
         devReverseProxy: (body.devReverseProxy ?? null) as SessionStatus<P>['devReverseProxy'],
       };
     } catch {
       return null;
+    }
+  }
+
+  async function* events(
+    opts: { signal?: AbortSignal; idleTimeoutMs?: number } = {},
+  ): AsyncGenerator<SessionEvent<P>> {
+    const idleMs = opts.idleTimeoutMs ?? EVENTS_IDLE_TIMEOUT_MS;
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    if (opts.signal?.aborted) {
+      return;
+    }
+    opts.signal?.addEventListener('abort', cancel, { once: true });
+    let idleFired = false;
+    let idle: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => {
+      clearTimeout(idle);
+      idle = setTimeout(() => {
+        idleFired = true;
+        controller.abort();
+      }, idleMs);
+    };
+    try {
+      arm();
+      const res = await fetch(`${base}/events`, { signal: controller.signal });
+      if (!res.ok || !res.body) {
+        throw new Error(`GET /events on port ${String(port)} answered ${String(res.status)}`);
+      }
+      const decoder = new TextDecoder();
+      let pending = '';
+      for await (const chunk of res.body) {
+        arm();
+        pending += decoder.decode(chunk as Uint8Array, { stream: true });
+        for (let nl = pending.indexOf('\n'); nl !== -1; nl = pending.indexOf('\n')) {
+          const line = pending.slice(0, nl).trim();
+          pending = pending.slice(nl + 1);
+          if (line) {
+            yield JSON.parse(line) as SessionEvent<P>;
+          }
+        }
+      }
+    } catch (error) {
+      if (idleFired) {
+        throw new Error(
+          `the session on port ${String(port)} sent nothing for ${String(idleMs / 1000)}s: it looks frozen`,
+          { cause: error },
+        );
+      }
+      if (opts.signal?.aborted) {
+        return;
+      }
+      throw error;
+    } finally {
+      clearTimeout(idle);
+      opts.signal?.removeEventListener('abort', cancel);
+      controller.abort();
     }
   }
 
@@ -204,70 +302,6 @@ export function createControlClient<P extends string = string>(
       return false; // timed out, or the target hard-exited before acking
     }
   }
-}
-
-/**
- * Returns a {@link ControlClient} for this workspace's running session in `mode` (the active
- * one unless given) — reading the port from its `running.<mode>.json` and confirming something
- * is listening on it — or null when no such session is up. The reusable entry point for
- * querying/driving the current session.
- */
-export async function connectControlClient(
-  cwd: string = process.cwd(),
-  mode?: string,
-): Promise<ControlClient | null> {
-  const running = readRunning(cwd, mode);
-  if (!running) {
-    return null;
-  }
-  if (!(await isPortListening(running.port))) {
-    return null;
-  }
-  return createControlClient(running.port);
-}
-
-/** A path with its symlinks resolved, or as given when it doesn't exist. */
-function realPath(p: string): string {
-  try {
-    return fs.realpathSync(p);
-  } catch {
-    return p;
-  }
-}
-
-/**
- * A {@link ControlClient} for the running session of **this** config in **this** mode, or
- * `undefined` when there is none. The port comes from the config's `apiPort` when it pins one,
- * else from the mode's `running.<mode>.json` — and since that record outlives its session, and
- * every project's control port comes from the same range, whatever answers there is only bound
- * when its `/query/status` names the same config file and mode (and, from a record, the
- * recorded pid). Anything else — nothing listening, another project's session, a stale record —
- * is `undefined`, never a client that could drive the wrong session.
- */
-export async function connectSessionControl(opts: {
-  workspaceDir: string;
-  /** Absolute path to the config the caller loaded. */
-  configPath: string;
-  mode: string;
-  /** The config's `apiPort`, when it pins one. */
-  apiPort?: number;
-}): Promise<ControlClient | undefined> {
-  const running = opts.apiPort === undefined ? readRunning(opts.workspaceDir, opts.mode) : null;
-  const port = opts.apiPort ?? running?.port;
-  if (port === undefined || !(await isPortListening(port))) {
-    return undefined;
-  }
-  const client = createControlClient(port);
-  const status = await client.query.status();
-  if (
-    !status ||
-    status.mode !== opts.mode ||
-    realPath(status.configPath) !== realPath(opts.configPath) ||
-    (running !== null && status.pid !== running.pid)
-  ) {
-    return undefined;
-  }
-  return client;
 }
 
 /**

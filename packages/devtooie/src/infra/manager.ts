@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { getConfigTokens, getWorkspaceDir, type Config } from '../config.js';
-import { connectSessionControl, type ControlClient } from '../control-client.js';
+import type { ControlClient } from '../control-client.js';
 import {
   baseEnvs,
   envCandidatePaths,
@@ -8,6 +8,7 @@ import {
   envKeysFile,
   workspaceEnvLayer,
 } from '../env.js';
+import { connectSessionControl } from '../find-session.js';
 import { findConfigPath } from '../load-config.js';
 import { execLines, spawnInherit, type Exec, type SpawnInherit, type Stream } from './exec.js';
 import type { InfraProvider, InfraRunRequest, InfraWatch, ProviderRuntime } from './provider.js';

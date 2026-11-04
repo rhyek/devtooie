@@ -1,5 +1,7 @@
 import { describe, expect, afterEach, test, vi } from 'vitest';
 import { startCommandServer, type ControlManager } from './command-server.js';
+import { createControlClient, type SessionEvent } from './control-client.js';
+import { sessionId } from './running.js';
 
 let server: Awaited<ReturnType<typeof startCommandServer>> | null = null;
 afterEach(async () => {
@@ -19,6 +21,7 @@ function fakeManager(overrides: Partial<ControlManager> = {}): ControlManager {
     runInfra: () => 'accepted',
     quit: () => {},
     logControl: () => {},
+    subscribeState: () => () => {},
     ...overrides,
   };
 }
@@ -36,6 +39,7 @@ describe('command-server', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       pid: process.pid,
+      sessionId: sessionId(),
       configPath: '/ws/devtooie.config.ts',
       mode: 'test',
       startedByAgent: expect.any(Boolean),
@@ -43,6 +47,7 @@ describe('command-server', () => {
       services: null,
       ready: null,
       infra: null,
+      sessionReady: false,
       config: null,
       devReverseProxy: null,
     });
@@ -106,6 +111,7 @@ describe('command-server', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       pid: process.pid,
+      sessionId: sessionId(),
       configPath: '/ws/devtooie.config.ts',
       mode: 'development',
       startedByAgent: expect.any(Boolean),
@@ -113,6 +119,7 @@ describe('command-server', () => {
       services: { web: 'running' },
       ready: { web: true },
       infra: null,
+      sessionReady: true,
       config: { packages: [] },
       devReverseProxy: null,
     });
@@ -316,5 +323,130 @@ describe('command-server', () => {
     await fetch(`http://127.0.0.1:${server.port}/command/quit`, { method: 'POST' });
     expect(secondCalled).toBe(true);
     expect(firstCalled).toBe(false);
+  });
+
+  describe('GET /events', () => {
+    /** A manager whose state the test sets, and tells the server about, as a real one would. */
+    function liveManager() {
+      const listeners = new Set<() => void>();
+      const state = {
+        services: { web: 'running', api: 'waiting' } as Record<string, string>,
+        ready: { web: false, api: false } as Record<string, boolean>,
+        infra: { db: 'starting' } as Record<string, string>,
+      };
+      const manager = fakeManager({
+        getAllStatuses: () => ({ ...state.services }),
+        getAllReadiness: () => ({ ...state.ready }),
+        getInfraStatuses: () => ({ ...state.infra }) as never,
+        subscribeState: (fn) => {
+          listeners.add(fn);
+          return () => listeners.delete(fn);
+        },
+      });
+      const change = (fn: (s: typeof state) => void) => {
+        fn(state);
+        for (const listener of listeners) {
+          listener();
+        }
+      };
+      return { manager, change };
+    }
+
+    /** The next `n` events of a stream, skipping heartbeats. */
+    async function take(iterator: AsyncIterator<SessionEvent>, n: number) {
+      const out: SessionEvent[] = [];
+      while (out.length < n) {
+        const { value, done } = await iterator.next();
+        if (done) {
+          break;
+        }
+        if (value.type !== 'heartbeat') {
+          out.push(value);
+        }
+      }
+      return out;
+    }
+
+    test('sends the snapshot, then each change as a line of JSON', async () => {
+      server = await startCommandServer({ onQuit: () => {}, port: 0, configPath: '/ws/c.ts' });
+      const { manager, change } = liveManager();
+      server.attach(manager);
+      const events = createControlClient(server.port).events();
+
+      const [snapshot] = await take(events, 1);
+      expect(snapshot).toMatchObject({
+        type: 'snapshot',
+        pid: process.pid,
+        sessionId: sessionId(),
+        services: { web: 'running', api: 'waiting' },
+        sessionReady: false,
+      });
+
+      change((s) => {
+        s.ready.web = true;
+        s.infra.db = 'running';
+      });
+      expect(await take(events, 2)).toEqual([
+        { type: 'service', service: 'web', status: 'running', ready: true },
+        { type: 'infra', service: 'db', status: 'running' },
+      ]);
+
+      change((s) => {
+        s.services.api = 'running';
+        s.ready.api = true;
+      });
+      expect(await take(events, 2)).toEqual([
+        { type: 'service', service: 'api', status: 'running', ready: true },
+        { type: 'session', ready: true },
+      ]);
+
+      change((s) => {
+        s.services.api = 'stopped';
+        s.ready.api = false;
+        s.ready.web = false;
+      });
+      expect(await take(events, 3)).toEqual([
+        { type: 'service', service: 'web', status: 'running', ready: false },
+        { type: 'service', service: 'api', status: 'stopped', ready: false },
+        { type: 'session', ready: false },
+      ]);
+      await events.return(undefined);
+    });
+
+    test('says nothing for a change that changes nothing', async () => {
+      server = await startCommandServer({ onQuit: () => {}, port: 0, configPath: '/ws/c.ts' });
+      const { manager, change } = liveManager();
+      server.attach(manager);
+      const events = createControlClient(server.port).events();
+      await take(events, 1);
+      change(() => {});
+      change((s) => (s.ready.web = true));
+      expect(await take(events, 1)).toEqual([
+        { type: 'service', service: 'web', status: 'running', ready: true },
+      ]);
+      await events.return(undefined);
+    });
+
+    test('is a stream of JSON lines a plain HTTP client can read', async () => {
+      server = await startCommandServer({ onQuit: () => {}, port: 0, configPath: '/ws/c.ts' });
+      const res = await fetch(`http://127.0.0.1:${server.port}/events`);
+      expect(res.headers.get('content-type')).toBe('application/x-ndjson');
+      const reader = res.body!.getReader();
+      const { value } = await reader.read();
+      const line = new TextDecoder().decode(value);
+      expect(line.endsWith('\n')).toBe(true);
+      expect(JSON.parse(line)).toMatchObject({ type: 'snapshot', services: null });
+      await reader.cancel();
+    });
+
+    test('ends every open stream when the server closes, without waiting on its client', async () => {
+      server = await startCommandServer({ onQuit: () => {}, port: 0, configPath: '/ws/c.ts' });
+      const events = createControlClient(server.port).events();
+      await take(events, 1);
+      const closing = server.close();
+      server = null;
+      await closing;
+      expect(await events.next()).toEqual({ value: undefined, done: true });
+    });
   });
 });

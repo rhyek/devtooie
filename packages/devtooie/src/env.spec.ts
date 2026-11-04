@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,6 +8,7 @@ import type { AnyServiceConfig } from './config.js';
 import {
   ambientEnv,
   assignedNames,
+  configEnvReader,
   dropInjectedEnv,
   envCandidatePaths,
   EnvFileSnapshot,
@@ -958,4 +960,39 @@ describe('ambientEnv', () => {
       expect(ambientEnv().DEVTOOIE_TEST_RAW).toBe('a$b');
     });
   });
+});
+
+describe('configEnvReader', () => {
+  test('reads plain files as they are asked for', () => {
+    write('.env', 'A=1\n');
+    const read = configEnvReader([path.join(cwd, '.env'), path.join(cwd, '.env.local')]);
+    expect(read(path.join(cwd, '.env'))).toBe('A=1\n');
+    expect(read(path.join(cwd, '.env.local'))).toBeNull();
+  });
+
+  test('reads them all at once when one is a link', () => {
+    write('store/.env.local', 'B=2\n');
+    write('.env', 'A=1\n');
+    fs.symlinkSync('store/.env.local', path.join(cwd, '.env.local'));
+    const files = [path.join(cwd, '.env'), path.join(cwd, '.env.local'), path.join(cwd, '.env.x')];
+    const read = configEnvReader(files);
+    // Read already: changing them now changes nothing it answers.
+    fs.writeFileSync(path.join(cwd, '.env'), 'A=changed\n');
+    expect(files.map(read)).toEqual(['A=1\n', 'B=2\n', null]);
+  });
+
+  test.skipIf(process.platform === 'win32')(
+    "gives up on a linked file that doesn't read in time, naming it",
+    () => {
+      // A FIFO with no writer stands in for a file macOS holds until access is allowed.
+      fs.mkdirSync(path.join(cwd, 'store'));
+      execFileSync('mkfifo', [path.join(cwd, 'store', '.env.local')]);
+      fs.symlinkSync('store/.env.local', path.join(cwd, '.env.local'));
+      const started = Date.now();
+      expect(() => configEnvReader([path.join(cwd, '.env.local')], 300)).toThrow(
+        new RegExp(`couldn't read ${path.join(cwd, '.env.local')} within 0\\.3s`),
+      );
+      expect(Date.now() - started).toBeLessThan(3000);
+    },
+  );
 });

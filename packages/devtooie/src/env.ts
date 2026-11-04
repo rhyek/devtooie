@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import type { AnyServiceConfig } from './config.js';
-import { type EnvFilesReading, readEnvFiles } from './env-file-reader.js';
+import { type EnvFilesReading, readEnvFiles, readEnvFilesSync } from './env-file-reader.js';
 import { findPassthrough } from './infra/argv.js';
 
 /** The mode used when neither `--mode` nor `DEVTOOIE_MODE` says otherwise. */
@@ -126,6 +126,48 @@ export type EnvFileReader = (file: string) => string | null;
 
 function readEnvFileSync(file: string): string | null {
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+}
+
+/** How long loading a config waits on its `.env` files when one is a link; see {@link configEnvReader}. */
+export const CONFIG_ENV_READ_TIMEOUT_MS = 10_000;
+
+/**
+ * The reader a config's callbacks get their `.env` files through, made once for every file they may
+ * read. Loading a config is synchronous, so it can only wait on a read, but a read can block for as
+ * long as something else decides: macOS holds a read of a File Provider folder (Dropbox, iCloud)
+ * until the user answers its prompt to allow access. A file is kept in such a folder by linking to
+ * it, so when any of `files` is a link they are all read at once in a child process, waited on for
+ * at most `timeoutMs`: a read that doesn't return by then fails the load, naming the file, rather
+ * than holding it. Otherwise each is read here, as it is needed.
+ */
+export function configEnvReader(
+  files: string[],
+  timeoutMs: number = CONFIG_ENV_READ_TIMEOUT_MS,
+): EnvFileReader {
+  const linked = files.some((file) => {
+    try {
+      // The link's own entry, in the workspace: it is the file it points to that may block.
+      return fs.lstatSync(file).isSymbolicLink();
+    } catch {
+      return false;
+    }
+  });
+  if (!linked) {
+    return readEnvFileSync;
+  }
+  const results = readEnvFilesSync(files, timeoutMs);
+  return (file) => {
+    const result = results.get(file);
+    if (result === undefined) {
+      return readEnvFileSync(file);
+    }
+    if (result.kind === 'error') {
+      throw Object.assign(new Error(`${result.code}: couldn't read ${file}`), {
+        code: result.code,
+      });
+    }
+    return result.kind === 'text' ? result.text : null;
+  };
 }
 
 /**
@@ -496,7 +538,7 @@ function privateKeys(text: string | null): Record<string, string> {
  * {@link resolveEnv}, with each candidate file read by `read`, and {@link envKeysFile} too. With no
  * `read`, the files are read from disk, synchronously, and dotenvx reads its keys itself.
  */
-function resolveEnvFrom(opts: ResolveEnvOptions, given?: EnvFileReader): EnvResolution {
+export function resolveEnvFrom(opts: ResolveEnvOptions, given?: EnvFileReader): EnvResolution {
   const read = given ?? readEnvFileSync;
   const candidates = envCandidatePaths(opts);
   const files: string[] = [];

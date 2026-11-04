@@ -2,24 +2,30 @@ import path from 'node:path';
 import chalk from 'chalk';
 import { startCommandServer } from '../command-server.js';
 import { findService, getLoadedConfig } from '../config.js';
-import { connectSessionControl } from '../control-client.js';
-import { acquireDevSession, isProcessAlive, startSessionDevReverseProxy } from '../dev-session.js';
+import { acquireDevSession, startSessionDevReverseProxy } from '../dev-session.js';
 import { currentMode } from '../env.js';
 import { handleShellError } from '../errors.js';
+import { findSession, unresponsiveMessage } from '../find-session.js';
 import { createInfraReporter } from '../infra/report.js';
 import { InfraFailedError, runSessionInfra } from '../infra/session.js';
 import { InfraError } from '../infra/types.js';
-import { buildRunnerArgs, getDefaultLogFile, resolveDeps, saveSelection } from '../lib.js';
+import {
+  buildRunnerArgs,
+  getDefaultLogFile,
+  hasDevScript,
+  resolveDeps,
+  saveSelection,
+} from '../lib.js';
 import { findConfigPath } from '../load-config.js';
 import { createPlainStatusReporter } from '../plain-status.js';
 import { renderAppInProduction } from '../render-app-production.js';
 import { runPlain } from '../runners/plain.js';
 import type { SessionInfra } from '../runners/types.js';
-import { readRunning } from '../running.js';
+import { sessionId } from '../running.js';
+import type { StackMessage } from '../stack.js';
 import { preflightTakeover } from '../takeover.js';
 import { buildDeps } from './build.js';
 import { type RootOptions, resolveSelectedNamesOrExit } from './default.js';
-import { DETACHED_FOUND_SESSION_EXIT } from './detach.js';
 
 // A dev session: `--headless`, streaming to stdout, or the TUI.
 
@@ -49,21 +55,41 @@ async function runPlainInfraOrExit(): Promise<SessionInfra | undefined> {
   }
 }
 
-/** Whether this config's session in the active mode is running: answering, or recorded alive. */
-async function sessionOfThisModeIsRunning(configPath: string): Promise<boolean> {
+/**
+ * Why a forked session (`startStack()`'s) must not start, or `undefined` when it may: a session of
+ * its mode is running, or recorded alive, and `--kill-others` didn't say to quit it. A forked
+ * session never quits one unasked, whoever started it.
+ */
+async function forkedSessionRefusal(
+  configPath: string,
+  killOthers: boolean,
+): Promise<string | undefined> {
+  if (killOthers) {
+    return undefined;
+  }
   const mode = currentMode();
-  const workspaceDir = process.cwd();
-  const client = await connectSessionControl({
-    workspaceDir,
-    configPath,
+  const found = await findSession({
+    workspaceDir: process.cwd(),
     mode,
+    configPath,
     apiPort: getLoadedConfig()?.apiPort,
   });
-  if (client) {
-    return true;
+  if (found.kind === 'running') {
+    return `a ${mode} session of this workspace is already running (pid ${String(found.status.pid)}); quit it, or start with killOthers to have it quit first`; // oxfmt-ignore
   }
-  const record = readRunning(workspaceDir, mode);
-  return record !== null && isProcessAlive(record.pid);
+  if (found.kind === 'unresponsive') {
+    return `${unresponsiveMessage(found, mode)}; stop it, or start with killOthers to have it killed`;
+  }
+  return undefined;
+}
+
+/** What a session started for `names` runs and waits on: their dev processes and their runtime deps'. */
+function servicesToWaitOn(names: string[]): string[] {
+  const runSet = [...resolveDeps(names.map((n) => findService(n))).runSet];
+  return runSet.filter((name) => {
+    const pkg = findService(name);
+    return hasDevScript(pkg) && (names.includes(name) || pkg.autostart !== false);
+  });
 }
 
 /** Starts the session the options ask for. It ends by exiting the process. */
@@ -82,9 +108,14 @@ export async function runDevSession(opts: RootOptions): Promise<void> {
   // them, so once it begins the other session is gone either way — declining has to mean
   // exiting here. Shared by both the --headless and TUI paths, and deliberately ahead of the
   // TUI's alternate screen, so the prompt is an ordinary terminal prompt.
-  if (opts.detachedSession && (await sessionOfThisModeIsRunning(configPath))) {
-    console.error('devtooie: a session of this mode is already running; the --detach reuses it.');
-    process.exit(DETACHED_FOUND_SESSION_EXIT);
+  // Forked by `startStack()`: it ends with its parent, and reports to it over the channel.
+  const forked = process.channel !== undefined;
+  if (forked) {
+    const refusal = await forkedSessionRefusal(configPath, opts.killOthers);
+    if (refusal) {
+      console.error(`devtooie: ${refusal}`);
+      process.exit(1);
+    }
   }
   const takeover = await preflightTakeover({
     configPath,
@@ -118,6 +149,17 @@ export async function runDevSession(opts: RootOptions): Promise<void> {
         logFile,
         devReverseProxy,
       });
+      if (forked) {
+        const message: StackMessage = {
+          type: 'started',
+          pid: process.pid,
+          port: server.port,
+          sessionId: sessionId(),
+          logFile,
+          services: servicesToWaitOn(names),
+        };
+        process.send?.(message);
+      }
       const packages = names.map((n) => findService(n));
       const deps = resolveDeps(packages);
       await buildDeps(deps);
@@ -128,6 +170,8 @@ export async function runDevSession(opts: RootOptions): Promise<void> {
         { ...buildRunnerArgs(packages, deps), logFile, infra },
         server,
         devReverseProxy,
+        // A forked session's output is in its log; its parent has no screen to stream it to.
+        { echo: !forked },
       );
     } catch (err) {
       handleShellError(err);

@@ -21,10 +21,16 @@ export async function runPlain(
   args: RunnerArgs,
   server: Awaited<ReturnType<typeof startCommandServer>>,
   devReverseProxy: DevReverseProxyServer | null = null,
+  /** `echo: false`: write the services' output only to the log, not to stdout too. */
+  opts: { echo?: boolean } = {},
 ): Promise<void> {
-  // Readiness is probed though a headless session shows none on screen: `/query/status` reports
-  // it (what `--detach --wait` waits on), and the proxy holds requests until a healthcheck passes.
-  const manager = new ProcessManager(args, { plain: true, probeReadiness: true });
+  // Readiness is probed though a headless session shows none on screen: `/query/status` and
+  // `/events` report it, and the proxy holds requests until a healthcheck passes.
+  const manager = new ProcessManager(args, {
+    plain: true,
+    probeReadiness: true,
+    echo: opts.echo ?? true,
+  });
 
   let stopBranchWatch = (): void => {};
   let shuttingDown = false;

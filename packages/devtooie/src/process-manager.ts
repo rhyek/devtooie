@@ -239,20 +239,24 @@ export class ProcessManager implements ControlManager {
   /** App name -> its resolved healthcheck (URL + per-probe timeout). */
   private healthchecks: Record<string, ResolvedHealthcheck>;
   /** Names whose healthcheck is currently passing. The single source of readiness in a session. */
-  private ready = new Set<string>();
+  private ready = new ObservedSet<string>(() => this.stateChanged());
   /** Pending next-probe timers, keyed by package; an entry means that package's loop is live. */
   private probeTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Packages with a probe in flight, so a loop is never started twice. */
   private probing = new Set<string>();
   private waitingPollTimer: ReturnType<typeof setInterval> | null = null;
   /** Names mid restart/rebuild, reported as a transitional status. */
-  private transitions = new Map<string, 'rebuilding' | 'restarting'>();
+  private transitions = new ObservedMap<string, 'rebuilding' | 'restarting'>(() =>
+    this.stateChanged(),
+  );
   /** Count of currently-visible (filter-matching) rows, used to decide when to clear scrollback. */
   private visibleLineCount = 0;
   /** Rows reserved for a host UI's footer, kept out of the clearable region. */
   private footerHeight = 3;
   /** Skip terminal clearing/scrollback tricks when there's no interactive UI on top. */
   private plain: boolean;
+  /** Plain mode streams lines to stdout only when this is set. */
+  private echo: boolean;
   /** Probe every running package's healthcheck regardless of `plain` (see the constructor). */
   private probeReadiness: boolean;
   /** devtooie's own lifecycle events; rendered under the gold `[devtooie]` prefix. */
@@ -332,6 +336,8 @@ export class ProcessManager implements ControlManager {
   private maxNameLen: number;
   /** Notified when a service joins the session (see {@link subscribeServices}). */
   private serviceListeners = new Set<() => void>();
+  /** See {@link ProcessManager.subscribeState}. */
+  private readonly stateListeners = new Set<() => void>();
   /** Bumped when a service joins the session: a UI's snapshot of the service list. */
   private servicesVersion = 0;
   /** Adds run one at a time, so two that share a dependency don't both add it. */
@@ -345,6 +351,7 @@ export class ProcessManager implements ControlManager {
     {
       plain = false,
       probeReadiness = false,
+      echo = true,
       infraCli = [process.execPath, fileURLToPath(new URL('./cli.js', import.meta.url))],
     }: {
       plain?: boolean;
@@ -354,6 +361,8 @@ export class ProcessManager implements ControlManager {
        * proxy, which holds requests until a package's healthcheck passes).
        */
       probeReadiness?: boolean;
+      /** Plain mode: stream each line to stdout as well as to the log. Default true. */
+      echo?: boolean;
       /** The command an infra action runs the devtooie CLI with; `[node, cli.js]` by default. */
       infraCli?: string[];
     } = {},
@@ -373,6 +382,7 @@ export class ProcessManager implements ControlManager {
     } = runnerArgs;
     this.runnerArgs = runnerArgs;
     this.plain = plain;
+    this.echo = echo;
     this.probeReadiness = probeReadiness;
     this.defaultShowTimestamps = logTimestamps;
     this.rebuildableSet = rebuildableSet;
@@ -599,6 +609,26 @@ export class ProcessManager implements ControlManager {
   /** The session's services, in the order a UI lists them: as it started, then each one added. */
   getSessionServices(): AnyServiceConfig[] {
     return [...this.processes.values()].map((m) => m.pkg);
+  }
+
+  /**
+   * ControlManager entry point: calls `fn` whenever what `/query/status` reports of the services
+   * or infra may have changed (a status, a readiness, a line logged). Calls come in bursts: a
+   * caller compares what it saw. Returns the unsubscribe.
+   */
+  subscribeState(fn: () => void): () => void {
+    this.stateListeners.add(fn);
+    const offInfra = this.infra?.subscribe(fn);
+    return () => {
+      this.stateListeners.delete(fn);
+      offInfra?.();
+    };
+  }
+
+  private stateChanged(): void {
+    for (const fn of this.stateListeners) {
+      fn();
+    }
   }
 
   /** Calls `fn` whenever a service joins the session; returns the unsubscribe. */
@@ -1722,6 +1752,8 @@ export class ProcessManager implements ControlManager {
   /** Bump the version and notify subscribers, coalescing a burst into a single flush. */
   private notify(): void {
     this.version++;
+    // A status change is always logged, so a line is when one may have happened.
+    this.stateChanged();
     if (this.notifyScheduled) {
       return;
     }
@@ -2055,7 +2087,7 @@ export class ProcessManager implements ControlManager {
     debugLog(`addLine: visibleLineCount=${this.visibleLineCount} searchName="${searchName}"`);
     // Plain mode streams each line straight to stdout; the interactive
     // (fullscreen Ink) UI re-renders from the buffer when notified instead.
-    if (this.plain && !alreadyShown) {
+    if (this.plain && this.echo && !alreadyShown) {
       this.renderNewLine();
     }
     this.notify();
@@ -2236,5 +2268,60 @@ export class ProcessManager implements ControlManager {
     const { rendered, rows } = this.formatLine(line);
     (line.isError ? console.error : console.log)(rendered);
     return rows;
+  }
+}
+
+/** A `Set` that calls `onChange` after every change to it. */
+class ObservedSet<T> extends Set<T> {
+  constructor(private readonly onChange: () => void) {
+    super();
+  }
+  override add(value: T): this {
+    const had = this.has(value);
+    super.add(value);
+    if (!had) {
+      this.onChange();
+    }
+    return this;
+  }
+  override delete(value: T): boolean {
+    const deleted = super.delete(value);
+    if (deleted) {
+      this.onChange();
+    }
+    return deleted;
+  }
+  override clear(): void {
+    const had = this.size > 0;
+    super.clear();
+    if (had) {
+      this.onChange();
+    }
+  }
+}
+
+/** A `Map` that calls `onChange` after every change to it. */
+class ObservedMap<K, V> extends Map<K, V> {
+  constructor(private readonly onChange: () => void) {
+    super();
+  }
+  override set(key: K, value: V): this {
+    super.set(key, value);
+    this.onChange?.();
+    return this;
+  }
+  override delete(key: K): boolean {
+    const deleted = super.delete(key);
+    if (deleted) {
+      this.onChange();
+    }
+    return deleted;
+  }
+  override clear(): void {
+    const had = this.size > 0;
+    super.clear();
+    if (had) {
+      this.onChange();
+    }
   }
 }

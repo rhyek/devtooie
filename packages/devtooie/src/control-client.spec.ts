@@ -1,18 +1,8 @@
-import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
-import path from 'node:path';
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import {
-  connectControlClient,
-  connectSessionControl,
-  createControlClient,
-  probeInstance,
-} from './control-client.js';
-import { writeRunning } from './running.js';
+import { createControlClient, probeInstance, type SessionEvent } from './control-client.js';
 
 const servers: http.Server[] = [];
-const tmpDirs: string[] = [];
 
 function startServer(handler: http.RequestListener): Promise<number> {
   const server = http.createServer(handler);
@@ -22,24 +12,24 @@ function startServer(handler: http.RequestListener): Promise<number> {
   );
 }
 
-function tmpWorkspace(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-client-'));
-  tmpDirs.push(dir);
-  return dir;
-}
-
 // Pinned, so a run from inside a devtooie session of another mode can't change the answers.
 beforeEach(() => vi.stubEnv('DEVTOOIE_MODE', 'development'));
 afterEach(async () => {
   vi.unstubAllEnvs();
-  await Promise.all(servers.splice(0).map((s) => new Promise<void>((r) => s.close(() => r()))));
-  for (const dir of tmpDirs.splice(0)) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  await Promise.all(
+    servers.splice(0).map(
+      (s) =>
+        new Promise<void>((r) => {
+          s.close(() => r());
+          s.closeAllConnections(); // a held `/events` stream would keep it open
+        }),
+    ),
+  );
 });
 
 const SNAPSHOT = {
   pid: 4242,
+  sessionId: 'b1946ac9-2e5f-4f0b-9d3e-1c6f0a9e3d21',
   configPath: '/ws/devtooie.config.ts',
   mode: 'test',
   startedByAgent: true,
@@ -47,6 +37,7 @@ const SNAPSHOT = {
   services: { web: 'running' },
   ready: { web: true },
   infra: { db: 'running' },
+  sessionReady: true,
   config: { packages: [] },
   devReverseProxy: {
     port: 21050,
@@ -183,108 +174,69 @@ describe('createControlClient', () => {
   });
 });
 
-describe('connectControlClient', () => {
-  test('returns null when there is no running.json', async () => {
-    expect(await connectControlClient(tmpWorkspace())).toBeNull();
-  });
-
-  test('returns null when the recorded port is not listening', async () => {
-    const cwd = tmpWorkspace();
-    const port = await startServer((_req, res) => res.end('{}'));
-    await new Promise<void>((r) => servers.splice(0)[0]!.close(() => r())); // free it
-    writeRunning(cwd, { port, pid: 1 });
-    expect(await connectControlClient(cwd)).toBeNull();
-  });
-
-  test('returns a client bound to the live instance', async () => {
-    const cwd = tmpWorkspace();
-    const port = await startServer((_req, res) => res.end(JSON.stringify(SNAPSHOT)));
-    writeRunning(cwd, { port, pid: SNAPSHOT.pid });
-    const client = await connectControlClient(cwd);
-    expect(client?.port).toBe(port);
-    expect(await client!.query.status()).toEqual(SNAPSHOT);
-  });
-
-  test("finds the given mode's session, not another mode's", async () => {
-    const cwd = tmpWorkspace();
-    const port = await startServer((_req, res) => res.end(JSON.stringify(SNAPSHOT)));
-    writeRunning(cwd, { port, pid: SNAPSHOT.pid }, 'test');
-    expect(await connectControlClient(cwd)).toBeNull();
-    expect((await connectControlClient(cwd, 'test'))?.port).toBe(port);
-  });
-});
-
-describe('connectSessionControl', () => {
-  /** A workspace whose `running.test.json` points at a live server answering `status`. */
-  async function session(status: Record<string, unknown>, record: { pid: number } = SNAPSHOT) {
-    const workspaceDir = tmpWorkspace();
-    const configPath = path.join(workspaceDir, 'devtooie.config.ts');
-    fs.writeFileSync(configPath, '');
-    const port = await startServer((_req, res) =>
-      res.end(JSON.stringify({ ...SNAPSHOT, configPath, ...status })),
-    );
-    writeRunning(workspaceDir, { port, pid: record.pid }, 'test');
-    return { workspaceDir, configPath, port };
+describe('events()', () => {
+  /** A server answering `/events` with `lines`, then holding the stream open (`hold`) or ending it. */
+  function eventsServer(lines: unknown[], hold = false): Promise<number> {
+    return startServer((req, res) => {
+      if (req.url !== '/events') {
+        res.statusCode = 404;
+        res.end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+      for (const line of lines) {
+        res.write(`${JSON.stringify(line)}\n`);
+      }
+      if (!hold) {
+        res.end();
+      }
+    });
   }
 
-  test("binds to this config's session in this mode", async () => {
-    const { workspaceDir, configPath, port } = await session({});
-    const client = await connectSessionControl({ workspaceDir, configPath, mode: 'test' });
-    expect(client?.port).toBe(port);
+  async function collect(iterable: AsyncIterable<SessionEvent>, max = Infinity) {
+    const seen: SessionEvent[] = [];
+    for await (const event of iterable) {
+      seen.push(event);
+      if (seen.length >= max) {
+        break;
+      }
+    }
+    return seen;
+  }
+
+  test('yields each line as an object, and ends when the stream does', async () => {
+    const lines = [
+      { type: 'snapshot', ...SNAPSHOT },
+      { type: 'service', service: 'web', status: 'running', ready: true },
+      { type: 'session', ready: true },
+    ];
+    const port = await eventsServer(lines);
+    expect(await collect(createControlClient(port).events())).toEqual(lines);
   });
 
-  test("leaves another project's session alone, though it answers on the recorded port", async () => {
-    const { workspaceDir, configPath } = await session({
-      configPath: '/elsewhere/devtooie.config.ts',
-    });
-    expect(await connectSessionControl({ workspaceDir, configPath, mode: 'test' })).toBeUndefined();
+  test('ends when the caller aborts', async () => {
+    const port = await eventsServer([{ type: 'heartbeat', at: 1 }], true);
+    const controller = new AbortController();
+    const seen: SessionEvent[] = [];
+    for await (const event of createControlClient(port).events({ signal: controller.signal })) {
+      seen.push(event);
+      controller.abort();
+    }
+    expect(seen).toEqual([{ type: 'heartbeat', at: 1 }]);
   });
 
-  test('leaves a session of another mode alone', async () => {
-    const { workspaceDir, configPath } = await session({ mode: 'development' });
-    expect(await connectSessionControl({ workspaceDir, configPath, mode: 'test' })).toBeUndefined();
+  test('throws when the session sends nothing for the idle timeout', async () => {
+    // A session whose loop has stopped keeps its connection open and says nothing.
+    const port = await eventsServer([{ type: 'heartbeat', at: 1 }], true);
+    await expect(collect(createControlClient(port).events({ idleTimeoutMs: 200 }))).rejects.toThrow(
+      /sent nothing for 0\.2s: it looks frozen/,
+    );
   });
 
-  test('is undefined when the session answering is not the one recorded', async () => {
-    const { workspaceDir, configPath } = await session({}, { pid: 1 });
-    expect(await connectSessionControl({ workspaceDir, configPath, mode: 'test' })).toBeUndefined();
-  });
-
-  test('is undefined with no record, or a record whose port is dead', async () => {
-    const workspaceDir = tmpWorkspace();
-    const configPath = path.join(workspaceDir, 'devtooie.config.ts');
-    expect(await connectSessionControl({ workspaceDir, configPath, mode: 'test' })).toBeUndefined();
-    const port = await startServer((_req, res) => res.end('{}'));
+  test('throws when nothing listens', async () => {
+    const port = await startServer((_req, res) => res.end());
     await new Promise<void>((r) => servers.splice(0)[0]!.close(() => r())); // free it
-    writeRunning(workspaceDir, { port, pid: SNAPSHOT.pid }, 'test');
-    expect(await connectSessionControl({ workspaceDir, configPath, mode: 'test' })).toBeUndefined();
-  });
-
-  test('matches the config path through a symlink', async () => {
-    const { workspaceDir, configPath } = await session({});
-    const link = path.join(tmpWorkspace(), 'ws');
-    fs.symlinkSync(workspaceDir, link);
-    const viaLink = path.join(link, 'devtooie.config.ts');
-    expect(
-      await connectSessionControl({ workspaceDir, configPath: viaLink, mode: 'test' }),
-    ).toBeDefined();
-    expect(configPath).not.toBe(viaLink);
-  });
-
-  test("goes by the config's apiPort when it pins one", async () => {
-    const { workspaceDir, configPath, port } = await session({});
-    const other = tmpWorkspace(); // no record at all
-    expect(
-      (
-        await connectSessionControl({
-          workspaceDir: other,
-          configPath,
-          mode: 'test',
-          apiPort: port,
-        })
-      )?.port,
-    ).toBe(port);
-    expect(await connectSessionControl({ workspaceDir, configPath, mode: 'test' })).toBeDefined();
+    await expect(collect(createControlClient(port).events())).rejects.toThrow('fetch failed');
   });
 });
 
