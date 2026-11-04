@@ -1555,12 +1555,12 @@ curl -s --max-time 2 "http://127.0.0.1:$port/query/status"
 
 **4. Read the service's state** from the `services` map in that answer (e.g. `{ "backend": "running" }`):
 
-| Value                       | What it means                                                                       |
-| --------------------------- | ----------------------------------------------------------------------------------- |
-| `running`                   | its process is live. Whether it passes its `healthcheck` is in `ready` (below).     |
-| `waiting`                   | not up yet; held back by `waitFor` / a dependency's healthcheck.                    |
-| `stopped`                   | not running — it exited, crashed, or was never started.                             |
-| `restarting` / `rebuilding` | mid-cycle after a control command or a code/`.env` change; it's on its way back up. |
+| Value                       | What it means                                                                                                                        |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `running`                   | its process is live. Whether it passes its `healthcheck` is in `ready` (below).                                                      |
+| `waiting`                   | not up yet; held back by `waitFor` / a dependency's healthcheck, or by an `.env` file the session can't read yet (its log names it). |
+| `stopped`                   | not running — it exited, crashed, or was never started.                                                                              |
+| `restarting` / `rebuilding` | mid-cycle after a control command or a code/`.env` change; it's on its way back up.                                                  |
 
 The same answer's `ready` map has the same keys: `true` once a service is running and passing its
 `healthcheck` (or running with none). That is the "is it actually up" answer — no need to poll the
@@ -1904,6 +1904,20 @@ Files for a mode, **ascending precedence within a scope**:
 
 The two `.local` files are the personal tier — commit `.env` and `.env.<mode>`, and keep
 `.env*.local` out of git.
+
+**A file that can't be read yet holds the services back, not the session.** macOS, for one, holds
+a read of a Dropbox or iCloud folder until the user allows access. Until a session has read its
+files, its services report `waiting`, and after a few seconds its log names the file it is
+waiting on (`waiting to read <file> before starting services`); the session still answers its
+control API and stops on `POST /command/quit` or a signal. A service that stays `waiting` with no
+`waitFor` is waiting on such a file: read the log. Two reads come earlier, and say nothing while
+they wait:
+
+- **A file a config callback reads** (`env.vars`, a `port` or `urls` callback) is read as the
+  config loads, before the session starts: no control API answers yet, and nothing is printed.
+  A signal still stops devtooie there.
+- **With [infra](#infra), the workspace's files** are read before the infra comes up: the control
+  API answers, with `services` still `null`.
 
 **Service scope overrides workspace scope**, and within a scope a later file overrides an earlier
 one. A `${VAR}` reference expands to the value that wins for that variable: the ambient

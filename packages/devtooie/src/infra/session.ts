@@ -48,7 +48,7 @@ export async function runSessionInfra(
   deps?: InfraManagerDeps,
 ): Promise<SessionInfra | undefined> {
   const config = getLoadedConfig();
-  const manager = config ? InfraManager.fromConfig(config, deps) : null;
+  const manager = config ? await InfraManager.fromConfig(config, deps) : null;
   if (!manager) {
     return undefined;
   }

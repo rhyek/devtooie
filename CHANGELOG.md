@@ -34,6 +34,7 @@
 - **A devtooie started from a process another devtooie started loads its own `.env` files** rather than inheriting the outer one's values.
 - **Editing a `.env` file through a symlink restarts the services that use it**, as editing a plain one does.
 - **A `.env` file restarts its services only when its content changes**, so a sync client like Dropbox touching it restarts nothing.
+- **A session no longer freezes while one of its `.env` files can't be read**, such as while macOS waits for you to allow access to a Dropbox folder. See [Environment loading](README.md#environment-env-loading).
 - **A saved selection naming a service that no longer exists no longer crashes the picker.**
 - **Resizing the terminal redraws the TUI right away, even with a long log.**
 - **A log line with tabs in it shows in full**, rather than losing its last characters.

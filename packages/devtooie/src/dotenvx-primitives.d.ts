@@ -6,6 +6,8 @@ declare module '@dotenvx/primitives' {
     processEnv?: Record<string, string | undefined>;
     /** Let the source's values win over `processEnv`'s. */
     overload?: boolean;
+    /** The `.env.keys` files to read private keys from; `.env.keys` in the working directory if not given. */
+    fk?: string[];
   }
   interface ParseResult {
     parsed: Record<string, string>;
@@ -14,6 +16,8 @@ declare module '@dotenvx/primitives' {
   }
   interface Primitives {
     parseSync(source: string, options?: ParseOptions): ParseResult;
+    /** Every assignment in `source`, each name's values in order, unresolved. */
+    scan(source: string): { parsed: Record<string, string[]> };
     keypair(): { publicKey: string; privateKey: string };
     encrypt(publicKey: string, value: string): string;
   }

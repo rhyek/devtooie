@@ -14,7 +14,7 @@ import { loadConfigOrExit } from './workspace.js';
 async function loadInfraOrExit(): Promise<{ manager: InfraManager; mode: string }> {
   await loadConfigOrExit();
   const config = getLoadedConfig();
-  const manager = config ? InfraManager.fromConfig(config) : null;
+  const manager = config ? await InfraManager.fromConfig(config) : null;
   if (!config || !manager) {
     console.error(
       "No `infra` in the devtooie config — add `infra: { 'docker-compose': true }` to use `devtooie infra`.",

@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { execa } from 'execa';
+import { execa, execaSync } from 'execa';
 import { describe, test, expect, beforeAll, afterAll, afterEach, beforeEach } from 'vitest';
 
 /**
@@ -628,6 +628,169 @@ describe('devtooie --headless --detach', () => {
     expect(result.stderr).toContain('--detach needs --headless.');
   });
 });
+
+describe.skipIf(process.platform === 'win32')(
+  'a session an .env file of which cannot be read yet',
+  () => {
+    // macOS holds a read of a File Provider folder (Dropbox, iCloud) until the user answers its
+    // prompt to allow access, which can be hours. A FIFO stands in: opening one blocks until a writer
+    // opens it, and none does here. Each test has a workspace of its own, so no other session reads
+    // its FIFO.
+    const made: {
+      dir: string;
+      fifo: string;
+      session?: ReturnType<typeof execa>;
+      ended: boolean;
+    }[] = [];
+
+    /** A workspace with one service, `idle`, whose `fifoAt` (relative to its root) is a FIFO. */
+    function blockedWorkspace(opts: { config: string; fifoAt: string }) {
+      const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-cli-blocked-')));
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'blockedroot', type: 'module' })); // oxfmt-ignore
+      fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), "packages:\n  - 'packages/*'\n");
+      fs.writeFileSync(
+        path.join(dir, 'devtooie.config.ts'),
+        `import { defineConfig } from 'devtooie';\nexport default defineConfig(${opts.config});\n`,
+      );
+      const standIn = path.join(dir, 'node_modules', 'devtooie');
+      fs.mkdirSync(standIn, { recursive: true });
+      fs.symlinkSync(path.join(packageDir, 'package.json'), path.join(standIn, 'package.json'));
+      fs.symlinkSync(buildDir, path.join(standIn, 'dist'));
+      const idle = path.join(dir, 'packages', 'idle');
+      fs.mkdirSync(idle, { recursive: true });
+      fs.writeFileSync(
+        path.join(idle, 'package.json'),
+        JSON.stringify({ name: 'idle', scripts: { dev: script('setInterval(()=>{},1e9)') } }),
+      );
+      const fifo = path.join(dir, opts.fifoAt);
+      execaSync('mkfifo', [fifo]);
+      const entry: (typeof made)[number] = { dir, fifo, ended: false };
+      made.push(entry);
+      return entry;
+    }
+
+    /** Starts a `--headless` session of `idle` in `ws`, collecting its output. */
+    function startSession(ws: (typeof made)[number]) {
+      const session = execa('node', [cli, '--headless', '-s', 'idle'], {
+        cwd: ws.dir,
+        env: { CI: '1' },
+        reject: false,
+      });
+      ws.session = session;
+      void session.then(() => (ws.ended = true));
+      const output = { text: '' };
+      session.stdout!.on('data', (chunk: Buffer) => (output.text += chunk.toString()));
+      session.stderr!.on('data', (chunk: Buffer) => (output.text += chunk.toString()));
+      return { session, output };
+    }
+
+    /** Whether `session` ends within 10s of a SIGTERM. */
+    async function endsOnSigterm(session: ReturnType<typeof execa>): Promise<boolean> {
+      session.kill('SIGTERM');
+      const ended = await Promise.race([
+        session.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 10_000)),
+      ]);
+      return ended;
+    }
+
+    /** The processes reading `fifo`: a session's reader, found by its argv. */
+    const readers = (fifo: string) =>
+      execaSync('ps', ['-A', '-ww', '-o', 'pid=,args='])
+        .stdout.split('\n')
+        .filter((line) => line.includes(fifo))
+        .map((line) => Number.parseInt(line.trim(), 10));
+
+    afterEach(async () => {
+      for (const ws of made.splice(0)) {
+        // A session stuck in the read itself only ever ends by SIGKILL, and one killed so leaves its
+        // reader behind.
+        if (ws.session?.pid !== undefined && !ws.ended) {
+          try {
+            process.kill(ws.session.pid, 'SIGKILL');
+          } catch {
+            /* already gone */
+          }
+          await ws.session;
+        }
+        for (const pid of readers(ws.fifo)) {
+          process.kill(pid, 'SIGKILL');
+        }
+        fs.rmSync(ws.dir, { recursive: true, force: true });
+      }
+    });
+
+    test("a service's: answers its control API while it waits, and stops on SIGTERM", async () => {
+      // No `env` callback: loading the config reads no `.env` file of a service.
+      const ws = blockedWorkspace({
+        config: "{ serviceRootDir: 'packages', services: { idle: {} } }",
+        fifoAt: 'packages/idle/.env.development',
+      });
+      const { session, output } = startSession(ws);
+
+      const record = path.join(ws.dir, 'node_modules', '.devtooie', 'running.development.json');
+      const status = async (): Promise<{
+        services?: Record<string, string>;
+        logFile?: string;
+      } | null> => {
+        try {
+          const { port } = JSON.parse(fs.readFileSync(record, 'utf8')) as { port: number };
+          const res = await fetch(`http://127.0.0.1:${String(port)}/query/status`, {
+            signal: AbortSignal.timeout(1000),
+          });
+          return (await res.json()) as { services?: Record<string, string>; logFile?: string };
+        } catch {
+          return null;
+        }
+      };
+      const until = async (done: () => Promise<boolean>, what: string) => {
+        const deadline = Date.now() + 15_000;
+        while (!(await done())) {
+          if (Date.now() > deadline) {
+            throw new Error(`${what}:\n${output.text}`);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      };
+
+      // Its control API answers, its service under way, as `--detach --wait` and a reusing
+      // `--detach` count it: not stopped.
+      await until(
+        async () => (await status())?.services !== undefined,
+        'its control API never answered',
+      );
+      const { services, logFile } = (await status())!;
+      expect(services).toEqual({ idle: 'waiting' });
+      // The log names the file it waits on.
+      await until(
+        async () => fs.readFileSync(logFile!, 'utf8').includes(`waiting to read ${ws.fifo}`),
+        'it never said what it waits on',
+      );
+
+      expect(await endsOnSigterm(session), `still running 10s after SIGTERM:\n${output.text}`).toBe(true); // oxfmt-ignore
+      // Nothing is left waiting on the file.
+      expect(readers(ws.fifo)).toEqual([]);
+    }, 40_000);
+
+    // Loading the config reads its files on the event loop's thread, which only a signal with no
+    // handler of the process's own can interrupt: so it must be done before any is installed.
+    test("the workspace's, read by a config callback: stops on SIGTERM", async () => {
+      const ws = blockedWorkspace({
+        config:
+        "{ serviceRootDir: 'packages', env: { vars: ({ envs }) => ({ HOME_DIR: envs.HOME ?? '' }) }, services: { idle: {} } }", // oxfmt-ignore
+        fifoAt: '.env.development',
+      });
+      const { session, output } = startSession(ws);
+      // Long enough to be well into loading the config, and blocked there: it never got as far as
+      // recording a session.
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      expect(ws.ended, output.text).toBe(false);
+      expect(fs.existsSync(path.join(ws.dir, 'node_modules', '.devtooie'))).toBe(false);
+      expect(output.text).not.toContain('freeing dev ports');
+      expect(await endsOnSigterm(session), `still running 10s after SIGTERM:\n${output.text}`).toBe(true); // oxfmt-ignore
+    }, 40_000);
+  },
+);
 
 describe('what a command loads', () => {
   const HEAVY = ['zod', 'execa', '@dotenvx/primitives', 'pino', '@clack/prompts', 'typescript'];

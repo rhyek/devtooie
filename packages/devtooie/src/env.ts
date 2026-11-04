@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import type { AnyServiceConfig } from './config.js';
+import { type EnvFilesReading, readEnvFiles } from './env-file-reader.js';
 import { findPassthrough } from './infra/argv.js';
 
 /** The mode used when neither `--mode` nor `DEVTOOIE_MODE` says otherwise. */
@@ -118,6 +119,94 @@ interface ResolveEnvOptions {
    * (see {@link captureShellEnv}), or the live `process.env` when none was recorded.
    */
   ambient?: Record<string, string>;
+}
+
+/** An `.env` file's text, or null when there is no such file. */
+export type EnvFileReader = (file: string) => string | null;
+
+function readEnvFileSync(file: string): string | null {
+  return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+}
+
+/**
+ * The `.env` files' contents as last read, so a session resolves a service's environment without
+ * touching the disk. A read can block for as long as something else decides: macOS holds a read
+ * of a File Provider folder (Dropbox, iCloud) until the user answers its prompt to allow access,
+ * which can be hours. So a session never reads its files on the event loop's thread, where a read
+ * that doesn't return would stop it answering its control API, reading its services' output, and
+ * acting on a signal to stop: every read is {@link refresh}'s, in a child process
+ * ({@link readEnvFiles}). Only loading the config reads synchronously, and it is done before
+ * anything handles a signal, so a signal still ends the process.
+ */
+export class EnvFileSnapshot {
+  private readonly texts = new Map<string, string | null>();
+  /** Files {@link refresh} was asked to add, for the next pass to read. */
+  private readonly adding = new Set<string>();
+  private inFlight: Promise<void> | null = null;
+  private queued: Promise<void> | null = null;
+  private current: EnvFilesReading | null = null;
+  private waitingOn: string | null = null;
+  private disposed = false;
+
+  /** A file's text as last read; null when it doesn't exist, or hasn't been read yet. */
+  readonly read: EnvFileReader = (file) => this.texts.get(file) ?? null;
+
+  /** The file the read under way is waiting on, or null when none is under way. */
+  get reading(): string | null {
+    return this.waitingOn;
+  }
+
+  /**
+   * Reads every file again, and `files` for the first time, settling once a pass begun after this
+   * call is done. One pass at a time, with every call made during a pass sharing the next: a read
+   * that doesn't return holds one reader, not one per call.
+   */
+  refresh(files: Iterable<string> = []): Promise<void> {
+    for (const file of files) {
+      if (!this.texts.has(file)) {
+        this.adding.add(file);
+      }
+    }
+    if (!this.inFlight) {
+      this.inFlight = this.pass().finally(() => {
+        this.inFlight = null;
+      });
+      return this.inFlight;
+    }
+    this.queued ??= this.inFlight.then(() => {
+      this.queued = null;
+      return this.refresh();
+    });
+    return this.queued;
+  }
+
+  /** Stops a read under way, and every one after: what was read stays as it was. */
+  dispose(): void {
+    this.disposed = true;
+    this.current?.cancel();
+  }
+
+  private async pass(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    const files = [...this.texts.keys(), ...this.adding];
+    this.adding.clear();
+    this.current = readEnvFiles(files, (file) => {
+      this.waitingOn = file;
+    });
+    const results = await this.current.done;
+    this.current = null;
+    this.waitingOn = null;
+    for (const [file, result] of results) {
+      if (result.kind === 'text') {
+        this.texts.set(file, result.text);
+      } else if (result.kind === 'missing' || !this.texts.has(file)) {
+        this.texts.set(file, null);
+      }
+      // A file that read before and fails now keeps what it last read as.
+    }
+  }
 }
 
 /**
@@ -371,12 +460,57 @@ function asEnvSource(
  * so `NODE_OPTIONS=$NODE_OPTIONS --flag` extends it.
  */
 export function resolveEnv(opts: ResolveEnvOptions): EnvResolution {
+  return resolveEnvFrom(opts);
+}
+
+/**
+ * dotenvx's file of decryption keys, which it looks for in the working directory. A reader that
+ * {@link resolveEnvFrom} is given reads it too, so it must have it: see {@link EnvFileSnapshot}.
+ */
+export function envKeysFile(): string {
+  return path.resolve('.env.keys');
+}
+
+/**
+ * The private keys in a `.env.keys` file's text, as dotenvx takes them from the environment:
+ * each under a name of its own, a list of keys split apart, as dotenvx splits one in the file.
+ */
+function privateKeys(text: string | null): Record<string, string> {
+  const keys: Record<string, string> = {};
+  if (text === null) {
+    return keys;
+  }
+  let i = 0;
+  for (const [name, values] of Object.entries(dotenvxPrimitives().scan(text).parsed)) {
+    if (!name.startsWith('DOTENV_PRIVATE_KEY')) {
+      continue;
+    }
+    for (const key of values.flatMap((value) => value.split(','))) {
+      keys[`DOTENV_PRIVATE_KEY__DEVTOOIE_KEYS_FILE_${String(i++)}`] = key;
+    }
+  }
+  return keys;
+}
+
+/**
+ * {@link resolveEnv}, with each candidate file read by `read`, and {@link envKeysFile} too. With no
+ * `read`, the files are read from disk, synchronously, and dotenvx reads its keys itself.
+ */
+function resolveEnvFrom(opts: ResolveEnvOptions, given?: EnvFileReader): EnvResolution {
+  const read = given ?? readEnvFileSync;
   const candidates = envCandidatePaths(opts);
-  const files = candidates.filter((p) => fs.existsSync(p));
+  const files: string[] = [];
+  const texts: string[] = [];
+  for (const file of candidates) {
+    const text = read(file);
+    if (text !== null) {
+      files.push(file);
+      texts.push(text);
+    }
+  }
 
   const ambient = opts.ambient ?? shellEnv ?? ambientEnv();
   const vars = opts.vars ?? {};
-  const texts = files.map((p) => fs.readFileSync(p, 'utf8'));
   const pkgDir = path.resolve(opts.cwd, opts.relativeDir);
   const packageNames = assignedNames(
     texts.filter((_text, i) => path.dirname(files[i] ?? '') === pkgDir).join('\n'),
@@ -408,9 +542,17 @@ export function resolveEnv(opts: ResolveEnvOptions): EnvResolution {
   // call in a CLI's worth of tooling, which costs every command its load time. It reads from
   // `processEnv` for `$VAR` lookups but writes to neither it nor the real process.env, so
   // nothing is mutated.
+  // The keys are only ever looked up by dotenvx, never by a `${VAR}`: each under a name of its own,
+  // they can't shadow a variable.
   const { parsed, errors } = dotenvxPrimitives().parseSync(
     [fromAmbient.source, fromVars.source, ...texts].join('\n'),
-    { processEnv: hideDollars(final, standIn), overload: false },
+    given
+      ? {
+          processEnv: { ...hideDollars(final, standIn), ...privateKeys(given(envKeysFile())) },
+          overload: false,
+          fk: [],
+        }
+      : { processEnv: hideDollars(final, standIn), overload: false },
   );
   // An encrypted value with no key to decrypt it stays as it is; say which, as dotenvx does.
   for (const error of errors) {
@@ -434,6 +576,11 @@ interface EnvLayerOptions {
   override?: EnvOverride;
   /** The config's own variables (`env.vars`, resolved); see {@link ResolveEnvOptions.vars}. */
   vars?: Record<string, string>;
+  /**
+   * Reads a candidate file, and dotenvx's {@link envKeysFile}; from disk, synchronously, unless
+   * given.
+   */
+  read?: EnvFileReader;
 }
 
 /**
@@ -449,7 +596,8 @@ export function packageEnvLayer(
   pkg: AnyServiceConfig,
   opts: EnvLayerOptions,
 ): Record<string, string> {
-  const { env, packageNames } = resolveEnv({ ...opts, relativeDir: pkg.relativeDir });
+  const { read, ...rest } = opts;
+  const { env, packageNames } = resolveEnvFrom({ ...rest, relativeDir: pkg.relativeDir }, read);
   const injected: Record<string, string> = {};
   if (pkg.port !== undefined) {
     injected.PORT = String(pkg.port);
@@ -471,5 +619,6 @@ export function packageEnvLayer(
  * resolved together. Excludes `process.env`, like {@link packageEnvLayer}.
  */
 export function workspaceEnvLayer(opts: EnvLayerOptions): Record<string, string> {
-  return withInjectedList(resolveEnv({ ...opts, relativeDir: '.' }).env);
+  const { read, ...rest } = opts;
+  return withInjectedList(resolveEnvFrom({ ...rest, relativeDir: '.' }, read).env);
 }

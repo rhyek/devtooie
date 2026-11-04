@@ -1,5 +1,5 @@
-import { execFileSync } from 'node:child_process';
-import { EventEmitter } from 'node:events';
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
+import { EventEmitter, once } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,10 +31,12 @@ afterEach(() => {
 describe('watchEnvFiles', () => {
   test('fires (debounced) when a watched file is created or changed', async () => {
     let calls = 0;
-    dispose = watchEnvFiles({
+    const watch = watchEnvFiles({
       targets: [{ dir, filenames: ['.env.local'], onChange: () => calls++ }],
       debounceMs: 40,
     });
+    dispose = watch;
+    await watch.ready;
 
     fs.writeFileSync(path.join(dir, '.env.local'), 'A=1\n');
     await waitFor(() => calls >= 1);
@@ -150,6 +152,114 @@ describe('watchEnvFiles', () => {
 
     expect(errors).toEqual([{ dir, message: 'EMFILE: too many open files, watch' }]);
     expect(closed).toBe(true);
+  });
+
+  describe.skipIf(process.platform === 'win32')('a read that does not return', () => {
+    // A read of a watched file can block for as long as something outside devtooie decides:
+    // macOS holds a read of a File Provider folder (Dropbox, iCloud) until the user answers
+    // its "would like to access files in Dropbox" prompt, and a file not yet downloaded blocks
+    // until it is. A FIFO with no writer stands in for that: opening it blocks until one opens.
+    // Made on the event loop's thread, such a read stops the session answering its control API
+    // and reading its children's output until it returns. The watcher runs in a child process:
+    // a read blocking this thread would block this test's own timeout too.
+    const children: ChildProcess[] = [];
+    afterEach(() => {
+      for (const child of children.splice(0)) {
+        if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+          process.kill(child.pid, 'SIGKILL');
+        }
+      }
+    });
+
+    /** Starts the watcher on `ws` in a child, behind a small HTTP server; resolves its port. */
+    async function startWatcher(ws: string): Promise<number> {
+      const script = path.join(dir, 'watcher.ts');
+      fs.writeFileSync(
+        script,
+        `
+import fs from 'node:fs';
+import http from 'node:http';
+const { watchEnvFiles } = await import(process.argv[2]);
+const ws = process.argv[3];
+let changes = 0;
+watchEnvFiles({
+  targets: [{ dir: ws, filenames: ['.env', '.env.local'], onChange: () => changes++ }],
+  debounceMs: 20,
+});
+http
+  .createServer(async (req, res) => {
+    if (req.url === '/fs') {
+      // An unrelated read through the thread pool, as a DNS lookup or a log write would.
+      await fs.promises.readFile(new URL(process.argv[2]));
+    }
+    res.end(String(changes));
+  })
+  .listen(0, '127.0.0.1', function () {
+    console.log(this.address().port);
+  });
+`,
+      );
+      const child = spawn(
+        process.execPath,
+        [script, new URL('./env-watch.ts', import.meta.url).href, ws],
+        { stdio: ['ignore', 'pipe', 'inherit'] },
+      );
+      children.push(child);
+      const [line] = (await once(child.stdout!, 'data')) as [Buffer];
+      return Number(line.toString().trim());
+    }
+
+    /** What the watcher's server answers on `url`, or null when it doesn't within `ms`. */
+    async function ask(port: number, url = '/', ms = 1000): Promise<string | null> {
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}${url}`, {
+          signal: AbortSignal.timeout(ms),
+        });
+        return await res.text();
+      } catch {
+        return null;
+      }
+    }
+
+    test('keeps the process answering while a watched file cannot be read', async () => {
+      const ws = path.join(dir, 'ws');
+      const store = path.join(dir, 'store');
+      fs.mkdirSync(ws);
+      fs.mkdirSync(store);
+      fs.writeFileSync(path.join(ws, '.env'), 'A=1\n');
+      fs.writeFileSync(path.join(store, '.env.local'), 'B=1\n');
+      fs.symlinkSync('../store/.env.local', path.join(ws, '.env.local'));
+      const port = await startWatcher(ws);
+      await wait(200);
+      expect(await ask(port)).toBe('0');
+
+      // The linked file now blocks every read, and the workspace's own `.env` changes.
+      fs.rmSync(path.join(store, '.env.local'));
+      execFileSync('mkfifo', [path.join(store, '.env.local')]);
+      fs.writeFileSync(path.join(ws, '.env'), 'A=2\n');
+      await wait(200);
+      expect(await ask(port)).toBe('0');
+
+      // Every further change while the read is stuck: none of them may take another thread
+      // with it, or the pool runs out and every other async read in the process waits too.
+      for (let i = 3; i < 10; i++) {
+        fs.writeFileSync(path.join(ws, '.env'), `A=${String(i)}\n`);
+        await wait(60);
+      }
+      expect(await ask(port, '/fs')).toBe('0');
+
+      // Once the read returns, the change it was checking for is reported.
+      const writer = spawn('sh', ['-c', 'printf "B=2\\n" > "$1"', 'sh', path.join(store, '.env.local')]); // oxfmt-ignore
+      children.push(writer);
+      await once(writer, 'exit');
+      const deadline = Date.now() + 2000;
+      let answer = await ask(port);
+      while (answer === '0' && Date.now() < deadline) {
+        await wait(20);
+        answer = await ask(port);
+      }
+      expect(answer).toBe('1');
+    });
   });
 
   describe('a watched file that is a symlink', () => {

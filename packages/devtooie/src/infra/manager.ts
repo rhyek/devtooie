@@ -1,7 +1,13 @@
 import path from 'node:path';
 import { getConfigTokens, getWorkspaceDir, type Config } from '../config.js';
 import { connectSessionControl, type ControlClient } from '../control-client.js';
-import { baseEnvs, workspaceEnvLayer } from '../env.js';
+import {
+  baseEnvs,
+  envCandidatePaths,
+  EnvFileSnapshot,
+  envKeysFile,
+  workspaceEnvLayer,
+} from '../env.js';
 import { findConfigPath } from '../load-config.js';
 import { execLines, spawnInherit, type Exec, type SpawnInherit, type Stream } from './exec.js';
 import type { InfraProvider, InfraRunRequest, InfraWatch, ProviderRuntime } from './provider.js';
@@ -30,12 +36,23 @@ export interface InfraManagerDeps {
 export class InfraManager {
   constructor(private readonly providers: InfraProvider[]) {}
 
-  /** The manager for a resolved config, or `null` when it declares no `infra`. */
-  static fromConfig(config: Config<string>, deps: InfraManagerDeps = {}): InfraManager | null {
+  /**
+   * The manager for a resolved config, or `null` when it declares no `infra`. Reads the
+   * workspace's `.env` files off this thread (see {@link EnvFileSnapshot} for why).
+   */
+  static async fromConfig(
+    config: Config<string>,
+    deps: InfraManagerDeps = {},
+  ): Promise<InfraManager | null> {
     if (!config.infra) {
       return null;
     }
     const workspaceDir = getWorkspaceDir();
+    const envFiles = new EnvFileSnapshot();
+    await envFiles.refresh([
+      envKeysFile(),
+      ...envCandidatePaths({ cwd: workspaceDir, relativeDir: '.', files: config.envFiles }),
+    ]);
     const runtime: ProviderRuntime = {
       workspaceDir,
       mode: config.envMode,
@@ -49,6 +66,7 @@ export class InfraManager {
           files: config.envFiles,
           override: config.envOverride,
           vars: config.envVars,
+          read: envFiles.read,
         }),
       ),
       tokens: getConfigTokens(),

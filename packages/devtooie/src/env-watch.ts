@@ -10,6 +10,16 @@ export interface WatchTarget {
   onChange: () => void;
 }
 
+/** Stops every watcher when called. */
+export interface EnvWatch {
+  (): void;
+  /**
+   * Settles once what every watched file starts as has been read: a change from then on fires.
+   * Reads are asynchronous, so one made just after {@link watchEnvFiles} returns may land before.
+   */
+  ready: Promise<void>;
+}
+
 /** Reports a watcher that had to be abandoned, so the session can say so instead of dying. */
 export type WatchErrorHandler = (dir: string, error: Error) => void;
 
@@ -19,7 +29,8 @@ export type WatchErrorHandler = (dir: string, error: Error) => void;
  * when what one of them reads as differs from the last time it fired (or from the start).
  * Watching directories — rather than the files themselves — means files that don't exist
  * yet are still picked up when they appear. Best-effort: a directory that can't be watched
- * (e.g. it doesn't exist) is skipped silently. Returns a disposer that stops every watcher.
+ * (e.g. it doesn't exist) is skipped silently. Returns a disposer that stops every watcher, and
+ * says when the watch is {@link EnvWatch.ready}.
  *
  * A watched name that is a symlink is also followed to the file it resolves to (through chains
  * and symlinked parent directories), whose directory is watched for that one basename: writing
@@ -38,7 +49,7 @@ export function watchEnvFiles(opts: {
   targets: WatchTarget[];
   debounceMs?: number;
   onError?: WatchErrorHandler;
-}): () => void {
+}): EnvWatch {
   const debounceMs = opts.debounceMs ?? 250;
   const timers: ReturnType<typeof setTimeout>[] = [];
   let disposed = false;
@@ -47,8 +58,14 @@ export function watchEnvFiles(opts: {
   // dispatched by basename to whoever registered it.
   const dirs = new Map<string, { watcher: fs.FSWatcher; handlers: Map<string, Set<() => void>> }>();
 
-  const subscribe = (dir: string, name: string, handler: () => void): (() => void) | null => {
-    const key = realpathOrSelf(dir);
+  // `realDir` is `dir` with its links resolved, when the caller already has it.
+  const subscribe = (
+    dir: string,
+    name: string,
+    handler: () => void,
+    realDir?: string,
+  ): (() => void) | null => {
+    const key = realDir ?? realpathOrSelfSync(dir);
     let entry = dirs.get(key);
     if (!entry) {
       const handlers = new Map<string, Set<() => void>>();
@@ -103,6 +120,7 @@ export function watchEnvFiles(opts: {
     };
   };
 
+  const ready: Promise<void>[] = [];
   for (const target of opts.targets) {
     let timer: ReturnType<typeof setTimeout> | null = null;
     // Resolved link target → its unsubscribe. Kept across re-resolutions so an unchanged link keeps
@@ -110,17 +128,18 @@ export function watchEnvFiles(opts: {
     // edit landing mid-rebuild is lost.
     let linkWatches = new Map<string, () => void>();
 
-    const followLinks = () => {
-      const realDir = realpathOrSelf(target.dir);
+    const followLinks = async () => {
+      const realDir = await realpathOrSelf(target.dir);
       const next = new Map<string, () => void>();
       for (const name of target.filenames) {
-        const real = resolveLink(path.join(target.dir, name));
+        const real = await resolveLink(path.join(target.dir, name));
         // Not a link, or a link back to this same file: the directory watch already covers it.
-        if (!real || real === path.join(realDir, name) || next.has(real)) {
+        if (disposed || !real || real === path.join(realDir, name) || next.has(real)) {
           continue;
         }
-        const stop =
-          linkWatches.get(real) ?? subscribe(path.dirname(real), path.basename(real), fire);
+        // `real` is already resolved, and so is its directory: no need to resolve it again.
+        const dir = path.dirname(real);
+        const stop = linkWatches.get(real) ?? subscribe(dir, path.basename(real), fire, dir);
         if (stop) {
           next.set(real, stop);
         }
@@ -136,8 +155,53 @@ export function watchEnvFiles(opts: {
     // What each watched name reads as (through any link), or null when it can't be read. An event
     // that leaves all of them as they were fires nothing: a sync client rewriting its extended
     // attributes, a bare `touch`, or FSEvents reporting writes from just before the watch began.
-    const readAll = () => target.filenames.map((name) => readOrNull(path.join(target.dir, name)));
-    let seen = readAll();
+    // One file at a time, so a read that doesn't return holds one thread of the pool, not one per
+    // file.
+    const readAll = async () => {
+      const contents: (Buffer | null)[] = [];
+      for (const name of target.filenames) {
+        contents.push(await readOrNull(path.join(target.dir, name)));
+      }
+      return contents;
+    };
+    // Null until the first check has read what the files start as.
+    let seen: (Buffer | null)[] | null = null;
+
+    // Every read here is asynchronous, and only one check runs at a time: a read can block for as
+    // long as something else decides — macOS holds a read of a File Provider folder such as
+    // Dropbox until the user answers its access prompt — and on the event loop's thread that
+    // would stop the whole session, its control API included. An event during a check runs one
+    // more check after it, however many events there were.
+    let checking = false;
+    let again = false;
+    const check = async (): Promise<void> => {
+      if (checking) {
+        again = true;
+        return;
+      }
+      checking = true;
+      try {
+        do {
+          again = false;
+          await followLinks();
+          const now = await readAll();
+          if (disposed) {
+            return;
+          }
+          if (seen === null) {
+            seen = now;
+            continue;
+          }
+          if (now.every((content, i) => sameContent(content, seen?.[i]))) {
+            continue;
+          }
+          seen = now;
+          target.onChange();
+        } while (again);
+      } finally {
+        checking = false;
+      }
+    };
 
     const fire = () => {
       if (timer) {
@@ -145,16 +209,9 @@ export function watchEnvFiles(opts: {
       }
       timer = setTimeout(() => {
         timer = null;
-        if (disposed) {
-          return;
+        if (!disposed) {
+          void check();
         }
-        followLinks();
-        const now = readAll();
-        if (now.every((content, i) => sameContent(content, seen[i]))) {
-          return;
-        }
-        seen = now;
-        target.onChange();
       }, debounceMs);
       timers.push(timer);
     };
@@ -162,10 +219,10 @@ export function watchEnvFiles(opts: {
     for (const name of target.filenames) {
       subscribe(target.dir, name, fire);
     }
-    followLinks();
+    ready.push(check());
   }
 
-  return () => {
+  const dispose = () => {
     disposed = true;
     for (const { watcher } of dirs.values()) {
       watcher.close();
@@ -175,11 +232,12 @@ export function watchEnvFiles(opts: {
       clearTimeout(t);
     }
   };
+  return Object.assign(dispose, { ready: Promise.all(ready).then(() => {}) });
 }
 
-function readOrNull(p: string): Buffer | null {
+async function readOrNull(p: string): Promise<Buffer | null> {
   try {
-    return fs.readFileSync(p);
+    return await fs.promises.readFile(p);
   } catch {
     return null;
   }
@@ -189,7 +247,19 @@ function sameContent(a: Buffer | null, b: Buffer | null | undefined): boolean {
   return a && b ? a.equals(b) : !a && !b;
 }
 
-function realpathOrSelf(p: string): string {
+async function realpathOrSelf(p: string): Promise<string> {
+  try {
+    return await fs.promises.realpath(p);
+  } catch {
+    return p;
+  }
+}
+
+/**
+ * {@link realpathOrSelf}, for a directory about to be watched: `fs.watch` resolves it the same way,
+ * on this same thread.
+ */
+function realpathOrSelfSync(p: string): string {
   try {
     return fs.realpathSync(p);
   } catch {
@@ -201,12 +271,12 @@ function realpathOrSelf(p: string): string {
  * The real path of `p` when `p` is a symlink, else null. A dangling link is null too: there is no
  * file to watch until the link is fixed, and fixing it fires the link's own directory watch.
  */
-function resolveLink(p: string): string | null {
+async function resolveLink(p: string): Promise<string | null> {
   try {
-    if (!fs.lstatSync(p).isSymbolicLink()) {
+    if (!(await fs.promises.lstat(p)).isSymbolicLink()) {
       return null;
     }
-    return fs.realpathSync(p);
+    return await fs.promises.realpath(p);
   } catch {
     return null;
   }

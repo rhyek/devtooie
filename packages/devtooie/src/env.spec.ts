@@ -9,7 +9,9 @@ import {
   assignedNames,
   dropInjectedEnv,
   envCandidatePaths,
+  EnvFileSnapshot,
   envFileNames,
+  envKeysFile,
   hideDollars,
   packageEnvLayer,
   resolveEnv,
@@ -897,6 +899,25 @@ describe('encrypted values', () => {
       ambient: { DOTENV_PRIVATE_KEY: privateKey },
     });
     expect(env).toMatchObject({ SECRET: 's3cret', PLAIN: '1' });
+  });
+
+  // A session reads `.env.keys` with its other files, off its own thread, where dotenvx would read
+  // it itself, synchronously.
+  test('decrypts a value whose private key is in .env.keys, read like the files', async () => {
+    const privateKey = secret();
+    write('.env.keys', `DOTENV_PRIVATE_KEY="${privateKey}"\n`);
+    const readFileSync = vi.spyOn(fs, 'readFileSync');
+    const before = process.cwd();
+    process.chdir(cwd);
+    try {
+      const files = new EnvFileSnapshot();
+      await files.refresh([envKeysFile(), ...envCandidatePaths({ cwd, relativeDir: '.' })]);
+      const layer = workspaceEnvLayer({ cwd, read: files.read });
+      expect(layer).toMatchObject({ SECRET: 's3cret', PLAIN: '1' });
+    } finally {
+      process.chdir(before);
+    }
+    expect(readFileSync.mock.calls.filter(([p]) => String(p).endsWith('.env.keys'))).toEqual([]);
   });
 
   test('leaves a value it has no key for as it is, and says which one on stderr', () => {

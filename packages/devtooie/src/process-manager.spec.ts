@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -540,6 +540,8 @@ describe('ProcessManager', () => {
     manager = new ProcessManager(runnerArgs(pkg()), { plain: true });
     expect(manager.getAllReadiness()).toEqual({ fixture: false });
     manager.start('fixture');
+    // It starts once the session has read its `.env` files.
+    await vi.waitFor(() => expect(manager!.getStatus('fixture')).toBe('running'));
     expect(manager.getAllReadiness()).toEqual({ fixture: true });
     await manager.stop('fixture');
     expect(manager.getAllReadiness()).toEqual({ fixture: false });
@@ -1069,6 +1071,192 @@ describe('ProcessManager env-change restart', () => {
     await m.stop('wfixture');
   }, 15_000);
 });
+
+describe('ProcessManager reading its .env files', () => {
+  let d: string;
+  let m: ProcessManager | undefined;
+  beforeEach(() => {
+    d = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-pm-env-read-'));
+    fs.writeFileSync(
+      path.join(d, 'package.json'),
+      JSON.stringify({
+        name: 'rfixture',
+        version: '1.0.0',
+        scripts: {
+          dev: 'node -e "console.log(\'VAL=\'+process.env.RVAR);setInterval(()=>{},1e9)"',
+        },
+      }),
+    );
+    fs.writeFileSync(path.join(d, '.env.local'), 'RVAR=r1\n');
+  });
+  afterEach(() => {
+    disposeManager(m);
+    m = undefined;
+    fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  // A read that doesn't return, on the event loop's thread, would leave the session unable to
+  // act on anything, a signal to stop included, until it did.
+  test('never reads one on its own thread, and starts nothing before they are read', async () => {
+    const isEnvFile = (p: unknown) => typeof p === 'string' && path.basename(p).startsWith('.env');
+    const readFileSync = vi.spyOn(fs, 'readFileSync');
+    const existsSync = vi.spyOn(fs, 'existsSync');
+    const log = path.join(d, 'devlog.txt');
+    const a: AnyServiceConfig = { name: 'rfixture', relativeDir: '.', absoluteDir: d };
+    m = new ProcessManager(
+      {
+        sortedPackages: [a],
+        selectedSet: new Set([a.name]),
+        buildDepSet: new Set(),
+        rebuildableSet: new Set(),
+        waitForMap: {},
+        healthchecks: {},
+        extraCommandsMap: {},
+        logFile: log,
+        envFiles: ['.env.local'],
+        cwd: d,
+      },
+      { plain: true },
+    );
+    m.startAll();
+    // Waiting for the files, not stopped: what a `--detach` counts as under way.
+    expect(m.getStatus('rfixture')).toBe('waiting');
+    await waitForLog(log, /VAL=r1/);
+    expect(readFileSync.mock.calls.filter(([p]) => isEnvFile(p))).toEqual([]);
+    expect(existsSync.mock.calls.filter(([p]) => isEnvFile(p))).toEqual([]);
+  });
+
+  test('a one-off command run before they are read sees their values', async () => {
+    const log = path.join(d, 'devlog.txt');
+    const a: AnyServiceConfig = { name: 'rfixture', relativeDir: '.', absoluteDir: d };
+    m = new ProcessManager(
+      {
+        sortedPackages: [a],
+        selectedSet: new Set([a.name]),
+        buildDepSet: new Set(),
+        rebuildableSet: new Set(),
+        waitForMap: {},
+        healthchecks: {},
+        extraCommandsMap: {},
+        logFile: log,
+        envFiles: ['.env.local'],
+        cwd: d,
+      },
+      { plain: true },
+    );
+    m.runCustomCommand('rfixture', 'echo "CMD=$RVAR"');
+    await waitForLog(log, /CMD=/);
+    expect(fs.readFileSync(log, 'utf8')).toContain('CMD=r1');
+  });
+
+  test('a service stopped while they are read stays stopped', async () => {
+    const log = path.join(d, 'devlog.txt');
+    const a: AnyServiceConfig = { name: 'rfixture', relativeDir: '.', absoluteDir: d };
+    m = new ProcessManager(
+      {
+        sortedPackages: [a],
+        selectedSet: new Set([a.name]),
+        buildDepSet: new Set(),
+        rebuildableSet: new Set(),
+        waitForMap: {},
+        healthchecks: {},
+        extraCommandsMap: {},
+        logFile: log,
+        envFiles: ['.env.local'],
+        cwd: d,
+      },
+      { plain: true },
+    );
+    m.start('rfixture');
+    await m.stop('rfixture');
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(m.getStatus('rfixture')).toBe('stopped');
+    expect(fs.readFileSync(log, 'utf8')).not.toContain('VAL=');
+  });
+});
+
+describe.skipIf(process.platform === 'win32')(
+  'ProcessManager with an .env file that cannot be read yet',
+  () => {
+    // macOS holds a read of a File Provider folder (Dropbox, iCloud) until the user answers its
+    // "would like to access files in Dropbox" prompt, which can be hours: on the event loop's thread,
+    // the session stops answering its control API and reading its children's output all that time.
+    // A FIFO stands in: opening one blocks until a writer opens it, here three seconds later.
+    let d: string;
+    let log: string;
+    let m: ProcessManager | undefined;
+    let writer: ChildProcess | undefined;
+
+    beforeAll(() => {
+      d = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-pm-blocked-env-'));
+      fs.writeFileSync(
+        path.join(d, 'package.json'),
+        JSON.stringify({
+          name: 'bfixture',
+          version: '1.0.0',
+          scripts: {
+            dev: 'node -e "console.log(\'VAL=\'+process.env.BVAR);setInterval(()=>{},1e9)"',
+          },
+        }),
+      );
+      fs.writeFileSync(path.join(d, '.env.local'), 'BVAR=v1\n');
+      log = path.join(d, 'devlog.txt');
+    });
+    afterAll(() => {
+      if (writer?.pid !== undefined && writer.exitCode === null && writer.signalCode === null) {
+        process.kill(writer.pid, 'SIGKILL');
+      }
+      disposeManager(m);
+      fs.rmSync(d, { recursive: true, force: true });
+    });
+
+    test('keeps the event loop free through a restart, and starts once the file reads', async () => {
+      const a: AnyServiceConfig = { name: 'bfixture', relativeDir: '.', absoluteDir: d };
+      m = new ProcessManager(
+        {
+          sortedPackages: [a],
+          selectedSet: new Set([a.name]),
+          buildDepSet: new Set(),
+          rebuildableSet: new Set(),
+          waitForMap: {},
+          healthchecks: {},
+          extraCommandsMap: {},
+          logFile: log,
+          envFiles: ['.env.local'],
+          cwd: d,
+        },
+        { plain: true },
+      );
+      // `start`, not `startAll`: no `.env` watcher, so only the restart reads the file.
+      m.start('bfixture');
+      await waitForLog(log, /VAL=v1/);
+
+      const fifo = path.join(d, '.env.local');
+      fs.rmSync(fifo);
+      execFileSync('mkfifo', [fifo]);
+      writer = spawn('sh', ['-c', 'sleep 3; printf "BVAR=v2\\n" > "$1"', 'sh', fifo]);
+
+      // The longest the event loop went without running a timer, from the restart on.
+      let last = Date.now();
+      let longest = 0;
+      const beat = setInterval(() => {
+        const now = Date.now();
+        longest = Math.max(longest, now - last);
+        last = now;
+      }, 10);
+      try {
+        expect(m.restart('bfixture')).toBe(true);
+        await waitForLog(log, /VAL=v2/);
+      } finally {
+        clearInterval(beat);
+      }
+      expect(fs.readFileSync(log, 'utf8')).toContain('VAL=v2');
+      expect(longest).toBeLessThan(1000);
+
+      await m.stop('bfixture');
+    }, 15_000);
+  },
+);
 
 describe('ProcessManager logs.formatter', () => {
   let fmtDir: string;

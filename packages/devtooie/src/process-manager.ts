@@ -10,7 +10,15 @@ import type { AnyServiceConfig, ResolvedHealthcheck } from './config.js';
 import { getDevScript, getLoadedConfig, getRegisteredPackages } from './config.js';
 import { debugLog } from './debug-log.js';
 import { watchEnvFiles, type WatchTarget } from './env-watch.js';
-import { currentMode, envFileNames, packageEnvLayer, type EnvOverride } from './env.js';
+import {
+  currentMode,
+  envCandidatePaths,
+  EnvFileSnapshot,
+  envFileNames,
+  envKeysFile,
+  packageEnvLayer,
+  type EnvOverride,
+} from './env.js';
 import {
   InfraControl,
   type InfraAction,
@@ -174,6 +182,9 @@ const MAX_BUFFER_LINES = 50_000;
  */
 const MAX_CHILD_RECORDS = 200;
 const WAIT_FOR_POLL_MS = 2000;
+
+/** How long the session's first `.env` read may take before the log says what it waits on. */
+const ENV_LOAD_NOTICE_MS = 3000;
 /**
  * Floor on a package's healthcheck cadence, measured from the **start** of the previous probe:
  * a probe that settles quickly is followed by an idle gap, while one that runs past this (a slow
@@ -268,6 +279,23 @@ export class ProcessManager implements ControlManager {
   private envVars?: Record<string, string>;
   /** Workspace root that package `relativeDir`s resolve against for `.env` loading. */
   private cwd: string;
+  /**
+   * The `.env` files as last read, which every spawn's environment comes from: read as the session
+   * starts, then again on each change the watcher sees and before each restart and rebuild, never
+   * on this thread (see {@link EnvFileSnapshot} for why).
+   */
+  private readonly envSnapshot = new EnvFileSnapshot();
+  /**
+   * Whether the session's first read of its `.env` files is done. Until it is, nothing spawns: a
+   * service started meanwhile waits for it (see {@link start}), and the file watchers start after.
+   */
+  private envLoaded = false;
+  /** Settles once {@link envLoaded} is set. */
+  private envLoad: Promise<void> = Promise.resolve();
+  /** The services started before {@link envLoaded}, to start once it is. */
+  private readonly startOnEnvLoad = new Set<string>();
+  /** Warns that the first `.env` read is taking long, naming the file it waits on. */
+  private envLoadNotice: ReturnType<typeof setTimeout> | null = null;
   /** Tears down the `.env` file watchers; null until `startAll` wires them up. */
   private envWatchDispose: (() => void) | null = null;
   /** Bound `process.on('exit')` handler, kept so `dispose()` can remove it. */
@@ -423,6 +451,37 @@ export class ProcessManager implements ControlManager {
             },
             track: (proc, dir) => this.trackChild(proc, dir),
           });
+
+    this.loadEnv(sortedPackages);
+  }
+
+  /**
+   * The session's first read of its `.env` files, in the background. Nothing spawns until it is
+   * done, and if it takes long the log says which file it waits on: macOS holds a read of a File
+   * Provider folder (Dropbox, iCloud) until the user answers its prompt to allow access.
+   */
+  private loadEnv(pkgs: AnyServiceConfig[]): void {
+    this.envLoadNotice = setTimeout(() => {
+      this.envLoadNotice = null;
+      const file = this.envSnapshot.reading;
+      this.systemLog.warn(
+        `waiting to read ${file ?? 'the .env files'} before starting services; if it is in a ` +
+          'cloud-synced folder, the system may be asking for permission to access it',
+      );
+    }, ENV_LOAD_NOTICE_MS);
+    this.envLoad = this.envSnapshot.refresh(this.envPaths(pkgs)).then(() => {
+      if (this.envLoadNotice) {
+        clearTimeout(this.envLoadNotice);
+        this.envLoadNotice = null;
+      }
+      this.envLoaded = true;
+      for (const name of this.startOnEnvLoad) {
+        if (this.processes.get(name)?.status === 'waiting') {
+          this.start(name);
+        }
+      }
+      this.startOnEnvLoad.clear();
+    });
   }
 
   /** Adds `pkg` to the session's processes, stopped, with its prefix in palette slot `index`. */
@@ -494,7 +553,13 @@ export class ProcessManager implements ControlManager {
     }
     this.ensureWaitingPoll();
     this.syncProbes();
-    this.startEnvWatchers();
+    // After the first read: a watcher reads its files as it starts, and a read that doesn't return
+    // must be the reader's to hold, not this process's (see `readEnvFiles`).
+    void this.envLoad.then(() => {
+      if (!this.closing && !this.disposed) {
+        this.startEnvWatchers();
+      }
+    });
     debugLog(`startAll: done, buffer.length=${this.buffer.length}`);
   }
 
@@ -597,6 +662,7 @@ export class ProcessManager implements ControlManager {
     }
     args.selectedSet.add(name);
     this.notifyServices();
+    await this.envSnapshot.refresh(this.envPaths(added));
 
     for (const pkg of added.filter((p) => deps.buildSet.has(p.name) && hasScript(p, 'build'))) {
       if (!(await this.buildAdded(this.processes.get(pkg.name)!))) {
@@ -838,6 +904,13 @@ export class ProcessManager implements ControlManager {
     if (this.closing || !managed || managed.status === 'running' || !managed.canDev) {
       return;
     }
+    if (!this.envLoaded) {
+      // Its environment isn't known yet: it waits for the first read, and a stop meanwhile, which
+      // takes it out of `waiting`, keeps it from starting.
+      managed.status = 'waiting';
+      this.startOnEnvLoad.add(name);
+      return;
+    }
 
     const pfx = managed.prefix;
     const { cmd, args, env } = getExecArgs(
@@ -902,7 +975,8 @@ export class ProcessManager implements ControlManager {
    * own variables and its resolved `.env` files (later files / package scope win), with the
    * package's configured `port` as `PORT` (and, under the dev reverse proxy, its public origin
    * as `PUBLIC_ORIGIN`) — which only a file of the package's own overrides. Re-resolved on
-   * every spawn so a restart picks up edited `.env` values. Never mutates `process.env`.
+   * every spawn from the files as last read ({@link envSnapshot}), so a restart picks up edited
+   * `.env` values. Never mutates `process.env`.
    */
   private packageEnv(pkg: AnyServiceConfig): NodeJS.ProcessEnv {
     return Object.assign(
@@ -913,8 +987,19 @@ export class ProcessManager implements ControlManager {
         files: this.envFiles,
         override: this.envOverride,
         vars: this.envVars,
+        read: this.envSnapshot.read,
       }),
     );
+  }
+
+  /** Every `.env` file `pkgs`' environments are resolved from, dotenvx's keys file included. */
+  private envPaths(pkgs: AnyServiceConfig[]): string[] {
+    return [
+      envKeysFile(),
+      ...pkgs.flatMap((pkg) =>
+        envCandidatePaths({ cwd: this.cwd, relativeDir: pkg.relativeDir, files: this.envFiles }),
+      ),
+    ];
   }
 
   /**
@@ -932,6 +1017,9 @@ export class ProcessManager implements ControlManager {
         dir: workspaceDir,
         filenames: this.envFiles,
         onChange: () => {
+          // A stopped service's next start reads the new values too; a running one's restart
+          // reads them again itself.
+          void this.envSnapshot.refresh();
           for (const name of this.processes.keys()) {
             this.restartForEnvChange(name);
           }
@@ -947,7 +1035,10 @@ export class ProcessManager implements ControlManager {
       targets.push({
         dir: pkgDir,
         filenames: this.envFiles,
-        onChange: () => this.restartForEnvChange(name),
+        onChange: () => {
+          void this.envSnapshot.refresh();
+          this.restartForEnvChange(name);
+        },
       });
     }
     this.envWatchDispose = watchEnvFiles({
@@ -1036,7 +1127,9 @@ export class ProcessManager implements ControlManager {
     this.transitions.set(name, 'restarting');
     try {
       await this.stop(name);
-      // A shutdown that began during the stop has the last word: nothing starts, nothing to report.
+      // A restart picks up what the `.env` files read as now, edited or not.
+      await this.envSnapshot.refresh();
+      // A shutdown that began meanwhile has the last word: nothing starts, nothing to report.
       if (this.closing) {
         return;
       }
@@ -1074,6 +1167,10 @@ export class ProcessManager implements ControlManager {
         return;
       }
       this.addLine(managed.prefix, chalk.yellow('rebuilding...'), managed.searchName, false);
+      await this.envSnapshot.refresh();
+      if (this.closing) {
+        return;
+      }
       // A clean rebuild is `build:clean`, or `clean` then `build` sequentially when the
       // package has no combined script/target — resolved identically for scripts and make.
       const commands = getRebuildCommands(managed.pkg, this.packageEnv(managed.pkg));
@@ -1130,28 +1227,41 @@ export class ProcessManager implements ControlManager {
   // One-off commands
   // ---------------------------------------------------------------------------
 
-  /** Run a named script/target for a package as a tracked one-off child process. */
+  /**
+   * Run a named script/target for a package as a tracked one-off child process: once the
+   * session's `.env` files are read, as everything it spawns.
+   */
   runCommand(name: string, scriptName: string): void {
     const managed = this.processes.get(name);
     if (!managed) {
       return;
     }
-    const { cmd, args, env } = getExecArgs(
-      managed.pkg,
-      scriptName,
-      [],
-      this.packageEnv(managed.pkg),
-    );
-    this.spawnExtra(managed, cmd, args, env, scriptName, false);
+    void this.envLoad.then(() => {
+      if (this.closing) {
+        return;
+      }
+      const { cmd, args, env } = getExecArgs(
+        managed.pkg,
+        scriptName,
+        [],
+        this.packageEnv(managed.pkg),
+      );
+      this.spawnExtra(managed, cmd, args, env, scriptName, false);
+    });
   }
 
-  /** Run an arbitrary shell command string for a package (pipes/redirects allowed). */
+  /** Run an arbitrary shell command string for a package (pipes/redirects allowed), like {@link runCommand}. */
   runCustomCommand(name: string, commandString: string): void {
     const managed = this.processes.get(name);
     if (!managed) {
       return;
     }
-    this.spawnExtra(managed, commandString, [], this.packageEnv(managed.pkg), commandString, true);
+    void this.envLoad.then(() => {
+      if (this.closing) {
+        return;
+      }
+      this.spawnExtra(managed, commandString, [], this.packageEnv(managed.pkg), commandString, true); // oxfmt-ignore
+    });
   }
 
   /**
@@ -1361,6 +1471,11 @@ export class ProcessManager implements ControlManager {
     this.disposed = true;
     this.infra?.stop();
     this.stopAllProbes();
+    this.envSnapshot.dispose();
+    if (this.envLoadNotice) {
+      clearTimeout(this.envLoadNotice);
+      this.envLoadNotice = null;
+    }
     if (this.waitingPollTimer) {
       clearInterval(this.waitingPollTimer);
       this.waitingPollTimer = null;
@@ -1549,6 +1664,8 @@ export class ProcessManager implements ControlManager {
           return 'unavailable';
         }
         this.start(name);
+        // Done once it has started: one started before the `.env` files are read starts with them.
+        await this.envLoad;
         return 'done';
       case 'stop':
         if (this.transitions.has(name)) {
@@ -1930,8 +2047,10 @@ export class ProcessManager implements ControlManager {
       this.buffer.splice(0, this.buffer.length - MAX_BUFFER_LINES);
     }
 
-    const plainLine = `${ts} ${stripAnsi(prefix)}${stripAnsi(raw)}\n`;
-    fs.writeSync(this.logFd, plainLine);
+    // Not once disposed: the descriptor is closed, and its number may be another file's by now.
+    if (!this.disposed) {
+      fs.writeSync(this.logFd, `${ts} ${stripAnsi(prefix)}${stripAnsi(raw)}\n`);
+    }
 
     debugLog(`addLine: visibleLineCount=${this.visibleLineCount} searchName="${searchName}"`);
     // Plain mode streams each line straight to stdout; the interactive

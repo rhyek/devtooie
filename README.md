@@ -296,6 +296,15 @@ Files for a mode, **ascending precedence within a scope**:
 The two `.local` files are the personal tier — commit `.env` and `.env.<mode>`, and keep
 `.env*.local` out of git.
 
+**A file that can't be read yet holds the services back, not the session.** macOS, for one,
+holds a read of a Dropbox or iCloud folder until you allow access. Until a session has read its
+files, its services wait (status `waiting`), and after a few seconds its log names the file it
+is waiting on; the session still answers its [control API](docs/control-api.md) and stops when
+asked. Two reads come earlier, and say nothing while they wait. A file a config callback reads
+(`env.vars`, a `port` or `urls` callback) is read as the config loads, before the session
+starts: Ctrl+C or a signal still stops devtooie there. With [infra](docs/infra.md), the
+workspace's files are read before the infra comes up.
+
 **Service scope overrides workspace scope**, and within a scope a later file
 overrides an earlier one. A `${VAR}` reference expands to the value that wins for
 that variable: the ambient environment's, or the already-loaded files' where the
