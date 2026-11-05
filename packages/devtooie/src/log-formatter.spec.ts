@@ -131,7 +131,7 @@ describe('createFormatter', () => {
       const seen: unknown[] = [];
       const f = fmt((log) => {
         seen.push(log.context);
-        return { fields: { custom: log.context === 'ingest' ? { when: 'at' } : {} } };
+        return { fields: log.context === 'ingest' ? { custom: { when: 'at' } } : {} };
       });
       expect(f('{"level":"INFO","msg":"a","context":"ingest","at":"T"}')).toBe('[INFO] a\n  context: ingest\n  when: T'); // oxfmt-ignore
       expect(f('{"level":"INFO","msg":"b","context":"other","at":"T"}')).toBe('[INFO] b\n  context: other\n  at: T'); // oxfmt-ignore

@@ -20,6 +20,13 @@ import {
   type Selection,
 } from './selection.js';
 
+// What every resolved service has and these fixtures don't vary: the command a config naming a
+// plain script resolves to (devtooie only reads its name and `cleans`), and no tokens.
+const SERVICE_DEFAULTS: Pick<AnyServiceConfig, 'command' | 'tokens'> = {
+  command: { name: 'dev', watches: true, builds: true, cleans: false },
+  tokens: {},
+};
+
 let dir: string;
 let logFile: string;
 let manager: ProcessManager | undefined;
@@ -85,8 +92,13 @@ describe('package prefix colors', () => {
     chalk.level = original;
   });
 
-  const p = (color?: string): AnyServiceConfig =>
-    ({ name: 'a', relativeDir: 'a', path: '/x', color }) as AnyServiceConfig;
+  const p = (color?: string): AnyServiceConfig => ({
+    ...SERVICE_DEFAULTS,
+    name: 'a',
+    relativeDir: 'a',
+    absoluteDir: '/x',
+    color,
+  });
 
   test('resolveColorSpec: hex (with or without #)', () => {
     expect(resolveColorSpec('#af87ff')('x')).toBe(chalk.hex('#af87ff')('x'));
@@ -119,7 +131,7 @@ describe('package prefix colors', () => {
 });
 
 function pkg(): AnyServiceConfig {
-  return { name: 'fixture', relativeDir: '.', absoluteDir: dir };
+  return { ...SERVICE_DEFAULTS, name: 'fixture', relativeDir: '.', absoluteDir: dir };
 }
 
 function runnerArgs(a: AnyServiceConfig): RunnerArgs {
@@ -177,14 +189,14 @@ describe('on-screen log timestamps', () => {
   // A control line tagged with a package's name shares that package's timestamp resolution,
   // so it's a spawn-free way to observe the per-package override.
   test("a package's logs.timestamps: true overrides a top-level default of false", () => {
-    const p: AnyServiceConfig = { name: 'fixture', relativeDir: '.', absoluteDir: dir, logs: { timestamps: true } }; // oxfmt-ignore
+    const p: AnyServiceConfig = { ...SERVICE_DEFAULTS, name: 'fixture', relativeDir: '.', absoluteDir: dir, logs: { timestamps: true } }; // oxfmt-ignore
     manager = new ProcessManager({ ...runnerArgs(p), logTimestamps: false });
     manager.logControl('hi', { service: 'fixture' });
     expect(lastRow(manager)).toMatch(TS);
   });
 
   test("a package's logs.timestamps: false overrides a top-level default of true", () => {
-    const p: AnyServiceConfig = { name: 'fixture', relativeDir: '.', absoluteDir: dir, logs: { timestamps: false } }; // oxfmt-ignore
+    const p: AnyServiceConfig = { ...SERVICE_DEFAULTS, name: 'fixture', relativeDir: '.', absoluteDir: dir, logs: { timestamps: false } }; // oxfmt-ignore
     manager = new ProcessManager({ ...runnerArgs(p), logTimestamps: true });
     manager.logControl('hi', { service: 'fixture' });
     expect(lastRow(manager)).not.toMatch(TS);
@@ -594,6 +606,7 @@ describe('ProcessManager', () => {
 
   test('logControl pads the [dt:control] label to align with the widest service name', () => {
     const wide: AnyServiceConfig = {
+      ...SERVICE_DEFAULTS,
       name: 'payments-worker',
       relativeDir: '.',
       absoluteDir: dir,
@@ -763,7 +776,12 @@ describe('ProcessManager env injection', () => {
   });
 
   test('injects resolved .env vars into the spawned dev process', async () => {
-    const a: AnyServiceConfig = { name: 'envfixture', relativeDir: '.', absoluteDir: envDir };
+    const a: AnyServiceConfig = {
+      ...SERVICE_DEFAULTS,
+      name: 'envfixture',
+      relativeDir: '.',
+      absoluteDir: envDir,
+    };
     mgr = new ProcessManager(
       {
         sortedPackages: [a],
@@ -789,7 +807,12 @@ describe('ProcessManager env injection', () => {
 
   test("gives the spawned dev process the config's own vars, under its .env vars", async () => {
     const varsLog = path.join(envDir, 'devlog-vars.txt');
-    const a: AnyServiceConfig = { name: 'envfixture', relativeDir: '.', absoluteDir: envDir };
+    const a: AnyServiceConfig = {
+      ...SERVICE_DEFAULTS,
+      name: 'envfixture',
+      relativeDir: '.',
+      absoluteDir: envDir,
+    };
     disposeManager(mgr);
     mgr = new ProcessManager(
       {
@@ -846,7 +869,8 @@ describe('ProcessManager PORT injection', () => {
       relativeDir: '.',
       absoluteDir: portDir,
       port: 4321,
-      command: { name: 'dev', watches: true, builds: true },
+      command: { name: 'dev', watches: true, builds: true, cleans: false },
+      tokens: {},
     };
     mgr = new ProcessManager(
       {
@@ -912,7 +936,12 @@ describe('ProcessManager child NODE_ENV inheritance', () => {
   });
 
   function makeManager(): ProcessManager {
-    const a: AnyServiceConfig = { name: 'nodeenvfix', relativeDir: '.', absoluteDir: dir };
+    const a: AnyServiceConfig = {
+      ...SERVICE_DEFAULTS,
+      name: 'nodeenvfix',
+      relativeDir: '.',
+      absoluteDir: dir,
+    };
     return new ProcessManager(
       {
         sortedPackages: [a],
@@ -991,7 +1020,12 @@ describe('ProcessManager NODE_ENV from a .env file', () => {
 
   test("uses the package's .env.development NODE_ENV even when the shell leaves it unset", async () => {
     delete process.env.NODE_ENV; // shell has no NODE_ENV
-    const a: AnyServiceConfig = { name: 'nodeenvdotenv', relativeDir: '.', absoluteDir: dir };
+    const a: AnyServiceConfig = {
+      ...SERVICE_DEFAULTS,
+      name: 'nodeenvdotenv',
+      relativeDir: '.',
+      absoluteDir: dir,
+    };
     mgr = new ProcessManager(
       {
         sortedPackages: [a],
@@ -1043,7 +1077,12 @@ describe('ProcessManager env-change restart', () => {
   });
 
   test('restarts a running package when its .env changes, picking up the new value', async () => {
-    const a: AnyServiceConfig = { name: 'wfixture', relativeDir: '.', absoluteDir: d };
+    const a: AnyServiceConfig = {
+      ...SERVICE_DEFAULTS,
+      name: 'wfixture',
+      relativeDir: '.',
+      absoluteDir: d,
+    };
     m = new ProcessManager(
       {
         sortedPackages: [a],
@@ -1102,7 +1141,12 @@ describe('ProcessManager reading its .env files', () => {
     const readFileSync = vi.spyOn(fs, 'readFileSync');
     const existsSync = vi.spyOn(fs, 'existsSync');
     const log = path.join(d, 'devlog.txt');
-    const a: AnyServiceConfig = { name: 'rfixture', relativeDir: '.', absoluteDir: d };
+    const a: AnyServiceConfig = {
+      ...SERVICE_DEFAULTS,
+      name: 'rfixture',
+      relativeDir: '.',
+      absoluteDir: d,
+    };
     m = new ProcessManager(
       {
         sortedPackages: [a],
@@ -1128,7 +1172,12 @@ describe('ProcessManager reading its .env files', () => {
 
   test('a one-off command run before they are read sees their values', async () => {
     const log = path.join(d, 'devlog.txt');
-    const a: AnyServiceConfig = { name: 'rfixture', relativeDir: '.', absoluteDir: d };
+    const a: AnyServiceConfig = {
+      ...SERVICE_DEFAULTS,
+      name: 'rfixture',
+      relativeDir: '.',
+      absoluteDir: d,
+    };
     m = new ProcessManager(
       {
         sortedPackages: [a],
@@ -1151,7 +1200,12 @@ describe('ProcessManager reading its .env files', () => {
 
   test('a service stopped while they are read stays stopped', async () => {
     const log = path.join(d, 'devlog.txt');
-    const a: AnyServiceConfig = { name: 'rfixture', relativeDir: '.', absoluteDir: d };
+    const a: AnyServiceConfig = {
+      ...SERVICE_DEFAULTS,
+      name: 'rfixture',
+      relativeDir: '.',
+      absoluteDir: d,
+    };
     m = new ProcessManager(
       {
         sortedPackages: [a],
@@ -1211,7 +1265,12 @@ describe.skipIf(process.platform === 'win32')(
     });
 
     test('keeps the event loop free through a restart, and starts once the file reads', async () => {
-      const a: AnyServiceConfig = { name: 'bfixture', relativeDir: '.', absoluteDir: d };
+      const a: AnyServiceConfig = {
+        ...SERVICE_DEFAULTS,
+        name: 'bfixture',
+        relativeDir: '.',
+        absoluteDir: d,
+      };
       m = new ProcessManager(
         {
           sortedPackages: [a],
@@ -1286,6 +1345,7 @@ describe('ProcessManager logs.formatter', () => {
 
   function argsWith(formatter?: (line: string) => string): RunnerArgs {
     const a: AnyServiceConfig = {
+      ...SERVICE_DEFAULTS,
       name: 'fmtfix',
       relativeDir: '.',
       absoluteDir: fmtDir,
@@ -1443,6 +1503,7 @@ describe('ProcessManager stderr color through a formatter', () => {
 
   function argsFor(formatter?: (line: string) => string): RunnerArgs {
     const a: AnyServiceConfig = {
+      ...SERVICE_DEFAULTS,
       name: 'errfix',
       relativeDir: '.',
       absoluteDir: errDir,
@@ -1525,6 +1586,7 @@ describe('ProcessManager healthcheck probing', () => {
     opts: { plain?: boolean } = {},
   ): ProcessManager {
     const packages: AnyServiceConfig[] = names.map((name) => ({
+      ...SERVICE_DEFAULTS,
       name,
       relativeDir: '.',
       absoluteDir: hcDir,
@@ -1683,7 +1745,12 @@ describe('ProcessManager rebuild (clean + build)', () => {
   });
 
   test('runs clean then build (in order) and restarts when there is no build:clean', async () => {
-    const a: AnyServiceConfig = { name: 'rbfix', relativeDir: '.', absoluteDir: rbDir };
+    const a: AnyServiceConfig = {
+      ...SERVICE_DEFAULTS,
+      name: 'rbfix',
+      relativeDir: '.',
+      absoluteDir: rbDir,
+    };
     mgr = new ProcessManager(
       {
         sortedPackages: [a],
@@ -1802,6 +1869,7 @@ describe('ProcessManager package script execution', () => {
     fakeBin(pkgDir, 'localbin');
     log = path.join(pkgDir, 'devlog.txt');
     const a: AnyServiceConfig = {
+      ...SERVICE_DEFAULTS,
       name: 'scriptfix',
       relativeDir: path.basename(pkgDir),
       absoluteDir: pkgDir,
@@ -2053,7 +2121,12 @@ describe('ProcessManager shutdown', () => {
       path.join(root, 'package.json'),
       JSON.stringify({ name: 'sdfix', version: '1.0.0', scripts: { dev: 'node child.js' } }),
     );
-    const a: AnyServiceConfig = { name: 'sdfix', relativeDir: '.', absoluteDir: root };
+    const a: AnyServiceConfig = {
+      ...SERVICE_DEFAULTS,
+      name: 'sdfix',
+      relativeDir: '.',
+      absoluteDir: root,
+    };
     mgr = new ProcessManager(
       {
         sortedPackages: [a],

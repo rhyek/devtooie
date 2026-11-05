@@ -3,7 +3,7 @@ import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { createInternalLogger, formatInternalRecord } from './internal-logger.js';
 
 // Deterministic, ANSI-free assertions on the rendered text.
-let prevLevel: number;
+let prevLevel: typeof chalk.level;
 beforeAll(() => {
   prevLevel = chalk.level;
   chalk.level = 0;
