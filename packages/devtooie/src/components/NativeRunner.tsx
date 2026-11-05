@@ -535,9 +535,13 @@ export function NativeRunner({
     useCallback((fn: () => void) => usage?.subscribe(fn) ?? (() => {}), [usage]),
     () => usage?.getVersion() ?? 0,
   );
-  /** A footer item's memory slot: always {@link MEMORY_WIDTH} wide, so the rows never re-wrap. */
-  const memorySlot = (text: string | undefined) =>
-    usage ? <Text dimColor>{` ${(text ?? '').padStart(MEMORY_WIDTH)}`}</Text> : null;
+  /**
+   * A footer item's memory, on the line under its name and lined up with the name, so the dot still
+   * stands out on its own. Always there and {@link MEMORY_WIDTH} wide, blank before the first
+   * reading and while the service isn't running, so the rows never re-wrap as figures come and go.
+   */
+  const memoryLine = (text: string | undefined) =>
+    usage ? <Text dimColor>{`  ${(text ?? '').padEnd(MEMORY_WIDTH)}`}</Text> : null;
   /** Each footer item's element, by cursor index: what ↑/↓ measure the layout from. */
   const itemRefs = useRef<(DOMElement | null)[]>([]);
   /** The reset awaiting its confirming `t`, if one was asked for. */
@@ -1267,23 +1271,26 @@ export function NativeRunner({
           <Box
             key={pkg.name}
             flexShrink={0}
+            flexDirection="column"
             ref={(el: DOMElement | null) => {
               itemRefs.current[i] = el;
             }}
           >
-            <Text color={color} dimColor={dim}>
-              ●
-            </Text>
-            <Text> </Text>
-            {/* Bold + underline, and no color: every hue in the footer already means
-                something (the dot's status, the accent, the notice), so the selection
-                is marked by weight and a rule instead. Bold carries it at a glance;
-                the underline is what makes it unambiguous which name is selected when
-                two sit side by side. */}
-            <Text bold={isFocused} underline={isFocused}>
-              {pkg.displayName}
-            </Text>
-            {memorySlot(usage?.memory(pkg.name))}
+            <Box flexShrink={0}>
+              <Text color={color} dimColor={dim}>
+                ●
+              </Text>
+              <Text> </Text>
+              {/* Bold + underline, and no color: every hue in the footer already means
+                  something (the dot's status, the accent, the notice), so the selection
+                  is marked by weight and a rule instead. Bold carries it at a glance;
+                  the underline is what makes it unambiguous which name is selected when
+                  two sit side by side. */}
+              <Text bold={isFocused} underline={isFocused}>
+                {pkg.displayName}
+              </Text>
+            </Box>
+            {memoryLine(usage?.memory(pkg.name))}
           </Box>
         );
       })}
@@ -1411,24 +1418,30 @@ export function NativeRunner({
                     <Box
                       key={`${service.provider}/${service.name}`}
                       flexShrink={0}
+                      flexDirection="column"
                       ref={(el: DOMElement | null) => {
                         itemRefs.current[index] = el;
                       }}
                     >
-                      <Text color={STATUS_COLORS[status]} dimColor={dim}>
-                        ●
-                      </Text>
-                      <Text> </Text>
-                      <Text bold={isFocused} underline={isFocused}>
-                        {service.name}
-                      </Text>
-                      {memorySlot(usage?.infraMemory(service.name))}
+                      <Box flexShrink={0}>
+                        <Text color={STATUS_COLORS[status]} dimColor={dim}>
+                          ●
+                        </Text>
+                        <Text> </Text>
+                        <Text bold={isFocused} underline={isFocused}>
+                          {service.name}
+                        </Text>
+                      </Box>
+                      {memoryLine(usage?.infraMemory(service.name))}
                     </Box>
                   );
                 })}
               </Box>
             )}
           </Box>
+          {/* Takes whatever height the links column has over this one, so `cwd:` and `logfile:`
+              sit on the footer's bottom edge however long the list of links runs. */}
+          <Box flexGrow={1} />
           <Box flexDirection="column" marginTop={1}>
             <Box columnGap={2}>
               <Text>

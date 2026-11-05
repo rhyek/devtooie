@@ -23,7 +23,7 @@ import {
   readSelection,
   initialPhaseFor,
   sortPackages,
-  depScore,
+  dependentScores,
   buildRunnerArgs,
   canRebuild,
   getRebuildCommands,
@@ -591,40 +591,47 @@ describe('display sort + runner args', () => {
     );
   }
 
-  test('orders by dependency weight (heaviest first), ties broken by name', () => {
+  test('orders the most depended-on first, ties broken by name', () => {
     const all = packages();
     const sorted = sortPackages(all).map((a) => a.name);
-    // web pulls in api + proxy (2), api pulls in proxy (1), proxy & lib-x pull in nothing (0).
-    // Zero-weight packages fall to the bottom, alphabetical among themselves.
-    expect(sorted).toEqual(['web', 'api', 'lib-x', 'proxy']);
+    // proxy is needed by api and web (2), api by web (1); nothing needs lib-x or web (0).
+    // The foundations lead; what nothing needs falls to the bottom, alphabetical among itself.
+    expect(sorted).toEqual(['proxy', 'api', 'lib-x', 'web']);
   });
 
-  test('depScore counts a dep reached via two kinds once per kind', () => {
-    const [both] = Object.values(
-      defineConfig({
-        serviceRootDir: 'packages',
-        workspaceDir: '/repo',
-        services: { both: { deps: { build: ['leaf'], runtime: ['leaf'] } }, leaf: {} },
-      }).services,
+  test('dependentScores counts a package needed two ways once per kind, transitively', () => {
+    defineConfig({
+      serviceRootDir: 'packages',
+      workspaceDir: '/repo',
+      services: {
+        app: { deps: { build: ['leaf'], runtime: ['mid'] } },
+        mid: { deps: { runtime: ['leaf'] } },
+        leaf: {},
+      },
+    });
+    // leaf: a build dep of app, a runtime dep of mid, and of app through mid — 3.
+    expect(dependentScores()).toEqual(
+      new Map([
+        ['app', 0],
+        ['mid', 1],
+        ['leaf', 3],
+      ]),
     );
-    // `leaf` is a build dep AND a runtime dep of `both`, so it counts twice.
-    expect(depScore(both!)).toBe(2);
   });
 
-  test('depScore is pure — repeated calls do not drain the package deps', () => {
+  test('dependentScores is pure — repeated calls do not drain the package deps', () => {
     const web = packages().find((a) => a.name === 'web')!;
     const before = [...(web.deps!.runtime ?? [])];
-    expect(depScore(web)).toBe(2);
-    expect(depScore(web)).toBe(2); // stable, not 1
+    expect(dependentScores().get('proxy')).toBe(2);
+    expect(dependentScores().get('proxy')).toBe(2); // stable
     expect(web.deps!.runtime).toEqual(before); // config array untouched
   });
 
-  test('gives a selected package one extra point, lifting it above equal-weight deps', () => {
+  test('among equals, a selected package comes before one only pulled in', () => {
     const all = packages();
-    // proxy (selectable:false, weight 0) selected; lib-x (weight 0) not.
-    const sorted = sortPackages(all, new Set(['proxy'])).map((a) => a.name);
-    // web(2) > api(1) > proxy(0+1=1) > lib-x(0). The selection point lifts proxy over lib-x.
-    expect(sorted).toEqual(['web', 'api', 'proxy', 'lib-x']);
+    // lib-x and web are both needed by nothing; web, selected, goes first despite the name.
+    const sorted = sortPackages(all, new Set(['web'])).map((a) => a.name);
+    expect(sorted).toEqual(['proxy', 'api', 'web', 'lib-x']);
   });
 
   test('buildRunnerArgs marks the selected set and produces sorted packages', () => {

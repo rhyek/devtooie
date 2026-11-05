@@ -34,7 +34,7 @@ It's a good reference for how a real workspace is wired: project-reference build
 - **Streamed, filterable logs.** Every service's output is streamed live into one combined
   view; in the TUI you can filter it down to a service or a search term (the `f` hotkey;
   matching is case- and accent-insensitive).
-- **Memory per service.** On Node 26.9+, the TUI's footer shows next to each service's name the
+- **Memory per service.** On Node 26.9+, the TUI's footer shows under each service's name the
   memory everything it runs uses. See [The footer's memory figures](#the-footers-memory-figures).
 - **Two run modes.** An interactive terminal UI, or a `--headless` log-streaming mode for
   coding agents — which can also start the stack in the background and wait until it's healthy,
@@ -1042,8 +1042,10 @@ the footer lists them once the session is running:
 
 ```
 ←→↑↓: select │ r: restart  b: rebuild  s: stop  m: commands
-● api  64M  ● web 474M
-infra:  ● db  23M  ● redis   6M
+● api   ● web
+  64M     474M
+infra:  ● db    ● redis
+          23M     6M
 
 cwd: example  git: main
 ```
@@ -2410,11 +2412,13 @@ devtooie to clear it.
 
 ## The footer's memory figures
 
-On Node 26.9+, the TUI's footer shows next to each service's name the memory it uses:
+On Node 26.9+, the TUI's footer shows under each service's name the memory it uses:
 
 ```
-● api  64M  ● web 474M
-infra:  ● db  23M  ● mail  22M
+● api   ● web
+  64M     474M
+infra:  ● db    ● mail
+          23M     22M
 ```
 
 - **A service's figure covers everything it runs**: its dev process and whatever that started

@@ -595,7 +595,7 @@ type DepKind = 'build' | 'dev' | 'runtime';
 
 /**
  * A package's direct deps for one kind; `build` folds in `tsconfig.build.json` project refs.
- * Always returns a fresh array — callers ({@link closureSize}) drain it in place, so it must
+ * Always returns a fresh array — callers ({@link closure}) drain it in place, so it must
  * never hand back the package's own `run.deps` array.
  */
 function directDeps(pkg: AnyServiceConfig, kind: DepKind): string[] {
@@ -605,8 +605,8 @@ function directDeps(pkg: AnyServiceConfig, kind: DepKind): string[] {
   return [...(pkg.deps?.[kind] ?? [])];
 }
 
-/** Size of the transitive closure reachable from `pkg` following only `kind` edges. */
-function closureSize(pkg: AnyServiceConfig, kind: DepKind): number {
+/** Every package reachable from `pkg` following only `kind` edges, `pkg` itself left out. */
+function closure(pkg: AnyServiceConfig, kind: DepKind): Set<string> {
   const seen = new Set<string>();
   const queue = directDeps(pkg, kind);
   while (queue.length) {
@@ -620,41 +620,44 @@ function closureSize(pkg: AnyServiceConfig, kind: DepKind): number {
       queue.push(...directDeps(dep, kind));
     }
   }
-  return seen.size;
+  return seen;
 }
 
 /**
- * A package's "weight": how many packages it pulls in across build, dev and runtime edges,
- * counted per edge type so a package reached via two kinds (e.g. build *and* runtime) counts
- * once per kind. Intrinsic to the dependency graph — independent of the current selection.
+ * Each registered package's weight as a foundation: how many packages need it, directly or through
+ * others, across build, dev and runtime edges, counted per edge type so a package needed two ways
+ * (e.g. as a build *and* a runtime dep) counts once per kind. Intrinsic to the dependency graph —
+ * independent of the current selection.
  */
-export function depScore(pkg: AnyServiceConfig): number {
-  return (['build', 'dev', 'runtime'] as const).reduce(
-    (sum, kind) => sum + closureSize(pkg, kind),
-    0,
-  );
+export function dependentScores(): Map<string, number> {
+  const packages = getRegisteredPackages();
+  const scores = new Map<string, number>(packages.map((a) => [a.name, 0]));
+  for (const kind of ['build', 'dev', 'runtime'] as const) {
+    for (const pkg of packages) {
+      for (const name of closure(pkg, kind)) {
+        if (scores.has(name)) {
+          scores.set(name, scores.get(name)! + 1);
+        }
+      }
+    }
+  }
+  return scores;
 }
 
 /**
- * A package's sort points: its `depScore` (dependency weight), plus one point if it was
- * explicitly selected in the picker. The selection point lifts a directly-chosen package
- * above equally-weighted deps that were only pulled in transitively.
- */
-export function packagePoints(pkg: AnyServiceConfig, selectedSet?: Set<string>): number {
-  return depScore(pkg) + (selectedSet?.has(pkg.name) ? 1 : 0);
-}
-
-/**
- * The one display order: most points first (`packagePoints` — dependency weight plus a point
- * for being selected), ties broken by name. Drives both the running process list and the
- * per-package URL column in the footer, and the interactive selector's list.
+ * The one display order: the most depended-on first ({@link dependentScores}), so the services
+ * everything else needs lead and the ones nothing needs come last. Among equals, a package picked
+ * in the selector comes before one only pulled in as a dependency, then by name. Drives the
+ * running footer, its per-service URL column, and the interactive selector's list.
  */
 export function sortPackages(
   packages: AnyServiceConfig[],
   selectedSet?: Set<string>,
 ): AnyServiceConfig[] {
-  const score = new Map(packages.map((a) => [a.name, packagePoints(a, selectedSet)] as const));
-  return [...packages].sort((a, b) => score.get(b.name)! - score.get(a.name)! || byName(a, b));
+  const scores = dependentScores();
+  const score = (a: AnyServiceConfig) => scores.get(a.name) ?? 0;
+  const picked = (a: AnyServiceConfig) => (selectedSet?.has(a.name) ? 1 : 0);
+  return [...packages].sort((a, b) => score(b) - score(a) || picked(b) - picked(a) || byName(a, b));
 }
 
 /** Selectable, dev-scripted packages for the interactive selector, in display order. */

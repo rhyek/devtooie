@@ -56,8 +56,10 @@ infra service while it happens, and the footer lists them once the session is ru
 
 ```
 ←→↑↓: select │ r: restart  b: rebuild  s: stop  m: commands
-● api  64M  ● web 474M
-infra:  ● db  23M  ● redis   6M
+● api   ● web
+  64M     474M
+infra:  ● db    ● redis
+          23M     6M
 
 cwd: example  git: main
 ```
