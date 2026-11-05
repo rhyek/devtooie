@@ -7,7 +7,7 @@ import {
   findConfigPath,
   findWorkspaceRoot,
   formatConfigLoadFailure,
-  MIN_TS_CONFIG_NODE,
+  MIN_NODE,
   NoProjectConfigError,
 } from './load-config.js';
 
@@ -59,12 +59,12 @@ describe('formatConfigLoadFailure', () => {
     const msg = formatConfigLoadFailure('/w/devtooie.config.ts', err, 'v22.17.1');
     expect(msg).toContain('Unknown file extension ".ts"');
     expect(msg).toContain('v22.17.1');
-    expect(msg).toContain(`>=${MIN_TS_CONFIG_NODE}`);
+    expect(msg).toContain(`>=${MIN_NODE}`);
   });
 
   test('omits the Node hint for unrelated failures', () => {
     const msg = formatConfigLoadFailure('/w/devtooie.config.ts', new Error('boom'), 'v22.17.1');
-    expect(msg).not.toContain(MIN_TS_CONFIG_NODE);
+    expect(msg).not.toContain(MIN_NODE);
   });
 
   test('stringifies a non-Error throw', () => {

@@ -71,10 +71,8 @@ catcher whose web UI the dev reverse proxy routes like a service, so running it 
 
 ## Requirements
 
-- **Node ≥22.18.** `devtooie.config.ts` is imported directly, so it needs Node's native
-  TypeScript type-stripping — unflagged in 22.18 (and, on the 23.x line, 23.6).
-- **Node ≥26.9 for the footer's memory figures** (it reads them through `node:ffi`, on by
-  default from 26.9). On older Node everything else works, and the footer shows no figures.
+- **Node ≥26.12.1.** The dev reverse proxy relies on its HTTP agent never reusing a kept-alive
+  connection the service has already closed (a fix shipped in 26.12.1).
 - **Unix only** (macOS/Linux). Windows is not supported.
 - **pnpm.** A service that imports a workspace library resolves it through a pnpm workspace link
   (`workspace:*`).

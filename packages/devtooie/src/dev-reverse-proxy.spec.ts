@@ -1,8 +1,11 @@
 import http from 'node:http';
+import http2 from 'node:http2';
 import net from 'node:net';
+import { Duplex } from 'node:stream';
 import { describe, test, expect, afterEach, vi } from 'vitest';
 import { defineConfig } from './config.js';
 import {
+  UPSTREAM_MAX_SOCKETS,
   startDevReverseProxy,
   routesFromConfig,
   type DevReverseProxyManager,
@@ -147,7 +150,7 @@ interface Reply {
 function request(
   proxyPort: number,
   host: string,
-  opts: { path?: string; headers?: Record<string, string>; method?: string } = {},
+  opts: { path?: string; headers?: Record<string, string>; method?: string; body?: string } = {},
 ): Promise<Reply> {
   return new Promise((resolve, reject) => {
     const req = http.request(
@@ -166,7 +169,7 @@ function request(
       },
     );
     req.on('error', reject);
-    req.end();
+    req.end(opts.body);
   });
 }
 
@@ -455,6 +458,244 @@ describe('forwarding', () => {
     expect(reply.body).toBe('v6');
   });
 
+  test('opens at most UPSTREAM_MAX_SOCKETS connections to an upstream, however many requests arrive at once', async () => {
+    // A wave of page loads (hundreds of modules over HTTP/2 through a TLS terminator) must not
+    // become hundreds of simultaneous dials: past the listen backlog (128 on macOS) the kernel
+    // resets them, and each becomes a 502. Requests beyond the cap wait for a free socket.
+    let open = 0;
+    let maxOpen = 0;
+    const server = http.createServer((_req, res) => {
+      setTimeout(() => res.end('ok'), 30);
+    });
+    server.on('connection', (socket) => {
+      open++;
+      maxOpen = Math.max(maxOpen, open);
+      socket.on('close', () => open--);
+      cleanups.push(() => {
+        socket.destroy();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const port = (server.address() as net.AddressInfo).port;
+    const proxy = await proxyFor([route(`web.${ROOT}`, 'web', port)]);
+    proxy.attach(stubManager({ web: 'running' }));
+
+    // The client stays under the proxy's own backlog, as a terminator's connection pool would.
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 100 });
+    cleanups.push(() => agent.destroy());
+    const replies = await Promise.all(
+      Array.from(
+        { length: 300 },
+        () =>
+          new Promise<number>((resolve, reject) => {
+            const req = http.request(
+              { host: '127.0.0.1', port: proxy.port, agent, headers: { host: `web.${ROOT}` } },
+              (res) => {
+                res.resume();
+                res.on('end', () => resolve(res.statusCode ?? 0));
+              },
+            );
+            req.on('error', reject);
+            req.end();
+          }),
+      ),
+    );
+    expect(replies.filter((status) => status !== 200)).toEqual([]);
+    expect(maxOpen).toBeLessThanOrEqual(UPSTREAM_MAX_SOCKETS);
+  });
+
+  test("keeps a client's idle connection open past Node's 5 s default, as a terminator's pool expects", async () => {
+    // A TLS terminator keeps its connections to the proxy pooled for minutes (Caddy: 2 min). Were
+    // the proxy to close an idle one first, a request the terminator sends on it as it closes is
+    // reset, and the terminator answers 502.
+    const web = await upstream('web');
+    const proxy = await proxyFor([route(`web.${ROOT}`, 'web', web.port)]);
+    proxy.attach(stubManager({ web: 'running' }));
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+    cleanups.push(() => agent.destroy());
+    const get = () =>
+      new Promise<{ status: number; reused: boolean }>((resolve, reject) => {
+        const req = http.request(
+          { host: '127.0.0.1', port: proxy.port, agent, headers: { host: `web.${ROOT}` } },
+          (res) => {
+            res.resume();
+            res.on('end', () => resolve({ status: res.statusCode ?? 0, reused: req.reusedSocket }));
+          },
+        );
+        req.on('error', reject);
+        req.end();
+      });
+    expect(await get()).toEqual({ status: 200, reused: false });
+    await new Promise((resolve) => setTimeout(resolve, 6_000));
+    expect(await get()).toEqual({ status: 200, reused: true });
+  }, 15_000);
+
+  test("closes an idle upstream connection itself, before the upstream's announced keep-alive timeout", async () => {
+    // Node's servers close an idle connection after 5 s and say so (`Keep-Alive: timeout=5`). A
+    // request sent on one as the upstream closes it is reset: the proxy must let go first.
+    const server = http.createServer((_req, res) => res.end('ok'));
+    server.keepAliveTimeout = 3_000;
+    let closedAfterMs: number | undefined;
+    let answeredAt = 0;
+    server.on('request', (_req, res) => res.on('finish', () => (answeredAt = Date.now())));
+    server.on('connection', (socket) => {
+      socket.on('close', () => (closedAfterMs = Date.now() - answeredAt));
+      cleanups.push(() => {
+        socket.destroy();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const port = (server.address() as net.AddressInfo).port;
+    const proxy = await proxyFor([route(`web.${ROOT}`, 'web', port)]);
+    proxy.attach(stubManager({ web: 'running' }));
+
+    expect((await request(proxy.port, `web.${ROOT}`)).status).toBe(200);
+    await vi.waitFor(() => expect(closedAfterMs).toBeDefined(), { timeout: 3_500 });
+    expect(closedAfterMs).toBeLessThan(2_500);
+  });
+
+  test('closes an idle upstream connection within a second when the upstream announces no timeout', async () => {
+    // Servers other than Node's close idle connections when they choose, without saying when
+    // (Go's after its IdleTimeout, gunicorn after 2 s). A request sent on one as the upstream
+    // closes it is reset, so the proxy lets go first, before any timeout a server commonly uses.
+    let closedAfterMs: number | undefined;
+    const server = net.createServer((socket) => {
+      socket.once('data', () => {
+        socket.write('HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok');
+        const answeredAt = Date.now();
+        socket.on('close', () => (closedAfterMs = Date.now() - answeredAt));
+      });
+      socket.on('end', () => socket.end());
+      socket.on('error', () => {});
+      cleanups.push(() => {
+        socket.destroy();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const port = (server.address() as net.AddressInfo).port;
+    const proxy = await proxyFor([route(`web.${ROOT}`, 'web', port)]);
+    proxy.attach(stubManager({ web: 'running' }));
+
+    expect((await request(proxy.port, `web.${ROOT}`)).status).toBe(200);
+    await vi.waitFor(() => expect(closedAfterMs).toBeDefined(), { timeout: 2_000 });
+    expect(closedAfterMs).toBeLessThan(1_500);
+  });
+
+  test("learns an upstream's shorter idle timeout and closes its idle connections first", async () => {
+    // An upstream may close idle connections sooner than the proxy's second, without saying so.
+    // Once it has been seen doing it, the proxy closes that upstream's idle connections itself,
+    // before it would: a request sent on a connection as the upstream closes it is reset.
+    const closes: { by: 'proxy' | 'upstream'; afterMs: number }[] = [];
+    const server = net.createServer((socket) => {
+      let closedByUpstream = false;
+      let answeredAt = 0;
+      let idle: NodeJS.Timeout | undefined;
+      socket.on('data', () => {
+        clearTimeout(idle);
+        socket.write('HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok');
+        answeredAt = Date.now();
+        idle = setTimeout(() => {
+          closedByUpstream = true;
+          socket.end();
+        }, 300);
+      });
+      socket.on('end', () => socket.end());
+      socket.on('close', () => {
+        clearTimeout(idle);
+        closes.push({
+          by: closedByUpstream ? 'upstream' : 'proxy',
+          afterMs: Date.now() - answeredAt,
+        });
+      });
+      socket.on('error', () => {});
+      cleanups.push(() => {
+        socket.destroy();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const port = (server.address() as net.AddressInfo).port;
+    const proxy = await proxyFor([route(`web.${ROOT}`, 'web', port)]);
+    proxy.attach(stubManager({ web: 'running' }));
+
+    expect((await request(proxy.port, `web.${ROOT}`)).status).toBe(200);
+    await vi.waitFor(() => expect(closes).toHaveLength(1), { timeout: 2_000 });
+    expect(closes[0]!.by).toBe('upstream');
+
+    expect((await request(proxy.port, `web.${ROOT}`)).status).toBe(200);
+    await vi.waitFor(() => expect(closes).toHaveLength(2), { timeout: 2_000 });
+    expect(closes[1]!.by).toBe('proxy');
+    expect(closes[1]!.afterMs).toBeLessThan(300);
+  });
+
+  describe('an upstream that drops a request as it arrives', () => {
+    // The keep-alive race, made certain: each connection `drops` says so is destroyed when its
+    // nth request arrives, before answering it. Every other request is answered, and each body
+    // received is kept, by connection.
+    async function droppingUpstream(drops: (connection: number, request: number) => boolean) {
+      const bodies: string[][] = [];
+      const server = net.createServer((socket) => {
+        const nth = bodies.push([]);
+        let buffered = '';
+        socket.on('data', (chunk) => {
+          buffered += chunk.toString('latin1');
+          while (buffered.includes('\r\n\r\n')) {
+            const end = buffered.indexOf('\r\n\r\n') + 4;
+            const head = buffered.slice(0, end);
+            const length = Number(/content-length: *(\d+)/i.exec(head)?.[1] ?? 0);
+            if (buffered.length < end + length) {
+              return;
+            }
+            const received = bodies[nth - 1]!;
+            received.push(buffered.slice(end, end + length));
+            buffered = buffered.slice(end + length);
+            if (drops(nth, received.length)) {
+              socket.destroy();
+              return;
+            }
+            socket.write(
+              'HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: keep-alive\r\n\r\nok',
+            );
+          }
+        });
+        socket.on('error', () => {});
+        cleanups.push(() => {
+          socket.destroy();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+      return { port: (server.address() as net.AddressInfo).port, bodies };
+    }
+
+    test('never sends a request again: one dropped on a reused connection is a 502, the next goes through', async () => {
+      // The proxy passes requests through; sending one twice is for the client to decide.
+      const upstream = await droppingUpstream((connection, nth) => connection === 1 && nth === 2);
+      const proxy = await proxyFor([route(`web.${ROOT}`, 'web', upstream.port)]);
+      proxy.attach(stubManager({ web: 'running' }));
+      expect((await request(proxy.port, `web.${ROOT}`)).status).toBe(200);
+      const post = await request(proxy.port, `web.${ROOT}`, {
+        method: 'POST',
+        headers: { 'content-length': '5' },
+        body: 'hello',
+      });
+      expect(post.status).toBe(502);
+      expect((await request(proxy.port, `web.${ROOT}`)).status).toBe(200);
+      expect(upstream.bodies).toEqual([['', 'hello'], ['']]);
+    });
+
+    test('never sends a request again: one dropped on a new connection is a 502', async () => {
+      const upstream = await droppingUpstream(() => true);
+      const proxy = await proxyFor([route(`web.${ROOT}`, 'web', upstream.port)]);
+      proxy.attach(stubManager({ web: 'running' }));
+      expect((await request(proxy.port, `web.${ROOT}`)).status).toBe(502);
+      expect(upstream.bodies).toHaveLength(1);
+    });
+  });
+
   test('turns an upstream refusing the connection into a 502 naming the package and port', async () => {
     const port = await deadPort();
     const proxy = await proxyFor([route(`web.${ROOT}`, 'web', port)]);
@@ -465,6 +706,252 @@ describe('forwarding', () => {
     expect(reply.headers['cache-control']).toBe('no-store');
     expect(reply.body).toContain('web');
     expect(reply.body).toContain(String(port));
+  });
+});
+
+describe('h2c (HTTP/2 without TLS) on the same port', () => {
+  /** A cleartext HTTP/2 session to the proxy, closed after the test. */
+  function h2session(proxyPort: number): http2.ClientHttp2Session {
+    const session = http2.connect(`http://127.0.0.1:${String(proxyPort)}`);
+    session.on('error', () => {});
+    cleanups.push(
+      () =>
+        new Promise<void>((resolve) => {
+          // A session the server already closed never calls back.
+          if (session.closed || session.destroyed) {
+            resolve();
+          } else {
+            session.close(() => resolve());
+          }
+        }),
+    );
+    return session;
+  }
+
+  /** One request on `session`, with `host` as `:authority`. */
+  function h2request(
+    session: http2.ClientHttp2Session,
+    host: string,
+    opts: { path?: string; headers?: Record<string, string> } = {},
+  ): Promise<Reply> {
+    return new Promise((resolve, reject) => {
+      const stream = session.request({
+        ':method': 'GET',
+        ':path': opts.path ?? '/',
+        ':authority': host,
+        ...opts.headers,
+      });
+      let status = 0;
+      let headers: http.IncomingHttpHeaders = {};
+      let body = '';
+      stream.setEncoding('utf8');
+      stream.on('response', (h) => {
+        status = Number(h[':status']);
+        headers = h as http.IncomingHttpHeaders;
+      });
+      stream.on('data', (chunk: string) => (body += chunk));
+      stream.on('end', () => resolve({ status, headers, body }));
+      stream.on('error', reject);
+      stream.end();
+    });
+  }
+
+  test('multiplexes many requests over one connection, each reaching the upstream with its Host and headers', async () => {
+    // A TLS terminator that speaks h2c to the proxy sends a whole page load's requests as
+    // streams of one connection, instead of opening a connection per request.
+    const web = await upstream('web');
+    const proxy = await proxyFor([route(`web.${ROOT}`, 'web', web.port)]);
+    proxy.attach(stubManager({ web: 'running' }));
+    const session = h2session(proxy.port);
+    const replies = await Promise.all(
+      Array.from({ length: 200 }, (_, i) =>
+        h2request(session, `web.${ROOT}`, {
+          path: `/m${String(i)}`,
+          headers: { 'x-custom': 'abc' },
+        }),
+      ),
+    );
+    expect(replies.filter((r) => r.status !== 200)).toEqual([]);
+    expect(JSON.parse(replies[7]!.body)).toMatchObject({
+      host: `web.${ROOT}`,
+      url: '/m7',
+      custom: 'abc',
+    });
+    expect(replies[7]!.headers['x-custom-echo']).toBe('abc');
+  });
+
+  test('answers the status pages over h2c too', async () => {
+    const web = await upstream('web');
+    const proxy = await proxyFor([route(`web.${ROOT}`, 'web', web.port)]);
+    proxy.attach(stubManager({ web: 'stopped' }));
+    const reply = await h2request(h2session(proxy.port), `web.${ROOT}`);
+    expect(reply.status).toBe(503);
+    expect(JSON.parse(reply.body)).toMatchObject({ service: 'web', status: 'stopped' });
+    expect(reply.headers['retry-after']).toBe('2');
+  });
+
+  test('tells the protocols apart when the first bytes arrive in pieces', async () => {
+    // The proxy reads a connection's first bytes to choose its protocol, then hands the socket to
+    // the server for it with those bytes put back: nothing may be lost when they come in pieces.
+    const web = await upstream('web');
+    const proxy = await proxyFor([route(`web.${ROOT}`, 'web', web.port)]);
+    proxy.attach(stubManager({ web: 'running' }));
+    const pause = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+    const h1 = net.connect(proxy.port, '127.0.0.1');
+    cleanups.push(() => {
+      h1.destroy();
+    });
+    let h1reply = '';
+    h1.setEncoding('latin1');
+    h1.on('data', (d: string) => (h1reply += d));
+    await new Promise((resolve) => h1.once('connect', resolve));
+    h1.write('GE');
+    await pause();
+    h1.write(`T / HTTP/1.1\r\nhost: web.${ROOT}\r\nconnection: close\r\n\r\n`);
+    await vi.waitFor(() => expect(h1reply).toMatch(/^HTTP\/1\.1 200/));
+
+    // An HTTP/2 client over a transport that sends its first write (the preface) in two pieces.
+    const raw = net.connect(proxy.port, '127.0.0.1');
+    let first = true;
+    const transport = new Duplex({
+      read() {},
+      write(chunk: Buffer, _encoding, callback) {
+        if (!first) {
+          raw.write(chunk, callback);
+          return;
+        }
+        first = false;
+        raw.write(chunk.subarray(0, 10));
+        void pause().then(() => raw.write(chunk.subarray(10), callback));
+      },
+      destroy(err, callback) {
+        raw.destroy();
+        callback(err);
+      },
+    });
+    raw.on('data', (d) => transport.push(d));
+    raw.on('end', () => transport.push(null));
+    const session = http2.connect(`http://127.0.0.1:${String(proxy.port)}`, {
+      createConnection: () => transport,
+    });
+    session.on('error', () => {});
+    cleanups.push(() => {
+      session.destroy();
+      raw.destroy();
+    });
+    expect((await h2request(session, `web.${ROOT}`)).status).toBe(200);
+  });
+
+  test('never resets a stream whose client still holds its request side open', async () => {
+    // A terminator may keep a GET's request side open after its headers: Caddy does for a request
+    // of unknown length, as an HTTP/3 one without content-length is. Node resets (NO_ERROR) a
+    // server stream whose request was never read as soon as its response is written, and on a
+    // busy connection the reset can reach the terminator before the response's end, which then
+    // drops the response as incomplete. The stream must stay open until the client ends it.
+    const web = await upstream('web');
+    const proxy = await proxyFor([route(`web.${ROOT}`, 'web', web.port)]);
+    proxy.attach(stubManager({ web: 'running' }));
+    const session = h2session(proxy.port);
+    const results = await Promise.all(
+      Array.from(
+        { length: 20 },
+        () =>
+          new Promise<{ status: number; resetEarly: boolean }>((resolve) => {
+            const stream = session.request(
+              { ':method': 'GET', ':path': '/', ':authority': `web.${ROOT}` },
+              { endStream: false },
+            );
+            let status = 0;
+            let ended = false;
+            stream.on('response', (h) => (status = Number(h[':status'])));
+            stream.on('error', () => {});
+            stream.resume();
+            stream.on('close', () => resolve({ status, resetEarly: !ended }));
+            setTimeout(() => {
+              ended = true;
+              stream.end();
+            }, 300);
+          }),
+      ),
+    );
+    expect(results.filter((r) => r.status !== 200 || r.resetEarly)).toEqual([]);
+  });
+
+  test('never resets a stream it answers itself while its client holds the request side open', async () => {
+    // The same as above for the proxy's own answers (an unknown host, a package not running), which
+    // never read the request either.
+    const proxy = await proxyFor([]);
+    const session = h2session(proxy.port);
+    const result = await new Promise<{ status: number; resetEarly: boolean }>((resolve) => {
+      const stream = session.request(
+        { ':method': 'GET', ':path': '/', ':authority': `nope.${ROOT}` },
+        { endStream: false },
+      );
+      let status = 0;
+      let ended = false;
+      stream.on('response', (h) => (status = Number(h[':status'])));
+      stream.on('error', () => {});
+      stream.resume();
+      stream.on('close', () => resolve({ status, resetEarly: !ended }));
+      setTimeout(() => {
+        ended = true;
+        stream.end();
+      }, 300);
+    });
+    expect(result).toEqual({ status: 404, resetEarly: false });
+  });
+
+  test('keeps the connection open through thousands of cancelled requests', async () => {
+    // Every request a TLS terminator multiplexes shares this one connection, so each page the
+    // browser closes or reloads mid-load cancels its in-flight requests on it. Node's defence
+    // against "rapid reset" floods would close the whole connection after about a thousand,
+    // failing every other request on it.
+    const web = await upstream('web');
+    const proxy = await proxyFor([route(`web.${ROOT}`, 'web', web.port)]);
+    proxy.attach(stubManager({ web: 'running' }));
+    const session = h2session(proxy.port);
+    let goaway: number | null = null;
+    session.on('goaway', (code) => (goaway = code));
+    await Promise.all(
+      Array.from(
+        { length: 3000 },
+        () =>
+          new Promise<void>((resolve) => {
+            const stream = session.request({
+              ':method': 'GET',
+              ':path': '/',
+              ':authority': `web.${ROOT}`,
+            });
+            stream.on('error', () => {});
+            stream.on('close', () => resolve());
+            stream.end();
+            setImmediate(() => stream.close(http2.constants.NGHTTP2_CANCEL));
+          }),
+      ),
+    );
+    const after = await h2request(session, `web.${ROOT}`);
+    expect(goaway).toBeNull();
+    expect(after.status).toBe(200);
+  });
+
+  test('turns an upstream refusing the connection into the same 502 over h2c', async () => {
+    const port = await deadPort();
+    const proxy = await proxyFor([route(`web.${ROOT}`, 'web', port)]);
+    proxy.attach(stubManager({ web: 'running' }));
+    const reply = await h2request(h2session(proxy.port), `web.${ROOT}`);
+    expect(reply.status).toBe(502);
+    expect(reply.headers['retry-after']).toBe('1');
+  });
+
+  test('keeps serving HTTP/1.1 and websocket upgrades on the same port', async () => {
+    const web = await upstream('web');
+    const proxy = await proxyFor([route(`web.${ROOT}`, 'web', web.port)]);
+    proxy.attach(stubManager({ web: 'running' }));
+    h2session(proxy.port); // an h2c connection open alongside
+    expect((await request(proxy.port, `web.${ROOT}`)).status).toBe(200);
+    const { res } = await upgrade(proxy.port, `web.${ROOT}`);
+    expect(res.statusCode).toBe(101);
   });
 });
 

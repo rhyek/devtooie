@@ -121,11 +121,8 @@ mode's `.env` files, so pass the same `--mode` the session runs with.
 
 ## Requirements
 
-- **Node ≥22.18.** `devtooie.config.ts` is imported directly, so it needs Node's native
-  TypeScript type-stripping — unflagged in 22.18 (and, on the 23.x line, 23.6). On older Node
-  every command fails with `ERR_UNKNOWN_FILE_EXTENSION` for the config file.
-- **Node ≥26.9 for the TUI footer's memory figures** (read through `node:ffi`, on by default from
-  26.9). On older Node everything else works, and the footer shows no figures.
+- **Node ≥26.12.1.** The dev reverse proxy relies on its HTTP agent never reusing a kept-alive
+  connection the service has already closed (a fix shipped in 26.12.1).
 - **Unix only** (macOS/Linux). Windows is not supported.
 - **pnpm.** Workspace packages that depend on each other are resolved through pnpm workspace links
   (`workspace:*`).
@@ -823,8 +820,29 @@ form's, still matches at the service — and every other request and response he
 hop-by-hop ones (`connection`, `keep-alive`, `proxy-*`, `te`, `trailer`, `transfer-encoding`,
 `upgrade`), which Node manages on each side. devtooie adds or rewrites no `X-Forwarded-*` —
 the TLS terminator in front already sets them. Bodies stream both ways; nothing is buffered,
-and the proxy has no request, response, or idle timeouts of its own, so SSE and long-lived
+and the proxy has no request or response timeouts of its own, so SSE and long-lived
 connections survive.
+
+The proxy speaks HTTP/1.1 and HTTP/2 without TLS (h2c) on the same port, telling them apart
+by how each connection opens. A TLS terminator that speaks h2c to it sends a whole page load as
+streams of one connection (see [The TLS terminator](#the-tls-terminator)); a client that speaks
+HTTP/1.1, the browser included under plain `localhost`, is served as always. Requests cancelled
+on that connection, as a page closed or reloaded mid-load cancels its own, never close it: Node's
+limit on cancellations, a defence for servers facing the internet, is lifted.
+
+Connections are pooled on both sides. The proxy keeps a client's idle connection open for 10
+minutes, longer than a TLS terminator keeps one in its pool (Caddy: 2 minutes), so the terminator
+always lets go first. To each service it holds at most 64 connections at a time: a page load that
+sends hundreds of module requests at once queues them rather than overflowing the service's listen
+backlog (128 connections on macOS, past which the kernel resets them). A request sent on a
+connection just as the service closes it is reset, so the proxy closes an idle connection to a
+service itself, after a second: most servers close idle ones without announcing when (Go's,
+gunicorn's, uvicorn's), and none of them commonly this soon. One that does announce it
+(`Keep-Alive: timeout=5`, from any Node server) has its connections closed 2 s before that when it
+comes sooner. A service seen closing an idle connection itself, sooner than that, has its idle
+connections closed after half as long from then on. Node never hands out an idle connection whose
+close is already waiting on it, which is why devtooie needs Node 26.12.1. The proxy never sends a
+request again: one the service drops is a 502.
 
 ### Status pages
 
@@ -963,12 +981,34 @@ the terminator with no port. With Caddy, one site block per project:
 ```caddyfile
 *.myproject.example.test, myproject.example.test {
   tls internal
-  reverse_proxy 127.0.0.1:4000
+
+  # Websocket upgrades (Vite's HMR) stay on HTTP/1.1.
+  @upgrade header Upgrade websocket
+  reverse_proxy @upgrade 127.0.0.1:4000
+
+  # Everything else is multiplexed over h2c.
+  reverse_proxy 127.0.0.1:4000 {
+    transport http {
+      versions h2c
+      max_conns_per_host 1
+    }
+  }
 }
 ```
 
 where `4000` is the project's `devReverseProxy.port`. Caddy sets `X-Forwarded-*` itself, which
 is why devtooie doesn't.
+
+**Speak h2c to the proxy.** A dev server serves each module as its own request, so a page load
+is hundreds of requests at once. Over HTTP/1.1 a terminator opens a connection for each one in
+flight, and past the proxy's listen backlog (128 connections on macOS) the kernel resets the
+rest, each a 502. Over h2c they are streams of one connection. `max_conns_per_host 1` keeps it
+one: Caddy's client shares an HTTP/2 connection only once it is up, so without it every request
+of a cold page load dials its own, and the burst overflows the backlog all the same. It limits
+connections, not requests. A websocket upgrade is an HTTP/1.1 request, which a terminator cannot
+carry over HTTP/2, hence its own `reverse_proxy` above. Any terminator that can send HTTP/2 without
+TLS to its upstream works the same way; one that can't still works over HTTP/1.1, where only a
+burst beyond the backlog fails (Linux's default backlog is 4096).
 
 ## Infra
 

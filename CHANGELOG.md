@@ -52,6 +52,7 @@
 
 ### Breaking changes
 
+- **devtooie needs Node 26.12.1 or later** — upgrade Node; 22.18 was enough before.
 - **`--plain` is `--headless`** — rename the flag in scripts that start a session without the TUI.
 - **The config's `packages` is `services`, and `-p/--package` is `-s/--service`** — rename the key in `devtooie.config.ts` and the flag in scripts; `/query/status` reports `services`, the exports `PackageType` and `findPackage` are `ServiceType` and `findService`, the `Package*` types are `Service*` (`ServiceName`, `ServiceConfig`, …), and `Register.packageConfigs` is `serviceConfigs`. See [docs/configuration.md](docs/configuration.md).
 - **A service's `subdomain` goes under `proxy`** — change `subdomain: 'api'` to `proxy: { subdomain: 'api' }`; a top-level `subdomain` is an error.

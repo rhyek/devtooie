@@ -1,5 +1,6 @@
 import http from 'node:http';
-import type net from 'node:net';
+import http2 from 'node:http2';
+import net from 'node:net';
 import type { Duplex } from 'node:stream';
 import type { Config } from './config.js';
 import { infraServicesOf, proxyHostsFor, serviceProxyHostsFor } from './config.js';
@@ -83,6 +84,111 @@ export interface DevReverseProxyServer {
 export const READY_HOLD_MS = 15_000;
 /** How often a held request re-checks readiness (the manager doesn't announce it). */
 const READY_POLL_MS = 250;
+/**
+ * The most connections the proxy holds open to one upstream at a time. A burst of requests beyond
+ * it waits for a free socket instead of dialling: a page load sends hundreds of module requests at
+ * once (a dev server serves each file on its own), and macOS caps a listener's queue of
+ * connections not yet accepted at 128 (`kern.ipc.somaxconn`), resetting the rest — each a 502.
+ */
+export const UPSTREAM_MAX_SOCKETS = 64;
+/**
+ * How long an idle connection to an upstream is kept. A request sent on a connection as the
+ * upstream closes it is reset, so the proxy lets go first. Most servers close idle connections
+ * without saying when (Go's at its `IdleTimeout`, gunicorn's at 2 s, uvicorn's at 5 s), so this is
+ * shorter than any timeout a server commonly uses; a page load's burst reuses its connections well
+ * within it, and a new connection on loopback costs next to nothing. One that announces its timeout
+ * (`Keep-Alive: timeout=5`, every Node server) is closed `UPSTREAM_CLOSE_EARLY_MS` before that when
+ * that comes sooner, and one seen closing an idle connection sooner has its own learned
+ * (`UpstreamAgent`). A request the upstream drops is a 502: the proxy never sends one again.
+ */
+const UPSTREAM_IDLE_MS = 1_000;
+const UPSTREAM_CLOSE_EARLY_MS = 2_000;
+/**
+ * How long the proxy keeps a client's idle connection open: longer than a TLS terminator keeps
+ * one in its pool (Caddy: 2 min), so the terminator always lets go first. Node's default, 5 s,
+ * would close connections the terminator still reuses, and each request caught by it is a 502.
+ */
+const CLIENT_IDLE_MS = 10 * 60_000;
+/**
+ * Node closes an HTTP/2 connection whose client cancels streams faster than about a thousand at
+ * once, then 33 a second: a defence against "rapid reset" floods (CVE-2023-44487). Over h2c every
+ * request a TLS terminator forwards shares one connection, and each page closed or reloaded
+ * mid-load cancels its in-flight requests on it, so a busy e2e suite would trip it and fail every
+ * other request on the connection. The proxy listens on loopback only, for one developer.
+ */
+const STREAM_RESETS_UNLIMITED = 2 ** 31 - 1;
+/** Methods whose requests carry no body unless they say so (`content-length`, `transfer-encoding`). */
+const BODYLESS_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * The pool of connections to the upstreams, which learns each upstream's idle timeout: when an
+ * upstream closes a connection that sat idle in the pool, it closes idle ones after that long, so
+ * from then on the proxy closes that upstream's idle connections itself, after half as long. (Node
+ * never hands out an idle connection whose close is already waiting on it; this keeps the upstream
+ * from closing one just as a request goes out on it.)
+ */
+class UpstreamAgent extends http.Agent {
+  /** Per upstream port, the idle timeout learned for it. */
+  readonly #learnedMs = new Map<number, number>();
+  /** Each idle connection: when it went back in the pool, and its upstream. */
+  readonly #idle = new WeakMap<net.Socket, { since: number; port: number }>();
+  readonly #watched = new WeakSet<net.Socket>();
+
+  override keepSocketAlive(socket: net.Socket): boolean {
+    const port = socket.remotePort;
+    const learned = port === undefined ? undefined : this.#learnedMs.get(port);
+    // Node keeps the socket only when this returns true; @types/node types it as void.
+    const kept = super.keepSocketAlive(socket) as unknown as boolean;
+    if (port === undefined || learned === 0 || !kept) {
+      return false;
+    }
+    if (learned !== undefined && learned < socket.timeout!) {
+      socket.setTimeout(learned);
+    }
+    this.#idle.set(socket, { since: Date.now(), port });
+    if (!this.#watched.has(socket)) {
+      this.#watched.add(socket);
+      // An idle connection the upstream closes is destroyed by Node at once, without 'end'.
+      // One the proxy closes itself times out first, and teaches nothing.
+      socket.on('timeout', () => this.#idle.delete(socket));
+      socket.once('close', () => {
+        const idle = this.#idle.get(socket);
+        if (idle) {
+          this.#learn(idle.port, Date.now() - idle.since);
+        }
+      });
+    }
+    return true;
+  }
+
+  override reuseSocket(socket: net.Socket, request: http.ClientRequest): void {
+    this.#idle.delete(socket);
+    super.reuseSocket(socket, request);
+  }
+
+  #learn(port: number, idleMs: number) {
+    const learned = Math.floor(idleMs / 2);
+    if (learned >= (this.#learnedMs.get(port) ?? Infinity)) {
+      return;
+    }
+    this.#learnedMs.set(port, learned);
+    // The pool's idle connections to it: closed now if they have already sat that long.
+    const now = Date.now();
+    for (const socket of Object.values(this.freeSockets).flat()) {
+      const idle = socket && this.#idle.get(socket);
+      if (!socket || idle?.port !== port) {
+        continue;
+      }
+      const left = learned - (now - idle.since);
+      if (left <= 0) {
+        this.#idle.delete(socket);
+        socket.destroy();
+      } else {
+        socket.setTimeout(left);
+      }
+    }
+  }
+}
 
 /**
  * Headers that describe the connection between two hops rather than the message itself.
@@ -100,6 +206,40 @@ const HOP_BY_HOP = new Set([
   'transfer-encoding',
   'upgrade',
 ]);
+
+/**
+ * A request the proxy answers: HTTP/1.1, or a stream of an h2c connection (HTTP/2 without TLS),
+ * which a TLS terminator in front can use to send a whole page load over one connection.
+ */
+type ProxyRequest = http.IncomingMessage | http2.Http2ServerRequest;
+type ProxyResponse = http.ServerResponse | http2.Http2ServerResponse;
+
+/** The first bytes of every HTTP/2 connection without TLS (RFC 9113, 3.4). */
+const H2_PREFACE = Buffer.from('PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n');
+
+/** The request's host: `Host` over HTTP/1.1, `:authority` over HTTP/2. */
+function hostHeaderOf(req: ProxyRequest): string | undefined {
+  const authority = req.headers[':authority'];
+  return req.headers.host ?? (typeof authority === 'string' ? authority : undefined);
+}
+
+/** Starts a response with no status message, on either protocol. */
+function writeHead(res: ProxyResponse, status: number, headers: http.OutgoingHttpHeaders) {
+  if (res instanceof http2.Http2ServerResponse) {
+    res.writeHead(status, headers);
+  } else {
+    res.writeHead(status, headers);
+  }
+}
+
+/** Drops a response mid-way: the connection over HTTP/1.1, the one stream over HTTP/2. */
+function abortResponse(res: ProxyResponse) {
+  if (res instanceof http2.Http2ServerResponse) {
+    res.stream.close(http2.constants.NGHTTP2_INTERNAL_ERROR);
+  } else {
+    res.destroy();
+  }
+}
 
 /**
  * The route table for a config, one entry per hostname: the packages' (`proxyHostsFor` order),
@@ -142,7 +282,7 @@ export function hostnameOf(hostHeader: string | undefined): string | null {
 }
 
 /** `true` when the request would rather have HTML than JSON. */
-function acceptsHtml(req: http.IncomingMessage): boolean {
+function acceptsHtml(req: ProxyRequest): boolean {
   return (req.headers.accept ?? '').includes('text/html');
 }
 
@@ -171,18 +311,21 @@ interface Problem {
   headers: Record<string, string>;
 }
 
-function sendProblem(req: http.IncomingMessage, res: http.ServerResponse, problem: Problem) {
+function sendProblem(req: ProxyRequest, res: ProxyResponse, problem: Problem) {
+  // The request is never needed, but read to its end: over HTTP/2, Node resets a stream whose
+  // request was never read as soon as its response is written (see `forward`).
+  req.resume();
   const headers = { 'cache-control': 'no-store', ...problem.headers };
   if (acceptsHtml(req)) {
     const items = problem.listItems?.length
       ? `<ul>${problem.listItems.map((i) => `<li><a href="${escapeHtml(i)}"><code>${escapeHtml(i)}</code></a></li>`).join('')}</ul>`
       : '';
     const body = problem.paragraphs.map((p) => `<p>${p}</p>`).join('') + items;
-    res.writeHead(problem.status, { ...headers, 'content-type': 'text/html; charset=utf-8' });
+    writeHead(res, problem.status, { ...headers, 'content-type': 'text/html; charset=utf-8' });
     res.end(page(problem.title, body));
     return;
   }
-  res.writeHead(problem.status, { ...headers, 'content-type': 'application/json' });
+  writeHead(res, problem.status, { ...headers, 'content-type': 'application/json' });
   res.end(JSON.stringify({ error: problem.title, ...problem.detail }));
 }
 
@@ -236,6 +379,18 @@ export async function startDevReverseProxy(opts: {
     sockets.add(socket);
     socket.once('close', () => sockets.delete(socket));
   };
+  /**
+   * The connections forwarded requests go out on: kept alive, at most `UPSTREAM_MAX_SOCKETS` per
+   * upstream, so a burst queues here rather than in the upstream's listen backlog, and each idle
+   * one closed before the upstream would close it. Websocket upgrades dial on their own, since an
+   * upgraded socket leaves any pool.
+   */
+  const upstreamAgent = new UpstreamAgent({
+    keepAlive: true,
+    maxSockets: UPSTREAM_MAX_SOCKETS,
+    timeout: UPSTREAM_IDLE_MS,
+    agentKeepAliveTimeoutBuffer: UPSTREAM_CLOSE_EARLY_MS,
+  });
 
   const restartHint = (name: string) =>
     opts.controlApiPort !== undefined
@@ -248,7 +403,7 @@ export async function startDevReverseProxy(opts: {
   const publicUrl = (host: string) =>
     `${urlScheme}://${host}${urlScheme === 'http' ? `:${String(port)}` : ''}`;
 
-  const notFound = (req: http.IncomingMessage, res: http.ServerResponse, host: string | null) => {
+  const notFound = (req: ProxyRequest, res: ProxyResponse, host: string | null) => {
     const urls = routes.map((r) => publicUrl(r.host));
     sendProblem(req, res, {
       status: 404,
@@ -269,8 +424,8 @@ export async function startDevReverseProxy(opts: {
    * restart is even something this session can do for it.
    */
   const unavailable = (
-    req: http.IncomingMessage,
-    res: http.ServerResponse,
+    req: ProxyRequest,
+    res: ProxyResponse,
     route: DevReverseProxyRoute & { kind: 'package' },
     status: string,
     managed: boolean,
@@ -300,8 +455,8 @@ export async function startDevReverseProxy(opts: {
 
   /** The 503 for an infra service while the session is still bringing the infra up. */
   const serviceStarting = (
-    req: http.IncomingMessage,
-    res: http.ServerResponse,
+    req: ProxyRequest,
+    res: ProxyResponse,
     route: DevReverseProxyRoute & { kind: 'service' },
   ) => {
     sendProblem(req, res, {
@@ -322,14 +477,14 @@ export async function startDevReverseProxy(opts: {
   };
 
   const badGateway = (
-    req: http.IncomingMessage,
-    res: http.ServerResponse,
+    req: ProxyRequest,
+    res: ProxyResponse,
     route: DevReverseProxyRoute,
     err: NodeJS.ErrnoException,
   ) => {
     // oxfmt-ignore
     if (res.headersSent) {
-      res.destroy();
+      abortResponse(res);
       return;
     }
     const target = route.kind === 'package' ? { service: route.package } : { infraService: route.service }; // oxfmt-ignore
@@ -360,11 +515,14 @@ export async function startDevReverseProxy(opts: {
     autoSelectFamily: true,
   });
 
-  /** Copies headers minus the hop-by-hop set (upgrades keep theirs — the handshake needs them). */
+  /**
+   * Copies headers minus the hop-by-hop set (upgrades keep theirs — the handshake needs them) and
+   * HTTP/2's pseudo-headers (`:path`, `:authority`…), which have no place in an HTTP/1.1 message.
+   */
   const endToEnd = (headers: http.IncomingHttpHeaders): http.OutgoingHttpHeaders => {
     const out: http.OutgoingHttpHeaders = {};
     for (const [name, value] of Object.entries(headers)) {
-      if (!HOP_BY_HOP.has(name) && value !== undefined) {
+      if (!HOP_BY_HOP.has(name) && !name.startsWith(':') && value !== undefined) {
         out[name] = value;
       }
     }
@@ -375,12 +533,10 @@ export async function startDevReverseProxy(opts: {
    * Resolves once the package can be forwarded to (`true`), or when it can't (`false`): status no
    * longer `running`, or the hold deadline passed. Re-checks on manager notifications and on a
    * short poll, since a readiness flip on its own doesn't notify. Also gives up if the client
-   * hangs up while waiting, so a held request can't outlive its socket.
+   * goes away while waiting (its connection, or over HTTP/2 its stream), so a held request can't
+   * outlive it.
    */
-  const waitUntilReady = (
-    route: DevReverseProxyRoute & { kind: 'package' },
-    req: http.IncomingMessage,
-  ) =>
+  const waitUntilReady = (route: DevReverseProxyRoute & { kind: 'package' }, res: ProxyResponse) =>
     // oxfmt-ignore
     new Promise<boolean>((resolve) => {
       const check = (): boolean => {
@@ -406,46 +562,62 @@ export async function startDevReverseProxy(opts: {
         unsubscribe();
         clearInterval(poll);
         clearTimeout(deadline);
-        req.socket.off('close', onClose);
+        res.off('close', onClose);
         resolve(ok);
       };
       const onClose = () => finish(false);
       const unsubscribe = manager?.subscribe(() => void check()) ?? (() => {});
       const poll = setInterval(check, READY_POLL_MS);
       const deadline = setTimeout(() => finish(false), readyTimeoutMs);
-      req.socket.once('close', onClose);
+      res.once('close', onClose);
       check();
     });
 
-  const forward = (
-    req: http.IncomingMessage,
-    res: http.ServerResponse,
-    route: DevReverseProxyRoute,
-  ) => {
+  const forward = (req: ProxyRequest, res: ProxyResponse, route: DevReverseProxyRoute) => {
     // oxfmt-ignore
     const upstream = http.request({
       ...upstreamAddress(route),
+      agent: upstreamAgent,
       method: req.method,
       path: req.url,
-      // `host` is kept as received — it's in `req.headers`, so Node won't synthesize one.
-      headers: endToEnd(req.headers),
+      // `host` is kept as received (from `:authority` over HTTP/2), so Node won't synthesize one.
+      headers: { ...endToEnd(req.headers), host: hostHeaderOf(req) },
     });
     upstream.on('response', (up) => {
-      res.writeHead(up.statusCode ?? 502, up.statusMessage, endToEnd(up.headers));
+      // HTTP/2 has no status message.
+      if (res instanceof http2.Http2ServerResponse) {
+        res.writeHead(up.statusCode ?? 502, endToEnd(up.headers));
+      } else {
+        res.writeHead(up.statusCode ?? 502, up.statusMessage, endToEnd(up.headers));
+      }
       up.pipe(res);
     });
     upstream.on('error', (err: NodeJS.ErrnoException) => badGateway(req, res, route, err));
+    const bodyless =
+      BODYLESS_METHODS.has(req.method ?? '') &&
+      req.headers['transfer-encoding'] === undefined &&
+      (req.headers['content-length'] ?? '0') === '0';
+    if (bodyless) {
+      // Sent at once: over HTTP/2 a request can leave its side open after its headers (Caddy does
+      // for one of unknown length), and piping it would forward a GET with a chunked body. Read
+      // the (empty) request to its end all the same: over HTTP/2, Node resets a stream whose
+      // request was never read as soon as its response is written, and a client still holding
+      // its side open can receive that reset before the response's end, and drop the response.
+      upstream.end();
+      req.resume();
+    } else {
+      req.pipe(upstream);
+    }
     // A client that leaves mid-request takes the upstream request with it.
     res.on('close', () => {
-      if (!res.writableFinished) {
+      if (!res.writableEnded) {
         upstream.destroy();
       }
     });
-    req.pipe(upstream);
   };
 
-  const handle = async (req: http.IncomingMessage, res: http.ServerResponse) => {
-    const host = hostnameOf(req.headers.host);
+  const handle = async (req: ProxyRequest, res: ProxyResponse) => {
+    const host = hostnameOf(hostHeaderOf(req));
     const route = host === null ? undefined : byHost.get(host);
     if (!route) {
       return notFound(req, res, host);
@@ -466,8 +638,10 @@ export async function startDevReverseProxy(opts: {
       return unavailable(req, res, route, status, true);
     }
     if (route.hasHealthcheck && !manager.isReady(route.package)) {
-      const ready = await waitUntilReady(route, req);
-      if (req.socket.destroyed) {
+      let gone = false;
+      res.once('close', () => (gone = true));
+      const ready = await waitUntilReady(route, res);
+      if (gone) {
         return;
       }
       if (!ready) {
@@ -485,7 +659,55 @@ export async function startDevReverseProxy(opts: {
   // the app in front and the package behind want them to.
   server.requestTimeout = 0;
   server.setTimeout(0);
-  server.on('connection', track);
+  server.keepAliveTimeout = CLIENT_IDLE_MS;
+
+  // The same requests over h2c. HTTP/2 needs no websocket path here: an upgrade is HTTP/1.1.
+  const h2server = http2.createServer(
+    {
+      streamResetBurst: STREAM_RESETS_UNLIMITED,
+      streamResetRate: STREAM_RESETS_UNLIMITED,
+    },
+    (req, res) => {
+      void handle(req, res);
+    },
+  );
+  h2server.setTimeout(0);
+  const sessions = new Set<http2.ServerHttp2Session>();
+  h2server.on('session', (session) => {
+    sessions.add(session);
+    session.once('close', () => sessions.delete(session));
+  });
+
+  /**
+   * Hands a new connection to the HTTP/2 server when it opens with HTTP/2's preface, else to the
+   * HTTP/1.1 one, both serving the same port. The bytes read to tell them apart are put back on the
+   * socket first: either server reads them from there (Node's HTTP/2 session takes a socket's
+   * buffered bytes before reading its handle), so both get the socket itself.
+   */
+  const dispatch = (socket: net.Socket) => {
+    track(socket);
+    socket.on('error', () => socket.destroy());
+    let seen = Buffer.alloc(0);
+    const onData = (chunk: Buffer) => {
+      seen = Buffer.concat([seen, chunk]);
+      const n = Math.min(seen.length, H2_PREFACE.length);
+      const h2 = seen.subarray(0, n).equals(H2_PREFACE.subarray(0, n));
+      if (h2 && seen.length < H2_PREFACE.length) {
+        return; // not enough to tell yet
+      }
+      socket.off('data', onData);
+      socket.pause();
+      socket.unshift(seen);
+      if (h2) {
+        h2server.emit('connection', socket);
+        return;
+      }
+      server.emit('connection', socket);
+      socket.resume();
+    };
+    socket.on('data', onData);
+  };
+  const listener = net.createServer(dispatch);
 
   server.on('upgrade', (req, socket, head) => {
     track(socket);
@@ -548,7 +770,7 @@ export async function startDevReverseProxy(opts: {
   });
 
   await new Promise<void>((resolve, reject) => {
-    server.once('error', (err: NodeJS.ErrnoException) => {
+    listener.once('error', (err: NodeJS.ErrnoException) => {
       reject(
         err.code === 'EADDRINUSE'
           ? new Error(
@@ -558,9 +780,9 @@ export async function startDevReverseProxy(opts: {
           : err,
       );
     });
-    server.listen(opts.port, '127.0.0.1', resolve);
+    listener.listen(opts.port, '127.0.0.1', resolve);
   });
-  port = (server.address() as net.AddressInfo).port;
+  port = (listener.address() as net.AddressInfo).port;
 
   return {
     port,
@@ -585,7 +807,11 @@ export async function startDevReverseProxy(opts: {
     },
     close() {
       return new Promise<void>((resolve) => {
-        server.close(() => resolve());
+        listener.close(() => resolve());
+        upstreamAgent.destroy();
+        for (const session of sessions) {
+          session.destroy();
+        }
         for (const socket of sockets) {
           socket.destroy();
         }

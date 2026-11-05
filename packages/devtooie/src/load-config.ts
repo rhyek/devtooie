@@ -18,11 +18,12 @@ export const CONFIG_NAMES = [
 ];
 
 /**
- * First Node release that can `import()` a TypeScript file without a flag — type-stripping was
- * unflagged in 22.18.0 (and, on the 23.x line, in 23.6.0). Below this a `devtooie.config.ts`
- * can't be loaded at all, which is why it's also the `engines.node` floor in package.json.
+ * The oldest Node devtooie runs on, its `engines.node` floor in package.json: the first 26.x whose
+ * HTTP agent checks a kept-alive connection for the upstream's close before reusing it
+ * (CVE-2026-105481), which the dev reverse proxy relies on. Far below it, a `devtooie.config.ts`
+ * can't be loaded at all (type-stripping was unflagged in 22.18.0).
  */
-export const MIN_TS_CONFIG_NODE = '22.18.0';
+export const MIN_NODE = '26.12.1';
 
 /**
  * Renders a config file that exists but wouldn't load. Deliberately distinct from "no config
@@ -39,7 +40,7 @@ export function formatConfigLoadFailure(
   const lines = [`Failed to load ${configPath}:`, detail];
   if ((err as { code?: unknown } | null | undefined)?.code === 'ERR_UNKNOWN_FILE_EXTENSION') {
     lines.push(
-      `\nNode ${nodeVersion} can't import TypeScript — devtooie needs Node >=${MIN_TS_CONFIG_NODE}.`,
+      `\nNode ${nodeVersion} can't import TypeScript — devtooie needs Node >=${MIN_NODE}.`,
     );
   }
   return lines.join('\n');

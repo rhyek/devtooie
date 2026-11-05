@@ -20,7 +20,7 @@
     "ink"
   ],
   "engines": {
-    "node": ">=22.18.0"
+    "node": ">=26.12.1"
   },
   "bin": {
     "devtooie": "./dist/cli.js"
