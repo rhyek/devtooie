@@ -5,7 +5,6 @@ import path from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   formatMemory,
-  hasDefaultFfi,
   libprocReader,
   loadLibproc,
   parseProcStat,
@@ -50,16 +49,6 @@ describe('shouldUpdate', () => {
 
   test('a drift that would print the same is no change', () => {
     expect(shouldUpdate(4.0 * 1024 * MiB, 4.04 * 1024 * MiB)).toBe(false);
-  });
-});
-
-describe('hasDefaultFfi', () => {
-  test('26.9 and later', () => {
-    expect(hasDefaultFfi('24.22.1')).toBe(false);
-    expect(hasDefaultFfi('26.8.0')).toBe(false);
-    expect(hasDefaultFfi('26.9.0')).toBe(true);
-    expect(hasDefaultFfi('26.13.0')).toBe(true);
-    expect(hasDefaultFfi('27.0.0')).toBe(true);
   });
 });
 
@@ -204,38 +193,32 @@ describe('libprocReader', () => {
   });
 });
 
-describe.runIf(os.platform() === 'darwin' && hasDefaultFfi())(
-  'loadLibproc (macOS, Node 26.9+)',
-  () => {
-    test('reads a live group — members past their exited leader — and prints no ExperimentalWarning', async () => {
-      const warn = vi.spyOn(process.stderr, 'write');
-      const lib = await loadLibproc();
-      expect(lib).not.toBeNull();
-      expect(warn.mock.calls.join('')).not.toMatch(/FFI/);
+describe.runIf(os.platform() === 'darwin')('loadLibproc (macOS)', () => {
+  test('reads a live group — members past their exited leader — and prints no ExperimentalWarning', async () => {
+    const warn = vi.spyOn(process.stderr, 'write');
+    const lib = await loadLibproc();
+    expect(lib).not.toBeNull();
+    expect(warn.mock.calls.join('')).not.toMatch(/FFI/);
 
-      const sh = spawn('sh', ['-c', 'sleep 30 & sleep 30 & exit 0'], {
-        detached: true,
-        stdio: 'ignore',
-      });
-      const pgid = sh.pid!;
-      await new Promise((r) => sh.on('exit', r));
-      try {
-        const out = libprocReader(lib!).read(new Map([['sleepers', [pgid]]]));
-        const usage: ServiceUsage | undefined = out.get('sleepers');
-        expect(usage?.memory).toBeGreaterThan(0);
-      } finally {
-        process.kill(-pgid, 'SIGKILL');
-      }
+    const sh = spawn('sh', ['-c', 'sleep 30 & sleep 30 & exit 0'], {
+      detached: true,
+      stdio: 'ignore',
     });
-  },
-);
+    const pgid = sh.pid!;
+    await new Promise((r) => sh.on('exit', r));
+    try {
+      const out = libprocReader(lib!).read(new Map([['sleepers', [pgid]]]));
+      const usage: ServiceUsage | undefined = out.get('sleepers');
+      expect(usage?.memory).toBeGreaterThan(0);
+    } finally {
+      process.kill(-pgid, 'SIGKILL');
+    }
+  });
+});
 
-test.runIf(os.platform() !== 'darwin' || !hasDefaultFfi())(
-  'loadLibproc: null without macOS and Node 26.9+',
-  async () => {
-    expect(await loadLibproc()).toBeNull();
-  },
-);
+test.runIf(os.platform() !== 'darwin')('loadLibproc: null off macOS', async () => {
+  expect(await loadLibproc()).toBeNull();
+});
 
 describe('UsageSampler', () => {
   const readerOf = (readings: Map<string, number>[]): UsageReader => ({

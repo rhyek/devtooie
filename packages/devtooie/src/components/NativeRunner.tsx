@@ -506,8 +506,8 @@ export function NativeRunner({
   // An infra service's status lives in the manager; re-render whenever one changes.
   const [, onInfraChange] = useReducer((n: number) => n + 1, 0);
   useEffect(() => manager.infra?.subscribe(onInfraChange), [manager]);
-  // Each service's memory, beside its name. Read only while this screen shows it — a headless
-  // session never builds one — and only where a cheap reader exists (Node 26.9+).
+  // Each service's memory, under its name. Read only while this screen shows it — a headless
+  // session never builds one — and only where a cheap reader exists (macOS and Linux).
   const [usage, setUsage] = useState<UsageSampler | null>(null);
   useEffect(() => {
     let sampler: UsageSampler | null = null;

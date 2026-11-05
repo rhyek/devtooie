@@ -65,7 +65,7 @@ cwd: example  git: main
 ```
 
 - **Each service's figure is its containers' memory as `docker stats` shows it**, refreshed every
-  10 seconds, on Node 26.9+ (see [Running the Terminal UI](../README.md#running-the-terminal-ui)).
+  10 seconds (see [Running the Terminal UI](../README.md#running-the-terminal-ui)).
   On macOS that memory is inside Docker's VM, not the Mac's own.
 
 - **Quitting devtooie leaves the infra services running**, so the next start finds them up and takes

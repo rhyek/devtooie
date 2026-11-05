@@ -10,8 +10,6 @@ import os from 'node:os';
 // processes are its members — which outlive the leader: an orphaned `esbuild`, a `node` a wrapper
 // script left behind — plus their descendants, which catches a child that called `setsid`.
 //
-// Only on Node 26.9+, where `node:ffi` is on by default; on anything older nothing is read or shown.
-//
 // - macOS: libproc through `node:ffi`. `proc_listpgrppids` and `proc_listchildpids` walk the tree,
 //   `proc_pid_rusage` reads `ri_phys_footprint` and the CPU times — a few µs per process, so every
 //   second. (`ps` RSS leaves out compressed pages, most of a long-running dev server's memory: 49 MB
@@ -92,12 +90,6 @@ class UsageAccumulator {
   }
 }
 
-/** Whether this Node has `node:ffi` on by default: 26.9 and later. */
-export function hasDefaultFfi(version: string = process.versions.node): boolean {
-  const [major = 0, minor = 0] = version.split('.').map(Number);
-  return major > 26 || (major === 26 && minor >= 9);
-}
-
 // ---------------------------------------------------------------------------
 // macOS through node:ffi
 // ---------------------------------------------------------------------------
@@ -119,13 +111,13 @@ export interface Libproc {
 }
 
 /**
- * libproc through `node:ffi`, or null where it isn't there to use: not macOS, a Node before 26.9, an
- * FFI turned off (`--no-experimental-ffi`) or restricted (the permission model without
- * `--allow-ffi`), or calls that don't answer as they should. The module's one-time
+ * libproc through `node:ffi`, or null where it isn't there to use: not macOS, an FFI turned off
+ * (`--no-experimental-ffi`) or restricted (the permission model without `--allow-ffi`), or calls
+ * that don't answer as they should. The module's one-time
  * ExperimentalWarning is kept off the screen: printed under the fullscreen TUI, it would garble it.
  */
 export async function loadLibproc(): Promise<Libproc | null> {
-  if (os.platform() !== 'darwin' || !hasDefaultFfi()) {
+  if (os.platform() !== 'darwin') {
     return null;
   }
   // Kept only to put back as it was; it's called through the bound copy below.
@@ -314,11 +306,8 @@ export function procReader(interval = 1000, root = '/proc'): UsageReader {
   };
 }
 
-/** The reader for this machine, or null — before Node 26.9, and on anything but macOS and Linux. */
+/** The reader for this machine, or null on anything but macOS and Linux. */
 export async function createUsageReader(): Promise<UsageReader | null> {
-  if (!hasDefaultFfi()) {
-    return null;
-  }
   switch (os.platform()) {
     case 'darwin': {
       const lib = await loadLibproc();

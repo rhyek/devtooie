@@ -25,8 +25,8 @@ then runs the services you picked.
 - **Structured logs, by default.** devtooie auto-formats every service's JSON logs (Go `slog`,
   pino, winston, …) as a colored `[LEVEL] message` for local dev — no `NODE_ENV` branching in your
   app, and nothing to configure. See [Logging](docs/logging.md).
-- **Memory per service, at a glance.** On Node 26.9+, the footer shows under each service's name
-  how much memory it uses — everything it runs, summed. On macOS that's the figure Activity Monitor
+- **Memory per service, at a glance.** The footer shows under each service's name how much memory
+  it uses — everything it runs, summed. On macOS that's the figure Activity Monitor
   shows. See [Running the Terminal UI](#running-the-terminal-ui).
 - **Two run modes.** An interactive terminal UI to pick and watch services, or a
   `--headless` log-streaming mode for coding agents, with a stream of the session's state as it
@@ -161,8 +161,8 @@ and service field.
 pnpm devtooie
 ```
 
-The footer lists every service with a dot for its state and, on Node 26.9+, the memory it uses on
-the line under its name:
+The footer lists every service with a dot for its state and the memory it uses on the line under
+its name:
 
 ```
 ● api   ● web

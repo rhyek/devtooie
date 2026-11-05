@@ -34,8 +34,8 @@ It's a good reference for how a real workspace is wired: project-reference build
 - **Streamed, filterable logs.** Every service's output is streamed live into one combined
   view; in the TUI you can filter it down to a service or a search term (the `f` hotkey;
   matching is case- and accent-insensitive).
-- **Memory per service.** On Node 26.9+, the TUI's footer shows under each service's name the
-  memory everything it runs uses. See [The footer's memory figures](#the-footers-memory-figures).
+- **Memory per service.** The TUI's footer shows under each service's name the memory everything
+  it runs uses. See [The footer's memory figures](#the-footers-memory-figures).
 - **Two run modes.** An interactive terminal UI, or a `--headless` log-streaming mode for
   coding agents — which can also start the stack in the background and wait until it's healthy,
   for an e2e suite.
@@ -1091,7 +1091,7 @@ cwd: example  git: main
 ```
 
 - **Each service's figure is its containers' memory as `docker stats` shows it**, refreshed every
-  10 seconds, on Node 26.9+ (see [The footer's memory figures](#the-footers-memory-figures)). On
+  10 seconds (see [The footer's memory figures](#the-footers-memory-figures)). On
   macOS that memory is inside Docker's VM, not the Mac's own.
 
 - **Quitting devtooie leaves the services running**, so the next start finds them up and takes
@@ -2452,7 +2452,7 @@ devtooie to clear it.
 
 ## The footer's memory figures
 
-On Node 26.9+, the TUI's footer shows under each service's name the memory it uses:
+The TUI's footer shows under each service's name the memory it uses:
 
 ```
 ● api   ● web

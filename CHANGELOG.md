@@ -7,7 +7,7 @@
 - **Reach each service at its own hostname**, like `http://api.localhost:4000` instead of a bare port per app, through a reverse proxy devtooie now runs itself — with a status page while the service is stopped or still starting. See [docs/dev-reverse-proxy.md](docs/dev-reverse-proxy.md).
 - **New top-level `infra` brings your `docker-compose.yaml` services up before the application services start** — waiting on their healthchecks and running your migrations — with `devtooie infra up|down|destroy` to drive them on their own. See [docs/infra.md](docs/infra.md).
 - **The session footer shows each infra service's live state, and starts, stops, restarts or resets the one you select with the arrow keys** — the control API does the same. See [docs/infra.md](docs/infra.md#in-a-dev-session).
-- **The footer shows each service's memory under its name, as Activity Monitor counts it**, on Node 26.9+. See [Running the Terminal UI](README.md#running-the-terminal-ui).
+- **The footer shows each service's memory under its name, as Activity Monitor counts it**. See [Running the Terminal UI](README.md#running-the-terminal-ui).
 - **Services are listed with the ones everything else depends on first**, in the footer and the service picker.
 - **Ctrl+C asks you to press it again before it exits a running session**, so a stray press doesn't take every service down. See [docs/control-api.md](docs/control-api.md#graceful-shutdown).
 - **Infra callbacks get `control`, a client for the running session's control API, a new `beforeDestroy`, and a `data` object shared for the run**, so a reset can stop a running service before its database is wiped and start it again after. See [docs/infra.md](docs/infra.md#driving-the-session-control).
