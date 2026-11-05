@@ -39,6 +39,7 @@ import { displayLogFile, getGitBranch } from '../lib.js';
 import { MOUSE_DISABLE, MOUSE_ENABLE, createMouseDecoder, type MouseChunk } from '../mouse.js';
 import { ProcessManager } from '../process-manager.js';
 import type { RunnerArgs } from '../runners/types.js';
+import { createUsageReader, MEMORY_WIDTH, UsageSampler } from '../service-usage.js';
 import { SHUTDOWN_TIMEOUT_MS } from '../shutdown-timing.js';
 import { installShutdownSignals } from '../signals.js';
 import { BottomChrome } from './BottomChrome.js';
@@ -146,6 +147,12 @@ const WHEEL_STEP = 3;
  * (the `[filter: …]` line, and the logs themselves changing).
  */
 const FILTER_TOAST_MS = 2000;
+
+/**
+ * How often the infra services' memory is read. Slower than the services' own (every second): each
+ * reading is a round of Docker API calls, and a container's memory moves slowly.
+ */
+const INFRA_MEMORY_INTERVAL_MS = 10_000;
 
 /**
  * Absolute on-screen rect of an Ink element, in 1-based SGR mouse coordinates.
@@ -499,6 +506,38 @@ export function NativeRunner({
   // An infra service's status lives in the manager; re-render whenever one changes.
   const [, onInfraChange] = useReducer((n: number) => n + 1, 0);
   useEffect(() => manager.infra?.subscribe(onInfraChange), [manager]);
+  // Each service's memory, beside its name. Read only while this screen shows it — a headless
+  // session never builds one — and only where a cheap reader exists (Node 26.9+).
+  const [usage, setUsage] = useState<UsageSampler | null>(null);
+  useEffect(() => {
+    let sampler: UsageSampler | null = null;
+    let cancelled = false;
+    void createUsageReader().then((reader) => {
+      if (!reader || cancelled) {
+        return;
+      }
+      const readInfra = args.infra?.readMemory;
+      sampler = new UsageSampler(
+        reader,
+        () => manager.getProcessGroups(),
+        readInfra ? { interval: INFRA_MEMORY_INTERVAL_MS, read: readInfra } : null,
+      );
+      sampler.start();
+      setUsage(sampler);
+    });
+    return () => {
+      cancelled = true;
+      sampler?.dispose();
+    };
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [manager]);
+  useSyncExternalStore(
+    useCallback((fn: () => void) => usage?.subscribe(fn) ?? (() => {}), [usage]),
+    () => usage?.getVersion() ?? 0,
+  );
+  /** A footer item's memory slot: always {@link MEMORY_WIDTH} wide, so the rows never re-wrap. */
+  const memorySlot = (text: string | undefined) =>
+    usage ? <Text dimColor>{` ${(text ?? '').padStart(MEMORY_WIDTH)}`}</Text> : null;
   /** Each footer item's element, by cursor index: what ↑/↓ measure the layout from. */
   const itemRefs = useRef<(DOMElement | null)[]>([]);
   /** The reset awaiting its confirming `t`, if one was asked for. */
@@ -1244,6 +1283,7 @@ export function NativeRunner({
             <Text bold={isFocused} underline={isFocused}>
               {pkg.displayName}
             </Text>
+            {memorySlot(usage?.memory(pkg.name))}
           </Box>
         );
       })}
@@ -1382,6 +1422,7 @@ export function NativeRunner({
                       <Text bold={isFocused} underline={isFocused}>
                         {service.name}
                       </Text>
+                      {memorySlot(usage?.infraMemory(service.name))}
                     </Box>
                   );
                 })}

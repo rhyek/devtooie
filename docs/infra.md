@@ -56,11 +56,15 @@ infra service while it happens, and the footer lists them once the session is ru
 
 ```
 ←→↑↓: select │ r: restart  b: rebuild  s: stop  m: commands
-● api  ● web
-infra:  ● db  ● redis
+● api  64M  ● web 474M
+infra:  ● db  23M  ● redis   6M
 
 cwd: example  git: main
 ```
+
+- **Each service's figure is its containers' memory as `docker stats` shows it**, refreshed every
+  10 seconds, on Node 26.9+ (see [Running the Terminal UI](../README.md#running-the-terminal-ui)).
+  On macOS that memory is inside Docker's VM, not the Mac's own.
 
 - **Quitting devtooie leaves the infra services running**, so the next start finds them up and takes
   well under a second.

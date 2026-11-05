@@ -119,6 +119,17 @@ export class InfraManager {
     return exitCode;
   }
 
+  /** Memory per running service, across providers. See {@link InfraProvider.readMemory}. */
+  async readMemory(): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    for (const provider of this.providers) {
+      for (const [name, bytes] of await provider.readMemory()) {
+        out.set(name, bytes);
+      }
+    }
+    return out;
+  }
+
   /** How each named service stands right now, across providers. See {@link InfraProvider.readStates}. */
   async readStates(services: string[]): Promise<Map<string, InfraServiceState>> {
     const plan = await this.route(services);

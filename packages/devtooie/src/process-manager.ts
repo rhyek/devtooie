@@ -1625,6 +1625,24 @@ export class ProcessManager implements ControlManager {
     return this.effectiveStatus(name, managed);
   }
 
+  /**
+   * Each service's process groups, for reading what it uses: its dev process while it runs, and every
+   * build or one-off command of its own still running. Each was spawned detached, so its pid is also
+   * its group id — a group that outlives its leader is still found by it.
+   */
+  getProcessGroups(): Map<string, number[]> {
+    const out = new Map<string, number[]>();
+    for (const [name, managed] of this.processes) {
+      const pgids = [managed.proc, ...managed.extraProcs]
+        .map((proc) => proc?.pid)
+        .filter((pid): pid is number => pid !== undefined);
+      if (pgids.length > 0) {
+        out.set(name, pgids);
+      }
+    }
+    return out;
+  }
+
   /** `managed.status`, overlaid with a transitional `rebuilding`/`restarting` if one is in flight. */
   private effectiveStatus(name: string, managed: ManagedProcess): Status {
     return this.transitions.get(name) ?? managed.status;

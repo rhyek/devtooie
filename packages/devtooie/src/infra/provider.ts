@@ -114,6 +114,14 @@ export abstract class InfraProvider {
    * remembers nothing between calls, so it can be read as often as a display needs.
    */
   abstract readStates(targets: string[]): Promise<Map<string, InfraServiceState>>;
+
+  /**
+   * Memory per running service, in bytes, for the footer. A provider that can't tell returns none;
+   * so does one whose reading fails.
+   */
+  readMemory(): Promise<Map<string, number>> {
+    return Promise.resolve(new Map<string, number>());
+  }
   /**
    * Starts the runtime's feed of changes to the targets, calling `onChange` for each — what
    * changed doesn't matter, {@link watchStates} reads the states again either way. The feed

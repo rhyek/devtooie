@@ -22,6 +22,8 @@ export interface SessionInfra {
    * and `/query/status`. Absent where nothing should watch (specs).
    */
   watch?: (onStates: (states: Map<string, InfraServiceState>) => void) => InfraWatch;
+  /** Memory per running service, in bytes, for the footer. Absent where nothing reads it (specs). */
+  readMemory?: () => Promise<Map<string, number>>;
 }
 
 export interface RunnerArgs {

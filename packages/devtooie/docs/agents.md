@@ -34,6 +34,8 @@ It's a good reference for how a real workspace is wired: project-reference build
 - **Streamed, filterable logs.** Every service's output is streamed live into one combined
   view; in the TUI you can filter it down to a service or a search term (the `f` hotkey;
   matching is case- and accent-insensitive).
+- **Memory per service.** On Node 26.9+, the TUI's footer shows next to each service's name the
+  memory everything it runs uses. See [The footer's memory figures](#the-footers-memory-figures).
 - **Two run modes.** An interactive terminal UI, or a `--headless` log-streaming mode for
   coding agents — which can also start the stack in the background and wait until it's healthy,
   for an e2e suite.
@@ -122,6 +124,8 @@ mode's `.env` files, so pass the same `--mode` the session runs with.
 - **Node ≥22.18.** `devtooie.config.ts` is imported directly, so it needs Node's native
   TypeScript type-stripping — unflagged in 22.18 (and, on the 23.x line, 23.6). On older Node
   every command fails with `ERR_UNKNOWN_FILE_EXTENSION` for the config file.
+- **Node ≥26.9 for the TUI footer's memory figures** (read through `node:ffi`, on by default from
+  26.9). On older Node everything else works, and the footer shows no figures.
 - **Unix only** (macOS/Linux). Windows is not supported.
 - **pnpm.** Workspace packages that depend on each other are resolved through pnpm workspace links
   (`workspace:*`).
@@ -1038,11 +1042,16 @@ the footer lists them once the session is running:
 
 ```
 ←→↑↓: select │ r: restart  b: rebuild  s: stop  m: commands
-● api  ● web
-infra:  ● db  ● redis
+● api  64M  ● web 474M
+infra:  ● db  23M  ● redis   6M
 
 cwd: example  git: main
 ```
+
+- **Each service's figure is its containers' memory as `docker stats` shows it**, refreshed every
+  10 seconds, on Node 26.9+ (see [The footer's memory figures](#the-footers-memory-figures)). On
+  macOS that memory is inside Docker's VM, not the Mac's own.
+
 
 - **Quitting devtooie leaves the services running**, so the next start finds them up and takes
   well under a second.
@@ -2367,6 +2376,30 @@ that wanted the port fails to bind as it normally would. The same goes for a por
 of this project's session in another mode: devtooie names that mode and leaves it running. If you're diagnosing "my service won't
 start, the port is taken", that message is the signal — find the other program rather than expecting
 devtooie to clear it.
+
+## The footer's memory figures
+
+On Node 26.9+, the TUI's footer shows next to each service's name the memory it uses:
+
+```
+● api  64M  ● web 474M
+infra:  ● db  23M  ● mail  22M
+```
+
+- **A service's figure covers everything it runs**: its dev process and whatever that started
+  (Vite's esbuild, Storybook's workers, the `node` under a `node --watch`), and any build or
+  one-off command of its own while it runs.
+- **On macOS it is the figure Activity Monitor shows** (the process's footprint), compressed memory
+  included. On Linux it is the memory the processes hold privately, in RAM or swapped out
+  (`RssAnon + VmSwap`). Units are binary, as in Activity Monitor: `906M` is 906 MiB.
+- **It refreshes every second**, and moves once it has changed by 2% or more.
+- **An infra service's figure is its containers' memory as `docker stats` shows it**, refreshed every
+  10 seconds. On macOS that memory is inside Docker's VM; the VM itself is one process in Activity
+  Monitor, shared by every project's containers.
+- **Only the TUI shows them.** A `--headless` session reads none, and the control API doesn't
+  report them. To see a service's memory from a script on macOS, sum `footprint --pid <pid>` over
+  its processes; `ps` RSS leaves out compressed memory, which for a long-running dev server is
+  most of it.
 
 ## Read running-service logs for debugging
 

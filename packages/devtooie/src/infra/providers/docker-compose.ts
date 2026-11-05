@@ -1,3 +1,4 @@
+import { composeMemory, socketPath } from '../docker-engine.js';
 import {
   SPAWN_FAILED,
   streamLines,
@@ -193,6 +194,9 @@ export class DockerComposeProvider extends InfraProvider {
    */
   private readonly seenRunning = new Set<string>();
 
+  /** The Docker Engine's socket, once asked for; null when it isn't a local unix socket. */
+  private engineSocket: Promise<string | null> | undefined;
+
   /** The service list, once asked for. See {@link listServices}. */
   private services: Promise<string[]> | undefined;
 
@@ -268,6 +272,24 @@ export class DockerComposeProvider extends InfraProvider {
         emit({ type: 'output', line: text, isError: false });
       }
     };
+  }
+
+  /**
+   * The containers' memory as `docker stats` shows it, read from the Engine API over the socket of
+   * the Docker context `docker` itself would use (so `DOCKER_HOST` and `DOCKER_CONTEXT` hold). On
+   * macOS that is memory inside Docker's VM, not the Mac's own.
+   */
+  override async readMemory(): Promise<Map<string, number>> {
+    this.engineSocket ??= this.runtime
+      .exec('docker', ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'], {
+        cwd: this.runtime.workspaceDir,
+        env: this.env(),
+      })
+      .then((r) => (r.exitCode === 0 ? socketPath(r.stdout) : null));
+    const socket = await this.engineSocket;
+    return socket
+      ? composeMemory(socket, this.resolved.projectName).catch(() => new Map())
+      : new Map();
   }
 
   /**

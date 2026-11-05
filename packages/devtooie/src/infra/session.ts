@@ -78,5 +78,10 @@ export async function runSessionInfra(
     throw new InfraFailedError(summary, log);
   }
   const names = services.map((service) => service.name);
-  return { services, log, watch: (onStates) => manager.watchStates(names, onStates) };
+  return {
+    services,
+    log,
+    watch: (onStates) => manager.watchStates(names, onStates),
+    readMemory: () => manager.readMemory(),
+  };
 }

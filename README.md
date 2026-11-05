@@ -25,6 +25,9 @@ then runs the services you picked.
 - **Structured logs, by default.** devtooie auto-formats every service's JSON logs (Go `slog`,
   pino, winston, …) as a colored `[LEVEL] message` for local dev — no `NODE_ENV` branching in your
   app, and nothing to configure. See [Logging](docs/logging.md).
+- **Memory per service, at a glance.** On Node 26.9+, the footer shows next to each service's name
+  how much memory it uses — everything it runs, summed. On macOS that's the figure Activity Monitor
+  shows. See [Running the Terminal UI](#running-the-terminal-ui).
 - **Two run modes.** An interactive terminal UI to pick and watch services, or a
   `--headless` log-streaming mode for coding agents, with a stream of the session's state as it
   changes. An e2e suite gets its stack, healthy, in one call that ends with the suite. See
@@ -70,6 +73,8 @@ catcher whose web UI the dev reverse proxy routes like a service, so running it 
 
 - **Node ≥22.18.** `devtooie.config.ts` is imported directly, so it needs Node's native
   TypeScript type-stripping — unflagged in 22.18 (and, on the 23.x line, 23.6).
+- **Node ≥26.9 for the footer's memory figures** (it reads them through `node:ffi`, on by
+  default from 26.9). On older Node everything else works, and the footer shows no figures.
 - **Unix only** (macOS/Linux). Windows is not supported.
 - **pnpm.** A service that imports a workspace library resolves it through a pnpm workspace link
   (`workspace:*`).
@@ -157,6 +162,24 @@ and service field.
 ```bash
 pnpm devtooie
 ```
+
+The footer lists every service with a dot for its state and, on Node 26.9+, the memory it uses:
+
+```
+● api  64M  ● web 474M
+infra:  ● db  23M  ● mail  22M
+```
+
+- **A service's figure covers everything it runs**: its dev process and whatever that started
+  (Vite's esbuild, Storybook's workers, the `node` under a `node --watch`), and any build or
+  one-off command of its own while it runs.
+- **On macOS it is the figure Activity Monitor shows** (the process's footprint), compressed memory
+  included. On Linux it is the memory the processes hold privately, in RAM or swapped out
+  (`RssAnon + VmSwap`). Units are binary, as in Activity Monitor: `906M` is 906 MiB.
+- **It refreshes every second**, and moves once it has changed by 2% or more.
+- **An infra service's figure is its containers' memory as `docker stats` shows it**, refreshed every
+  10 seconds. On macOS that memory is inside Docker's VM; the VM itself is one process in Activity
+  Monitor, shared by every project's containers.
 
 ## Service supporting scripts
 
