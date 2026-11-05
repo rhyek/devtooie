@@ -102,9 +102,17 @@ export interface EnvResolution {
 interface ResolveEnvOptions {
   /** Workspace root. */
   cwd: string;
-  /** Service directory relative to `cwd`; `'.'` collapses service scope onto the workspace. */
-  relativeDir: string;
-  /** Filenames to look for at each scope (defaults to the active mode's {@link envFileNames}). */
+  /**
+   * Service directory relative to `cwd`. Defaults to `'.'`, which collapses service scope onto
+   * the workspace, so only the workspace's files are read.
+   */
+  relativeDir?: string;
+  /**
+   * The mode whose {@link envFileNames} to look for at each scope. Defaults to the active mode
+   * ({@link currentMode}). Ignored when `files` is given.
+   */
+  mode?: Mode;
+  /** Filenames to look for at each scope. Takes precedence over `mode`. */
   files?: string[];
   /** Variables the files may override the ambient environment for. */
   override?: EnvOverride;
@@ -259,13 +267,15 @@ export class EnvFileSnapshot {
  */
 export function envCandidatePaths({
   cwd,
-  relativeDir,
-  files = envFileNames(),
+  relativeDir = '.',
+  mode,
+  files,
 }: Omit<ResolveEnvOptions, 'override' | 'ambient'>): string[] {
+  const names = files ?? envFileNames(mode === undefined ? currentMode() : assertValidMode(mode));
   const workspaceDir = path.resolve(cwd);
   const pkgDir = path.resolve(cwd, relativeDir);
   const scopes = pkgDir === workspaceDir ? [workspaceDir] : [workspaceDir, pkgDir];
-  return scopes.flatMap((scope) => files.map((f) => path.join(scope, f)));
+  return scopes.flatMap((scope) => names.map((f) => path.join(scope, f)));
 }
 
 /** The variables devtooie sets itself, for the config's callbacks and every process it starts. */
@@ -553,7 +563,7 @@ export function resolveEnvFrom(opts: ResolveEnvOptions, given?: EnvFileReader): 
 
   const ambient = opts.ambient ?? shellEnv ?? ambientEnv();
   const vars = opts.vars ?? {};
-  const pkgDir = path.resolve(opts.cwd, opts.relativeDir);
+  const pkgDir = path.resolve(opts.cwd, opts.relativeDir ?? '.');
   const packageNames = assignedNames(
     texts.filter((_text, i) => path.dirname(files[i] ?? '') === pkgDir).join('\n'),
   );

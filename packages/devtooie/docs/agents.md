@@ -2109,6 +2109,38 @@ devtooie run -s <name> <script> -- ...      # target <name> explicitly (from any
 You do not need this for services devtooie is already running (their env is injected
 automatically) — it's for driving commands yourself.
 
+### Read the environment from a script (`resolveEnv`)
+
+A script that devtooie doesn't start — a launcher another tool runs, a setup step that needs a
+port before anything else is up — reads the same `.env` files with `resolveEnv`, exported from
+`devtooie`. It reads the files and returns what they resolve to, without starting a session or
+touching `process.env`:
+
+```ts
+import { resolveEnv } from 'devtooie';
+
+const { env } = resolveEnv({ cwd: process.cwd(), mode: 'development' });
+const port = Number(env.API_PORT);
+```
+
+| Option        | Value                                                                                                                        |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `cwd`         | The workspace root. Required.                                                                                                |
+| `mode`        | The mode whose files to read, as `--mode` takes it. Defaults to the active mode: `DEVTOOIE_MODE`, else `development`.        |
+| `relativeDir` | A service's directory, relative to `cwd`, to read its files over the workspace's. Defaults to `'.'`: the workspace's alone.  |
+| `files`       | The filenames to look for at each scope, in ascending precedence. Given, it takes precedence over `mode`.                    |
+| `override`    | As [`env.override`](#environment-env-loading): the variables a file's value wins for over the ambient environment.           |
+
+The files resolve as they do for a service: service scope over workspace scope, the
+[mode's order](#modes---mode) within a scope, and the ambient environment over the files unless
+`override` names the variable. The config is not read, so the config's own
+[`env.vars`](#envvars) and `env.override` don't apply, and neither does `PORT`.
+
+`env` holds only the variables the files define. Merge it over the environment yourself when you
+need both, with `{ ...process.env, ...env }`. The result also carries `files`, the paths that
+existed and were read, and `candidates`, every path looked for; read `candidates` when a variable
+is missing to see where it was expected.
+
 ## Service lifecycle when you change code
 
 devtooie does **not** watch source files. How a service should react to a code edit is declared

@@ -281,6 +281,49 @@ describe('resolveEnv', () => {
   });
 });
 
+describe('resolveEnv with a mode', () => {
+  beforeEach(() => {
+    write('.env', 'BASE=yes\n');
+    write('.env.development', 'KEY=development\n');
+    write('.env.test', 'KEY=test\n');
+    write('.env.apple', 'KEY=apple\n');
+  });
+
+  test("loads the given mode's files", () => {
+    withAmbient({ DEVTOOIE_MODE: 'development' }, () => {
+      const { env, files } = resolveEnv({ cwd, mode: 'test' });
+      expect(env).toEqual({ BASE: 'yes', KEY: 'test' });
+      expect(files).toEqual([path.join(cwd, '.env'), path.join(cwd, '.env.test')]);
+    });
+  });
+
+  test('files take precedence over mode', () => {
+    const { env, candidates } = resolveEnv({ cwd, mode: 'test', files: envFileNames('apple') });
+    expect(env.KEY).toBe('apple');
+    expect(candidates).toEqual(envFileNames('apple').map((f) => path.join(cwd, f)));
+  });
+
+  test('without a mode, follows DEVTOOIE_MODE', () => {
+    withAmbient({ DEVTOOIE_MODE: 'test' }, () => {
+      expect(resolveEnv({ cwd }).env.KEY).toBe('test');
+    });
+    withAmbient({ DEVTOOIE_MODE: 'apple' }, () => {
+      expect(resolveEnv({ cwd }).env.KEY).toBe('apple');
+    });
+  });
+
+  test("without a relativeDir, reads only the workspace's files", () => {
+    write('packages/api/.env.test', 'KEY=pkg\n');
+    const { env, candidates } = resolveEnv({ cwd, mode: 'test' });
+    expect(env.KEY).toBe('test');
+    expect(candidates).toEqual(envFileNames('test').map((f) => path.join(cwd, f)));
+  });
+
+  test('rejects a mode that is not a plain name', () => {
+    expect(() => resolveEnv({ cwd, mode: '../x' })).toThrow(/invalid --mode/);
+  });
+});
+
 describe('resolveEnv precedence against the ambient environment', () => {
   test('the ambient environment wins over a file var of the same name', () => {
     withAmbient({ DEVTOOIE_ENV_OVERRIDE: 'ambient' }, () => {

@@ -11,6 +11,7 @@
 - **Ctrl+C asks you to press it again before it exits a running session**, so a stray press doesn't take every service down. See [docs/control-api.md](docs/control-api.md#graceful-shutdown).
 - **Infra callbacks get `control`, a client for the running session's control API, a new `beforeDestroy`, and a `data` object shared for the run**, so a reset can stop a running service before its database is wiped and start it again after. See [docs/infra.md](docs/infra.md#driving-the-session-control).
 - **`startStack()` gives a test suite its stack in one call**: a healthy session that ends with the suite, with each service's origin, a control client and a `stop()`. See [docs/cli.md](docs/cli.md#a-test-suites-stack-startstack).
+- **`resolveEnv()` takes a `mode`**, so a script of your own reads a mode's `.env` values with just `resolveEnv({ cwd, mode })`.
 - **`GET /events` streams a session's state as JSON lines**, so an agent or a script waits for a stack to be healthy without polling. See [docs/control-api.md](docs/control-api.md#get-events).
 - **A session deletes its `running.<mode>.json` as it exits, and one that looks hung blocks a new one in its mode** until it's stopped or `--kill-others` kills it. See [docs/control-api.md](docs/control-api.md#finding-a-session).
 - **The control API starts and stops a service**, with `POST /command/service/start/<name>` and `/stop/<name>`; starting one the session wasn't started with adds it, dependencies included. See [docs/control-api.md](docs/control-api.md).
