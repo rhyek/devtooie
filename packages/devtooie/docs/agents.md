@@ -1052,7 +1052,6 @@ cwd: example  git: main
   10 seconds, on Node 26.9+ (see [The footer's memory figures](#the-footers-memory-figures)). On
   macOS that memory is inside Docker's VM, not the Mac's own.
 
-
 - **Quitting devtooie leaves the services running**, so the next start finds them up and takes
   well under a second.
 - **A service that doesn't come up stops the session.** The application services aren't started against
