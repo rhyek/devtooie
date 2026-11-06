@@ -46,8 +46,9 @@ then runs the services you picked.
   migrations — per mode, so a test database never lands on the dev port. `devtooie infra up`
   does the same on its own. See [Infra](docs/infra.md).
 - **One hostname per service.** Optionally, devtooie runs the dev reverse proxy itself:
-  give a service a `proxy: { subdomain }` and reach it at `http://api.localhost:4000` — or
-  `https://api.myproject.test` behind a TLS terminator — instead of a bare port, with a
+  give a service a `proxy: { subdomain }` and reach it at `http://api.localhost:4000` (over TLS
+  too, as `https://api.localhost:4000`), or `https://api.myproject.test` behind a TLS terminator,
+  instead of a bare port, with a
   status page while the service is stopped or still starting. Vite HMR works through it, and
   an infra service — an object store, a mail catcher — can be routed the same way.
   See [Dev reverse proxy](docs/dev-reverse-proxy.md).
@@ -395,10 +396,9 @@ at once, give each its own ports in its `.env.<mode>` file.
 `NODE_ENV` isn't). Set it from the mode's own file if you want it:
 `NODE_ENV=test` in `.env.test`.
 
-With a [dev reverse proxy](docs/dev-reverse-proxy.md) configured, a routable service also gets
-`PUBLIC_ORIGIN` (its public `<urlScheme>://<subdomain>.<rootDomain>[:<port>]`, from its
-`proxy.subdomain`, or the bare `<urlScheme>://<rootDomain>[:<port>]` for a `defaultService` with
-no `proxy`), under the same rule.
+A service with a `port` also gets its [public origin](docs/configuration.md#publicorigin) as
+`PUBLIC_ORIGIN` (where a browser reaches it: through the [dev reverse proxy](docs/dev-reverse-proxy.md)
+when that routes it, else `http://localhost:<port>`), under the same rule.
 
 A service's `port` is also injected as `PORT`. It wins over a `PORT` set
 workspace-wide — in a workspace `.env` file or `env.vars` — and only a `PORT` in
@@ -506,7 +506,8 @@ See **[docs/infra.md](docs/infra.md)**.
 devtooie can run the project's dev reverse proxy itself: a loopback listener that routes
 `<subdomain>.<rootDomain>` to the application service or [infra](docs/infra.md) service whose
 `proxy` declares that subdomain, answering with a status page for a service that is stopped or still
-starting. A TLS terminator (Caddy, say) forwards
+starting. A browser reaches it directly, over TLS too with
+[`https`](docs/configuration.md#tls), or through a TLS terminator (Caddy, say) forwarding
 `*.<rootDomain>` to it. Enable it with a top-level `devReverseProxy` block — see
 **[docs/dev-reverse-proxy.md](docs/dev-reverse-proxy.md)**.
 

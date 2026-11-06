@@ -126,6 +126,67 @@ export interface ServiceContext<T = TokenRecord> extends ConfigContext<T> {
   subdomain?: string;
 }
 
+/** The dev reverse proxy as the `publicOrigin` callback sees it. */
+export interface PublicOriginProxy {
+  /** The canonical root domain. */
+  rootDomain: string;
+  /** The proxy's own port. */
+  port: number;
+  /** Whether it does TLS itself (`devReverseProxy.https`). */
+  https: boolean;
+}
+
+/**
+ * What the top-level `publicOrigin` callback receives, once for each application service that
+ * declares a `port` and each enabled infra service the dev reverse proxy routes:
+ * {@link ConfigContext} (the service's own environment and tokens; the workspace's for an infra
+ * service), the service and how the proxy routes it, and the proxy. `Proxy` is what
+ * `devReverseProxy` is: {@link PublicOriginProxy} for a config that sets one, `null` for one
+ * that doesn't.
+ */
+export interface PublicOriginContext<
+  T = TokenRecord,
+  Proxy = PublicOriginProxy | null,
+> extends ConfigContext<T> {
+  /** The service the origin is for. */
+  service: {
+    /** Its key in the config. */
+    name: string;
+    /** Its `shortName`, for an application service that sets one. */
+    shortName: string | undefined;
+    /** Its resolved `port`, on loopback. */
+    port: number;
+    /** `'service'` for an application service, `'infra'` for an infra service. */
+    kind: 'service' | 'infra';
+    /**
+     * Where the dev reverse proxy serves it, or `null` when the proxy doesn't route this
+     * application service (or the config has none). Never `null` for an infra service.
+     */
+    proxy: {
+      /**
+       * The hostname a browser asks for: `<subdomain>.<rootDomain>`, or the bare `rootDomain`
+       * for a `defaultService` that declares no subdomain.
+       */
+      host: string;
+      /** Its canonical subdomain; `undefined` for a `defaultService` served at the bare root. */
+      subdomain: string | undefined;
+    } | null;
+  };
+  /** The dev reverse proxy: never `null` in a config that sets `devReverseProxy`. */
+  devReverseProxy: Proxy;
+}
+
+/**
+ * What `devReverseProxy` is in the `publicOrigin` callback's context, given `Keys`, the top-level
+ * keys the config writes: {@link PublicOriginProxy} when they include `devReverseProxy`, `null`
+ * when they don't, and either while they aren't known (`unknown`).
+ */
+type PublicOriginProxyFor<Keys> = unknown extends Keys
+  ? PublicOriginProxy | null
+  : 'devReverseProxy' extends Keys
+    ? PublicOriginProxy
+    : null;
+
 /** Any `tokens` record: your own string values, keyed however you like. */
 export type TokenRecord = Record<string, string | undefined>;
 
@@ -490,15 +551,15 @@ export interface ResolvedProxy {
  * The built-in dev reverse proxy, as written in the config. Its presence enables the proxy:
  * devtooie listens on `port` (loopback only) and routes each request by the first label of its
  * `Host` to the service or infra service whose `proxy` declares that subdomain, on its resolved
- * `port`. A TLS
- * terminator in front (Caddy, say) forwards `*.<rootDomain>` here; the proxy does no TLS itself.
+ * `port`. A browser can reach it directly (over TLS too, with `https`), or a TLS terminator in
+ * front (Caddy, say) can forward `*.<rootDomain>` to it.
  */
 export interface DevReverseProxyInput<Top = TokenRecord, N extends string = string> {
   /**
-   * The loopback port the proxy listens on — what the TLS terminator forwards to. A literal, or
-   * a callback over the workspace context `{ envs, tokens }` resolved once at load, like a
-   * service `port`: `port: ({ envs }) => Number(envs.DEV_REVERSE_PROXY_PORT)`. Must differ from
-   * every service's and infra service's port.
+   * The loopback port the proxy listens on. A literal, or a callback over the workspace context
+   * `{ envs, tokens }` resolved once at load, like a service `port`:
+   * `port: ({ envs }) => Number(envs.DEV_REVERSE_PROXY_PORT)`. Must differ from every service's
+   * and infra service's port.
    */
   port: number | ((ctx: ConfigContext<Top>) => number);
   /**
@@ -508,40 +569,57 @@ export interface DevReverseProxyInput<Top = TokenRecord, N extends string = stri
    * `rootDomain: ({ envs }) => \`myproject.${envs.LOCALDEV_DOMAIN}\``.
    *
    * An array (or a callback returning one) adds aliases: the first entry is the canonical root,
-   * the one every derived URL uses (`PUBLIC_ORIGIN`, footer links, the `urlScheme` default); a
-   * Host under any other entry routes exactly as under the canonical one. No two entries may be
-   * equal, and none may be a suffix of another.
+   * the one public origins are built from; a Host under any other entry routes exactly as under
+   * the canonical one. No two entries may be equal, and none may be a suffix of another.
    */
   rootDomain?: string | string[] | ((ctx: ConfigContext<Top>) => string | string[]);
   /**
    * The service the bare `rootDomain` routes to. Must declare a `port`; needs no `proxy`, and
-   * without one its `PUBLIC_ORIGIN` is the bare root. Omit for a 404 there.
+   * without one it is served at the bare root. Omit for a 404 there.
    */
   defaultService?: NoInfer<N>;
   /**
-   * Scheme of the public URLs devtooie derives (footer links, `PUBLIC_ORIGIN`). Defaults from
-   * the canonical `rootDomain`: `http` on `localhost`, `https` on any other root. `http` means the browser
-   * hits the proxy directly, so the URLs carry its `port` (`http://web.localhost:4000`);
-   * `https` means a TLS terminator sits in front, so they carry no port.
+   * Serve TLS on the proxy's port, beside plain HTTP: browsers get HTTP/2, and public origins
+   * become `https://`. `true` makes a self-signed certificate for each hostname the proxy serves
+   * (the browser warns about it once per host); `{ key, cert }` uses yours, each a PEM's text or
+   * a file's path (relative to the workspace). A callback over `{ envs, tokens }` may return
+   * either. Off by default.
    */
-  urlScheme?: 'http' | 'https';
+  https?: DevReverseProxyHttps | ((ctx: ConfigContext<Top>) => DevReverseProxyHttps);
 }
 
-/** The dev reverse proxy after resolution: callbacks invoked, `rootDomain`/`urlScheme` defaulted. */
+/** `devReverseProxy.https`: off, self-signed certificates (`true`), or a key and certificate of yours. */
+export type DevReverseProxyHttps = boolean | { key: string; cert: string };
+
+/** The dev reverse proxy after resolution: callbacks invoked, `rootDomain` defaulted. */
 export interface ResolvedDevReverseProxy {
-  /** The loopback port the proxy listens on — and the port of the public URLs under `http`. */
+  /** The loopback port the proxy listens on. */
   port: number;
   /**
    * The canonical domain services are routed under (`localhost` unless the config says
-   * otherwise): the first entry when the config gives an array. Every derived URL uses it.
+   * otherwise): the first entry when the config gives an array. Public origins are built from it.
    */
   rootDomain: string;
   /** Every root domain the proxy routes under, canonical first, then its aliases. */
   rootDomains: string[];
   /** The service the bare `rootDomain` routes to, if any. */
   defaultService?: string;
-  /** Scheme of the public URLs devtooie derives; `https` means they carry no port. */
-  urlScheme: 'http' | 'https';
+  /**
+   * TLS on the proxy's port: `false`, `'self-signed'` for a certificate per hostname, or `'own'`
+   * for the config's key and certificate — which stay off the resolved config, since it is
+   * printed (`show-config`) and served (the control API); see {@link proxyKeyAndCert}.
+   */
+  https: false | 'self-signed' | 'own';
+}
+
+/** The key and certificate each resolved proxy with `https: 'own'` was given, as written. */
+const ownKeyAndCert = new WeakMap<ResolvedDevReverseProxy, { key: string; cert: string }>();
+
+/** The key and certificate the config gave the proxy (PEM text or paths, as written), if any. */
+export function proxyKeyAndCert(
+  proxy: ResolvedDevReverseProxy,
+): { key: string; cert: string } | undefined {
+  return ownKeyAndCert.get(proxy);
 }
 
 /**
@@ -565,6 +643,9 @@ export type DefineConfigOptions<
   P extends Record<string, unknown>,
   K extends string = Extract<keyof P, string>,
   RootDir extends string | undefined = undefined,
+  // The top-level keys the config writes, when known: what tells `publicOrigin` whether
+  // `devReverseProxy` is there.
+  Keys = unknown,
 > = {
   /**
    * Fixed control-API port; omit to let devtooie pick one (recorded in `running.<mode>.json`). A
@@ -612,6 +693,20 @@ export type DefineConfigOptions<
    * See {@link DevReverseProxyInput}.
    */
   devReverseProxy?: DevReverseProxyInput<Top, K>;
+  /**
+   * Each service's public origin: where a browser reaches it. It becomes the service's
+   * `PUBLIC_ORIGIN`, what its relative `urls` are based on, and its `publicOrigin` in the exported
+   * config and the control API. Called for every application service that declares a `port`, and
+   * every enabled infra service the proxy routes; must return an origin
+   * (`https://api.myproject.test`, no path).
+   *
+   * Without it: `http://<host>:<proxy port>` for a service the dev reverse proxy routes
+   * (`https://` with `devReverseProxy.https`), else `http://localhost:<port>`. A TLS terminator in
+   * front of the proxy is declared here, since devtooie can't see it:
+   * `publicOrigin: ({ service }) => service.proxy ? \`https://${service.proxy.host}\` : \`http://localhost:${service.port}\``.
+   * See {@link PublicOriginContext}.
+   */
+  publicOrigin?: (ctx: PublicOriginContext<Top, PublicOriginProxyFor<Keys>>) => string;
   /**
    * Your application services, **keyed by service name**. The key is the service's name —
    * what `-s` takes, what `waitFor`/`deps` reference, and what `relativeDir` defaults from
@@ -701,12 +796,11 @@ export type ResolvedServiceConfig<N extends string, T = TokenRecord> = ServiceNa
   /** The readiness probe, normalized from whichever form the config wrote. */
   healthcheck?: ResolvedHealthcheck;
   /**
-   * The service's public origin under the dev reverse proxy —
-   * `<urlScheme>://<canonical subdomain>.<rootDomain>[:<port>]`, or the bare
-   * `<urlScheme>://<rootDomain>[:<port>]` for a `defaultService` that declares no subdomain —
-   * or `undefined` when the config has no `devReverseProxy` or the proxy doesn't route this
-   * service (no `port`, or neither a `proxy` nor `defaultService`). Injected into the service's process as `PUBLIC_ORIGIN` (only one in the
-   * service's own `.env` file overrides it), and what the proxy's footer links are built from.
+   * The service's public origin: the top-level `publicOrigin` callback's result, or its default
+   * (`http://<host>:<proxy port>` under the dev reverse proxy, `https://` with its `https`, else
+   * `http://localhost:<port>`). `undefined` for a service with no `port`. Injected into the
+   * service's process as `PUBLIC_ORIGIN` (only one in the service's own `.env` file overrides it),
+   * and what its relative `urls` are based on.
    */
   publicOrigin?: string;
 };
@@ -832,12 +926,13 @@ interface UrlScope {
 
 /**
  * Every form a resolved URL can take. Identical for an absolute URL; for a relative path they
- * differ once the dev reverse proxy routes the service — and each call site picks: `urls` show
- * `public` (one link, not a loopback twin), a `healthcheck` probes `private` (the service itself;
- * the proxy holds requests until that very probe passes, so probing through it would never pass).
+ * differ once the service's public origin is somewhere else than its loopback port (under the dev
+ * reverse proxy, say) — and each call site picks: `urls` show `public` (one link, not a loopback
+ * twin), a `healthcheck` probes `private` (the service itself; the proxy holds requests until that
+ * very probe passes, so probing through it would never pass).
  */
 export interface ResolvedUrlForms {
-  /** Under the dev reverse proxy, `<publicOrigin>/path`; otherwise the same as `private`. */
+  /** `<publicOrigin>/path`: the same as `private` when the public origin is the service itself. */
   public: string;
   /** The service itself on loopback: `http://localhost:<port>/path`. */
   private: string;
@@ -1047,6 +1142,8 @@ function resolveInfraService(
     /** The service's `proxy`, already settled (see `resolveProxy`). */
     proxy: ResolvedProxy | undefined;
     devReverseProxy: ResolvedDevReverseProxy | undefined;
+    /** The config's `publicOrigin` callback, if any. */
+    publicOrigin: ((ctx: PublicOriginContext) => string) | undefined;
     ctx: () => ConfigContext;
     enabledCtx: () => InfraEnabledContext;
     envFilesLoaded: () => string[];
@@ -1074,7 +1171,13 @@ function resolveInfraService(
     }
   }
   const publicOrigin = isEnabled
-    ? publicOriginOf(opts.devReverseProxy, { port: resolvedPort, proxy: opts.proxy })
+    ? publicOriginOf(opts.devReverseProxy, opts.publicOrigin, {
+        name,
+        kind: 'infra',
+        port: resolvedPort,
+        proxy: opts.proxy,
+        ctx: opts.ctx,
+      })
     : undefined;
   const where = `infra service "${name}" urls`;
   // What a `urls` callback gets: a service's context, with the service's port and subdomain.
@@ -1221,11 +1324,35 @@ function resolveDevReverseProxy(
       : (block.rootDomain ?? 'localhost');
   const rootDomains = resolveRootDomains(written, isCallback, fail);
   const rootDomain = rootDomains[0]!;
-  // The scheme follows the canonical root unless the config says: `localhost` has nothing in
-  // front, so the browser hits the proxy itself over http; any other root has a TLS terminator
-  // in front.
-  const urlScheme = block.urlScheme ?? (rootDomain === 'localhost' ? 'http' : 'https');
-  return { port, rootDomain, rootDomains, defaultService: block.defaultService, urlScheme };
+  const https: unknown = typeof block.https === 'function' ? block.https(ctx()) : (block.https ?? false); // oxfmt-ignore
+  if (!isHttpsValue(https)) {
+    return fail('https', https);
+  }
+  const resolved: ResolvedDevReverseProxy = {
+    port,
+    rootDomain,
+    rootDomains,
+    defaultService: block.defaultService,
+    https: https === false ? false : https === true ? 'self-signed' : 'own',
+  };
+  if (typeof https === 'object') {
+    ownKeyAndCert.set(resolved, https);
+  }
+  return resolved;
+}
+
+/** `true` for what `devReverseProxy.https` may be: a boolean, or non-empty `key` and `cert` strings. */
+function isHttpsValue(value: unknown): value is DevReverseProxyHttps {
+  if (typeof value === 'boolean') {
+    return true;
+  }
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const { key, cert, ...rest } = value as Record<string, unknown>;
+  return (
+    typeof key === 'string' && key !== '' && typeof cert === 'string' && cert !== '' && Object.keys(rest).length === 0 // oxfmt-ignore
+  );
 }
 
 /**
@@ -1286,35 +1413,75 @@ function resolveRootDomains(
   return domains;
 }
 
-/**
- * A public hostname as it appears in URLs: with the proxy's port under `http` (the browser hits
- * the proxy directly), bare under `https` (a TLS terminator on 443 in front).
- */
-function publicHost(proxy: ResolvedDevReverseProxy, host: string): string {
-  return proxy.urlScheme === 'http' ? `${host}:${String(proxy.port)}` : host;
-}
+/** An origin as `publicOrigin` must return it: `http(s)://host[:port]`, a trailing slash tolerated. */
+const ORIGIN_RE = /^https?:\/\/[^/?#\s]+\/?$/i;
 
 /**
- * The origin a service's or service's public URLs start from, or `undefined` when the proxy
- * doesn't route it. That is its canonical subdomain when it declares one, else the bare root
- * domain when it is the `defaultService` — so a default service that also declares a subdomain
- * keeps the subdomain origin, with the bare root as one more route to it.
+ * Settles a service's public origin: the config's `publicOrigin` callback over the service and
+ * its route, or the default — the proxy's address for a routed service (`https://` when the proxy
+ * does TLS), else an application service itself on loopback. `undefined` for a service with no
+ * `port`, and for an infra service the proxy doesn't route.
  */
 function publicOriginOf(
   proxy: ResolvedDevReverseProxy | undefined,
-  target: { port: number | undefined; proxy?: ResolvedProxy | undefined; isDefault?: boolean },
+  callback: ((ctx: PublicOriginContext) => string) | undefined,
+  target: {
+    name: string;
+    shortName?: string | undefined;
+    kind: 'service' | 'infra';
+    port: number | undefined;
+    proxy?: ResolvedProxy | undefined;
+    isDefault?: boolean;
+    ctx: () => ConfigContext;
+  },
 ): string | undefined {
-  if (!proxy || target.port === undefined) {
+  if (target.port === undefined) {
     return undefined;
   }
+  const port = target.port;
   const [canonical] = subdomainsOf(target);
   const host =
-    canonical !== undefined
-      ? `${canonical}.${proxy.rootDomain}`
-      : target.isDefault
-        ? proxy.rootDomain
-        : undefined;
-  return host === undefined ? undefined : `${proxy.urlScheme}://${publicHost(proxy, host)}`;
+    proxy === undefined
+      ? undefined
+      : canonical !== undefined
+        ? `${canonical}.${proxy.rootDomain}`
+        : target.isDefault
+          ? proxy.rootDomain
+          : undefined;
+  const route =
+    proxy === undefined || host === undefined
+      ? null
+      : { host, subdomain: canonical, rootDomain: proxy.rootDomain, port: proxy.port };
+  // An infra service is reached through the proxy or not at all: a database's port is no origin.
+  if (target.kind === 'infra' && route === null) {
+    return undefined;
+  }
+  const https = proxy !== undefined && proxy.https !== false;
+  if (callback === undefined) {
+    return route === null
+      ? `http://localhost:${String(port)}`
+      : `${https ? 'https' : 'http'}://${route.host}:${String(route.port)}`;
+  }
+  const value: unknown = callback({
+    ...target.ctx(),
+    service: {
+      name: target.name,
+      shortName: target.shortName,
+      port,
+      kind: target.kind,
+      proxy: route === null ? null : { host: route.host, subdomain: route.subdomain },
+    },
+    devReverseProxy:
+      proxy === undefined ? null : { rootDomain: proxy.rootDomain, port: proxy.port, https },
+  });
+  const owner = target.kind === 'service' ? target.name : `infra service "${target.name}"`;
+  if (typeof value !== 'string' || !ORIGIN_RE.test(value)) {
+    throw new Error(
+      `publicOrigin returned ${typeof value === 'string' ? JSON.stringify(value) : String(value)} for ${owner} ` +
+        '(expected an origin, such as `https://api.myproject.test`: a scheme and a host, no path)',
+    );
+  }
+  return value.replace(/\/$/, '');
 }
 
 /** One infra service with the provider that runs it — what routing and validation iterate over. */
@@ -1483,18 +1650,43 @@ const RENAMED_KEYS: {
   },
 ];
 
-/** Rejects a key `RENAMED_KEYS` lists, naming its spelling — clearer than the schema's "unrecognized key". */
+/** Config keys that are gone, with what replaces them. */
+const REMOVED_KEYS: {
+  path: string;
+  read: (opts: Record<string, unknown>) => unknown;
+  instead: string;
+}[] = [
+  // oxfmt-ignore
+  {
+    path: 'devReverseProxy.urlScheme',
+    read: (o) => (o.devReverseProxy as Record<string, unknown> | undefined)?.urlScheme,
+    instead:
+      'say where services are reached with the top-level `publicOrigin` callback ' +
+      '(for a TLS terminator in front: `publicOrigin: ({ service }) => ' +
+      'service.proxy ? `https://${service.proxy.host}` : `http://localhost:${service.port}``), ' +
+      'or set `devReverseProxy.https` for devtooie to serve TLS itself',
+  },
+];
+
+/**
+ * Rejects a key `RENAMED_KEYS` or `REMOVED_KEYS` lists, naming its spelling or replacement —
+ * clearer than the schema's "unrecognized key".
+ */
 function rejectRenamedKeys(opts: unknown): void {
   if (typeof opts !== 'object' || opts === null) {
     return;
   }
-  const used = RENAMED_KEYS.filter(
-    (key) => key.read(opts as Record<string, unknown>) !== undefined,
-  );
-  if (used.length > 0) {
-    throw new Error(
-      used.map((key) => `\`${key.path}\` is spelled \`${key.use}\`: rename it.`).join('\n'),
-    );
+  const record = opts as Record<string, unknown>;
+  const messages = [
+    ...RENAMED_KEYS.filter((key) => key.read(record) !== undefined).map(
+      (key) => `\`${key.path}\` is spelled \`${key.use}\`: rename it.`,
+    ),
+    ...REMOVED_KEYS.filter((key) => key.read(record) !== undefined).map(
+      (key) => `\`${key.path}\` was removed: ${key.instead}.`,
+    ),
+  ];
+  if (messages.length > 0) {
+    throw new Error(messages.join('\n'));
   }
 }
 
@@ -1503,7 +1695,14 @@ export function defineConfig<
   P extends Record<string, unknown>,
   K extends string = Extract<keyof P, string>,
   RootDir extends string | undefined = undefined,
->(opts: DefineConfigOptions<Top, P, K, RootDir>): Config<K, P, Top> {
+  Keys extends keyof DefineConfigOptions<Top, P, K, RootDir> = never,
+>(
+  // `{ [Q in Keys]: … }` infers which top-level keys the config writes, from the keys alone, as
+  // `services`' `Record<K, unknown>` infers the service names: inferring the `devReverseProxy`
+  // block itself fails once a callback in it needs a contextual type. A `devReverseProxy` the
+  // config names may not be `undefined`, so `publicOrigin` can count on it.
+  opts: DefineConfigOptions<Top, P, K, RootDir, Keys> & { [Q in Keys]: Q extends 'devReverseProxy' ? NonNullable<unknown> : unknown }, // oxfmt-ignore
+): Config<K, P, Top> {
   rejectRenamedKeys(opts);
   const result = DefineConfigSchema.safeParse(opts);
   if (!result.success) {
@@ -1687,13 +1886,17 @@ export function defineConfig<
           `Add \`port\` to ${config.name} in devtooie.config.ts, or drop \`port\` from the callback.`,
       ),
     );
-    // What this service's relative URLs resolve against: its port on loopback, and — when the
-    // dev reverse proxy routes it — its public origin. `urls` show the public form, the
-    // `healthcheck` probes the private one (see `ResolvedUrlForms`).
-    const publicOrigin = publicOriginOf(devReverseProxy, {
+    // What this service's relative URLs resolve against: its port on loopback, and its public
+    // origin. `urls` show the public form, the `healthcheck` probes the private one (see
+    // `ResolvedUrlForms`).
+    const publicOrigin = publicOriginOf(devReverseProxy, parsed.publicOrigin, {
+      name: config.name,
+      shortName: config.shortName,
+      kind: 'service',
       port,
       proxy: config.proxy,
       isDefault: devReverseProxy?.defaultService === config.name,
+      ctx: baseCtx,
     });
     const scope = (where: string): UrlScope => ({ ctx, port, publicOrigin, where });
     return {
@@ -1742,6 +1945,7 @@ export function defineConfig<
         resolveInfraService(name, service, {
           proxy: serviceProxies.find((s) => s.name === name)?.proxy,
           devReverseProxy,
+          publicOrigin: parsed.publicOrigin,
           ctx: workspaceBase,
           enabledCtx: () => ({ mode: currentMode(), ...workspaceBase() }),
           envFilesLoaded: workspaceEnv.files,

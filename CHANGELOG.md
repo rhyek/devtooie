@@ -5,6 +5,8 @@
 ### Features
 
 - **Reach each service at its own hostname**, like `http://api.localhost:4000` instead of a bare port per app, through a reverse proxy devtooie now runs itself — with a status page while the service is stopped or still starting. See [docs/dev-reverse-proxy.md](docs/dev-reverse-proxy.md).
+- **The dev reverse proxy serves HTTPS with `devReverseProxy.https`**, from a self-signed certificate per hostname or your own, and your Node services trust it with no setup. See [docs/configuration.md](docs/configuration.md#tls).
+- **New top-level `publicOrigin` says where each service is reached**, such as a TLS terminator in front of the proxy. See [docs/configuration.md](docs/configuration.md#publicorigin).
 - **New top-level `infra` brings your `docker-compose.yaml` services up before the application services start** — waiting on their healthchecks and running your migrations — with `devtooie infra up|down|destroy` to drive them on their own. See [docs/infra.md](docs/infra.md).
 - **The session footer shows each infra service's live state, and starts, stops, restarts or resets the one you select with the arrow keys** — the control API does the same. See [docs/infra.md](docs/infra.md#in-a-dev-session).
 - **The footer shows each service's memory under its name, as Activity Monitor counts it**. See [Running the Terminal UI](README.md#running-the-terminal-ui).

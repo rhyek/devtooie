@@ -72,7 +72,7 @@ describe('runSessionInfra', () => {
     });
     const infra = await runSessionInfra(undefined, { exec: docker({ State: 'running' }) });
     expect(infra?.services).toEqual([
-      { provider: 'docker-compose', name: 'db', urls: ['https://db.example.test'] },
+      { provider: 'docker-compose', name: 'db', urls: ['http://db.example.test:4000'] },
     ]);
   });
 

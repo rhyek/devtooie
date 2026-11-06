@@ -6,8 +6,8 @@ export default defineConfig({
   // Let `.env.development` extend an inherited NODE_OPTIONS instead of losing to it.
   env: { override: ['NODE_OPTIONS'] },
   // devtooie's own dev reverse proxy: http://<subdomain>.localhost:21050 reaches each service
-  // (and the mail catcher), with a status page while it's stopped or starting. A custom `rootDomain` (behind a TLS
-  // terminator) implies https URLs without the port.
+  // (and the mail catcher), with a status page while it's stopped or starting. `https: true` would
+  // serve it over TLS too, with a self-signed certificate per hostname.
   devReverseProxy: {
     port: ({ envs }) => Number(envs.DEV_REVERSE_PROXY_PORT),
     rootDomain: 'localhost', // the default

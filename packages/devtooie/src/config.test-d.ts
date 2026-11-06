@@ -17,6 +17,8 @@ import {
   defineConfig,
   type ConfigContext,
   type DefineConfigOptions,
+  type DevReverseProxyHttps,
+  type PublicOriginProxy,
   type ServiceConfigInput,
   type TokenRecord,
   type ProxyInput,
@@ -433,7 +435,10 @@ describe('devReverseProxy', () => {
         },
         rootDomain: (ctx) => `example.${ctx.tokens.tld}`,
         defaultService: 'web',
-        urlScheme: 'http',
+        https: (ctx) => {
+          expectTypeOf(ctx.tokens.tld).toEqualTypeOf<'test'>();
+          return { key: `key.${ctx.tokens.tld}`, cert: 'cert.pem' };
+        },
       },
       services: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
@@ -442,7 +447,11 @@ describe('devReverseProxy', () => {
     >[0];
     type Proxy = NonNullable<Opts['devReverseProxy']>;
     expectTypeOf<Proxy['defaultService']>().toEqualTypeOf<'web' | 'api' | undefined>();
-    expectTypeOf<Proxy['urlScheme']>().toEqualTypeOf<'http' | 'https' | undefined>();
+    expectTypeOf<Proxy['https']>().toEqualTypeOf<
+      | DevReverseProxyHttps
+      | ((ctx: ConfigContext<Record<never, never>>) => DevReverseProxyHttps)
+      | undefined
+    >();
   });
 
   test('exposes the resolved block on the returned config', () => {
@@ -454,9 +463,91 @@ describe('devReverseProxy', () => {
     expectTypeOf(config.devReverseProxy).toEqualTypeOf<ResolvedDevReverseProxy | undefined>();
     expectTypeOf(config.devReverseProxy!.port).toEqualTypeOf<number>();
     expectTypeOf(config.devReverseProxy!.rootDomain).toEqualTypeOf<string>();
-    expectTypeOf(config.devReverseProxy!.urlScheme).toEqualTypeOf<'http' | 'https'>();
+    expectTypeOf(config.devReverseProxy!.https).toEqualTypeOf<false | 'self-signed' | 'own'>();
     expectTypeOf(config.devReverseProxy!.defaultService).toEqualTypeOf<string | undefined>();
     expectTypeOf(config.services.web.publicOrigin).toEqualTypeOf<string | undefined>();
+  });
+});
+
+describe('publicOrigin', () => {
+  const route = { host: 'h', subdomain: undefined } as { host: string; subdomain: string | undefined } | null; // oxfmt-ignore
+
+  test('is handed the service and its route, typed with the config tokens', () => {
+    defineConfig({
+      serviceRootDir: 'packages',
+      tokens: { tld: 'test' },
+      publicOrigin: (ctx) => {
+        expectTypeOf(ctx.envs).toEqualTypeOf<Envs>();
+        expectTypeOf(ctx.tokens.tld).toEqualTypeOf<'test'>();
+        expectTypeOf(ctx.service).toEqualTypeOf<{
+          name: string;
+          shortName: string | undefined;
+          port: number;
+          kind: 'service' | 'infra';
+          proxy: typeof route;
+        }>();
+        return `http://localhost:${ctx.service.port}`;
+      },
+      services: { web: { port: 3000 } },
+    });
+  });
+
+  test('types devReverseProxy as present exactly when the config sets it', () => {
+    defineConfig({
+      serviceRootDir: 'packages',
+      devReverseProxy: { port: 4000, rootDomain: ({ envs }) => envs.ROOT_DOMAIN ?? 'localhost' },
+      publicOrigin: ({ devReverseProxy, service }) => {
+        expectTypeOf(devReverseProxy).toEqualTypeOf<PublicOriginProxy>();
+        return service.proxy
+          ? `https://${service.proxy.host}`
+          : `http://localhost:${devReverseProxy.port}`;
+      },
+      services: { web: { port: 3000 } },
+    });
+    defineConfig({
+      serviceRootDir: 'packages',
+      publicOrigin: ({ devReverseProxy }) => {
+        expectTypeOf(devReverseProxy).toEqualTypeOf<null>();
+        return 'http://localhost';
+      },
+      services: { web: { port: 3000 } },
+    });
+    defineConfig({
+      serviceRootDir: 'packages',
+      // @ts-expect-error -- a devReverseProxy the config names is one: publicOrigin counts on it
+      devReverseProxy: undefined,
+      services: { web: { port: 3000 } },
+    });
+  });
+
+  test('still refuses an unknown key in devReverseProxy', () => {
+    defineConfig({
+      serviceRootDir: 'packages',
+      devReverseProxy: {
+        port: 4000,
+        // @ts-expect-error -- not an option
+        rootDomian: 'example.test',
+      },
+      services: { web: { port: 3000 } },
+    });
+  });
+
+  test('still refuses an unknown top-level key', () => {
+    defineConfig({
+      serviceRootDir: 'packages',
+      // @ts-expect-error -- not an option
+      publicOrign: () => 'http://localhost',
+      services: { web: { port: 3000 } },
+    });
+  });
+
+  test('must return a string', () => {
+    defineConfig({
+      serviceRootDir: 'packages',
+      // @ts-expect-error -- not a string
+      publicOrigin: () => 1,
+      services: { web: { port: 3000 } },
+    });
   });
 });
 

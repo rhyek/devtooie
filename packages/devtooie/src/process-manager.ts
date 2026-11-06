@@ -9,6 +9,7 @@ import type { ControlManager, ServiceAction, ServiceRunOutcome } from './command
 import type { AnyServiceConfig, ResolvedHealthcheck } from './config.js';
 import { getDevScript, getLoadedConfig, getRegisteredPackages } from './config.js';
 import { debugLog } from './debug-log.js';
+import { sessionTrustFile } from './dev-tls.js';
 import { watchEnvFiles, type WatchTarget } from './env-watch.js';
 import {
   currentMode,
@@ -1003,8 +1004,8 @@ export class ProcessManager implements ControlManager {
   /**
    * Environment for a package's child processes: the current `process.env`, then the config's
    * own variables and its resolved `.env` files (later files / package scope win), with the
-   * package's configured `port` as `PORT` (and, under the dev reverse proxy, its public origin
-   * as `PUBLIC_ORIGIN`) — which only a file of the package's own overrides. Re-resolved on
+   * package's configured `port` as `PORT`, its public origin as `PUBLIC_ORIGIN` and the proxy's
+   * trust file as `NODE_EXTRA_CA_CERTS` — which only a file of the package's own overrides. Re-resolved on
    * every spawn from the files as last read ({@link envSnapshot}), so a restart picks up edited
    * `.env` values. Never mutates `process.env`.
    */
@@ -1017,6 +1018,7 @@ export class ProcessManager implements ControlManager {
         files: this.envFiles,
         override: this.envOverride,
         vars: this.envVars,
+        extraCaCerts: sessionTrustFile(this.cwd),
         read: this.envSnapshot.read,
       }),
     );

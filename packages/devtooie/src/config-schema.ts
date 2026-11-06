@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import type {
   ConfigContext,
+  DevReverseProxyHttps,
   EnvVars,
   EnvVarsResolver,
   PortResolver,
+  PublicOriginContext,
   UrlResolver,
 } from './config.js';
 
@@ -176,7 +178,16 @@ export const DevReverseProxySchema = z.strictObject({
     ])
     .optional(),
   defaultService: z.string().optional(),
-  urlScheme: z.enum(['http', 'https']).optional(),
+  // A callback's result is checked once it has run, in `defineConfig`.
+  https: z
+    .union([
+      z.boolean(),
+      z.strictObject({ key: z.string().min(1), cert: z.string().min(1) }),
+      z.custom<(ctx: ConfigContext) => DevReverseProxyHttps>((v) => typeof v === 'function', {
+        message: 'devReverseProxy.https must be a boolean, { key, cert }, or a function',
+      }),
+    ])
+    .optional(),
 });
 
 // One callback an infra service can attach. Zod only checks it's a function and passes it
@@ -257,6 +268,11 @@ export const DefineConfigSchema = z.object({
   serviceRootDir: z.string().optional(),
   urls: z.array(UrlEntrySchema).optional(),
   devReverseProxy: DevReverseProxySchema.optional(),
+  publicOrigin: z
+    .custom<(ctx: PublicOriginContext) => string>((v) => typeof v === 'function', {
+      message: 'publicOrigin must be a function',
+    })
+    .optional(),
   infra: InfraSchema.optional(),
   workspaceDir: z.string().optional(),
   tokens: z.record(z.string(), z.string().optional()).optional(),

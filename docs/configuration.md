@@ -15,7 +15,8 @@
 | `urls`         | Workspace-wide footer links, not tied to a service. Same shape as a service's `urls`, but a callback here gets only `{ envs, tokens }`. |
 | `tokens`       | Values of your own, handed to every callback as `tokens` (a service's own `tokens` are merged on top) — see [Callbacks](#callbacks-instead-of-interpolation). |
 | `infra`        | Infra services — databases, caches, brokers — keyed by provider: `{ 'docker-compose': { file?, readyTimeout?, services? } }`, where `services` gives an infra service its `enabled`, its `port`, `proxy` and `urls`, and callbacks. Brought up, and waited on, before the application services start. See [Infra](./infra.md). |
-| `devReverseProxy` | Run devtooie's own dev reverse proxy, routing `<subdomain>.<rootDomain>` to the application service or infra service whose `proxy` declares that subdomain. `{ port, rootDomain?, defaultService?, urlScheme? }`, where `rootDomain` may be an array (the canonical root, then aliases); present = enabled. See [Dev reverse proxy](./dev-reverse-proxy.md). |
+| `devReverseProxy` | Run devtooie's own dev reverse proxy, routing `<subdomain>.<rootDomain>` to the application service or infra service whose `proxy` declares that subdomain. `{ port, rootDomain?, defaultService?, https? }`, where `rootDomain` may be an array (the canonical root, then aliases); present = enabled. See [Dev reverse proxy](./dev-reverse-proxy.md). |
+| `publicOrigin`    | Each service's public origin, as a callback over the service and how the proxy routes it: where a browser reaches it, for `PUBLIC_ORIGIN` and its `urls`. Defaults to the proxy's address, else `http://localhost:<port>`. See [`publicOrigin`](#publicorigin). |
 
 `services` is an object keyed by service name:
 
@@ -64,8 +65,8 @@ Each service's value has a flat set of fields, all optional:
   `subdomain: 'api'`. (`true` needs a name that is itself a DNS label; a scoped or uppercase key
   has to spell its subdomain out.) With a top-level
   [`devReverseProxy`](./dev-reverse-proxy.md), devtooie routes `<subdomain>.<rootDomain>` to
-  this service's `port` (aliases too) and injects `PUBLIC_ORIGIN` into its process (also
-  exposed as `publicOrigin` on the resolved service). Without one, devtooie doesn't use it:
+  this service's `port` (aliases too), and its [`publicOrigin`](#publicorigin) is that host.
+  Without one, devtooie doesn't use it:
   it's data for tooling that reads the exported config (`config.services.api.proxy.subdomain`),
   such as a reverse proxy of your own. Either way the canonical entry is handed to this
   service's callbacks as `subdomain` — see [Callbacks](#callbacks-instead-of-interpolation).
@@ -100,6 +101,80 @@ Each service's value has a flat set of fields, all optional:
   top-level [`logs.timestamps`](./logging.md#timestamps) for this service (inheriting it when
   omitted); `formatter` (`(line: string) => string`) **overrides the default structured-log
   formatter** that devtooie already applies to every service. See [Logging](./logging.md).
+
+## `publicOrigin`
+
+Each service's public origin, where a browser reaches it, is its `PUBLIC_ORIGIN`, the base of
+its relative `urls`, and its `publicOrigin` in `devtooie show-config`, the control API and
+`startStack`'s `origins`. By default it is:
+
+| The service                                     | Its `publicOrigin`                                                                         |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| routed by the [dev reverse proxy](./dev-reverse-proxy.md) | `http://<host>:<proxy port>`, or `https://<host>:<proxy port>` with [`https`](#tls)        |
+| any other application service with a `port`    | `http://localhost:<port>`                                                                  |
+| any other infra service                         | none                                                                                       |
+
+devtooie can't see what sits in front of it, so a TLS terminator (Caddy, say) is declared with
+the top-level `publicOrigin` callback:
+
+```ts
+publicOrigin: ({ service }) =>
+  service.proxy ? `https://${service.proxy.host}` : `http://localhost:${service.port}`,
+```
+
+It runs for every application service that has a `port` and every infra service the proxy
+routes, and returns
+an origin: a scheme and a host, no path. Beside `{ envs, tokens }` (the service's own; the
+workspace's for an infra service), it gets:
+
+| Field             | What it is                                                                                                                                                                          |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `service`         | `{ name, shortName, port, kind, proxy }`: `kind` is `'service'` or `'infra'`, and `proxy` is `{ host, subdomain }` where the dev reverse proxy routes the service, else `null` (never for an infra service). `host` is `<subdomain>.<rootDomain>`, or the bare root for a `defaultService` with no subdomain. |
+| `devReverseProxy` | `{ rootDomain, port, https }`: the proxy's canonical root, its port, and whether it does TLS itself. `null` only in a config without a `devReverseProxy`, and typed that way. |
+
+## TLS
+
+`devReverseProxy.https` serves TLS on the proxy's port, beside plain HTTP, as Vite's
+`server.https` does: browsers get HTTP/2, so a dev server's hundreds of module requests share
+one connection instead of six. Public origins become `https://<host>:<proxy port>`.
+
+```ts
+devReverseProxy: {
+  port: 4000,
+  https: true, // a self-signed certificate per hostname
+  // https: { key: 'certs/key.pem', cert: 'certs/cert.pem' }, // or yours
+},
+```
+
+- **`true`** makes a self-signed certificate for each hostname the proxy serves, as Vite's
+  `@vitejs/plugin-basic-ssl` does. The browser warns about it; accept it once per hostname. Open
+  each hostname a page calls (the API's, say) yourself once too: until then the browser refuses
+  the page's requests to it, with nothing to accept. Each certificate is valid for a year, and a
+  new service's hostname asks once more. They live in
+  `node_modules/.devtooie/tls/`.
+- **`{ key, cert }`** uses yours, each a file's path (relative to the workspace) or a PEM's text.
+  For no warning at all, make one your browsers trust, with
+  [mkcert](https://github.com/FiloSottile/mkcert), say, naming every hostname. Browsers refuse a
+  wildcard directly under a top-level name, such as `*.localhost`; `*.myproject.localhost` is fine.
+- A callback over `{ envs, tokens }` may return either, or `false`.
+
+A request devtooie decrypts reaches the service with `X-Forwarded-Proto: https`,
+`X-Forwarded-Host` and `X-Forwarded-For`, as it would from a TLS terminator.
+
+**Calls between services.** A service calling another through the proxy
+(`https://api.localhost:4000`) would refuse a self-signed certificate. So with `https: true`,
+devtooie writes every hostname's certificate to one file and sets `NODE_EXTRA_CA_CERTS` to it in
+each service's environment, and in [`devtooie exec` and `devtooie run`](./cli.md#devtooie-exec-and-devtooie-run)'s, and Node
+trusts the proxy with no setup. Certificates that a `NODE_EXTRA_CA_CERTS` devtooie was started
+with names are added to the file; a service's own `.env` value wins. Other runtimes read the
+same file from that variable another way:
+
+- **Go:** add it to the client's `tls.Config.RootCAs` (`x509.NewCertPool`, `AppendCertsFromPEM`).
+  On Linux, `SSL_CERT_FILE` also works, in place of the system's certificates.
+- **Rust:** with reqwest, `Certificate::from_pem` and `ClientBuilder::add_root_certificate`; not
+  every TLS library takes a self-signed server certificate as a root, so check yours.
+- **Python:** `SSL_CERT_FILE`, and `REQUESTS_CA_BUNDLE` for requests.
+- **curl:** `--cacert "$NODE_EXTRA_CA_CERTS"`.
 
 ## `env.vars`
 

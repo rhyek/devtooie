@@ -8,6 +8,7 @@ import {
   startDevReverseProxy,
   type DevReverseProxyServer,
 } from './dev-reverse-proxy.js';
+import { proxyTlsFor } from './dev-tls.js';
 import { isInsideWorkspace, isProcessAlive, processCwd, resolveRealPath } from './process-info.js';
 import {
   decideControlPort,
@@ -346,7 +347,8 @@ export async function startSessionDevReverseProxy(opts: {
     rootDomainAliases: proxy.rootDomains.slice(1),
     routes: routesFromConfig(config),
     controlApiPort: opts.controlApiPort,
-    urlScheme: proxy.urlScheme,
+    // Before any service starts, so the trust file their NODE_EXTRA_CA_CERTS names is there.
+    tls: (await proxyTlsFor(config, getWorkspaceDir())).tls,
   });
 }
 

@@ -80,7 +80,7 @@ reports as `config` on `GET /query/status`. For each service you get, among the 
 
 ```jsonc
 {
-  "devReverseProxy": { "port": 4000, "rootDomain": "myproject.example.test", "rootDomains": ["myproject.example.test"], "defaultService": "web", "urlScheme": "https" },
+  "devReverseProxy": { "port": 4000, "rootDomain": "myproject.example.test", "rootDomains": ["myproject.example.test"], "defaultService": "web", "https": false },
   "services": {
     "api": {
       "name": "api",
@@ -97,24 +97,27 @@ reports as `config` on `GET /query/status`. For each service you get, among the 
 
 **Which URL to use:**
 
-- **`publicOrigin` present** → the service is routed by the [dev reverse proxy](#dev-reverse-proxy):
-  `curl https://api.myproject.example.test/todos`. That is the same origin a browser uses, and
-  the one the app itself is configured for (its `PUBLIC_ORIGIN`). If the session is down or the
+- **`publicOrigin`** → where a browser reaches the service, and the origin the app itself is
+  configured for (its `PUBLIC_ORIGIN`). When the [dev reverse proxy](#dev-reverse-proxy) routes
+  the service, it is the proxy's address (or a TLS terminator's in front, as the config's
+  [`publicOrigin`](#publicorigin) says): `curl https://api.myproject.example.test/todos`. If the session is down or the
   service is still starting you get a **503 with `Retry-After`** naming the service and its status,
   not a connection error — see [Status pages](#status-pages). With a plain `localhost` root the
   origin already carries the proxy port (`http://api.localhost:21050`); `*.localhost` names
   resolve in browsers but not for `curl`, so pass the host explicitly:
   `curl -H 'Host: api.localhost' http://127.0.0.1:21050/todos`.
-- **No `publicOrigin`** → the service is not routed; talk to it directly on loopback at its
-  `port`: `curl http://localhost:3001/todos`. This works in every setup, proxy or not, but only
-  while the service is running.
+- **`port`** → the service itself on loopback: `curl http://localhost:3001/todos`. This works
+  in every setup, proxy or not, but only while the service is running; an application service
+  the proxy doesn't route has this as its `publicOrigin` too.
 - **`healthcheck.url`** is the readiness probe devtooie itself polls — the right thing to hit to
   find out whether the service is up, and what `services.<name>` on `/query/status` reflects.
 - An **infra service** the proxy routes has its own `port` and `publicOrigin` under
   `infra["docker-compose"].services.<name>` — use them the same way. Its hostnames answer 503
   `starting` until the session's infra step has finished; see [Infra services](#infra-services).
-- The `devReverseProxy.port` is the proxy's own listener, for the TLS terminator in front of it;
-  you normally don't call it directly unless the root is plain `localhost` (above).
+- The `devReverseProxy.port` is the proxy's own listener, for a TLS terminator in front of it;
+  you normally don't call it directly unless the public origins carry it (above). With
+  `devReverseProxy.https: true` it speaks TLS with self-signed certificates: `curl` needs
+  `--cacert` with the file the services' `NODE_EXTRA_CA_CERTS` names, or `-k`.
 
 `--mode` matters: a `port` or `rootDomain` written as a callback over `envs` resolves against that
 mode's `.env` files, so pass the same `--mode` the session runs with.
@@ -288,7 +291,8 @@ Debian's and Ubuntu's `/bin/sh` stays as a small parent process. A Makefile targ
 | `urls`            | Workspace-wide footer links, not tied to a service. Same shape as a service's `urls`, but a callback here gets only `{ envs, tokens }` (no service, so no `port`). |
 | `tokens`          | Values of your own, handed to every callback as `tokens` (a service's own `tokens` are merged on top) — see [Callbacks](#callbacks-instead-of-interpolation).      |
 | `infra`           | Infrastructure that isn't an application service — databases, caches, brokers — keyed by provider: `{ 'docker-compose': { file?, readyTimeout?, services? } }`, where `services` gives an infra service its `enabled`, its `port` and `proxy`, its `urls`, and callbacks. Brought up, and waited on, before the application services start. See [Infra](#infra). |
-| `devReverseProxy` | Run devtooie's own dev reverse proxy, routing `<subdomain>.<rootDomain>` to the application service or infra service whose `proxy` declares that subdomain. `{ port, rootDomain?, defaultService?, urlScheme? }`, where `rootDomain` may be an array (the canonical root, then aliases); present = enabled. See [Dev reverse proxy](#dev-reverse-proxy). |
+| `devReverseProxy` | Run devtooie's own dev reverse proxy, routing `<subdomain>.<rootDomain>` to the application service or infra service whose `proxy` declares that subdomain. `{ port, rootDomain?, defaultService?, https? }`, where `rootDomain` may be an array (the canonical root, then aliases); present = enabled. See [Dev reverse proxy](#dev-reverse-proxy). |
+| `publicOrigin`    | Each service's public origin, as a callback over the service and how the proxy routes it: where a browser reaches it, for `PUBLIC_ORIGIN` and its `urls`. Defaults to the proxy's address, else `http://localhost:<port>`. See [`publicOrigin`](#publicorigin). |
 
 `services` is an object **keyed by service name**:
 
@@ -335,8 +339,8 @@ lib):
   reverse proxy building its routing table from each service's `proxy.subdomain` and resolved
   `port` (`config.services.api.proxy.subdomain`). With a top-level
   [`devReverseProxy`](#dev-reverse-proxy), devtooie is that proxy: it routes
-  `<subdomain>.<rootDomain>` to this service's `port` (aliases too) and injects `PUBLIC_ORIGIN`
-  into its process. Without one, devtooie doesn't use it. Either way the canonical entry is
+  `<subdomain>.<rootDomain>` to this service's `port` (aliases too), and its
+  [`publicOrigin`](#publicorigin) is that host. Without one, devtooie doesn't use it. Either way the canonical entry is
   handed to this service's callbacks as `subdomain` — see
   [Callbacks](#callbacks-instead-of-interpolation). The proxy's [`defaultService`](#config),
   served at the bare root, needs no `proxy`. Each entry must be a DNS label — lowercase letters,
@@ -369,6 +373,80 @@ lib):
   top-level [`logs.timestamps`](#log-timestamps) for this service (inheriting it when omitted);
   `formatter` (`(line: string) => string`) **overrides the default structured-log formatter** that
   devtooie already applies to every service. See [Structured logs](#structured-logs).
+
+### `publicOrigin`
+
+Each service's public origin, where a browser reaches it, is its `PUBLIC_ORIGIN`, the base of
+its relative `urls`, and its `publicOrigin` in `devtooie show-config`, the control API and
+`startStack`'s `origins`. By default it is:
+
+| The service                                     | Its `publicOrigin`                                                                         |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| routed by the [dev reverse proxy](#dev-reverse-proxy) | `http://<host>:<proxy port>`, or `https://<host>:<proxy port>` with [`https`](#tls)        |
+| any other application service with a `port`    | `http://localhost:<port>`                                                                  |
+| any other infra service                         | none                                                                                       |
+
+devtooie can't see what sits in front of it, so a TLS terminator (Caddy, say) is declared with
+the top-level `publicOrigin` callback:
+
+```ts
+publicOrigin: ({ service }) =>
+  service.proxy ? `https://${service.proxy.host}` : `http://localhost:${service.port}`,
+```
+
+It runs for every application service that has a `port` and every infra service the proxy
+routes, and returns
+an origin: a scheme and a host, no path. Beside `{ envs, tokens }` (the service's own; the
+workspace's for an infra service), it gets:
+
+| Field             | What it is                                                                                                                                                                          |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `service`         | `{ name, shortName, port, kind, proxy }`: `kind` is `'service'` or `'infra'`, and `proxy` is `{ host, subdomain }` where the dev reverse proxy routes the service, else `null` (never for an infra service). `host` is `<subdomain>.<rootDomain>`, or the bare root for a `defaultService` with no subdomain. |
+| `devReverseProxy` | `{ rootDomain, port, https }`: the proxy's canonical root, its port, and whether it does TLS itself. `null` only in a config without a `devReverseProxy`, and typed that way. |
+
+### TLS
+
+`devReverseProxy.https` serves TLS on the proxy's port, beside plain HTTP, as Vite's
+`server.https` does: browsers get HTTP/2, so a dev server's hundreds of module requests share
+one connection instead of six. Public origins become `https://<host>:<proxy port>`.
+
+```ts
+devReverseProxy: {
+  port: 4000,
+  https: true, // a self-signed certificate per hostname
+  // https: { key: 'certs/key.pem', cert: 'certs/cert.pem' }, // or yours
+},
+```
+
+- **`true`** makes a self-signed certificate for each hostname the proxy serves, as Vite's
+  `@vitejs/plugin-basic-ssl` does. The browser warns about it; accept it once per hostname. Open
+  each hostname a page calls (the API's, say) yourself once too: until then the browser refuses
+  the page's requests to it, with nothing to accept. Each certificate is valid for a year, and a
+  new service's hostname asks once more. They live in
+  `node_modules/.devtooie/tls/`.
+- **`{ key, cert }`** uses yours, each a file's path (relative to the workspace) or a PEM's text.
+  For no warning at all, make one your browsers trust, with
+  [mkcert](https://github.com/FiloSottile/mkcert), say, naming every hostname. Browsers refuse a
+  wildcard directly under a top-level name, such as `*.localhost`; `*.myproject.localhost` is fine.
+- A callback over `{ envs, tokens }` may return either, or `false`.
+
+A request devtooie decrypts reaches the service with `X-Forwarded-Proto: https`,
+`X-Forwarded-Host` and `X-Forwarded-For`, as it would from a TLS terminator.
+
+**Calls between services.** A service calling another through the proxy
+(`https://api.localhost:4000`) would refuse a self-signed certificate. So with `https: true`,
+devtooie writes every hostname's certificate to one file and sets `NODE_EXTRA_CA_CERTS` to it in
+each service's environment, and in [`devtooie exec` and `devtooie run`](#run-a-one-off-command-in-a-services-dir-with-its-environment)'s, and Node
+trusts the proxy with no setup. Certificates that a `NODE_EXTRA_CA_CERTS` devtooie was started
+with names are added to the file; a service's own `.env` value wins. Other runtimes read the
+same file from that variable another way:
+
+- **Go:** add it to the client's `tls.Config.RootCAs` (`x509.NewCertPool`, `AppendCertsFromPEM`).
+  On Linux, `SSL_CERT_FILE` also works, in place of the system's certificates.
+- **Rust:** with reqwest, `Certificate::from_pem` and `ClientBuilder::add_root_certificate`; not
+  every TLS library takes a self-signed server certificate as a root, so check yours.
+- **Python:** `SSL_CERT_FILE`, and `REQUESTS_CA_BUNDLE` for requests.
+- **curl:** `--cacert "$NODE_EXTRA_CA_CERTS"`.
 
 ### Callbacks instead of interpolation
 
@@ -697,16 +775,16 @@ building those deps first. Give a shared lib a watching `dev` (e.g. `tsc --watch
 
 ## Dev reverse proxy
 
-devtooie can run the project's dev reverse proxy itself. A TLS terminator on the machine
-(Caddy, say — not devtooie's concern) forwards `*.<rootDomain>` to one loopback port per
-project; devtooie owns that port and routes each request by the first label of its `Host`
-header to the application service or [infra service](#infra) whose `proxy` declares that subdomain, on
-its resolved `port`.
+devtooie can run the project's dev reverse proxy itself: one loopback port per project, which a
+browser reaches directly (over TLS too, with [`https`](#tls)) or through a TLS terminator in
+front (Caddy, say) forwarding `*.<rootDomain>` to it. devtooie routes each request by the first
+label of its `Host` header to the application service or [infra service](#infra) whose `proxy`
+declares that subdomain, on its resolved `port`.
 
 Because devtooie also knows every service's live status, the proxy can **answer for a service
 that is stopped or still starting** — a page saying so, rather than a bare connection error.
 
-The proxy does no TLS, no path-based routing, and no auth.
+The proxy does no path-based routing and no auth.
 
 ### Config
 
@@ -717,7 +795,7 @@ export default defineConfig({
     port: ({ envs }) => Number(envs.DEV_REVERSE_PROXY_PORT), // number | callback
     rootDomain: ({ envs }) => `myproject.${envs.LOCALDEV_DOMAIN}`, // string | string[] | callback, default 'localhost'
     defaultService: 'web', // optional: what the bare rootDomain routes to
-    urlScheme: 'https', // optional; defaults from rootDomain: http on localhost, https elsewhere
+    https: true, // optional: TLS on the same port, with a self-signed certificate per hostname
   },
   infra: {
     'docker-compose': {
@@ -747,9 +825,9 @@ export default defineConfig({
   literal or a callback's return. The first entry is the **canonical** root; the rest are
   **aliases**, and a `Host` under one routes exactly as under the canonical root — subdomains,
   subdomain aliases, `defaultService` on the bare alias, infra services, status pages,
-  WebSockets — with the `Host` still forwarded unchanged. Everything devtooie derives uses the
-  canonical root alone: `PUBLIC_ORIGIN`, the `urlScheme` default, footer links, `publicOrigin`,
-  and the 404 page's links. An alias suits a local-only name reached at the proxy directly,
+  WebSockets — with the `Host` still forwarded unchanged. Public origins (`PUBLIC_ORIGIN`,
+  `publicOrigin`, the footer links and the 404 page's links) are built from the canonical root
+  alone. An alias suits a local-only name reached at the proxy directly,
   `http://web.myproject.localhost:<proxy port>`, beside a canonical root that a TLS terminator
   serves. The app behind it is configured from the canonical `PUBLIC_ORIGIN`, so whatever it
   derives from that — the HMR `clientPort` in the [Vite example](#websockets-and-vite-hmr), CORS
@@ -758,13 +836,9 @@ export default defineConfig({
   and needs no `proxy`: without one, the bare root is its public origin (its `PUBLIC_ORIGIN` and
   `publicOrigin`); with a `proxy.subdomain`, that subdomain stays its origin and the bare root is
   one more route to it. Without `defaultService` the bare root is a 404.
-- **`urlScheme`** — `'http' | 'https'`. The scheme of the public URLs devtooie derives (footer
-  links, `PUBLIC_ORIGIN`), and with it whether they carry a port. **Defaults from `rootDomain`**:
-  `http` on `localhost`, `https` on any other root. `http` means the browser hits the proxy
-  directly, so the URLs carry the proxy `port` — how a plain `localhost` setup works with nothing
-  in front; `https` means a TLS terminator sits in front, so they carry no port. So the same
-  service is `http://api.localhost:4000` under the default root and `https://api.myproject.test`
-  under a custom one, with nothing else to set.
+- **`https`** — TLS on the proxy's port, beside plain HTTP and h2c: `true` for a self-signed
+  certificate per hostname, `{ key, cert }` for yours. Public origins become `https://`. See
+  [TLS](#tls).
 
 #### `proxy`
 
@@ -818,13 +892,15 @@ families (Vite on a modern Node listens on `[::1]` alone). The `Host` header is 
 received — so a signature computed over it, like an S3 presigned URL's or a presigned POST
 form's, still matches at the service — and every other request and response header passes through unchanged, except the
 hop-by-hop ones (`connection`, `keep-alive`, `proxy-*`, `te`, `trailer`, `transfer-encoding`,
-`upgrade`), which Node manages on each side. devtooie adds or rewrites no `X-Forwarded-*` —
-the TLS terminator in front already sets them. Bodies stream both ways; nothing is buffered,
+`upgrade`), which Node manages on each side. A request devtooie decrypts itself (with
+`https`) gains `X-Forwarded-Proto: https`, `X-Forwarded-Host` and `X-Forwarded-For`, replacing any
+the client sent; a plain request's, a terminator's `X-Forwarded-*` included, pass untouched. Bodies stream both ways; nothing is buffered,
 and the proxy has no request or response timeouts of its own, so SSE and long-lived
 connections survive.
 
-The proxy speaks HTTP/1.1 and HTTP/2 without TLS (h2c) on the same port, telling them apart
-by how each connection opens. A TLS terminator that speaks h2c to it sends a whole page load as
+The proxy speaks HTTP/1.1 and HTTP/2 without TLS (h2c) on the same port, and TLS too with
+[`https`](#tls) (HTTP/2 for a browser, HTTP/1.1 for the rest, websockets included), telling
+them apart by how each connection opens. A TLS terminator that speaks h2c to it sends a whole page load as
 streams of one connection (see [The TLS terminator](#the-tls-terminator)); a client that speaks
 HTTP/1.1, the browser included under plain `localhost`, is served as always. Requests cancelled
 on that connection, as a page closed or reloaded mid-load cancels its own, never close it: Node's
@@ -895,21 +971,19 @@ export default defineConfig({
 
 ### `PUBLIC_ORIGIN`
 
-Every routable service's process — one with a `port` and either a `proxy` or the
-`defaultService` slot — gets `PUBLIC_ORIGIN` injected next to `PORT`, under the same rule: only a `PUBLIC_ORIGIN` in the
-service's own `.env` file overrides it. It is built from the block as
+Every service's process with a `port` gets its [public origin](#publicorigin) as
+`PUBLIC_ORIGIN`, next to `PORT`, under the same rule: only a `PUBLIC_ORIGIN` in the service's own
+`.env` file overrides it. For a service the proxy routes, it is by default
 
 ```
-<urlScheme>://<canonical subdomain>.<rootDomain>[:<port>]
+http://<canonical subdomain>.<rootDomain>:<proxy port>
 ```
 
-where the canonical subdomain is the service's `proxy.subdomain` (the first entry of an array —
-aliases never appear here) and the port follows the [`urlScheme` rule](#config): the proxy
-`port` under `http`, none under `https`. So `https://web.myproject.test` behind a TLS
-terminator, and `http://web.localhost:21050` on plain `localhost`. A `defaultService` with no
-`proxy` gets the bare root instead, `<urlScheme>://<rootDomain>[:<port>]`:
-`https://myproject.test`, or `http://localhost:21050`. Any other service with no `proxy` gets
-no `PUBLIC_ORIGIN` at all.
+(`https://` with [`https`](#tls)), where the canonical subdomain is the service's
+`proxy.subdomain`, the first entry of an array; aliases never appear here. So
+`http://web.localhost:21050` on plain `localhost`. A `defaultService` with no `proxy` gets the bare
+root instead: `http://localhost:21050`. Behind a TLS terminator, the config's
+[`publicOrigin`](#publicorigin) callback says so, for `https://web.myproject.test`.
 
 Apps use it for things like Vite's `server.allowedHosts` and `server.hmr` without repeating the
 subdomain in their own config. `devtooie exec` and `devtooie run` hand the same variable to a one-off command.
@@ -927,8 +1001,8 @@ The origin is on the resolved config as `publicOrigin` — for a service, the sa
 as `PUBLIC_ORIGIN` — next to `config.devReverseProxy`:
 
 ```ts
-// with `urls: ['', '/todos']` on web
-config.devReverseProxy; // { port: 4000, rootDomain: 'myproject.example.test', rootDomains: ['myproject.example.test'], defaultService: 'web', urlScheme: 'https' } | undefined
+// with `urls: ['', '/todos']` on web, and a `publicOrigin` callback for a TLS terminator in front
+config.devReverseProxy; // { port: 4000, rootDomain: 'myproject.example.test', rootDomains: ['myproject.example.test'], defaultService: 'web', https: false } | undefined
 config.services.web.publicOrigin; // 'https://web.myproject.example.test'
 config.services.web.urls; // ['https://web.myproject.example.test', 'https://web.myproject.example.test/todos']
 config.infra['docker-compose'].services.store; // { enabled: true, port: 9000, proxy: { subdomain: 's3' }, publicOrigin: 'https://s3.myproject.example.test', … }
@@ -957,10 +1031,10 @@ the same table under `devReverseProxy`.
 
 With the default `rootDomain` (`localhost`) nothing needs to sit in front: browsers resolve
 every `*.localhost` name to the loopback address, so `http://web.localhost:<proxy port>` reaches
-the proxy, which routes it by the `web` label. `localhost` implies `urlScheme: 'http'`, under
-which the public URLs devtooie derives carry the proxy port, so footer links and
-`PUBLIC_ORIGIN` are right and Vite's HMR client (see above) connects to the same port the page
-came from.
+the proxy, which routes it by the `web` label. Public origins default to that address, the proxy
+port included, so footer links and `PUBLIC_ORIGIN` are right and Vite's HMR client (see above)
+connects to the same port the page came from. Add [`https: true`](#tls) for
+`https://web.localhost:<proxy port>`.
 
 ```ts
 devReverseProxy: {
@@ -975,8 +1049,15 @@ devReverseProxy: {
 ### The TLS terminator
 
 Anything that terminates TLS and forwards to a loopback port works. Point `rootDomain` at its
-domain: a root other than `localhost` implies `urlScheme: 'https'`, so the public URLs point at
-the terminator with no port. With Caddy, one site block per project:
+domain, and tell devtooie the terminator is there, which it can't see, with the top-level
+[`publicOrigin`](#publicorigin) callback, so public origins point at the terminator with no port:
+
+```ts
+publicOrigin: ({ service }) =>
+  service.proxy ? `https://${service.proxy.host}` : `http://localhost:${service.port}`,
+```
+
+With Caddy, one site block per project:
 
 ```caddyfile
 *.myproject.example.test, myproject.example.test {
@@ -996,8 +1077,8 @@ the terminator with no port. With Caddy, one site block per project:
 }
 ```
 
-where `4000` is the project's `devReverseProxy.port`. Caddy sets `X-Forwarded-*` itself, which
-is why devtooie doesn't.
+where `4000` is the project's `devReverseProxy.port`. Caddy sets `X-Forwarded-*` itself, and
+devtooie passes them on.
 
 **Speak h2c to the proxy.** A dev server serves each module as its own request, so a page load
 is hundreds of requests at once. Over HTTP/1.1 a terminator opens a connection for each one in
@@ -1811,7 +1892,7 @@ It resolves with:
 | `pid`, `port`     | The session's process and its control-API port.                                                                                                                           |
 | `mode`, `logFile` | The session's mode and log.                                                                                                                                                |
 | `services`        | What the session runs: the services asked for, and their runtime deps.                                                                                                    |
-| `origins`         | Every configured service's origin, selected or not: its `publicOrigin` under the [dev reverse proxy](#dev-reverse-proxy), `http://localhost:<port>` otherwise. A service with no `port` has none. |
+| `origins`         | Every configured service's origin, selected or not: its [`publicOrigin`](#publicorigin). A service with no `port` has none. |
 | `rootDomain`      | The dev reverse proxy's canonical root domain, or `null` without one.                                                                                                      |
 | `control`         | A [control API](#drive-a-running-session-via-the-control-api) client bound to the session: `query.status()`, `events()`, `command.service.*`, `command.infra.*`, `command.quit()`. |
 | `stop()`          | Quits the session, resolving once it has exited.                                                                                                                           |
@@ -2070,7 +2151,7 @@ variables first, so its own `.env` files load as if from a clean shell, while va
 shell set still win as usual. `DEVTOOIE_MODE` is never in the list, so a nested devtooie runs in
 the outer one's mode unless `--mode` says otherwise.
 
-A service's `port` is also injected as `PORT` — it wins over a `PORT` set workspace-wide (in a workspace `.env` file or `env.vars`), and only a `PORT` in the service's own `.env` file overrides it — and under the [dev reverse proxy](#dev-reverse-proxy) a routable service also gets `PUBLIC_ORIGIN` (its public `<urlScheme>://<subdomain>.<rootDomain>[:<port>]`, or the bare `<urlScheme>://<rootDomain>[:<port>]` for a `defaultService` with no `proxy`) under the same rule. The reverse direction works too: `port` may be a callback (`port: ({ envs }) => Number(envs.BACKEND_PORT)`) that reads these same resolved files to decide the port, and `healthcheck`/`urls` callbacks get the same `envs` — see [Callbacks instead of interpolation](#callbacks-instead-of-interpolation).
+A service's `port` is also injected as `PORT` — it wins over a `PORT` set workspace-wide (in a workspace `.env` file or `env.vars`), and only a `PORT` in the service's own `.env` file overrides it — and its [public origin](#publicorigin) is injected as `PUBLIC_ORIGIN` under the same rule (and, with the proxy's self-signed certificates, their file as `NODE_EXTRA_CA_CERTS`; see [TLS](#tls)). The reverse direction works too: `port` may be a callback (`port: ({ envs }) => Number(envs.BACKEND_PORT)`) that reads these same resolved files to decide the port, and `healthcheck`/`urls` callbacks get the same `envs` — see [Callbacks instead of interpolation](#callbacks-instead-of-interpolation).
 
 ### Modes (`--mode`)
 

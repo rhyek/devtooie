@@ -4,17 +4,19 @@ import net from 'node:net';
 import type { Duplex } from 'node:stream';
 import type { Config } from './config.js';
 import { infraServicesOf, proxyHostsFor, serviceProxyHostsFor } from './config.js';
+import type { ProxyTls } from './dev-tls.js';
 
 /**
  * The built-in dev reverse proxy.
  *
- * A TLS terminator on the machine (Caddy, say — not devtooie's concern) forwards `*.<rootDomain>`
- * to one loopback port per project. This is that port: each request is routed by its `Host` to the
- * package or infra service whose `proxy` declares that subdomain, on its resolved `port`. Since
- * devtooie also knows every package's live status, the proxy can answer for a package that is
- * stopped or still starting instead of surfacing a bare connection error. An infra service has no
- * live status: it is answered for as starting until the session's infra step has finished, and
- * forwarded to from then on. No TLS, no path-based routing, no auth.
+ * One loopback port per project, reached by a browser directly or through a TLS terminator in
+ * front (Caddy, say): each request is routed by its `Host` to the package or infra service whose
+ * `proxy` declares that subdomain, on its resolved `port`. Since devtooie also knows every
+ * package's live status, the proxy can answer for a package that is stopped or still starting
+ * instead of surfacing a bare connection error. An infra service has no live status: it is
+ * answered for as starting until the session's infra step has finished, and forwarded to from then
+ * on. The port speaks HTTP/1.1 and h2c, and TLS too when given a certificate (`tls`); no
+ * path-based routing, no auth.
  *
  * Built like the control API server: created early (before any package starts) so the listener
  * is bound and the port conflict is settled up front, then `attach`ed to the process manager once
@@ -28,6 +30,8 @@ export type DevReverseProxyRoute = {
   host: string;
   /** The package's or service's resolved port, on loopback. */
   port: number;
+  /** Its public origin (`publicOrigin` in the config), which the 404 page links to. */
+  publicOrigin?: string;
 } & (
   | {
       kind: 'package';
@@ -117,6 +121,14 @@ const CLIENT_IDLE_MS = 10 * 60_000;
  * other request on the connection. The proxy listens on loopback only, for one developer.
  */
 const STREAM_RESETS_UNLIMITED = 2 ** 31 - 1;
+
+/**
+ * How much an HTTP/2 connection may buffer, in megabytes, before Node refuses new streams on it
+ * (its default is 10). One connection carries a whole page load — from a browser over TLS, or
+ * from a TLS terminator over h2c — so the proxy allows as much as Vite does on its own HTTP/2
+ * server.
+ */
+const SESSION_MEMORY_MB = 1000;
 /** Methods whose requests carry no body unless they say so (`content-length`, `transfer-encoding`). */
 const BODYLESS_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -208,14 +220,46 @@ const HOP_BY_HOP = new Set([
 ]);
 
 /**
- * A request the proxy answers: HTTP/1.1, or a stream of an h2c connection (HTTP/2 without TLS),
- * which a TLS terminator in front can use to send a whole page load over one connection.
+ * A request the proxy answers: HTTP/1.1, or a stream of an HTTP/2 connection — h2c (HTTP/2
+ * without TLS), which a TLS terminator in front can use to send a whole page load over one
+ * connection, or HTTP/2 over TLS, which a browser speaks when the proxy has a certificate.
  */
 type ProxyRequest = http.IncomingMessage | http2.Http2ServerRequest;
 type ProxyResponse = http.ServerResponse | http2.Http2ServerResponse;
 
 /** The first bytes of every HTTP/2 connection without TLS (RFC 9113, 3.4). */
 const H2_PREFACE = Buffer.from('PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n');
+
+/** The first byte of every TLS connection: a handshake record (RFC 8446, 5.1). */
+const TLS_HANDSHAKE = 0x16;
+
+/** Whether the request reached the proxy over TLS, on either protocol. */
+function isEncrypted(req: ProxyRequest): boolean {
+  return req instanceof http2.Http2ServerRequest
+    ? req.stream.session?.encrypted === true
+    : (req.socket as { encrypted?: boolean }).encrypted === true;
+}
+
+/**
+ * What a request the proxy decrypted itself tells the service about where it came from: the
+ * `X-Forwarded-*` a TLS terminator in front would set. Replaced rather than appended to, as the
+ * proxy is where the connection ends. Nothing for a plain request, whose headers pass untouched.
+ */
+function forwardedHeaders(req: ProxyRequest): Record<string, string> {
+  if (!isEncrypted(req)) {
+    return {};
+  }
+  const headers: Record<string, string> = { 'x-forwarded-proto': 'https' };
+  const host = hostHeaderOf(req);
+  if (host !== undefined) {
+    headers['x-forwarded-host'] = host;
+  }
+  const address = req.socket.remoteAddress;
+  if (address !== undefined) {
+    headers['x-forwarded-for'] = address;
+  }
+  return headers;
+}
 
 /** The request's host: `Host` over HTTP/1.1, `:authority` over HTTP/2. */
 function hostHeaderOf(req: ProxyRequest): string | undefined {
@@ -254,16 +298,51 @@ export function routesFromConfig(config: Config<string>): DevReverseProxyRoute[]
         host,
         package: pkg.name,
         port: pkg.port!,
+        publicOrigin: pkg.publicOrigin,
         hasHealthcheck: pkg.healthcheck !== undefined,
       });
     }
   }
   for (const { name, service } of infraServicesOf(config)) {
     for (const host of serviceProxyHostsFor(config, service)) {
-      routes.push({ kind: 'service', host, service: name, port: service.port! });
+      routes.push({
+        kind: 'service',
+        host,
+        service: name,
+        port: service.port!,
+        publicOrigin: service.publicOrigin,
+      });
     }
   }
   return routes;
+}
+
+/**
+ * Every hostname the proxy answers, with its route: each route under every root, the same
+ * target with `host` the one asked for, so a status page names the hostname in the address bar.
+ * (No root is under another — the config rejects that — so no alias host can shadow a canonical
+ * one.)
+ */
+export function routesByHost(
+  rootDomain: string,
+  aliases: string[],
+  routes: DevReverseProxyRoute[],
+): Map<string, DevReverseProxyRoute> {
+  const byHost = new Map(routes.map((r) => [r.host, r]));
+  for (const alias of aliases) {
+    for (const r of routes) {
+      const host =
+        r.host === rootDomain
+          ? alias
+          : r.host.endsWith(`.${rootDomain}`)
+            ? `${r.host.slice(0, -rootDomain.length)}${alias}`
+            : null;
+      if (host !== null) {
+        byHost.set(host, { ...r, host });
+      }
+    }
+  }
+  return byHost;
 }
 
 /** The hostname of a `Host` header: lowercased, any `:port` dropped, or `null` when absent. */
@@ -343,34 +422,17 @@ export async function startDevReverseProxy(opts: {
   /** The control API's port, if known, so a 503 page can spell out the exact `restart` URL. */
   controlApiPort?: number;
   /**
-   * Scheme of the public URLs (`config.devReverseProxy.urlScheme`), so the 404 page can list
-   * every route as a link that actually works: under `http` (the default) they carry the
-   * proxy's own port, under `https` none (a TLS terminator on 443 in front).
+   * Serve TLS too, with this certificate (or one per hostname, through its `SNICallback`): a
+   * connection opening with a TLS handshake gets HTTP/2 or HTTP/1.1 over TLS, by ALPN.
    */
-  urlScheme?: 'http' | 'https';
+  tls?: ProxyTls;
   /** Override of {@link READY_HOLD_MS}. */
   readyTimeoutMs?: number;
 }): Promise<DevReverseProxyServer> {
   const { rootDomain, routes } = opts;
   const rootDomains = [rootDomain, ...(opts.rootDomainAliases ?? [])];
   const readyTimeoutMs = opts.readyTimeoutMs ?? READY_HOLD_MS;
-  // Every route answers under every root: the same target, with `host` the one asked for, so a
-  // status page names the hostname in the address bar. (No root is under another — the config
-  // rejects that — so no alias host can shadow a canonical one.)
-  const byHost = new Map(routes.map((r) => [r.host, r]));
-  for (const alias of opts.rootDomainAliases ?? []) {
-    for (const r of routes) {
-      const host =
-        r.host === rootDomain
-          ? alias
-          : r.host.endsWith(`.${rootDomain}`)
-            ? `${r.host.slice(0, -rootDomain.length)}${alias}`
-            : null;
-      if (host !== null) {
-        byHost.set(host, { ...r, host });
-      }
-    }
-  }
+  const byHost = routesByHost(rootDomain, opts.rootDomainAliases ?? [], routes);
   let manager: DevReverseProxyManager | null = null;
   let infraReady = false;
   /** Every socket we've seen, on either side, so `close()` can cut them all. */
@@ -397,20 +459,20 @@ export async function startDevReverseProxy(opts: {
       ? `POST http://127.0.0.1:${String(opts.controlApiPort)}/command/service/restart/${name}`
       : `POST /command/service/restart/${name} on the control API`;
 
-  const urlScheme = opts.urlScheme ?? 'http';
   // `port` (the bound one) is assigned below, before any request can arrive.
   let port = opts.port;
-  const publicUrl = (host: string) =>
-    `${urlScheme}://${host}${urlScheme === 'http' ? `:${String(port)}` : ''}`;
 
   const notFound = (req: ProxyRequest, res: ProxyResponse, host: string | null) => {
-    const urls = routes.map((r) => publicUrl(r.host));
+    // Each routed service's public origin, once (a service's alias hosts share it).
+    const urls = [
+      ...new Set(routes.flatMap((r) => (r.publicOrigin === undefined ? [] : [r.publicOrigin]))),
+    ];
     sendProblem(req, res, {
       status: 404,
       title: `Nothing is routed at ${host ?? '(no Host header)'}`,
       detail: { host, routes: routes.map((r) => r.host), urls },
       paragraphs: [
-        `The devtooie dev reverse proxy for ${rootDomains.map((d) => `<code>${escapeHtml(d)}</code>`).join(', ')} knows these hostnames` +
+        `The devtooie dev reverse proxy for ${rootDomains.map((d) => `<code>${escapeHtml(d)}</code>`).join(', ')} serves these` +
           (rootDomains.length > 1 ? ', each under every one of those roots:' : ':'),
       ],
       listItems: urls,
@@ -581,7 +643,7 @@ export async function startDevReverseProxy(opts: {
       method: req.method,
       path: req.url,
       // `host` is kept as received (from `:authority` over HTTP/2), so Node won't synthesize one.
-      headers: { ...endToEnd(req.headers), host: hostHeaderOf(req) },
+      headers: { ...endToEnd(req.headers), ...forwardedHeaders(req), host: hostHeaderOf(req) },
     });
     upstream.on('response', (up) => {
       // HTTP/2 has no status message.
@@ -664,6 +726,7 @@ export async function startDevReverseProxy(opts: {
   // The same requests over h2c. HTTP/2 needs no websocket path here: an upgrade is HTTP/1.1.
   const h2server = http2.createServer(
     {
+      maxSessionMemory: SESSION_MEMORY_MB,
       streamResetBurst: STREAM_RESETS_UNLIMITED,
       streamResetRate: STREAM_RESETS_UNLIMITED,
     },
@@ -673,16 +736,45 @@ export async function startDevReverseProxy(opts: {
   );
   h2server.setTimeout(0);
   const sessions = new Set<http2.ServerHttp2Session>();
-  h2server.on('session', (session) => {
+  const trackSession = (session: http2.ServerHttp2Session) => {
     sessions.add(session);
     session.once('close', () => sessions.delete(session));
-  });
+  };
+  h2server.on('session', trackSession);
+
+  // The same requests over TLS, as Vite serves them with a certificate: HTTP/2 for a client that
+  // offers it by ALPN (every browser), HTTP/1.1 for the rest, websocket upgrades included.
+  const tlsServer =
+    opts.tls &&
+    http2.createSecureServer(
+      {
+        ...opts.tls,
+        allowHTTP1: true,
+        maxSessionMemory: SESSION_MEMORY_MB,
+        streamResetBurst: STREAM_RESETS_UNLIMITED,
+        streamResetRate: STREAM_RESETS_UNLIMITED,
+      },
+      (req, res) => {
+        void handle(req, res);
+      },
+    );
+  if (tlsServer) {
+    tlsServer.setTimeout(0);
+    // Its HTTP/1.1 connections are served as an `http.Server`'s, from these fields, which Node
+    // sets on a server with `allowHTTP1` but leaves out of its type.
+    Object.assign(tlsServer, { requestTimeout: 0, keepAliveTimeout: CLIENT_IDLE_MS });
+    tlsServer.on('session', trackSession);
+    // A failed handshake (a browser refusing the self-signed certificate, say) is the client's
+    // business: its socket closes, and nothing else does.
+    tlsServer.on('tlsClientError', (_err, socket) => socket.destroy());
+  }
 
   /**
-   * Hands a new connection to the HTTP/2 server when it opens with HTTP/2's preface, else to the
-   * HTTP/1.1 one, both serving the same port. The bytes read to tell them apart are put back on the
-   * socket first: either server reads them from there (Node's HTTP/2 session takes a socket's
-   * buffered bytes before reading its handle), so both get the socket itself.
+   * Hands a new connection to the TLS server when it opens with a TLS handshake (and the proxy
+   * has a certificate), to the h2c server when it opens with HTTP/2's preface, else to the
+   * HTTP/1.1 one, all serving the same port. The bytes read to tell them apart are put back on the
+   * socket first: each server reads them from there (Node's HTTP/2 session and TLS socket both
+   * take a socket's buffered bytes before reading its handle), so each gets the socket itself.
    */
   const dispatch = (socket: net.Socket) => {
     track(socket);
@@ -690,14 +782,19 @@ export async function startDevReverseProxy(opts: {
     let seen = Buffer.alloc(0);
     const onData = (chunk: Buffer) => {
       seen = Buffer.concat([seen, chunk]);
+      const encrypted = tlsServer !== undefined && seen[0] === TLS_HANDSHAKE;
       const n = Math.min(seen.length, H2_PREFACE.length);
-      const h2 = seen.subarray(0, n).equals(H2_PREFACE.subarray(0, n));
+      const h2 = !encrypted && seen.subarray(0, n).equals(H2_PREFACE.subarray(0, n));
       if (h2 && seen.length < H2_PREFACE.length) {
         return; // not enough to tell yet
       }
       socket.off('data', onData);
       socket.pause();
       socket.unshift(seen);
+      if (encrypted) {
+        tlsServer.emit('connection', socket);
+        return;
+      }
       if (h2) {
         h2server.emit('connection', socket);
         return;
@@ -709,7 +806,7 @@ export async function startDevReverseProxy(opts: {
   };
   const listener = net.createServer(dispatch);
 
-  server.on('upgrade', (req, socket, head) => {
+  const upgrade = (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
     track(socket);
     socket.on('error', () => socket.destroy());
     const host = hostnameOf(req.headers.host);
@@ -731,7 +828,7 @@ export async function startDevReverseProxy(opts: {
       method: req.method,
       path: req.url,
       // The upgrade handshake *is* hop-by-hop: `connection`/`upgrade` must reach the package.
-      headers: req.headers,
+      headers: { ...req.headers, ...forwardedHeaders(req) },
     });
     upstream.on('upgrade', (upRes, upSocket, upHead) => {
       track(upSocket);
@@ -767,7 +864,9 @@ export async function startDevReverseProxy(opts: {
     upstream.on('error', () => socket.destroy());
     socket.once('close', () => upstream.destroy());
     upstream.end();
-  });
+  };
+  server.on('upgrade', upgrade);
+  tlsServer?.on('upgrade', upgrade);
 
   await new Promise<void>((resolve, reject) => {
     listener.once('error', (err: NodeJS.ErrnoException) => {

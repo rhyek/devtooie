@@ -1,7 +1,14 @@
+import { execFile } from 'node:child_process';
+import { X509Certificate } from 'node:crypto';
+import fs from 'node:fs';
 import http from 'node:http';
 import http2 from 'node:http2';
+import https from 'node:https';
 import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import { Duplex } from 'node:stream';
+import tls from 'node:tls';
 import { describe, test, expect, afterEach, vi } from 'vitest';
 import { defineConfig } from './config.js';
 import {
@@ -12,6 +19,7 @@ import {
   type DevReverseProxyRoute,
   type DevReverseProxyServer,
 } from './dev-reverse-proxy.js';
+import { type ProxyTls, selfSignedTls } from './dev-tls.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures: real upstream servers on ephemeral ports, a stub manager, and a tiny HTTP client
@@ -131,8 +139,8 @@ async function proxyFor(
     defaultService?: string;
     readyTimeoutMs?: number;
     controlApiPort?: number;
-    urlScheme?: 'http' | 'https';
     rootDomainAliases?: string[];
+    tls?: ProxyTls;
   } = {},
 ): Promise<DevReverseProxyServer> {
   const proxy = await startDevReverseProxy({ port: 0, rootDomain: ROOT, routes, ...opts });
@@ -202,14 +210,15 @@ const route = (
   pkg: string,
   port: number,
   hasHealthcheck = false,
-): DevReverseProxyRoute => ({ kind: 'package', host, package: pkg, port, hasHealthcheck });
+  publicOrigin?: string,
+): DevReverseProxyRoute => ({ kind: 'package', host, package: pkg, port, hasHealthcheck, publicOrigin }); // oxfmt-ignore
 
-const serviceRoute = (host: string, service: string, port: number): DevReverseProxyRoute => ({
-  kind: 'service',
-  host,
-  service,
-  port,
-});
+const serviceRoute = (
+  host: string,
+  service: string,
+  port: number,
+  publicOrigin?: string,
+): DevReverseProxyRoute => ({ kind: 'service', host, service, port, publicOrigin });
 
 /** A loopback port nothing listens on: bind an ephemeral one, read the number, release it. */
 async function deadPort(): Promise<number> {
@@ -268,27 +277,28 @@ describe('routing', () => {
   });
 
   test.each([`ghost.${ROOT}`, `a.web.${ROOT}`, 'web.other.test', 'localhost'])(
-    '404s %s, listing every hostname that does exist',
+    "404s %s, listing each routed service's public origin once",
     async (host) => {
       const web = await upstream('web');
       const api = await upstream('api');
       const proxy = await proxyFor(
         [
-          route(`web.${ROOT}`, 'web', web.port),
-          route(`www.${ROOT}`, 'web', web.port),
-          route(ROOT, 'web', web.port),
-          route(`api.${ROOT}`, 'api', api.port),
+          route(`web.${ROOT}`, 'web', web.port, false, `https://web.${ROOT}`),
+          route(`www.${ROOT}`, 'web', web.port, false, `https://web.${ROOT}`),
+          route(ROOT, 'web', web.port, false, `https://web.${ROOT}`),
+          route(`api.${ROOT}`, 'api', api.port, false, `https://api.${ROOT}`),
         ],
-        { defaultService: 'web', urlScheme: 'http' },
+        { defaultService: 'web' },
       );
       proxy.attach(stubManager({ web: 'running', api: 'running' }));
       const reply = await request(proxy.port, host, { headers: { accept: 'text/html' } });
       expect(reply.status).toBe(404);
       expect(reply.headers['content-type']).toMatch(/^text\/html/);
-      // Listed as the public URLs, so each one is a link that actually works.
-      for (const known of [`web.${ROOT}`, `www.${ROOT}`, `api.${ROOT}`, ROOT]) {
-        expect(reply.body).toContain(`href="http://${known}:${String(proxy.port)}"`);
-      }
+      // Listed as the public origins, so each one is a link that actually works.
+      expect(reply.body.match(/href="[^"]+"/g)).toEqual([
+        `href="https://web.${ROOT}"`,
+        `href="https://api.${ROOT}"`,
+      ]);
       expect(reply.body).toContain(host);
     },
   );
@@ -367,14 +377,14 @@ describe('root domain aliases', () => {
     '404s %s, listing only the canonical links',
     async (host) => {
       const web = await upstream('web');
-      const proxy = await proxyFor([route(`web.${ROOT}`, 'web', web.port)], {
-        rootDomainAliases: [ALIAS],
-        urlScheme: 'http',
-      });
+      const proxy = await proxyFor(
+        [route(`web.${ROOT}`, 'web', web.port, false, `http://web.${ROOT}:4000`)],
+        { rootDomainAliases: [ALIAS] },
+      );
       proxy.attach(stubManager({ web: 'running' }));
       const reply = await request(proxy.port, host, { headers: { accept: 'text/html' } });
       expect(reply.status).toBe(404);
-      expect(reply.body).toContain(`href="http://web.${ROOT}:${String(proxy.port)}"`);
+      expect(reply.body).toContain(`href="http://web.${ROOT}:4000"`);
       expect(reply.body).not.toContain(`href="http://web.${ALIAS}`);
       // The page names every root it answers under.
       expect(reply.body).toContain(`<code>${ROOT}</code>, <code>${ALIAS}</code>`);
@@ -1273,10 +1283,10 @@ describe('infra services', () => {
   test('lists the service hostnames on the 404 page and in the attach log', async () => {
     const web = await upstream('web');
     const store = await upstream('store');
-    const proxy = await proxyFor(
-      [route(`web.${ROOT}`, 'web', web.port), serviceRoute(`s3.${ROOT}`, 'store', store.port)],
-      { urlScheme: 'https' },
-    );
+    const proxy = await proxyFor([
+      route(`web.${ROOT}`, 'web', web.port, false, `https://web.${ROOT}`),
+      serviceRoute(`s3.${ROOT}`, 'store', store.port, `https://s3.${ROOT}`),
+    ]);
     const manager = stubManager({ web: 'running' });
     proxy.attach(manager);
     const reply = await request(proxy.port, `ghost.${ROOT}`, { headers: { accept: 'text/html' } });
@@ -1291,6 +1301,7 @@ describe('infra services', () => {
 });
 
 describe('routesFromConfig', () => {
+  const WEB = `http://web.${ROOT}:4000`;
   test('lists every hostname of every routable package, bare root last for defaultService', () => {
     const config = defineConfig({
       serviceRootDir: 'packages',
@@ -1307,10 +1318,10 @@ describe('routesFromConfig', () => {
       },
     });
     expect(routesFromConfig(config)).toEqual([
-      { kind: 'package', host: `web.${ROOT}`, package: 'web', port: 3000, hasHealthcheck: true },
-      { kind: 'package', host: `www.${ROOT}`, package: 'web', port: 3000, hasHealthcheck: true },
-      { kind: 'package', host: ROOT, package: 'web', port: 3000, hasHealthcheck: true },
-      { kind: 'package', host: `api.${ROOT}`, package: 'api', port: 3001, hasHealthcheck: false },
+      { kind: 'package', host: `web.${ROOT}`, package: 'web', port: 3000, hasHealthcheck: true, publicOrigin: WEB }, // oxfmt-ignore
+      { kind: 'package', host: `www.${ROOT}`, package: 'web', port: 3000, hasHealthcheck: true, publicOrigin: WEB }, // oxfmt-ignore
+      { kind: 'package', host: ROOT, package: 'web', port: 3000, hasHealthcheck: true, publicOrigin: WEB }, // oxfmt-ignore
+      { kind: 'package', host: `api.${ROOT}`, package: 'api', port: 3001, hasHealthcheck: false, publicOrigin: `http://api.${ROOT}:4000` }, // oxfmt-ignore
     ]);
   });
 
@@ -1338,11 +1349,11 @@ describe('routesFromConfig', () => {
       services: { web: { port: 3000, proxy: { subdomain: 'web' } } },
     });
     expect(routesFromConfig(config)).toEqual([
-      { kind: 'package', host: `web.${ROOT}`, package: 'web', port: 3000, hasHealthcheck: false },
-      { kind: 'package', host: ROOT, package: 'web', port: 3000, hasHealthcheck: false },
-      { kind: 'service', host: `s3.${ROOT}`, service: 'store', port: 9000 },
-      { kind: 'service', host: `files.${ROOT}`, service: 'store', port: 9000 },
-      { kind: 'service', host: `mail.${ROOT}`, service: 'mail', port: 8025 },
+      { kind: 'package', host: `web.${ROOT}`, package: 'web', port: 3000, hasHealthcheck: false, publicOrigin: WEB }, // oxfmt-ignore
+      { kind: 'package', host: ROOT, package: 'web', port: 3000, hasHealthcheck: false, publicOrigin: WEB }, // oxfmt-ignore
+      { kind: 'service', host: `s3.${ROOT}`, service: 'store', port: 9000, publicOrigin: `http://s3.${ROOT}:4000` }, // oxfmt-ignore
+      { kind: 'service', host: `files.${ROOT}`, service: 'store', port: 9000, publicOrigin: `http://s3.${ROOT}:4000` }, // oxfmt-ignore
+      { kind: 'service', host: `mail.${ROOT}`, service: 'mail', port: 8025, publicOrigin: `http://mail.${ROOT}:4000` }, // oxfmt-ignore
     ]);
   });
 
@@ -1353,7 +1364,7 @@ describe('routesFromConfig', () => {
       services: { landing: { port: 3000 }, worker: { port: 3001 } },
     });
     expect(routesFromConfig(config)).toEqual([
-      { kind: 'package', host: ROOT, package: 'landing', port: 3000, hasHealthcheck: false },
+      { kind: 'package', host: ROOT, package: 'landing', port: 3000, hasHealthcheck: false, publicOrigin: `http://${ROOT}:4000` }, // oxfmt-ignore
     ]);
   });
 
@@ -1363,5 +1374,221 @@ describe('routesFromConfig', () => {
         defineConfig({ serviceRootDir: 'packages', services: { web: { port: 3000 } } }),
       ),
     ).toEqual([]);
+  });
+});
+
+// `tls`: the same port serves TLS beside HTTP/1.1 and h2c, as Vite serves with a certificate —
+// HTTP/2 by ALPN, HTTP/1.1 for the rest, websockets included — with one self-signed certificate
+// per hostname, and the `X-Forwarded-*` a terminator in front would have set.
+describe('tls', () => {
+  /** An upstream answering with the request's forwarded headers, and echoing them on an upgrade. */
+  async function headersEcho(): Promise<number> {
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          host: req.headers.host,
+          proto: req.headers['x-forwarded-proto'] ?? null,
+          forwardedHost: req.headers['x-forwarded-host'] ?? null,
+          forwardedFor: req.headers['x-forwarded-for'] ?? null,
+        }),
+      );
+    });
+    server.on('upgrade', (req, socket) => {
+      socket.write(
+        'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +
+          `x-proto: ${String(req.headers['x-forwarded-proto'] ?? 'none')}\r\n\r\n`,
+      );
+      socket.on('data', (chunk) => socket.write(chunk));
+      socket.on('error', () => {});
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    server.on('connection', (socket) => cleanups.push(() => void socket.destroy()));
+    cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    return (server.address() as net.AddressInfo).port;
+  }
+
+  async function tlsProxy() {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'devtooie-tls-'));
+    cleanups.push(() => fs.rmSync(workspaceDir, { recursive: true, force: true }));
+    const port = await headersEcho();
+    const { tls: proxyTls, trustFile } = await selfSignedTls({
+      workspaceDir,
+      mode: 'spec',
+      hosts: [ROOT, `web.${ROOT}`, `api.${ROOT}`],
+      rootDomains: [ROOT],
+    });
+    const proxy = await proxyFor(
+      [route(`web.${ROOT}`, 'web', port), route(`api.${ROOT}`, 'api', port)],
+      { tls: proxyTls },
+    );
+    proxy.attach(stubManager({ web: 'running', api: 'running' }));
+    return { proxy, ca: fs.readFileSync(trustFile, 'utf8'), trustFile };
+  }
+
+  /** The certificate the proxy presents for `servername`, verified against `ca`. */
+  function peerCertificate(port: number, servername: string | undefined, ca: string) {
+    return new Promise<{ subject: string; authorized: boolean }>((resolve, reject) => {
+      const socket = tls.connect(
+        { host: '127.0.0.1', port, servername, ca, rejectUnauthorized: false },
+        () => {
+          // oxfmt-ignore
+          const raw = socket.getPeerX509Certificate()!;
+          resolve({ subject: new X509Certificate(raw.raw).subject, authorized: socket.authorized });
+          socket.destroy();
+        },
+      );
+      socket.on('error', reject);
+    });
+  }
+
+  test('serves HTTP/2 over TLS by ALPN, trusted through the trust file, with forwarded headers', async () => {
+    const { proxy, ca } = await tlsProxy();
+    const session = http2.connect(`https://127.0.0.1:${String(proxy.port)}`, { ca, servername: `web.${ROOT}` }); // oxfmt-ignore
+    cleanups.push(() => {
+      session.destroy();
+    });
+    const body = await new Promise<string>((resolve, reject) => {
+      const req = session.request({ ':path': '/', ':authority': `web.${ROOT}` });
+      let text = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk: string) => (text += chunk));
+      req.on('end', () => resolve(text));
+      req.on('error', reject);
+      req.end();
+    });
+    expect(session.alpnProtocol).toBe('h2');
+    expect(JSON.parse(body)).toEqual({
+      host: `web.${ROOT}`,
+      proto: 'https',
+      forwardedHost: `web.${ROOT}`,
+      forwardedFor: '127.0.0.1',
+    });
+  });
+
+  test('serves HTTP/1.1 over TLS to a client offering no HTTP/2, replacing forwarded headers it sent', async () => {
+    const { proxy, ca } = await tlsProxy();
+    const reply = await new Promise<{ protocol: string | false | null; body: string }>(
+      (resolve, reject) => {
+        const req = https.request(
+          {
+            host: '127.0.0.1',
+            port: proxy.port,
+            servername: `api.${ROOT}`,
+            ca,
+            headers: { host: `api.${ROOT}`, 'x-forwarded-for': '6.6.6.6', 'x-forwarded-proto': 'http' }, // oxfmt-ignore
+            agent: false,
+          },
+          (res) => {
+            let body = '';
+            res.setEncoding('utf8');
+            res.on('data', (chunk: string) => (body += chunk));
+            res.on('end', () => resolve({ protocol: (res.socket as tls.TLSSocket).alpnProtocol, body })); // oxfmt-ignore
+          },
+        );
+        req.on('error', reject);
+        req.end();
+      },
+    );
+    // Node's HTTPS client offers no protocol by ALPN, so the server falls back to HTTP/1.1.
+    expect(reply.protocol).toBe(false);
+    expect(JSON.parse(reply.body)).toMatchObject({ proto: 'https', forwardedFor: '127.0.0.1' });
+  });
+
+  test('still serves plain HTTP/1.1 on the same port, its headers untouched', async () => {
+    const { proxy } = await tlsProxy();
+    const reply = await request(proxy.port, `web.${ROOT}`, { headers: { 'x-forwarded-proto': 'https' } }); // oxfmt-ignore
+    expect(reply.status).toBe(200);
+    expect(JSON.parse(reply.body)).toEqual({
+      host: `web.${ROOT}`,
+      proto: 'https',
+      forwardedHost: null,
+      forwardedFor: null,
+    });
+  });
+
+  test('still serves h2c on the same port, with no forwarded headers added', async () => {
+    const { proxy } = await tlsProxy();
+    const session = http2.connect(`http://127.0.0.1:${String(proxy.port)}`);
+    cleanups.push(() => {
+      session.destroy();
+    });
+    const body = await new Promise<string>((resolve, reject) => {
+      const req = session.request({ ':path': '/', ':authority': `web.${ROOT}` });
+      let text = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk: string) => (text += chunk));
+      req.on('end', () => resolve(text));
+      req.on('error', reject);
+      req.end();
+    });
+    expect(JSON.parse(body)).toMatchObject({ host: `web.${ROOT}`, proto: null });
+  });
+
+  test('carries a websocket upgrade over TLS, telling the service it came in over https', async () => {
+    const { proxy, ca } = await tlsProxy();
+    const { socket, proto } = await new Promise<{ socket: Duplex; proto: unknown }>(
+      (resolve, reject) => {
+        // oxfmt-ignore
+        const req = https.request({
+        host: '127.0.0.1',
+        port: proxy.port,
+        servername: `web.${ROOT}`,
+        ca,
+        agent: false,
+        headers: { host: `web.${ROOT}`, connection: 'Upgrade', upgrade: 'websocket' },
+      });
+        req.on('upgrade', (res, upgraded) => resolve({ socket: upgraded, proto: res.headers['x-proto'] })); // oxfmt-ignore
+        req.on('response', (res) =>
+          reject(new Error(`upgrade refused: ${String(res.statusCode)}`)),
+        );
+        req.on('error', reject);
+        req.end();
+      },
+    );
+    cleanups.push(() => void socket.destroy());
+    expect(proto).toBe('https');
+    const echoed = new Promise<string>((resolve) => socket.once('data', (d: Buffer) => resolve(d.toString()))); // oxfmt-ignore
+    socket.write('ping');
+    expect(await echoed).toBe('ping');
+  });
+
+  test("presents each hostname its own certificate, makes one for an unknown name under the root, and the root's for any other", async () => {
+    // oxfmt-ignore
+    const { proxy, ca } = await tlsProxy();
+    expect(await peerCertificate(proxy.port, `api.${ROOT}`, ca)).toEqual({
+      subject: `CN=api.${ROOT}`,
+      authorized: true,
+    });
+    // Not in the trust file, so not trusted — but named, so the browser can show the 404.
+    expect(await peerCertificate(proxy.port, `ghost.${ROOT}`, ca)).toEqual({
+      subject: `CN=ghost.${ROOT}`,
+      authorized: false,
+    });
+    expect((await peerCertificate(proxy.port, 'elsewhere.test', ca)).subject).toBe(`CN=${ROOT}`);
+    expect((await peerCertificate(proxy.port, undefined, ca)).subject).toBe(`CN=${ROOT}`);
+  });
+
+  test('a Node process given the trust file as NODE_EXTRA_CA_CERTS trusts the proxy', async () => {
+    const { proxy, trustFile } = await tlsProxy();
+    const script = `
+      const https = require('node:https');
+      https.get({ host: '127.0.0.1', port: ${String(proxy.port)}, servername: 'web.${ROOT}', headers: { host: 'web.${ROOT}' } }, (res) => {
+        let body = '';
+        res.on('data', (c) => (body += c));
+        res.on('end', () => console.log(JSON.parse(body).proto));
+      }).on('error', (err) => { console.error(err.code); process.exit(1); });`;
+    const run = (env: NodeJS.ProcessEnv) =>
+      new Promise<{ code: number; out: string }>((resolve) => {
+        execFile(process.execPath, ['-e', script], { env }, (err, stdout, stderr) =>
+          resolve({ code: err ? 1 : 0, out: (stdout || stderr).trim() }),
+        );
+      });
+    const { NODE_EXTRA_CA_CERTS: _, ...env } = process.env;
+    expect(await run({ ...env, NODE_EXTRA_CA_CERTS: trustFile })).toEqual({
+      code: 0,
+      out: 'https',
+    });
+    expect(await run(env)).toEqual({ code: 1, out: 'DEPTH_ZERO_SELF_SIGNED_CERT' });
   });
 });

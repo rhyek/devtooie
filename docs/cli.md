@@ -121,7 +121,7 @@ It resolves with:
 | `pid`, `port`     | The session's process and its control-API port.                                                                                                                           |
 | `mode`, `logFile` | The session's mode and log.                                                                                                                                                |
 | `services`        | What the session runs: the services asked for, and their runtime deps.                                                                                                    |
-| `origins`         | Every configured service's origin, selected or not: its `publicOrigin` under the [dev reverse proxy](./dev-reverse-proxy.md), `http://localhost:<port>` otherwise. A service with no `port` has none. |
+| `origins`         | Every configured service's origin, selected or not: its [`publicOrigin`](./configuration.md#publicorigin). A service with no `port` has none. |
 | `rootDomain`      | The dev reverse proxy's canonical root domain, or `null` without one.                                                                                                      |
 | `control`         | A [control API](./control-api.md) client bound to the session: `query.status()`, `events()`, `command.service.*`, `command.infra.*`, `command.quit()`.                       |
 | `stop()`          | Quits the session, resolving once it has exited.                                                                                                                           |
@@ -149,9 +149,8 @@ Print the **fully resolved config** as prettified JSON — the same object a run
 as `config` on [`GET /query/status`](./control-api.md) — **without a session**. Callbacks have run,
 defaults are applied, `command` is normalized, and every service carries its `relativeDir`
 (as written, or inferred from `serviceRootDir`) and `absoluteDir`, its resolved `port`,
-`urls`, `healthcheck`, and — under the [dev reverse proxy](./dev-reverse-proxy.md) — its
-`publicOrigin` (`<urlScheme>://<subdomain>.<rootDomain>[:<port>]`, or the bare root for a
-`defaultService` with no `proxy`). Each infra service the config
+`urls`, `healthcheck`, and its [`publicOrigin`](./configuration.md#publicorigin), where a
+browser reaches it. Each infra service the config
 names carries its `enabled`, its resolved `port`, its `proxy`, its `urls`, and its `publicOrigin`
 the same way. The `devReverseProxy` block itself is there too, with its port, its canonical `rootDomain`,
 and `rootDomains`, every root domain it routes under.
@@ -187,7 +186,7 @@ to run:
   service](../README.md#how-a-script-is-run). Anything after `--` is forwarded to it as
   arguments. Errors if it has no such script/target.
 
-Either way the command runs in the service's directory with that service's resolved `.env` injected and its configured `port` as `PORT` (plus `PUBLIC_ORIGIN` under the [dev reverse proxy](./dev-reverse-proxy.md)) —
+Either way the command runs in the service's directory with that service's resolved `.env` injected and its configured `port` as `PORT` (plus its [public origin](./configuration.md#publicorigin) as `PUBLIC_ORIGIN`) —
 exactly the environment the TUI would give it (its `.env` files and the config's
 [`env.vars`](./configuration.md#envvars), per
 [Environment loading](../README.md#environment-env-loading)).

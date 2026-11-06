@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { execa } from 'execa';
 import { type AnyServiceConfig, getLoadedConfig } from '../config.js';
+import { proxyTlsFor } from '../dev-tls.js';
 import { envFileNames, packageEnvLayer, workspaceEnvLayer } from '../env.js';
 import {
   exitCodeOf,
@@ -121,16 +122,20 @@ async function resolveOneOffTargetOrExit(
     );
     process.exit(1);
   }
+  // The proxy's self-signed certificates, made now if no session has yet, so a test runner
+  // started here trusts the `https://` origins of the stack it starts.
+  const { trustFile } = config.devReverseProxy?.https === 'self-signed' ? await proxyTlsFor(config, root) : {}; // oxfmt-ignore
   const layerOpts = {
     cwd: root,
     files: config.envFiles ?? envFileNames(),
     override: config.envOverride,
     vars: config.envVars,
+    extraCaCerts: trustFile,
   };
 
   const configPackages = Object.values(config.services);
-  // The same layer the session spawns the package with: `PORT`, `PUBLIC_ORIGIN` under the dev
-  // reverse proxy, then the config's own variables and its `.env` files.
+  // The same layer the session spawns the package with: `PORT`, `PUBLIC_ORIGIN` and
+  // `NODE_EXTRA_CA_CERTS`, then the config's own variables and its `.env` files.
   const layerFor = (pkg: AnyServiceConfig) => packageEnvLayer(pkg, layerOpts);
   if (explicitName !== undefined) {
     const pkg = configPackages.find((p) => p.name === explicitName);

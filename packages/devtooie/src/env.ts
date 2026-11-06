@@ -629,6 +629,11 @@ interface EnvLayerOptions {
   /** The config's own variables (`env.vars`, resolved); see {@link ResolveEnvOptions.vars}. */
   vars?: Record<string, string>;
   /**
+   * The trust file of the dev reverse proxy's self-signed certificates, injected as
+   * `NODE_EXTRA_CA_CERTS`, so a Node process trusts the proxy's `https://` origins.
+   */
+  extraCaCerts?: string;
+  /**
    * Reads a candidate file, and dotenvx's {@link envKeysFile}; from disk, synchronously, unless
    * given.
    */
@@ -637,10 +642,11 @@ interface EnvLayerOptions {
 
 /**
  * The environment layer for a service's child process: the config's own variables and its
- * `.env` files, resolved together, with the service's configured `port` as `PORT` and, under
- * the dev reverse proxy, its public origin as `PUBLIC_ORIGIN`. Those two are the service's own,
- * so they win over a value set workspace-wide — by the config's variables or a workspace `.env`
- * file — and only a file of the service's own replaces them. Excludes `process.env` — merge
+ * `.env` files, resolved together, with the service's configured `port` as `PORT`, its public
+ * origin as `PUBLIC_ORIGIN`, and the trust file of the proxy's self-signed certificates (if any)
+ * as `NODE_EXTRA_CA_CERTS`. Those are the service's own, so they win over a value set
+ * workspace-wide — by the config's variables or a workspace `.env` file — and only a file of the
+ * service's own replaces them. Excludes `process.env` — merge
  * this over it at spawn time (`Object.assign({}, process.env, layer)`). Shared by the TUI/plain
  * session and `devtooie exec` so both build the same env.
  */
@@ -648,7 +654,7 @@ export function packageEnvLayer(
   pkg: AnyServiceConfig,
   opts: EnvLayerOptions,
 ): Record<string, string> {
-  const { read, ...rest } = opts;
+  const { read, extraCaCerts, ...rest } = opts;
   const { env, packageNames } = resolveEnvFrom({ ...rest, relativeDir: pkg.relativeDir }, read);
   const injected: Record<string, string> = {};
   if (pkg.port !== undefined) {
@@ -656,6 +662,9 @@ export function packageEnvLayer(
   }
   if (pkg.publicOrigin !== undefined) {
     injected.PUBLIC_ORIGIN = pkg.publicOrigin;
+  }
+  if (extraCaCerts !== undefined) {
+    injected.NODE_EXTRA_CA_CERTS = extraCaCerts;
   }
   for (const [name, value] of Object.entries(injected)) {
     if (!packageNames.has(name)) {
@@ -668,9 +677,14 @@ export function packageEnvLayer(
 /**
  * The environment layer for what belongs to no service — infra, and `devtooie exec` / `run`
  * outside every service: the config's own variables and the workspace-scope `.env` files,
- * resolved together. Excludes `process.env`, like {@link packageEnvLayer}.
+ * resolved together, with `extraCaCerts` as `NODE_EXTRA_CA_CERTS` unless a file sets it.
+ * Excludes `process.env`, like {@link packageEnvLayer}.
  */
 export function workspaceEnvLayer(opts: EnvLayerOptions): Record<string, string> {
-  const { read, ...rest } = opts;
-  return withInjectedList(resolveEnvFrom({ ...rest, relativeDir: '.' }, read).env);
+  const { read, extraCaCerts, ...rest } = opts;
+  const { env, packageNames } = resolveEnvFrom({ ...rest, relativeDir: '.' }, read);
+  if (extraCaCerts !== undefined && !packageNames.has('NODE_EXTRA_CA_CERTS')) {
+    env.NODE_EXTRA_CA_CERTS = extraCaCerts;
+  }
+  return withInjectedList(env);
 }
